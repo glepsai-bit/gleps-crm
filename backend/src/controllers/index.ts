@@ -1,0 +1,13 @@
+export { authController } from './auth.controller';
+export { accountController } from './account.controller';
+export { userController } from './user.controller';
+export { contactController } from './contact.controller';
+export { productController } from './product.controller';
+export { tagController, funnelController } from './tag.controller';
+export { saleController } from './sale.controller';
+export { dashboardController } from './dashboard.controller';
+export { financeController } from './finance.controller';
+export { insightsController } from './insights.controller';
+export { calendarController } from './calendar.controller';
+export { eventController } from './event.controller';
+export { chatwootController } from './chatwoot.controller';

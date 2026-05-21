@@ -1,0 +1,60 @@
+# ============================================
+# GLEPS CRM Frontend - Dockerfile
+# ============================================
+
+# Build stage
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Accept build arguments
+ARG VITE_API_URL=/api
+ARG VITE_USE_BACKEND=true
+
+# Set as environment variables for the build
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_USE_BACKEND=$VITE_USE_BACKEND
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Ensure VITE_USE_BACKEND is written to .env so Vite's loadEnv picks it up
+# This is critical for the Supabase client alias to activate during build
+RUN echo "" >> .env && \
+    echo "VITE_USE_BACKEND=true" >> .env && \
+    echo "VITE_API_URL=/api" >> .env
+
+# Cache bust to force rebuild
+ARG CACHEBUST=1
+
+# Build the application
+RUN npm run build
+
+# Production stage with nginx
+FROM nginx:alpine AS production
+
+# Copy nginx template (processado em runtime via envsubst)
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+
+# Copy built application
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Default value for BACKEND_UPSTREAM
+ENV BACKEND_UPSTREAM=backend:3000
+
+# Expose port
+EXPOSE 80
+
+# Health check
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --spider -q http://localhost:80/health || exit 1
+
+# Start nginx with envsubst template processing
+# nginx:alpine image processes /etc/nginx/templates/*.template automatically
+CMD ["nginx", "-g", "daemon off;"]

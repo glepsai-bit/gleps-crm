@@ -1,0 +1,984 @@
+// GLEPS CRM Database Schema
+// Multi-tenant CRM with Chatwoot integration
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// ACCOUNTS (Multi-tenant)
+// ============================================
+model Account {
+  id              String        @id @default(uuid()) @db.Uuid
+  nome            String        @db.VarChar(255)
+  timezone        String        @default("America/Sao_Paulo") @db.VarChar(100)
+  plano           String?       @db.VarChar(50)
+  status          AccountStatus @default(active)
+  limiteUsuarios  Int           @default(10) @map("limite_usuarios")
+  monthlyExtractionLimit Int?  @default(500) @map("monthly_extraction_limit")
+  monthlyEmailLimit      Int?  @default(3000) @map("monthly_email_limit")
+  dailyEmailLimit        Int?  @default(100)  @map("daily_email_limit")
+
+  // Chatwoot Integration
+  chatwootBaseUrl   String? @map("chatwoot_base_url") @db.VarChar(500)
+  chatwootAccountId String? @map("chatwoot_account_id") @db.VarChar(100)
+  chatwootApiKey    String? @map("chatwoot_api_key") @db.VarChar(500)
+
+  // Google Calendar OAuth (stored in DB, not env vars)
+  googleClientId     String? @map("google_client_id") @db.VarChar(500)
+  googleClientSecret String? @map("google_client_secret") @db.VarChar(500)
+  googleRedirectUri  String? @map("google_redirect_uri") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Email/AI Integration
+  openaiApiKey       String? @map("openai_api_key") @db.VarChar(500)
+  sendgridApiKey     String? @map("sendgrid_api_key") @db.VarChar(500)
+  sendgridFromEmail  String? @map("sendgrid_from_email") @db.VarChar(255)
+  sendgridFromName   String? @map("sendgrid_from_name") @db.VarChar(255)
+  emailBatchSize     Int     @default(100) @map("email_batch_size")
+  emailDelayMs       Int     @default(500) @map("email_delay_ms")
+
+  // Relations
+  users               User[]
+  contacts            Contact[]
+  products            Product[]
+  sales               Sale[]
+  tags                Tag[]
+  funnels             Funnel[]
+  calendarEvents      CalendarEvent[]
+  events              Event[]
+  googleCalendarTokens GoogleCalendarToken[]
+  apiUsageLogs        ApiUsageLog[]
+  dispatchBatches     DispatchBatch[]
+  emailCadences       EmailCadence[]
+  emailTemplates      EmailTemplate[]
+  emailEnrollments    EmailEnrollment[]
+  emailSends          EmailSend[]
+  emailCampaigns      EmailCampaign[]
+  emailInboxMessages  EmailInboxMessage[]
+  emailAudiences      EmailAudience[]
+  prospectingAudiences ProspectingAudience[]
+
+  @@index([status])
+  @@map("accounts")
+}
+
+enum AccountStatus {
+  active
+  paused
+  cancelled
+}
+
+// ============================================
+// USERS
+// ============================================
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  accountId    String?    @map("account_id") @db.Uuid
+  nome         String     @db.VarChar(255)
+  email        String     @unique @db.VarChar(255)
+  passwordHash String     @map("password_hash") @db.VarChar(255)
+  role         UserRole
+  status       UserStatus @default(active)
+
+  // Granular permissions (for agents)
+  permissions String[] @default(["dashboard"])
+
+  // Chatwoot Integration
+  chatwootAgentId Int? @map("chatwoot_agent_id")
+
+  lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  account         Account?        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sales           Sale[]          @relation("SalesResponsavel")
+  refundedSales   Sale[]          @relation("SalesRefundedBy")
+  leadNotes       LeadNote[]
+  calendarEvents  CalendarEvent[]
+  actorEvents     Event[]         @relation("EventActor")
+  refreshTokens   RefreshToken[]
+
+  @@index([accountId])
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+enum UserRole {
+  super_admin
+  admin
+  agent
+}
+
+enum UserStatus {
+  active
+  inactive
+  suspended
+}
+
+// ============================================
+// REFRESH TOKENS
+// ============================================
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique @db.VarChar(500)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+// ============================================
+// CONTACTS (Leads)
+// ============================================
+model Contact {
+  id        String         @id @default(uuid()) @db.Uuid
+  accountId String         @map("account_id") @db.Uuid
+  nome      String?        @db.VarChar(255)
+  telefone  String?        @db.VarChar(50)
+  email     String?        @db.VarChar(255)
+  origem    ContactOrigin?
+
+  // Chatwoot Integration
+  chatwootContactId      Int? @map("chatwoot_contact_id")
+  chatwootConversationId Int? @map("chatwoot_conversation_id")
+
+  // Segmentation
+  nicho    String? @db.VarChar(255)
+  cidade   String? @db.VarChar(255)
+  estado   String? @db.VarChar(100)
+
+  firstResolvedAt DateTime? @map("first_resolved_at") @db.Timestamptz
+
+  // Follow-up
+  followupCount  Int       @default(0) @map("followup_count")
+  lastFollowupAt DateTime? @map("last_followup_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  account            Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sales              Sale[]
+  leadTags           LeadTag[]
+  tagHistory         TagHistory[]
+  leadNotes          LeadNote[]
+  calendarEvents     CalendarEvent[]
+  emailEnrollments   EmailEnrollment[]
+  emailSends         EmailSend[]
+  emailInboxMessages EmailInboxMessage[]
+  emailAudienceContacts EmailAudienceContact[]
+
+  @@index([accountId])
+  @@index([telefone])
+  @@index([email])
+  @@index([nicho])
+  @@index([cidade])
+  @@map("contacts")
+}
+
+enum ContactOrigin {
+  whatsapp
+  instagram
+  site
+  indicacao
+  outro
+}
+
+// ============================================
+// FUNNELS
+// ============================================
+model Funnel {
+  id        String  @id @default(uuid()) @db.Uuid
+  accountId String  @map("account_id") @db.Uuid
+  name      String  @db.VarChar(100)
+  slug      String  @db.VarChar(100)
+  isDefault Boolean @default(false) @map("is_default")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tags    Tag[]
+
+  @@unique([accountId, slug])
+  @@index([accountId])
+  @@map("funnels")
+}
+
+// ============================================
+// TAGS (Kanban Stages)
+// ============================================
+model Tag {
+  id        String  @id @default(uuid()) @db.Uuid
+  accountId String  @map("account_id") @db.Uuid
+  funnelId  String  @map("funnel_id") @db.Uuid
+  name      String  @db.VarChar(100)
+  slug      String  @db.VarChar(100)
+  type      TagType
+  color     String  @default("#6366F1") @db.VarChar(20)
+  ordem     Int     @default(0)
+  ativo     Boolean @default(true)
+
+  // Chatwoot Integration
+  chatwootLabelId Int? @map("chatwoot_label_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  account    Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  funnel     Funnel       @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  leadTags   LeadTag[]
+  tagHistory TagHistory[]
+
+  @@unique([accountId, slug])
+  @@index([accountId])
+  @@index([funnelId])
+  @@index([type])
+  @@map("tags")
+}
+
+enum TagType {
+  stage
+  operational
+}
+
+// ============================================
+// LEAD_TAGS (Relationship)
+// ============================================
+model LeadTag {
+  id            String        @id @default(uuid()) @db.Uuid
+  contactId     String        @map("contact_id") @db.Uuid
+  tagId         String        @map("tag_id") @db.Uuid
+  appliedByType ActorType     @map("applied_by_type")
+  appliedById   String?       @map("applied_by_id") @db.Uuid
+  source        LeadTagSource
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, tagId])
+  @@index([contactId])
+  @@index([tagId])
+  @@map("lead_tags")
+}
+
+enum ActorType {
+  user
+  agent_bot
+  system
+  external
+}
+
+enum LeadTagSource {
+  kanban
+  chatwoot
+  system
+  api
+}
+
+// ============================================
+// TAG_HISTORY (Immutable Audit Log)
+// ============================================
+model TagHistory {
+  id        String          @id @default(uuid()) @db.Uuid
+  contactId String?         @map("contact_id") @db.Uuid
+  tagId     String?         @map("tag_id") @db.Uuid
+  action    TagHistoryAction
+  actorType ActorType       @map("actor_type")
+  actorId   String?         @map("actor_id") @db.Uuid
+  source    LeadTagSource
+  reason    String?
+
+  // Snapshot data
+  tagName     String? @map("tag_name") @db.VarChar(100)
+  contactNome String? @map("contact_nome") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  tag     Tag?     @relation(fields: [tagId], references: [id], onDelete: SetNull)
+
+  @@index([contactId])
+  @@index([createdAt])
+  @@map("tag_history")
+}
+
+enum TagHistoryAction {
+  added
+  removed
+  tag_created
+  tag_deleted
+}
+
+// ============================================
+// PRODUCTS
+// ============================================
+model Product {
+  id               String   @id @default(uuid()) @db.Uuid
+  accountId        String   @map("account_id") @db.Uuid
+  nome             String   @db.VarChar(255)
+  valorPadrao      Decimal  @map("valor_padrao") @db.Decimal(10, 2)
+  metodosPagamento String[] @default(["pix"]) @map("metodos_pagamento")
+  conveniosAceitos String[] @default([]) @map("convenios_aceitos")
+  ativo            Boolean  @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  account   Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  saleItems SaleItem[]
+
+  @@index([accountId])
+  @@index([ativo])
+  @@map("products")
+}
+
+// ============================================
+// SALES
+// ============================================
+model Sale {
+  id               String        @id @default(uuid()) @db.Uuid
+  accountId        String        @map("account_id") @db.Uuid
+  contactId        String        @map("contact_id") @db.Uuid
+  valor            Decimal       @db.Decimal(10, 2)
+  status           SaleStatus    @default(pending)
+  metodoPagamento  PaymentMethod @map("metodo_pagamento")
+  convenioNome     String?       @map("convenio_nome") @db.VarChar(255)
+  responsavelId    String        @map("responsavel_id") @db.Uuid
+  isRecurring      Boolean       @default(false) @map("is_recurring")
+
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  paidAt      DateTime? @map("paid_at") @db.Timestamptz
+  refundedAt  DateTime? @map("refunded_at") @db.Timestamptz
+
+  // Refund metadata
+  refundReason String? @map("refund_reason")
+  refundedById String? @map("refunded_by") @db.Uuid
+
+  // Relations
+  account     Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contact     Contact    @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  responsavel User       @relation("SalesResponsavel", fields: [responsavelId], references: [id])
+  refundedBy  User?      @relation("SalesRefundedBy", fields: [refundedById], references: [id])
+  items       SaleItem[]
+
+  @@index([accountId])
+  @@index([contactId])
+  @@index([status])
+  @@index([responsavelId])
+  @@index([createdAt])
+  @@map("sales")
+}
+
+enum SaleStatus {
+  pending
+  paid
+  refunded
+  partial_refund
+}
+
+enum PaymentMethod {
+  pix
+  boleto
+  debito
+  credito
+  dinheiro
+  convenio
+}
+
+// ============================================
+// SALE_ITEMS
+// ============================================
+model SaleItem {
+  id            String   @id @default(uuid()) @db.Uuid
+  saleId        String   @map("sale_id") @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  quantidade    Int      @default(1)
+  valorUnitario Decimal  @map("valor_unitario") @db.Decimal(10, 2)
+  valorTotal    Decimal  @map("valor_total") @db.Decimal(10, 2)
+  refunded      Boolean  @default(false)
+  refundedAt    DateTime? @map("refunded_at") @db.Timestamptz
+  refundReason  String?  @map("refund_reason")
+
+  // Relations
+  sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_items")
+}
+
+// ============================================
+// LEAD_NOTES
+// ============================================
+model LeadNote {
+  id         String @id @default(uuid()) @db.Uuid
+  contactId  String @map("contact_id") @db.Uuid
+  authorId   String @map("author_id") @db.Uuid
+  authorName String @map("author_name") @db.VarChar(255)
+  content    String
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  author  User    @relation(fields: [authorId], references: [id])
+
+  @@index([contactId])
+  @@index([createdAt])
+  @@map("lead_notes")
+}
+
+// ============================================
+// EVENTS (Audit/Event Sourcing)
+// ============================================
+model Event {
+  id         String     @id @default(uuid()) @db.Uuid
+  accountId  String?    @map("account_id") @db.Uuid
+  eventType  String     @map("event_type") @db.VarChar(100)
+  actorType  ActorType? @map("actor_type")
+  actorId    String?    @map("actor_id") @db.Uuid
+  entityType String?    @map("entity_type") @db.VarChar(100)
+  entityId   String?    @map("entity_id") @db.Uuid
+  channel    String?    @db.VarChar(50)
+  payload    Json?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  account Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  actor   User?    @relation("EventActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([accountId])
+  @@index([eventType])
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@map("events")
+}
+
+// ============================================
+// CALENDAR_EVENTS
+// ============================================
+model CalendarEvent {
+  id          String              @id @default(uuid()) @db.Uuid
+  accountId   String              @map("account_id") @db.Uuid
+  title       String              @db.VarChar(255)
+  startTime   DateTime            @map("start_time") @db.Timestamptz
+  endTime     DateTime            @map("end_time") @db.Timestamptz
+  type        CalendarEventType   @default(appointment)
+  source      CalendarEventSource @default(crm)
+  status      CalendarEventStatus @default(scheduled)
+  location    String?             @db.VarChar(500)
+  meetingLink String?             @map("meeting_link") @db.VarChar(500)
+  contactId   String?             @map("contact_id") @db.Uuid
+  notes       String?
+  createdById String?             @map("created_by") @db.Uuid
+
+  // Google Calendar sync
+  googleEventId    String? @map("google_event_id") @db.VarChar(255)
+  googleCalendarId String? @map("google_calendar_id") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  account   Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contact   Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  createdBy User?               @relation(fields: [createdById], references: [id])
+  attendees CalendarAttendee[]
+
+  @@index([accountId])
+  @@index([startTime])
+  @@index([googleEventId])
+  @@map("calendar_events")
+}
+
+enum CalendarEventType {
+  meeting
+  appointment
+  block
+  other
+}
+
+enum CalendarEventSource {
+  google
+  crm
+}
+
+enum CalendarEventStatus {
+  scheduled
+  cancelled
+  completed
+}
+
+// ============================================
+// CALENDAR_ATTENDEES
+// ============================================
+model CalendarAttendee {
+  id      String         @id @default(uuid()) @db.Uuid
+  eventId String         @map("event_id") @db.Uuid
+  name    String         @db.VarChar(255)
+  email   String         @db.VarChar(255)
+  status  AttendeeStatus @default(pending)
+
+  // Relations
+  event CalendarEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId])
+  @@map("calendar_attendees")
+}
+
+enum AttendeeStatus {
+  pending
+  confirmed
+  declined
+  tentative
+}
+
+// ============================================
+// RESOLUTION LOGS
+// ============================================
+model ResolutionLog {
+  id              String   @id @default(uuid()) @db.Uuid
+  accountId       String   @map("account_id") @db.Uuid
+  conversationId  Int      @map("conversation_id")
+  resolvedBy      String   @map("resolved_by")
+  resolutionType  String   @default("explicit") @map("resolution_type")
+  aiParticipated  Boolean? @default(false) @map("ai_participated")
+  agentId         Int?     @map("agent_id")
+  resolvedAt      DateTime @default(now()) @map("resolved_at") @db.Timestamptz
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([accountId])
+  @@index([resolvedAt])
+  @@index([accountId, conversationId, resolvedAt(sort: Desc)], map: "resolution_logs_account_conversation_idx")
+  @@map("resolution_logs")
+}
+
+// ============================================
+// GOOGLE_CALENDAR_TOKENS
+// ============================================
+model GoogleCalendarToken {
+  id             String   @id @default(uuid()) @db.Uuid
+  accountId      String   @map("account_id") @db.Uuid
+  userId         String   @unique @map("user_id") @db.Uuid
+  accessToken    String   @map("access_token")
+  refreshToken   String   @map("refresh_token")
+  tokenType      String   @default("Bearer") @map("token_type") @db.VarChar(50)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz
+  calendarId     String?  @map("calendar_id") @db.VarChar(255)
+  connectedEmail String?  @map("connected_email") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("google_calendar_tokens")
+}
+
+// ============================================
+// API USAGE LOGS (Prospecting quota tracking)
+// ============================================
+model ApiUsageLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  accountId     String   @map("account_id") @db.Uuid
+  endpoint      String   @default("maps-data") @db.VarChar(100)
+  requestsCount Int      @default(1) @map("requests_count")
+  month         String   @db.VarChar(7)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, month])
+  @@map("api_usage_logs")
+}
+
+// ============================================
+// DISPATCH BATCHES (Prospecting mass dispatch)
+// ============================================
+model DispatchBatch {
+  id            String    @id @default(uuid()) @db.Uuid
+  accountId     String    @map("account_id") @db.Uuid
+  keyword       String?
+  location      String?
+  totalContacts Int       @default(0) @map("total_contacts")
+  sentCount     Int       @default(0) @map("sent_count")
+  failedCount   Int       @default(0) @map("failed_count")
+  status        String    @default("running")
+  delaySeconds  Int       @default(30) @map("delay_seconds")
+  startedAt     DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  account Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  logs    DispatchLog[]
+
+  @@index([accountId])
+  @@map("dispatch_batches")
+}
+
+// ============================================
+// DISPATCH LOGS (Individual message logs)
+// ============================================
+model DispatchLog {
+  id           String    @id @default(uuid()) @db.Uuid
+  batchId      String    @map("batch_id") @db.Uuid
+  contactName  String    @map("contact_name")
+  phone        String
+  inboxId      Int       @map("inbox_id")
+  inboxName    String?   @map("inbox_name")
+  status       String    @default("pending")
+  errorMessage String?   @map("error_message")
+  sentAt       DateTime? @map("sent_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  batch DispatchBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@map("dispatch_logs")
+}
+
+// ============================================
+// PROSPECTING AUDIENCES (Saved lead lists from extraction)
+// ============================================
+model ProspectingAudience {
+  id          String  @id @default(uuid()) @db.Uuid
+  accountId   String  @map("account_id") @db.Uuid
+  name        String  @db.VarChar(255)
+  description String?
+  keyword     String?
+  location    String?
+  totalLeads  Int     @default(0) @map("total_leads")
+  createdBy   String? @map("created_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account Account                   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  leads   ProspectingAudienceLead[]
+
+  @@index([accountId])
+  @@map("prospecting_audiences")
+}
+
+model ProspectingAudienceLead {
+  id         String   @id @default(uuid()) @db.Uuid
+  audienceId String   @map("audience_id") @db.Uuid
+  name       String   @db.VarChar(255)
+  phone      String?  @db.VarChar(50)
+  address    String?
+  rating     Decimal? @db.Decimal(3, 1)
+  website    String?
+  category   String?  @db.VarChar(255)
+  rawData    Json?    @map("raw_data")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  audience ProspectingAudience @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+
+  @@index([audienceId])
+  @@map("prospecting_audience_leads")
+}
+
+// ============================================
+// EMAIL CADENCES
+// ============================================
+model EmailCadence {
+  id             String   @id @default(uuid()) @db.Uuid
+  accountId      String   @map("account_id") @db.Uuid
+  name           String   @db.VarChar(255)
+  description    String?
+  targetStageIds String[] @default([]) @map("target_stage_ids") @db.Uuid
+  active         Boolean  @default(true)
+  createdBy      String?  @map("created_by") @db.Uuid
+  sendAtTime     String   @default("09:00") @map("send_at_time") @db.VarChar(5)
+  startDate      DateTime @default(now()) @map("start_date") @db.Date
+  campaignId     String?  @map("campaign_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account      Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign     EmailCampaign?       @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  steps        EmailCadenceStep[]
+  enrollments  EmailEnrollment[]
+  rulesFrom    EmailCadenceRule[]   @relation("RulesFromCadence")
+  rulesTo      EmailCadenceRule[]   @relation("RulesToCadence")
+
+  @@index([accountId])
+  @@index([campaignId])
+  @@map("email_cadences")
+}
+
+// ============================================
+// EMAIL CADENCE RULES (branching)
+// ============================================
+model EmailCadenceRule {
+  id              String  @id @default(uuid()) @db.Uuid
+  cadenceId       String  @map("cadence_id") @db.Uuid
+  triggerEvent    String  @map("trigger_event") @db.VarChar(50)
+  targetCadenceId String  @map("target_cadence_id") @db.Uuid
+  delayHours      Int     @default(0) @map("delay_hours")
+  timeoutHours    Int     @default(48) @map("timeout_hours")
+  active          Boolean @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  cadence       EmailCadence @relation("RulesFromCadence", fields: [cadenceId], references: [id], onDelete: Cascade)
+  targetCadence EmailCadence @relation("RulesToCadence", fields: [targetCadenceId], references: [id], onDelete: Cascade)
+
+  @@index([cadenceId])
+  @@index([triggerEvent])
+  @@map("email_cadence_rules")
+}
+
+// ============================================
+// EMAIL CADENCE STEPS
+// ============================================
+model EmailCadenceStep {
+  id         String  @id @default(uuid()) @db.Uuid
+  cadenceId  String  @map("cadence_id") @db.Uuid
+  templateId String? @map("template_id") @db.Uuid
+  dayNumber  Int     @default(1) @map("day_number")
+  subject    String  @db.VarChar(500)
+  bodyHtml   String  @map("body_html")
+  bodyText   String? @map("body_text")
+  active     Boolean @default(true)
+  ordem      Int     @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  cadence    EmailCadence   @relation(fields: [cadenceId], references: [id], onDelete: Cascade)
+  template   EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  emailSends EmailSend[]
+
+  @@index([cadenceId])
+  @@index([templateId])
+  @@map("email_cadence_steps")
+}
+
+// ============================================
+// EMAIL TEMPLATES
+// ============================================
+model EmailTemplate {
+  id        String  @id @default(uuid()) @db.Uuid
+  accountId String  @map("account_id") @db.Uuid
+  name      String  @db.VarChar(255)
+  subject   String  @db.VarChar(500)
+  bodyHtml  String  @map("body_html")
+  bodyText  String? @map("body_text")
+  category  String? @db.VarChar(100)
+  createdBy String? @map("created_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account            Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  emailCadenceSteps  EmailCadenceStep[]
+
+  @@index([accountId])
+  @@map("email_templates")
+}
+
+// ============================================
+// EMAIL ENROLLMENTS
+// ============================================
+enum EmailEnrollmentStatus {
+  active
+  paused
+  completed
+  unsubscribed
+  bounced
+
+  @@map("email_enrollment_status")
+}
+
+model EmailEnrollment {
+  id          String                @id @default(uuid()) @db.Uuid
+  accountId   String                @map("account_id") @db.Uuid
+  cadenceId   String                @map("cadence_id") @db.Uuid
+  contactId   String                @map("contact_id") @db.Uuid
+  currentStep Int                   @default(0) @map("current_step")
+  status      EmailEnrollmentStatus @default(active)
+  enrolledAt  DateTime              @default(now()) @map("enrolled_at") @db.Timestamptz
+  nextSendAt  DateTime?             @map("next_send_at") @db.Timestamptz
+  completedAt DateTime?             @map("completed_at") @db.Timestamptz
+  createdAt   DateTime              @default(now()) @map("created_at") @db.Timestamptz
+
+  account  Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  cadence  EmailCadence @relation(fields: [cadenceId], references: [id], onDelete: Cascade)
+  contact  Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sends          EmailSend[]
+  inboxMessages  EmailInboxMessage[]
+
+  @@index([accountId])
+  @@index([cadenceId])
+  @@index([contactId])
+  @@index([status])
+  @@map("email_enrollments")
+}
+
+// ============================================
+// EMAIL SENDS
+// ============================================
+enum EmailSendStatus {
+  queued
+  sent
+  delivered
+  opened
+  clicked
+  bounced
+  failed
+  spam
+
+  @@map("email_send_status")
+}
+
+model EmailSend {
+  id                String         @id @default(uuid()) @db.Uuid
+  accountId         String         @map("account_id") @db.Uuid
+  enrollmentId      String?        @map("enrollment_id") @db.Uuid
+  stepId            String?        @map("step_id") @db.Uuid
+  contactId         String         @map("contact_id") @db.Uuid
+  toEmail           String         @map("to_email") @db.VarChar(255)
+  subject           String         @db.VarChar(500)
+  sendgridMessageId String?        @map("sendgrid_message_id") @db.VarChar(255)
+  status            EmailSendStatus @default(queued)
+  openedAt          DateTime?      @map("opened_at") @db.Timestamptz
+  clickedAt         DateTime?      @map("clicked_at") @db.Timestamptz
+  bouncedAt         DateTime?      @map("bounced_at") @db.Timestamptz
+  errorMessage      String?        @map("error_message")
+  sentAt            DateTime?      @map("sent_at") @db.Timestamptz
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  account    Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  enrollment EmailEnrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  step       EmailCadenceStep? @relation(fields: [stepId], references: [id], onDelete: SetNull)
+  contact    Contact          @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([enrollmentId])
+  @@index([contactId])
+  @@index([status])
+  @@map("email_sends")
+}
+
+// ============================================
+// EMAIL CAMPAIGNS
+// ============================================
+model EmailCampaign {
+  id          String  @id @default(uuid()) @db.Uuid
+  accountId   String  @map("account_id") @db.Uuid
+  name        String  @db.VarChar(255)
+  description String?
+  active      Boolean @default(true)
+  audienceId  String? @map("audience_id") @db.Uuid
+  createdBy   String? @map("created_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account  Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  audience EmailAudience? @relation(fields: [audienceId], references: [id], onDelete: SetNull)
+  cadences EmailCadence[]
+
+  @@index([accountId])
+  @@map("email_campaigns")
+}
+
+// ============================================
+// EMAIL INBOX MESSAGES (Inbound replies)
+// ============================================
+model EmailInboxMessage {
+  id           String    @id @default(uuid()) @db.Uuid
+  accountId    String    @map("account_id") @db.Uuid
+  contactId    String?   @map("contact_id") @db.Uuid
+  fromEmail    String    @map("from_email") @db.VarChar(255)
+  toEmail      String    @map("to_email") @db.VarChar(255)
+  subject      String    @db.VarChar(500)
+  bodyText     String?   @map("body_text")
+  bodyHtml     String?   @map("body_html")
+  inReplyTo    String?   @map("in_reply_to") @db.VarChar(500)
+  enrollmentId String?   @map("enrollment_id") @db.Uuid
+  read         Boolean   @default(false)
+  replied      Boolean   @default(false)
+  repliedAt    DateTime? @map("replied_at") @db.Timestamptz
+  receivedAt   DateTime  @default(now()) @map("received_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  account    Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contact    Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  enrollment EmailEnrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+
+  @@index([accountId])
+  @@index([contactId])
+  @@index([read])
+  @@map("email_inbox_messages")
+}
+
+// ============================================
+// EMAIL AUDIENCES
+// ============================================
+model EmailAudience {
+  id          String  @id @default(uuid()) @db.Uuid
+  accountId   String  @map("account_id") @db.Uuid
+  name        String  @db.VarChar(255)
+  description String?
+  createdBy   String? @map("created_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account   Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contacts  EmailAudienceContact[]
+  campaigns EmailCampaign[]
+
+  @@index([accountId])
+  @@map("email_audiences")
+}
+
+// ============================================
+// EMAIL AUDIENCE CONTACTS (junction)
+// ============================================
+model EmailAudienceContact {
+  id         String @id @default(uuid()) @db.Uuid
+  audienceId String @map("audience_id") @db.Uuid
+  contactId  String @map("contact_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  audience EmailAudience @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+  contact  Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([audienceId, contactId])
+  @@index([audienceId])
+  @@index([contactId])
+  @@map("email_audience_contacts")
+}

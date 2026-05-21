@@ -1,0 +1,110 @@
+# ============================================
+# GLEPS CRM - Docker Compose Unificado
+# ============================================
+# Funciona em: EasyPanel, Docker local, qualquer VPS com Docker.
+#
+# Uso local:
+#   docker compose up -d
+#   Acesse http://localhost (frontend) → proxy automático para backend
+#   Para expor portas: docker compose up -d --publish 80:80
+#
+# Uso no EasyPanel:
+#   1. Crie um app "Docker Compose" apontando para este arquivo
+#   2. Configure as variáveis de ambiente na UI do EasyPanel
+#   3. Mapeie o domínio para o serviço "frontend" na porta 80
+#   4. Deploy!
+#
+# Variáveis obrigatórias (produção):
+#   DB_USER, DB_PASSWORD, DB_NAME, FRONTEND_URL,
+#   JWT_SECRET, REFRESH_TOKEN_SECRET
+#
+# Variáveis opcionais:
+#   CORS_ORIGINS, RUN_SEED, BACKEND_UPSTREAM, LOG_LEVEL
+#
+# Google Calendar e Chatwoot: credenciais armazenadas no banco
+# de dados (por conta), configuráveis via UI do Super Admin.
+# ============================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-gleps}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gleps_secret}
+      POSTGRES_DB: ${DB_NAME:-gleps_crm}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-gleps} -d ${DB_NAME:-gleps_crm}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      no_cache: true
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: "3000"
+      API_URL: ${API_URL:-http://backend:3000}
+      FRONTEND_URL: ${FRONTEND_URL:-https://goodleads.mychooice.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      DATABASE_URL: postgresql://${DB_USER:-gleps}:${DB_PASSWORD:-gleps_secret}@postgres:5432/${DB_NAME:-gleps_crm}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-your-production-jwt-secret-min-32-characters}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET:-your-production-refresh-secret-min-32}
+      REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN:-7d}
+      BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-900000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      CHATWOOT_WEBHOOK_SECRET: ${CHATWOOT_WEBHOOK_SECRET:-}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-135d71789fmsh285761fddf395b1p1eb3e3jsn35a4433e1377}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-139951706457-1qgvvuqrokb2rv5bvofnscdgnhhf12o2.apps.googleusercontent.com}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-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}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-https://goodleads.mychooice.com/api/calendar/google/callback}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BUILD_VERSION: "2026-04-27-chatwoot-stage-last-label-fix"
+      RUN_SEED: ${RUN_SEED:-true}
+    expose:
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: /api
+        VITE_USE_BACKEND: "true"
+    restart: unless-stopped
+    environment:
+      BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:3000}
+    expose:
+      - "80"
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres_data:

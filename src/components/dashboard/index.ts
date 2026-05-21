@@ -1,0 +1,12 @@
+export { DashboardFilters } from './DashboardFilters';
+export { AgentFilter } from './AgentFilter';
+export { PageFilters } from './PageFilters';
+export { KPICard } from './KPICard';
+export { IAvsHumanCard } from './IAvsHumanCard';
+export { AtendimentoRealtimeCard } from './AtendimentoRealtimeCard';
+export { ResolucaoCard } from './ResolucaoCard';
+export { HourlyPeakChart } from './HourlyPeakChart';
+export { BacklogCard } from './BacklogCard';
+export { AgentPerformanceTable } from './AgentPerformanceTable';
+export { QualityCards } from './QualityCards';
+export { EmptyState } from './EmptyState';

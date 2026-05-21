@@ -1,0 +1,115 @@
+ {
+   "nodes": [
+     {
+       "parameters": {
+         "httpMethod": "POST",
+         "path": "chatwoot-resolution",
+         "options": {}
+       },
+       "name": "Chatwoot Webhook",
+       "type": "n8n-nodes-base.webhook",
+       "typeVersion": 1,
+       "position": [
+         100,
+         300
+       ],
+       "webhookId": "chatwoot-resolution-webhook"
+     },
+     {
+       "parameters": {
+         "conditions": {
+           "all": [
+             {
+               "value1": "={{$node[\"Chatwoot Webhook\"].json[\"body\"][\"event\"]}}",
+               "value2": "conversation_status_changed"
+             },
+             {
+               "value1": "={{$node[\"Chatwoot Webhook\"].json[\"body\"][\"conversation\"][\"status\"]}}",
+               "value2": "resolved"
+             }
+           ]
+         }
+       },
+       "name": "If Resolved",
+       "type": "n8n-nodes-base.if",
+       "typeVersion": 1,
+       "position": [
+         320,
+         300
+       ]
+     },
+     {
+       "parameters": {
+         "jsCode": "const body = $node[\"Chatwoot Webhook\"].json[\"body\"];\nconst conv = body.conversation;\nconst customAttr = conv.custom_attributes || {};\nconst addAttr = conv.additional_attributes || {};\n\nlet resolved_by = customAttr.resolved_by || addAttr.resolved_by;\n\nif (!resolved_by) {\n  if (conv.meta && conv.meta.assignee && conv.meta.assignee.type === 'agent_bot') {\n    resolved_by = 'ai';\n  } else {\n    resolved_by = 'human';\n  }\n}\n\nreturn [{\n  json: {\n    chatwoot_account_id: body.account.id,\n    conversation_id: conv.id,\n    resolved_by: resolved_by,\n    ai_participated: customAttr.ai_responded === true || customAttr.ai_participated === true || addAttr.ai_responded === true,\n    agent_id: conv.meta && conv.meta.assignee ? conv.meta.assignee.id : null\n  }\n}];"
+       },
+       "name": "Prepare Payload",
+       "type": "n8n-nodes-base.code",
+       "typeVersion": 1,
+       "position": [
+         540,
+         280
+       ]
+     },
+     {
+       "parameters": {
+         "method": "POST",
+         "url": "={{$env.BACKEND_URL}}/api/chatwoot/log-resolution",
+         "sendHeaders": true,
+         "headerParameters": {
+           "parameters": [
+             {
+               "name": "x-webhook-secret",
+               "value": "={{$env.CHATWOOT_WEBHOOK_SECRET}}"
+             }
+           ]
+         },
+         "sendBody": true,
+         "specifyBody": "json",
+         "jsonBody": "={{JSON.stringify($node[\"Prepare Payload\"].json)}}",
+         "options": {}
+       },
+       "name": "Log to Backend",
+       "type": "n8n-nodes-base.httpRequest",
+       "typeVersion": 4.1,
+       "position": [
+         760,
+         280
+       ]
+     }
+   ],
+   "connections": {
+     "Chatwoot Webhook": {
+       "main": [
+         [
+           {
+             "node": "If Resolved",
+             "type": "main",
+             "index": 0
+           }
+         ]
+       ]
+     },
+     "If Resolved": {
+       "main": [
+         [
+           {
+             "node": "Prepare Payload",
+             "type": "main",
+             "index": 0
+           }
+         ]
+       ]
+     },
+     "Prepare Payload": {
+       "main": [
+         [
+           {
+             "node": "Log to Backend",
+             "type": "main",
+             "index": 0
+           }
+         ]
+       ]
+     }
+   }
+ }
