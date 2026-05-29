@@ -48,7 +48,6 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-      no_cache: true
     restart: unless-stopped
     environment:
       NODE_ENV: ${NODE_ENV:-production}
