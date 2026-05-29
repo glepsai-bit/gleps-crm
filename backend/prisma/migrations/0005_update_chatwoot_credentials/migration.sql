@@ -1,10 +1,12 @@
 -- UpdateChatwootCredentials
--- Atualiza as credenciais do Chatwoot para todas as contas que já tinham integração parcial.
--- Executada automaticamente pelo prisma migrate deploy no startup do container.
-
-UPDATE accounts
-SET chatwoot_base_url = 'https://atendimento.gleps.com.br',
-    chatwoot_account_id = '1',
-    chatwoot_api_key = 'UjBMtqZSRxPB72qSm8Fi1hh1'
-WHERE chatwoot_base_url IS NOT NULL
-   OR chatwoot_account_id IS NOT NULL;
+--
+-- [2026-05-21] SEGREDO REMOVIDO POR SEGURANÇA.
+-- Esta migration antes continha uma chave de API do Chatwoot hardcoded, que foi
+-- exposta em repositório público e portanto deve ser rotacionada. Credenciais de
+-- integração NUNCA devem ficar em migrations — são configuradas por conta via
+-- painel admin / variáveis de ambiente (tabela `accounts`).
+--
+-- O conteúdo original era um backfill one-time que já foi aplicado em produção.
+-- Em bancos novos esta migration é um no-op (nenhuma conta existe neste ponto do
+-- histórico de migrations). Mantida como no-op para preservar o histórico aplicado.
+SELECT 1;

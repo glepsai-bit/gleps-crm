@@ -34,7 +34,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-gleps_secret}
       POSTGRES_DB: ${DB_NAME:-gleps_crm}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pgdata_v2:/var/lib/postgresql/data
     expose:
       - "5432"
     healthcheck:
@@ -65,10 +65,10 @@ services:
       RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-900000}
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
       CHATWOOT_WEBHOOK_SECRET: ${CHATWOOT_WEBHOOK_SECRET:-}
-      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-135d71789fmsh285761fddf395b1p1eb3e3jsn35a4433e1377}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-139951706457-1qgvvuqrokb2rv5bvofnscdgnhhf12o2.apps.googleusercontent.com}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-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}
-      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-https://goodleads.mychooice.com/api/calendar/google/callback}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       BUILD_VERSION: "2026-04-27-chatwoot-stage-last-label-fix"
       RUN_SEED: ${RUN_SEED:-true}
@@ -107,4 +107,4 @@ services:
       start_period: 10s
 
 volumes:
-  postgres_data:
+  pgdata_v2:
