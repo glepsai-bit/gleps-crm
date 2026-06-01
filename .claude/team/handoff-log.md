@@ -10,6 +10,26 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-01 — QA: T-004 e T-005 APROVADOS no código (pré-deploy) (@qa → @usuário)
+
+Revisão estática dos commits `2f33c43` (T-004) e `c74a2eb` (T-005) antes do próximo deploy.
+
+**T-004 — APROVADO ✅** `src/api/endpoints.ts:75` `SALES.STATS: '/api/sales/stats' → '/api/sales/kpis'`. Mudança de 1 linha, correta. `/api/sales/kpis` é rota real (validei 200 ao vivo). Consumidores `salesService.getStats` e `finance.backend.getSaleKPIs` passam a apontar para o lugar certo.
+
+**T-005 — APROVADO ✅** `backend/src/services/auth.service.ts`: campo `chatwootApiKey` removido da interface `LoginResult` e dos returns de `login()` e `getMe()`. Sem referência sobrando no arquivo. **Sem regressão no front (backend mode):**
+- `chatwootConfig.ts:21-23` faz branch em `useBackend` → exige só `base_url + account_id`, não a key. ✅
+- `useChatwootMetrics.ts:265-268` em backend mode chama `fetchChatwootMetricsViaBackend(...)` (não usa a key); o ramo que usa `account.chatwoot_api_key` (linha 216) é só Cloud. ✅
+- `AuthContext.backend.tsx:43` é defensivo (`?? raw.chatwootApiKey`) → vira `undefined`, inofensivo. ✅
+- Telas super_admin leem a key de `/api/accounts` (listagem), não do payload de auth → intactas.
+
+**Validação independente:** front `vite build` ✅; `vitest` ✅ 36/36; backend `tsc --noEmit` ✅ exit 0.
+
+**Observação (não-bloqueante):** o T-005 fechou só o payload de **auth**. A `chatwootApiKey` ainda volta em `GET /api/accounts` (necessária para o form de edição do super_admin pré-preencher). Se a intenção for nunca trafegar a key ao cliente, avaliar mascarar também ali — fica a critério do Dev/usuário, fora do escopo do T-005.
+
+**Veredito:** seguro para deploy. Pós-deploy: `npm run qa:smoke` deve marcar `T-005 chatwootApiKey` como `ABSENT`.
+
+---
+
 ## 2026-06-01 — QA: harness de smoke-test da API + T-004/T-005 ainda NÃO deployados (@qa → @usuário/@dev-principal)
 
 **Entregável (cabe ao QA — tooling de validação):** `scripts/qa-smoke.mjs` + script `npm run qa:smoke`. Roda 48 checks contra uma instância: auth, dashboard, CRM core, finance, insights, chatwoot, email, prospecção, e barreiras authz/multi-tenancy. Credenciais por env (`QA_BASE_URL`/`QA_EMAIL`/`QA_PASSWORD`), **nenhum segredo no repo**. `--write` inclui round-trip criar→apagar contato. Anomalias conhecidas (paths mortos, etc.) são reportadas sem derrubar o run; se uma mudar de status, ele avisa para limpar a lista.
