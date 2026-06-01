@@ -148,8 +148,6 @@ export const API_ENDPOINTS = {
     AGENT_KPIS: '/api/dashboard/agent/kpis',
     HOURLY_PEAK: '/api/dashboard/hourly-peak',
     AGENT_PERFORMANCE: '/api/dashboard/agents-performance',
-    REVENUE: '/api/dashboard/revenue',
-    CONVERSION_FUNNEL: '/api/dashboard/conversion-funnel',
     SERVER_RESOURCES: '/api/admin/server-resources',
     CONSUMPTION_HISTORY: '/api/admin/consumption-history',
     WEEKLY_CONSUMPTION: '/api/admin/weekly-consumption',
@@ -171,7 +169,6 @@ export const API_ENDPOINTS = {
 
   // ============= INSIGHTS/REPORTS =============
   INSIGHTS: {
-    OVERVIEW: '/api/insights/overview',
     PRODUCT_ANALYSIS: '/api/insights/products',
     TEMPORAL_ANALYSIS: '/api/insights/temporal',
     PAYMENT_METHODS: '/api/insights/payment-methods',

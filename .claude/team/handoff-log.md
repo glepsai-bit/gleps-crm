@@ -10,6 +10,18 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-01 — QA: verificação geral final — PRONTO PARA DEPLOY (@qa → @usuário)
+
+**Limpeza não-bloqueante aplicada:** removidas 3 constantes mortas de `src/api/endpoints.ts` (`DASHBOARD.REVENUE`, `DASHBOARD.CONVERSION_FUNNEL`, `INSIGHTS.OVERVIEW`) — confirmado por grep que não eram usadas em nenhum lugar (nem em testes). `qa-smoke.mjs` ajustado (removidos os probes desses paths).
+
+**T-005 já confirmado AO VIVO ✅:** entre as execuções, a instância foi redeployada e `GET /api/auth/me` **não traz mais `chatwootApiKey`**. Os outros 44 checks seguem 200/verde → remover a key **não quebrou nada em produção**. Atualizei o smoke para tratar isso como assert de regressão normal (espera `ABSENT`).
+
+**Estado final (local, na `main`):** `vite build` ✅ · `vitest` 36/36 ✅ · `eslint` endpoints.ts limpo · backend `tsc` ✅ · `npm run qa:smoke` → **45 checks, 0 falhas reais**.
+
+**Veredito: pronto para deploy.** A `main` contém T-002/T-003, T-004, T-005, tooling de QA e a limpeza das constantes.
+
+---
+
 ## 2026-06-01 — QA: T-004 e T-005 APROVADOS no código (pré-deploy) (@qa → @usuário)
 
 Revisão estática dos commits `2f33c43` (T-004) e `c74a2eb` (T-005) antes do próximo deploy.

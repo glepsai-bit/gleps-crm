@@ -90,11 +90,9 @@ async function main() {
   // Esperado pós-deploy: ausente. Enquanto a instância roda o build antigo, fica "presente"
   // → marcado como conhecida(T-005-deploy) para não derrubar o run, mas avisa quando resolver.
   const keyLeaked = !!(me.json?.data?.account?.chatwootApiKey ?? login.json?.data?.account?.chatwootApiKey);
-  // Convenção igual às demais conhecidas: `expect` = estado anômalo atual.
-  // Hoje a instância roda build antigo → 'LEAKED'. Quando o deploy do T-005 entrar,
-  // virá 'ABSENT' ≠ 'LEAKED' → "RESOLVIDA?" avisa para remover o marcador e tornar
-  // este um assert normal (key sempre ausente).
-  record('T-005 chatwootApiKey no /auth/me', keyLeaked ? 'LEAKED' : 'ABSENT', 'LEAKED', 'T-005-deploy');
+  // T-005 deployado e confirmado em 2026-06-01: a key NÃO deve voltar no payload de auth.
+  // Assert de regressão normal — falha o run se a chatwootApiKey reaparecer.
+  record('T-005 chatwootApiKey ausente no /auth/me', keyLeaked ? 'LEAKED' : 'ABSENT', 'ABSENT');
 
   // ---- DASHBOARD ----
   await get('GET /api/dashboard/kpis', '/api/dashboard/kpis');
@@ -153,10 +151,7 @@ async function main() {
   // literal /api/sales/stats não é endpoint real: casa com /:id → 500. Mantido só como
   // documentação de que esse caminho não deve ser usado.
   await get('CONHECIDA /api/sales/stats não é endpoint (500)', '/api/sales/stats', 500, 'sales-stats-naoexiste');
-  // Constants mortos no front (não usados): rotas não existem no backend.
-  await get('CONHECIDA dead /api/dashboard/revenue (404)', '/api/dashboard/revenue', 404, 'dead-const');
-  await get('CONHECIDA dead /api/dashboard/conversion-funnel (404)', '/api/dashboard/conversion-funnel', 404, 'dead-const');
-  await get('CONHECIDA dead /api/insights/overview (404)', '/api/insights/overview', 404, 'dead-const');
+  // (Constants mortos DASHBOARD.REVENUE/CONVERSION_FUNNEL/INSIGHTS.OVERVIEW removidos do front em 2026-06-01.)
 
   // ---- WRITE round-trip (opcional) ----
   if (DO_WRITE) {
