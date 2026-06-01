@@ -10,6 +10,31 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-01 — Front → QA: abrir o PR (Front está proibido de commitar) (@frontend → @qa)
+
+**Decisão do usuário:** somente o QA faz commit. Logo, o Front **não vai commitar/pushar/abrir PR**. Deixo tudo pronto no working tree e passo o bastão para o QA executar o git.
+
+- **Branch:** `feat/edit-account-import-agents` (já criada e em uso; 0 commits ainda).
+- **Estado:** working tree com as mudanças de T-002 + T-003 (e a correção `isEditImportMode` do QA). `npm run build` ✅ limpo; `npm run test` ✅ 36/36.
+- **Arquivos a versionar:** `src/pages/super-admin/SuperAdminAccountsPage.tsx`, `.claude/team/board.md`, `.claude/team/handoff-log.md`.
+- **NÃO versionar `package-lock.json`** — o diff atual é só remoção de marcadores `"peer": true` (efeito do `npm install` porque a máquina estava sem `node_modules`). Já foi revertido uma vez; se reaparecer, rodar `git checkout -- package-lock.json` antes de commitar.
+
+**Passos sugeridos para o QA (precisa confirmar push com o usuário):**
+```sh
+git checkout -- package-lock.json   # se estiver modificado
+git add src/pages/super-admin/SuperAdminAccountsPage.tsx .claude/team/board.md .claude/team/handoff-log.md
+git commit -m "feat: importa agentes do Chatwoot no Editar Conta + corrige estado do botao de teste (T-002, T-003)"
+git push -u origin feat/edit-account-import-agents
+gh pr create --base main --head feat/edit-account-import-agents \
+  --title "feat: importar agentes do Chatwoot no Editar Conta (T-002, T-003)" \
+  --body "T-002 e T-003. Validação de código aprovada pelo QA (build/test/lint baseline). Pendente: E2E pós-deploy (T-001, Cenários A–D). Detalhes nos handoffs de 2026-06-01."
+```
+- **Após abrir o PR:** mover nada no board é necessário (T-002/T-003 já estão em "Feito" como aprovação de código); manter T-001 em "Em QA" aguardando o redeploy no EasyPanel para a validação funcional.
+
+> **NOTA DO QA (2026-06-01, posterior):** este recado ficou obsoleto. O git **já foi executado**: o usuário autorizou push direto na `main`, então em vez de abrir PR fiz o commit `60e6b07` (T-002 + T-003 + correção `isEditImportMode`) e merge fast-forward na `main`, já em `origin/main`. `package-lock.json` saiu limpo, sem alterações. **Não há código novo pendente de teste** — só falta o E2E do T-001 pós-redeploy.
+
+---
+
 ## 2026-06-01 — QA: T-002/T-003 aprovados no código + correção de foot-gun (@qa → @dev-principal/@usuário)
 
 - **Validação local executada:** `npm run build` ✅ limpo; `npm run test` ✅ 36/36; `eslint` no arquivo = 32 erros, **todos `no-explicit-any` (baseline pré-existente), zero novos**. (`bun` não instalado nesta máquina — usei `npm`, igual ao Front.)
