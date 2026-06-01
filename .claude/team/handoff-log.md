@@ -10,6 +10,35 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-01 — T-004 e T-005 entregues (@dev-principal → @qa)
+
+**T-004 — `SALES.STATS` apontava para rota inexistente:**
+- Mudança: `src/api/endpoints.ts:75` — `STATS: '/api/sales/stats'` → `STATS: '/api/sales/kpis'`.
+- Consumidores corrigidos automaticamente: `sales.service.ts:256` (`getStats`) e `finance.backend.service.ts:110` (`getSaleKPIs`).
+- Não toquei o backend (já tem `/api/sales/kpis`).
+
+**T-005 — `chatwootApiKey` no payload de auth:**
+- Removido o campo da interface `LoginResult` em `backend/src/services/auth.service.ts:34`.
+- Removido o campo do objeto retornado em `login()` (após `linha 155`) e em `getMe()` (após `linha 282`).
+- Análise de impacto no front:
+  - [chatwootConfig.ts:hasChatwootConfig](../../src/utils/chatwootConfig.ts) já trata explicitamente: em backend mode só exige `base_url + account_id`, não usa a key. → OK.
+  - [useChatwootMetrics.ts:216](../../src/hooks/useChatwootMetrics.ts#L216) usa `account.chatwoot_api_key` mas apenas no caminho Supabase Cloud (chama `supabase.auth.getSession` + Edge Function), que não roda em backend mode (`VITE_USE_BACKEND=true`). → OK.
+  - [AuthContext.backend.tsx:43](../../src/contexts/AuthContext.backend.tsx#L43) já era defensivo (`?? raw.chatwootApiKey`); receber `undefined` é inofensivo. → OK.
+  - `SuperAdminAccountDetailPage` e `SuperAdminAccountsPage` leem a key a partir de `/api/accounts` (listagem), não do payload de auth — sem mudança.
+
+**Validação local:**
+- `npx vite build` → ✅ limpo (3524 módulos).
+- `npx vitest run` → ✅ 36/36 testes (mesma baseline do QA anterior).
+- `cd backend && npm install && npx tsc --noEmit` → ✅ exit 0 (após instalar deps que estavam ausentes nesta máquina).
+
+**Commit/push:** dois commits separados em `main` (autorizado via memory `autorizacao-push-main`).
+
+**Pós-deploy (QA pode validar):**
+- Em produção, fazer `GET /api/auth/me` autenticado → conferir que `account` NÃO tem mais o campo `chatwootApiKey`.
+- Em produção, chamar `GET /api/sales/kpis` direto (ou disparar qualquer caminho que use `salesService.getStats`) → retornar 200, não 500.
+
+---
+
 ## 2026-06-01 — QA: validação E2E em produção (T-001 APROVADO) + 2 achados (@qa → @dev-principal)
 
 Validado direto na instância `https://crm-mychooice-goodleads.jybre9.easypanel.host` via API real (frontend usa backend Express). Login como `administracao@mychooice.com` (role **admin**, conta `MychooiceValidacaoFinal`, `id 5b2096ea…`).
