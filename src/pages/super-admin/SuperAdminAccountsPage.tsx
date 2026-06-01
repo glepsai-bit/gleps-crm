@@ -70,6 +70,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
+import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ChatwootAgentImport, EmbeddedUserCreationForm, UserCreationData } from '@/components/chatwoot';
@@ -146,6 +147,10 @@ export default function SuperAdminAccountsPage() {
   // Edit modal connection state
   const [editConnectionStatus, setEditConnectionStatus] = useState<ConnectionStatus>('idle');
   const [editConnectionError, setEditConnectionError] = useState<string | null>(null);
+  const [editConnectionResult, setEditConnectionResult] = useState<ChatwootConnectionResult | null>(null);
+  // T-003: true quando o wizard de importação foi aberto a partir do modal de Edição
+  // (reusa o Dialog de Criação, mas não deve voltar para o formulário "Criar Nova Conta").
+  const [isEditImportMode, setIsEditImportMode] = useState(false);
 
   // Wizard state
   const [wizardStep, setWizardStep] = useState<WizardStep>('form');
@@ -317,10 +322,13 @@ export default function SuperAdminAccountsPage() {
   };
 
   const handleSkipAgentImport = async () => {
-    // Account already created, just finish
+    // Account already created (fluxo de criação) ou já existente (fluxo de edição), apenas finaliza
     await loadAccounts();
+    const wasEditImport = isEditImportMode;
     closeAndReset();
-    toast.success('Conta criada com sucesso!');
+    if (!wasEditImport) {
+      toast.success('Conta criada com sucesso!');
+    }
   };
 
   // Step 3: User creation handlers
@@ -404,6 +412,7 @@ export default function SuperAdminAccountsPage() {
     setCreatedAccountId(null);
     setCurrentAgentIndex(0);
     setCreatedUsers([]);
+    setIsEditImportMode(false);
   };
 
   const handleUpdate = async () => {
@@ -470,19 +479,33 @@ export default function SuperAdminAccountsPage() {
 
   const handleEditTestConnection = async () => {
     if (!editingAccount) return;
-    
+
     setEditConnectionStatus('loading');
     setEditConnectionError(null);
-    
+    setEditConnectionResult(null);
+
     try {
       const result = await accountsCloudOrBackend.testChatwootConnection(
         editingAccount.chatwoot_base_url || '',
         editingAccount.chatwoot_account_id || '',
         editingAccount.chatwoot_api_key || ''
       );
-      
+
       if (result.success) {
         setEditConnectionStatus('success');
+        // Map agents to ChatwootAgent type with proper role typing (same as create flow)
+        const agents: ChatwootAgent[] = (result.agents || []).map((a: any) => ({
+          id: a.id,
+          name: a.name,
+          email: a.email,
+          role: (a.role === 'administrator' ? 'administrator' : 'agent') as 'administrator' | 'agent',
+          availability_status: a.availability_status as 'online' | 'busy' | 'offline' | undefined,
+        }));
+        setEditConnectionResult({
+          agents,
+          inboxes: result.inboxes || [],
+          labels: result.labels || [],
+        });
         toast.success(result.message);
       } else {
         setEditConnectionStatus('error');
@@ -494,6 +517,29 @@ export default function SuperAdminAccountsPage() {
       setEditConnectionError(e?.message || 'Erro inesperado');
       toast.error(e?.message || 'Erro ao testar conexão');
     }
+  };
+
+  // T-003: import Chatwoot agents into an EXISTING account (edit flow).
+  // Reuses the same wizard rendered inside the Create dialog (steps select-agents/create-users)
+  // by populating the shared wizard state with the edited account's id and detected agents.
+  const handleEditImportAgents = () => {
+    if (!editingAccount || !editConnectionResult || editConnectionResult.agents.length === 0) return;
+
+    // Seed shared wizard state with the existing account's id (instead of a freshly created one)
+    setIsEditImportMode(true);
+    setCreatedAccountId(editingAccount.id);
+    setConnectionResult(editConnectionResult);
+    setSelectedAgentIds(editConnectionResult.agents.map((a) => a.id));
+    setCurrentAgentIndex(0);
+    setCreatedUsers([]);
+    setWizardStep('select-agents');
+
+    // Close the edit modal and open the wizard dialog
+    setEditingAccount(null);
+    setEditConnectionStatus('idle');
+    setEditConnectionError(null);
+    setEditConnectionResult(null);
+    setIsCreateOpen(true);
   };
 
   const canTestEditConnection = editingAccount &&
@@ -701,7 +747,11 @@ export default function SuperAdminAccountsPage() {
                         <Button
                           type="button"
                           variant="outline"
-                          className="w-full gap-2"
+                          className={cn(
+                            "w-full gap-2",
+                            connectionStatus === 'success' && "border-emerald-500 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-700",
+                            connectionStatus === 'error' && "border-destructive text-destructive hover:text-destructive"
+                          )}
                           disabled={!canTestConnection || connectionStatus === 'loading'}
                           onClick={handleTestConnection}
                         >
@@ -868,16 +918,18 @@ export default function SuperAdminAccountsPage() {
                 </DialogHeader>
 
                 <div className="py-4 flex-1 overflow-hidden">
-                  {/* Back button */}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-2 mb-4"
-                    onClick={() => setWizardStep('form')}
-                  >
-                    <ArrowLeft className="w-4 h-4" />
-                    Voltar
-                  </Button>
+                  {/* Back button — só no fluxo de criação; na edição não há formulário de origem */}
+                  {!isEditImportMode && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="gap-2 mb-4"
+                      onClick={() => setWizardStep('form')}
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      Voltar
+                    </Button>
+                  )}
 
                   <ChatwootAgentImport
                     agents={connectionResult.agents}
@@ -1077,6 +1129,7 @@ export default function SuperAdminAccountsPage() {
           setEditingAccount(null);
           setEditConnectionStatus('idle');
           setEditConnectionError(null);
+          setEditConnectionResult(null);
         }
       }}>
         <DialogContent className="max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
@@ -1158,7 +1211,14 @@ export default function SuperAdminAccountsPage() {
                   <Input
                     id="edit-chatwoot-url"
                     value={editingAccount.chatwoot_base_url || ''}
-                    onChange={(e) => setEditingAccount({ ...editingAccount, chatwoot_base_url: e.target.value })}
+                    onChange={(e) => {
+                      setEditingAccount({ ...editingAccount, chatwoot_base_url: e.target.value });
+                      if (editConnectionStatus !== 'idle') {
+                        setEditConnectionStatus('idle');
+                        setEditConnectionError(null);
+                        setEditConnectionResult(null);
+                      }
+                    }}
                     placeholder="https://app.chatwoot.com"
                   />
                   <p className="text-xs text-muted-foreground">URL do Chatwoot Cloud ou self-hosted</p>
@@ -1169,7 +1229,14 @@ export default function SuperAdminAccountsPage() {
                   <Input
                     id="edit-chatwoot-id"
                     value={editingAccount.chatwoot_account_id || ''}
-                    onChange={(e) => setEditingAccount({ ...editingAccount, chatwoot_account_id: e.target.value })}
+                    onChange={(e) => {
+                      setEditingAccount({ ...editingAccount, chatwoot_account_id: e.target.value });
+                      if (editConnectionStatus !== 'idle') {
+                        setEditConnectionStatus('idle');
+                        setEditConnectionError(null);
+                        setEditConnectionResult(null);
+                      }
+                    }}
                     placeholder="Ex: 1"
                   />
                 </div>
@@ -1180,7 +1247,14 @@ export default function SuperAdminAccountsPage() {
                     id="edit-chatwoot-api-key"
                     type="password"
                     value={editingAccount.chatwoot_api_key || ''}
-                    onChange={(e) => setEditingAccount({ ...editingAccount, chatwoot_api_key: e.target.value })}
+                    onChange={(e) => {
+                      setEditingAccount({ ...editingAccount, chatwoot_api_key: e.target.value });
+                      if (editConnectionStatus !== 'idle') {
+                        setEditConnectionStatus('idle');
+                        setEditConnectionError(null);
+                        setEditConnectionResult(null);
+                      }
+                    }}
                     placeholder="Cole sua API Key aqui"
                   />
                   <p className="text-xs text-muted-foreground">
@@ -1195,7 +1269,11 @@ export default function SuperAdminAccountsPage() {
                   size="sm"
                   onClick={handleEditTestConnection}
                   disabled={!canTestEditConnection || editConnectionStatus === 'loading'}
-                  className="w-full"
+                  className={cn(
+                    "w-full",
+                    editConnectionStatus === 'success' && "border-emerald-500 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-700",
+                    editConnectionStatus === 'error' && "border-destructive text-destructive hover:text-destructive"
+                  )}
                 >
                   {editConnectionStatus === 'loading' ? (
                     <>
@@ -1204,12 +1282,12 @@ export default function SuperAdminAccountsPage() {
                     </>
                   ) : editConnectionStatus === 'success' ? (
                     <>
-                      <CheckCircle2 className="w-4 h-4 mr-2 text-green-500" />
+                      <CheckCircle2 className="w-4 h-4 mr-2 text-emerald-600" />
                       Conexão verificada!
                     </>
                   ) : editConnectionStatus === 'error' ? (
                     <>
-                      <XCircle className="w-4 h-4 mr-2 text-red-500" />
+                      <XCircle className="w-4 h-4 mr-2" />
                       Testar novamente
                     </>
                   ) : (
@@ -1219,16 +1297,37 @@ export default function SuperAdminAccountsPage() {
                     </>
                   )}
                 </Button>
-                
+
                 {/* Connection Status Feedback */}
                 {editConnectionStatus === 'success' && (
-                  <p className="text-sm text-green-600 flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4" />
-                    Conexão estabelecida com sucesso!
-                  </p>
+                  <div className="space-y-2">
+                    <p className="text-sm text-emerald-600 flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4" />
+                      Conexão estabelecida com sucesso!
+                      {editConnectionResult && ` ${editConnectionResult.agents.length} agente(s) encontrados.`}
+                    </p>
+
+                    {/* T-003: import agents into this existing account */}
+                    {editConnectionResult && editConnectionResult.agents.length > 0 && (
+                      <Button
+                        type="button"
+                        className="w-full gap-2"
+                        onClick={handleEditImportAgents}
+                      >
+                        <Users className="w-4 h-4" />
+                        Importar {editConnectionResult.agents.length} Agente(s)
+                        <ArrowRight className="w-4 h-4" />
+                      </Button>
+                    )}
+                    {editConnectionResult && editConnectionResult.agents.length === 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Nenhum agente encontrado no Chatwoot para importar.
+                      </p>
+                    )}
+                  </div>
                 )}
                 {editConnectionStatus === 'error' && editConnectionError && (
-                  <p className="text-sm text-red-600 flex items-center gap-2">
+                  <p className="text-sm text-destructive flex items-center gap-2">
                     <XCircle className="w-4 h-4" />
                     {editConnectionError}
                   </p>
