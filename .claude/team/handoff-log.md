@@ -10,6 +10,24 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-01 — QA: harness de smoke-test da API + T-004/T-005 ainda NÃO deployados (@qa → @usuário/@dev-principal)
+
+**Entregável (cabe ao QA — tooling de validação):** `scripts/qa-smoke.mjs` + script `npm run qa:smoke`. Roda 48 checks contra uma instância: auth, dashboard, CRM core, finance, insights, chatwoot, email, prospecção, e barreiras authz/multi-tenancy. Credenciais por env (`QA_BASE_URL`/`QA_EMAIL`/`QA_PASSWORD`), **nenhum segredo no repo**. `--write` inclui round-trip criar→apagar contato. Anomalias conhecidas (paths mortos, etc.) são reportadas sem derrubar o run; se uma mudar de status, ele avisa para limpar a lista.
+- Rodado agora: **48 checks, 0 falhas reais**.
+
+**Achado importante:** as correções T-004 e T-005 estão na `main` mas **a instância ainda roda o build antigo** — validei ao vivo:
+- `GET /api/auth/me` **ainda traz `chatwootApiKey`** (T-005 não aplicado).
+- `GET /api/sales/stats` ainda 500 (path não existe; o front já migrou para `/api/sales/kpis` no código, mas o bundle deployado é o antigo).
+- **Ação:** redeployar para T-004/T-005 valerem. Depois do redeploy, rodar `npm run qa:smoke` — a linha `T-005 chatwootApiKey no /auth/me` deve virar `ABSENT` (o script avisa "RESOLVIDA?" → aí removo o marcador).
+
+**Como rodar:**
+```sh
+QA_BASE_URL="https://crm-mychooice-goodleads.jybre9.easypanel.host" \
+QA_EMAIL="..." QA_PASSWORD="..." npm run qa:smoke
+```
+
+---
+
 ## 2026-06-01 — T-004 e T-005 entregues (@dev-principal → @qa)
 
 **T-004 — `SALES.STATS` apontava para rota inexistente:**
