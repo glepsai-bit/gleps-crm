@@ -10,6 +10,37 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-01 — QA: validação E2E em produção (T-001 APROVADO) + 2 achados (@qa → @dev-principal)
+
+Validado direto na instância `https://crm-mychooice-goodleads.jybre9.easypanel.host` via API real (frontend usa backend Express). Login como `administracao@mychooice.com` (role **admin**, conta `MychooiceValidacaoFinal`, `id 5b2096ea…`).
+
+**T-001 — Integração Chatwoot: FUNCIONAL ✅**
+- `GET /api/users` → 3 usuários ativos: Leandro (`chatwootAgentId:1`), André (`:2`), Amanda (`:3`).
+- `GET /api/chatwoot/agents` → 3 agentes ids 1/2/3, mesmos e-mails. **Bate 1:1** — agentes viraram usuários do CRM. A conta saiu de `Usuários: 0`.
+- **Login confirmado** como Leandro (agente importado id 1). André/Amanda existem e estão `active` mas `lastLoginAt: null` — login deles não testado (sem senhas). Recomendo o usuário confirmar o login de um deles.
+
+**Multi-tenancy / authz: OK ✅**
+- admin → `GET /api/accounts` = 403 `SUPER_ADMIN_REQUIRED`; `GET /api/admin/kpis` = 403.
+- `GET /api/users/<uuid-aleatório>` = 404; `GET /api/contacts/<uuid-aleatório>` = 404 (sem vazamento entre contas).
+- `GET /api/contacts` sem token = 401. Todos os dados retornados escopados ao `accountId` da conta.
+
+**Módulos exercitados (todos OK):**
+- Dashboard: `kpis` (17 leads, 0 vendas), `hourly-peak`, `agents-performance`, `backlog`, `ia-vs-human` → 200.
+- Contacts: **CRUD round-trip** completo — POST 201 → GET 200 → PUT 200 → DELETE 200 → GET 404 (dado de teste removido, total voltou a 17). Validação de enum `origem` funcionando (rejeitou valor inválido com 400). 17 contatos vindos do sync Chatwoot.
+- Sales/Finance: `/api/sales`, `/api/sales/kpis`, `/api/finance/revenue-chart`, `/api/finance/funnel-conversion` → 200.
+- Insights: `kpis`, `products`, `temporal`, `marketing`, `payment-methods`, `automatic`, `agents-ranking` → 200 (admin bypassa `requirePermission('insights')`).
+- Tags (6), Funnels (1 default "Funil Principal", 6 tags), Calendar, Events, Email (cadences/templates/campaigns/audiences vazios mas 200; `quota` 0/3000 mês, 0/100 dia), Prospecting (`usage` 0/100, batches, audiences) → 200.
+- `chatwoot/metrics` exige `dateFrom`/`dateTo` (400 sem eles, 200 com) — comportamento correto.
+
+**Achados (não-bloqueantes, abri T-004 e T-005):**
+1. **[T-004] Latente:** `GET /api/sales/stats` → **500**. `SALES.STATS` aponta para rota inexistente; backend tem `/api/sales/kpis`. `/stats` casa com `/:id` → `getById('stats')` → 500. NÃO afeta UI hoje (FinanceContext calcula KPIs no client). Corrigir o constant.
+2. **[T-005] Segurança:** `POST /api/auth/login` e `GET /api/auth/me` retornam `account.chatwootApiKey` em texto puro no payload.
+- Dívida técnica menor: constants mortos `DASHBOARD.REVENUE`, `DASHBOARD.CONVERSION_FUNNEL`, `INSIGHTS.OVERVIEW` (404, não usados — front usa `/api/finance/*` e `/api/insights/kpis`).
+
+**Veredito:** produto operacional para uso de admin; T-001 aprovado. Nenhum bug bloqueante encontrado nos fluxos que a UI realmente usa.
+
+---
+
 ## 2026-06-01 — Front → QA: abrir o PR (Front está proibido de commitar) (@frontend → @qa)
 
 **Decisão do usuário:** somente o QA faz commit. Logo, o Front **não vai commitar/pushar/abrir PR**. Deixo tudo pronto no working tree e passo o bastão para o QA executar o git.
