@@ -31,7 +31,6 @@ export interface LoginResult {
     timezone: string;
     chatwootBaseUrl: string | null;
     chatwootAccountId: string | null;
-    chatwootApiKey: string | null;
   } | null;
   token: string;
   refreshToken: string;
@@ -152,7 +151,6 @@ class AuthService {
         timezone: user.account.timezone,
         chatwootBaseUrl: user.account.chatwootBaseUrl,
         chatwootAccountId: user.account.chatwootAccountId,
-        chatwootApiKey: user.account.chatwootApiKey,
       } : null,
       token,
       refreshToken,
@@ -279,7 +277,6 @@ class AuthService {
         plano: user.account.plano,
         chatwootBaseUrl: user.account.chatwootBaseUrl,
         chatwootAccountId: user.account.chatwootAccountId,
-        chatwootApiKey: user.account.chatwootApiKey,
       } : null,
     };
   }
