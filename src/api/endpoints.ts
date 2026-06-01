@@ -72,7 +72,7 @@ export const API_ENDPOINTS = {
     REFUND_ITEM: (saleId: string, itemId: string) => `/api/sales/${saleId}/items/${itemId}/refund`,
     BY_CONTACT: (contactId: string) => `/api/contacts/${contactId}/sales`,
     TRANSACTIONS: (id: string) => `/api/sales/${id}/transactions`,
-    STATS: '/api/sales/stats',
+    STATS: '/api/sales/kpis',
   },
 
   // ============= PRODUCTS SERVICE =============
