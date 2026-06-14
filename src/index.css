@@ -159,6 +159,22 @@
     --sidebar-border: 0 0% 8%;
     --sidebar-ring: 8 85% 54%;
     --sidebar-muted: 0 0% 40%;
+
+    /* Gaps de token p/ dark mode (auditoria 2026-06-14) — tokens que ficavam
+       com o valor light e quebravam em fundo escuro. Mantém a mesma matiz,
+       só ajusta luminosidade/saturação para contraste correto no dark. */
+    --chart-grid: 0 0% 20%;          /* gridlines visíveis sobre card #141414 */
+
+    --success-soft: 142 30% 14%;     /* fundo suave do BacklogCard (texto claro legível) */
+    --warning-soft: 38 40% 15%;
+    --destructive-soft: 0 40% 16%;
+
+    --role-admin: 0 0% 75%;          /* badges de papel legíveis sobre quase-preto */
+    --role-agent: 0 0% 60%;
+
+    --text-primary: 0 0% 93%;        /* tokens de texto (hoje sem consumidor) — valor seguro no dark */
+    --text-secondary: 0 0% 70%;
+    --text-muted: 0 0% 50%;
   }
 }
 
@@ -174,13 +190,13 @@
 }
 
 @layer components {
-  /* Glassmorphism effects - for dark areas only (login, sidebar) */
+  /* Glassmorphism effects - adaptativo ao tema (usa o token --card) */
   .glass {
     @apply backdrop-blur-md border border-border/40;
     background: linear-gradient(
       135deg,
-      hsl(0 0% 6% / 0.7) 0%,
-      hsl(0 0% 8% / 0.5) 100%
+      hsl(var(--card) / 0.7) 0%,
+      hsl(var(--card) / 0.5) 100%
     );
   }
 
@@ -188,14 +204,30 @@
     @apply backdrop-blur-lg border border-border/50 shadow-lg;
     background: linear-gradient(
       135deg,
-      hsl(0 0% 6% / 0.9) 0%,
-      hsl(0 0% 8% / 0.8) 100%
+      hsl(var(--card) / 0.9) 0%,
+      hsl(var(--card) / 0.8) 100%
     );
   }
 
   /* SaaS Card Shadow - standard for all cards */
   .shadow-card {
     box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  }
+
+  /* No dark, sombra clara some sobre fundo quase-preto: usa sombra mais forte p/ manter profundidade */
+  .dark .shadow-card {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  }
+
+  /* Botão primário com gradiente da marca + glow (usado no login).
+     Estas classes eram referenciadas mas não existiam: sem o background, o
+     botão "Entrar" ficava transparente (some no tema claro). Tokens => adapta. */
+  .bg-gradient-primary {
+    background-image: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent)));
+  }
+
+  .glow-primary {
+    box-shadow: 0 0 20px hsl(var(--primary) / 0.3);
   }
 
   /* ==============================================

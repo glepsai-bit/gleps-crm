@@ -87,7 +87,7 @@ export function BacklogCard({ data, isLoading = false }: BacklogCardProps) {
                 </div>
                 <span className="text-lg font-bold text-foreground">{item.value}</span>
               </div>
-              <div className="h-2 bg-white/50 rounded-full overflow-hidden">
+              <div className="h-2 bg-foreground/10 rounded-full overflow-hidden">
                 <div
                   className="h-full rounded-full transition-all duration-500"
                   style={{ width: `${item.percentage}%`, backgroundColor: item.color }}

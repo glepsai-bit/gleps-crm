@@ -14,8 +14,8 @@ interface RevenueChartProps {
   isLoading?: boolean;
 }
 
-// Chart colors from design system
-const CHART_GREEN = '#16A34A'; // chart-2 - success/revenue
+// Chart colors from design system (token para adaptar ao tema)
+const CHART_GREEN = 'hsl(var(--chart-2))'; // chart-2 - success/revenue
 
 const chartConfig = {
   valor: {
@@ -71,20 +71,20 @@ export function RevenueChart({ isLoading = false }: RevenueChartProps) {
                 <stop offset="95%" stopColor={CHART_GREEN} stopOpacity={0} />
               </linearGradient>
             </defs>
-            {/* Grid - #E5E7EB */}
-            <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+            {/* Grid - token --chart-grid (adapta ao tema) */}
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--chart-grid))" />
             <XAxis
               dataKey="date"
               tickLine={false}
               axisLine={false}
-              tick={{ fontSize: 10, fill: '#64748B' }}
+              tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
               tickMargin={8}
             />
             <YAxis
               tickLine={false}
               axisLine={false}
               tickFormatter={formatCurrency}
-              tick={{ fontSize: 9, fill: '#64748B' }}
+              tick={{ fontSize: 9, fill: 'hsl(var(--muted-foreground))' }}
               width={50}
             />
             <ChartTooltip

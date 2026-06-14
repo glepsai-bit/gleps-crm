@@ -25,6 +25,7 @@ import {
   ArrowLeftRight,
 } from 'lucide-react';
 import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
+import { ThemeToggle } from '@/components/theme-toggle';
 
 interface SidebarLayoutProps {
   children: ReactNode;
@@ -79,6 +80,7 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
             <span className="font-semibold text-sidebar-foreground text-sm sm:text-base">GoodLeads Admin</span>
           </div>
         </div>
+        <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
       </header>
 
       {/* Mobile Overlay */}
@@ -124,7 +126,7 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
         </div>
 
         {/* Navigation */}
-        <ScrollArea className="h-[calc(100vh-8rem)]">
+        <ScrollArea className="h-[calc(100vh-11rem)]">
           <nav className="p-3 space-y-1">
             {superAdminNavItems.map((item) => {
               const isActive = location.pathname === item.href;
@@ -148,7 +150,10 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
         </ScrollArea>
 
         {/* User Menu */}
-        <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border">
+        <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border space-y-1">
+          <div className={cn('flex', collapsed ? 'justify-center' : 'justify-end')}>
+            <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
+          </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -234,7 +239,7 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
       {/* Main Content */}
       <main
         className={cn(
-          'transition-all duration-300 min-h-screen bg-white',
+          'transition-all duration-300 min-h-screen bg-background',
           collapsed ? 'lg:pl-[72px]' : 'lg:pl-64',
           'pt-14 sm:pt-16 lg:pt-0'
         )}

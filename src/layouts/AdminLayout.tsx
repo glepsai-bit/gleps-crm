@@ -34,6 +34,7 @@ import {
   Mail,
 } from 'lucide-react';
 import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
+import { ThemeToggle } from '@/components/theme-toggle';
 
 interface AdminLayoutProps {
   children: ReactNode;
@@ -103,6 +104,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             </span>
           </div>
         </div>
+        <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
       </header>
 
       {/* Mobile Overlay */}
@@ -146,7 +148,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </div>
 
         {/* Navigation */}
-        <ScrollArea className="h-[calc(100vh-8rem)]">
+        <ScrollArea className="h-[calc(100vh-11rem)]">
           <nav className="p-3 space-y-1">
             {visibleNavItems.map((item) => {
               const isActive = location.pathname === item.href;
@@ -170,7 +172,10 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </ScrollArea>
 
         {/* User Menu */}
-        <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border">
+        <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border space-y-1">
+          <div className={cn('flex', collapsed ? 'justify-center' : 'justify-end')}>
+            <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
+          </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -253,14 +258,13 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </div>
       </aside>
 
-      {/* Main Content - SaaS background #F8FAFC */}
+      {/* Main Content - usa token de tema (claro/escuro) */}
       <main
         className={cn(
-          'transition-all duration-300 min-h-screen',
+          'transition-all duration-300 min-h-screen bg-background',
           collapsed ? 'lg:pl-[72px]' : 'lg:pl-64',
           'pt-14 sm:pt-16 lg:pt-0'
         )}
-        style={{ backgroundColor: '#F8FAFC' }}
       >
         {isImpersonating && (
           <div className="bg-warning/10 border-b border-warning/30 px-3 sm:px-4 py-2">

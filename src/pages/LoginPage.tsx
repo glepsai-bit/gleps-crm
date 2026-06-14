@@ -99,7 +99,7 @@ export default function LoginPage() {
   const isFormDisabled = isSubmitting;
 
   return (
-    <div className="dark min-h-screen flex items-center justify-center bg-background p-4">
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
       {/* Background gradient effect */}
       <div className="fixed inset-0 bg-gradient-to-br from-background via-background to-primary/5 pointer-events-none" />
       <div className="fixed top-1/4 -left-1/4 w-1/2 h-1/2 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
@@ -108,10 +108,11 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md space-y-6 animate-fade-in">
         {/* Logo/Brand */}
         <div className="text-center space-y-3">
-          <div className="inline-flex items-center justify-center mb-2">
-            <img 
-              src={mychooiceLogo} 
-              alt="MyChooice" 
+          {/* Chip escuro: o logo é branco, então mantém um fundo escuro nos dois temas */}
+          <div className="inline-flex items-center justify-center mb-2 rounded-2xl bg-sidebar px-8 py-4 shadow-lg">
+            <img
+              src={mychooiceLogo}
+              alt="MyChooice"
               className="w-48 h-16 object-contain logo-glow"
             />
           </div>
@@ -139,7 +140,7 @@ export default function LoginPage() {
               )}
               
               <div className="space-y-2">
-                <Label htmlFor="email" className="text-white/90 font-medium">Email</Label>
+                <Label htmlFor="email" className="text-foreground/90 font-medium">Email</Label>
                 <Input
                   id="email"
                   type="email"
@@ -154,7 +155,7 @@ export default function LoginPage() {
               </div>
               
               <div className="space-y-2">
-                <Label htmlFor="password" className="text-white/90 font-medium">Senha</Label>
+                <Label htmlFor="password" className="text-foreground/90 font-medium">Senha</Label>
                 <div className="relative">
                   <Input
                     id="password"

@@ -63,13 +63,13 @@ export function IAvsHumanCard({
           {/* Donut Chart */}
           <div className="relative w-24 h-24 sm:w-28 sm:h-28 shrink-0">
             <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
-              {/* Background circle */}
+              {/* Background circle - track (token p/ adaptar ao tema) */}
               <circle
                 cx="50"
                 cy="50"
                 r="40"
                 fill="none"
-                stroke="#E5E7EB"
+                stroke="hsl(var(--muted))"
                 strokeWidth="14"
               />
               {/* IA segment - Blue */}

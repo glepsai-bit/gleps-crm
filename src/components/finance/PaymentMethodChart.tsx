@@ -125,7 +125,7 @@ export function PaymentMethodChart({ isLoading = false }: PaymentMethodChartProp
                 <Cell
                   key={`cell-${index}`}
                   fill={COLORS[entry.method]}
-                  stroke="#FFFFFF"
+                  stroke="hsl(var(--card))"
                   strokeWidth={2}
                 />
               ))}

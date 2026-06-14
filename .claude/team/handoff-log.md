@@ -10,6 +10,81 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-14 — Dark Mode validado na UI + bateria verde → merge na main (@dev-principal → @usuário) {#2026-06-14-darkmode-merge-main}
+
+**Por instrução direta do usuário** (autorização de push na main), rodei a bateria de testes e, com tudo verde, fiz o merge do dark mode na `main` para deploy. O bloqueio T-009 deixou de valer na prática: o `.env` da raiz já tem `VITE_USE_BACKEND=true` e a stack local (Express :3000 + Postgres + Vite :8080) sobe — **login local funciona**, o que destravou a validação visual.
+
+**Validação visual (Playwright, stack local, usuários do seed):**
+- Login claro **e** escuro: logo legível, labels legíveis, botão "Entrar" vermelho visível nos 2 temas (confirma a correção do botão transparente).
+- Admin (escuro): dashboard (donut Resolução, barras Backlog soft, IAvsHuman), Financeiro (RevenueChart, PaymentMethodChart donut com separador `--card`) e Insights — sem buraco branco.
+- Financeiro também no claro (separadores brancos corretos). Toggle troca ao vivo (sem reload) e **persiste** no reload.
+- Super-admin (escuro): layout próprio, Monitoramento do Servidor + charts de consumo OK.
+- Não-regressão @700px: sidebar inteira, último item de nav não sobreposto pelo rodapé/toggle. Console: 0 erros.
+
+**Bateria (gates locais):** `tsc -p tsconfig.app.json` ✅ · `vitest` 36/36 ✅ · `vite build` ✅ · `eslint` nos arquivos do diff ✅ (o único erro, `location.state as any` em LoginPage:58, é **pré-existente na main** — confirmado: não aparece no diff) · `qa:smoke` local 42/45 (as 3 falhas `/chatwoot/*` são esperadas em local — seed sem credenciais Chatwoot; backend não foi tocado).
+
+**Pendência (não bloqueia deploy):** empacotar `npm run dev:stack` e `npm run qa:smoke:local` no package.json (T-009 "rodar local com um comando só"). Logo MyChooice colorido p/ tema claro e favicon `prefers-color-scheme` seguem como polimento opcional.
+
+---
+
+## 2026-06-14 — Front sinaliza: dev local ≠ prod, login local não funciona (T-009) (@frontend → @dev-principal) {#2026-06-14-dev-local-prod}
+
+**Não é da minha alçada (front) resolver — só estou reportando para o Dev Principal decidir o caminho.** O usuário pediu para alinhar o ambiente local ao de produção e focar tudo em uma só tecnologia, funcional. Ele vai logar e validar o dark mode **depois** que isto for resolvido.
+
+**O que observei (fatos, sem propor solução):**
+- Produção/Docker usa Express: `docker-compose.yml` builda o front com `VITE_USE_BACKEND: "true"` e sobe postgres + backend.
+- No `vite dev` local o app cai em **Supabase Cloud**: o `.env` do front **não** define `VITE_USE_BACKEND` (e `.env.example` não menciona a flag) → `useBackend=false` em [src/config/backend.config.ts](../../src/config/backend.config.ts).
+- Existe seed do Express ([backend/src/prisma/seed.ts](../../backend/src/prisma/seed.ts)) com `superadmin@sistema.com` / `Admin@123`, mas ele não vale no localhost atual porque o front local fala com Supabase, não com o Express seedado.
+- Consequência: não há como logar no localhost de forma confiável hoje → bloqueia a validação visual do dark mode.
+
+**Necessidade (resultado esperado, não o "como"):** ambiente local que funcione igual ao de prod, com login funcionando. A tecnologia/arquitetura e a eventual consolidação da camada dupla de dados ficam a critério do Dev Principal (e ele deve confirmar o escopo com o usuário).
+
+**Do meu lado (front):** o dark mode está pronto e em QA na branch `feat/dark-mode` (working tree). Assim que o login local funcionar, valido visualmente as telas autenticadas no dark.
+
+---
+
+## 2026-06-14 — Dark Mode COMPLETO (T-006 + T-007 + T-008) (@frontend → @qa) {#2026-06-14-dark-mode-completo}
+
+**O usuário pediu o dark mode por completo, com a obrigatoriedade de NÃO quebrar nenhuma funcionalidade, rodando workflows de monitoramento em paralelo. Entreguei as 3 fases numa única branch `feat/dark-mode` (working tree, ainda não commitada — QA commita).**
+
+### O que mudou
+- **Plumbing (T-006):** novo `src/components/theme-provider.tsx` (next-themes; tipado via `ComponentProps<typeof NextThemesProvider>` p/ não depender de `ThemeProviderProps`, que a 0.3.0 não re-exporta) + `src/components/theme-toggle.tsx` (dropdown Claro/Escuro/Sistema; ícone anima via `dark:` sem ler tema em JS). `App.tsx` envolve a árvore com `<ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>` (ordem: QueryClient > Theme > Tooltip > Router > Auth).
+- **Toggle posicionado** no header mobile **e** no rodapé da sidebar dos dois layouts (cores `sidebar-*`).
+- **Fundo do `<main>`** trocado de `#F8FAFC` (Admin) e `bg-white` (SuperAdmin) → `bg-background`.
+- **Login segue a preferência do usuário** (requisito explícito): removido o `className="dark"` forçado; labels `text-white/90`→`text-foreground/90`; card `glass-strong` tokenizado; logo branco posto num "chip" `bg-sidebar` (escuro nos 2 temas) p/ legibilidade.
+- **Charts (T-007):** RevenueChart (grid→`--chart-grid`, ticks→`--muted-foreground`, série→`--chart-2`), PaymentMethodChart (separador do donut `#FFFFFF`→`--card`), Resolução/IAvsHuman (track do donut `#E5E7EB`→`--muted`), BacklogCard (track da barra `bg-white/50`→`bg-foreground/10`).
+- **Gaps de token no `.dark` (T-008):** `--chart-grid`, `--success/warning/destructive-soft`, `--role-admin/agent`, `--text-*`; `.glass`/`.glass-strong`→`hsl(var(--card))`; `.shadow-card` com sombra mais forte no dark; reserva do ScrollArea da sidebar 8rem→11rem (toggle aumentou o rodapé).
+
+### Decisões (divergi da auditoria com motivo)
+- **Azul-IA e paleta de método de pagamento mantidos como DADO** (não tokenizados). Não há token azul; mapear p/ `--chart-1` (vermelho) deixaria a IA vermelha (regressão + conflito com "perigo"). São cores legíveis nos 2 temas.
+- `defaultTheme="system"` (não "light") porque o usuário pediu que o login/app **siga a preferência** do SO; persiste a escolha manual via toggle.
+
+### Bug encontrado e corrigido (reportado ao usuário)
+Botão **"Entrar"** usava `bg-gradient-primary` e `glow-primary` — **classes inexistentes**. O `twMerge` descartava o `bg-primary` do Button → botão transparente; só não se via porque o login era sempre escuro (texto branco). Ao tornar o login claro, o botão **sumia**. Corrigido definindo as classes com tokens da marca (gradiente vermelho→accent + glow). Confirmado por screenshot nos 2 temas.
+
+### Verificação (2 workflows + gates)
+- **Workflow auditoria** (7 agentes): mapa exato de cores + risco funcional + gaps de token.
+- **Workflow verificação adversarial** (3 agentes): regressão funcional = PASS (árvore de providers ok, auth/submit/redirect intactos, nenhum teste depende de tema); completude = PASS (nenhum chrome hardcoded de chrome escapou); corretude pegou **1 blocker** (o `tsc` do `theme-provider`) — **já corrigido e revalidado**.
+- Gates locais: `npx tsc --noEmit -p tsconfig.app.json` ✅ · `vite build` ✅ · `vitest` 36/36 ✅ · `eslint` limpo nos arquivos do diff (o único erro, `location.state as any` em LoginPage:58, é pré-existente em main).
+- **Visual:** login capturado nos 2 temas (claro/escuro) via Playwright na instância local — ambos corretos e legíveis.
+
+### Arquivos (10 modificados + 2 novos)
+Novos: `src/components/theme-provider.tsx`, `src/components/theme-toggle.tsx`.
+Modificados: `src/App.tsx`, `src/layouts/AdminLayout.tsx`, `src/layouts/SuperAdminLayout.tsx`, `src/pages/LoginPage.tsx`, `src/index.css`, `src/components/finance/RevenueChart.tsx`, `src/components/finance/PaymentMethodChart.tsx`, `src/components/dashboard/ResolucaoCard.tsx`, `src/components/dashboard/IAvsHumanCard.tsx`, `src/components/dashboard/BacklogCard.tsx`.
+
+### Como testar (QA)
+1. `npm run dev` → abrir `/login`: alternar tema do SO (ou `localStorage.theme`) e confirmar login legível em claro e escuro (logo, labels, botão "Entrar" vermelho visível).
+2. Logar e usar o `ThemeToggle` (sidebar/header) em `/admin/*` e `/super-admin/*`; alternar Claro/Escuro/Sistema; conferir persistência (reload mantém escolha).
+3. Olhar dashboards/insights/financeiro no dark: gráficos com grid/ticks/tracks visíveis, sem "buraco branco"; BacklogCard legível; donuts com track sutil.
+4. **Não-regressão:** sidebar não sobrepõe o último item de nav em tela baixa (~700px); Sonner (toast) segue o tema; multi-tenancy/auth inalterados.
+
+### Pendências / decisões p/ o usuário
+- **Commit:** não commitei (regra do time = QA commita). Para QA: `git add -A` (inclui os 2 arquivos novos) e commit na branch `feat/dark-mode`.
+- **Logo no tema claro:** hoje usa "chip" escuro. Se quiser o logo **colorido** no claro, precisa do SVG limpo do MyChooice (o atual é só branco). Workaround atual é seguro e legível.
+- **Favicon `prefers-color-scheme`** ficou de fora (cosmético, ícone da aba).
+
+---
+
 ## 2026-06-01 — QA: verificação geral final — PRONTO PARA DEPLOY (@qa → @usuário)
 
 **Limpeza não-bloqueante aplicada:** removidas 3 constantes mortas de `src/api/endpoints.ts` (`DASHBOARD.REVENUE`, `DASHBOARD.CONVERSION_FUNNEL`, `INSIGHTS.OVERVIEW`) — confirmado por grep que não eram usadas em nenhum lugar (nem em testes). `qa-smoke.mjs` ajustado (removidos os probes desses paths).
