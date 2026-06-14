@@ -60,6 +60,96 @@ QA_EMAIL="..." QA_PASSWORD="..." npm run qa:smoke
 
 ---
 
+## 2026-06-01 — Dark Mode — Auditoria + abertura de T-006/T-007/T-008 (@dev-principal → @frontend) {#2026-06-01-dark-mode-auditoria}
+
+**Contexto:** o usuário pediu dark mode. Antes de abrir card, rodei auditoria multi-agente read-only do code base inteiro (9 agentes em paralelo cobrindo infra + 8 áreas). Resultado: viabilidade ALTA, infra ~80% pronta, escopo dividido em 3 fases. **Esta é a passagem para o Front executar a Fase 1 (T-006).**
+
+### Estado da infraestrutura (não precisa refazer)
+- `tailwind.config.ts` já usa `darkMode: ['class']`. Toda paleta referencia `hsl(var(--token))` — zero hardcode no tema.
+- `src/index.css` tem **62 variáveis semânticas em `:root`** (padrão shadcn completo + extensões `--success`, `--warning`, `--info`, `--sidebar-*`, `--kanban-*`, `--role-*`, `--status-*`, `--chart-*`).
+- **`.dark { }` já está desenhado** com **35 variáveis sobrescritas** ("Deep black enterprise") — paleta dark pronta, só não está sendo ativada.
+- `next-themes` ^0.3.0 nas dependências.
+- `components.json` com `cssVariables: true`, `baseColor: "slate"`.
+- 86% dos componentes shadcn (43 de 50) usam exclusivamente tokens semânticos. Baseline saudável.
+- **`src/components/ui/sonner.tsx` já chama `useTheme()`** mas cai no fallback porque não há provider.
+
+### Gaps que faltam (escopo do T-006)
+1. **Nenhum `ThemeProvider` em `src/App.tsx`** — toda a árvore não tem contexto de tema.
+2. **Nenhum `ThemeToggle`** existe (grep retornou zero).
+3. **Bug real em layouts** (rompe dark mode visualmente):
+   - `src/layouts/AdminLayout.tsx:263` → `style={{ backgroundColor: '#F8FAFC' }}` no `<main>`. Conteúdo todo fica fundo claro permanente.
+   - `src/layouts/SuperAdminLayout.tsx:237` → `bg-white` no `<main>`. Mesmo problema.
+4. **Cleanup mínimo** em `src/pages/LoginPage.tsx:142,157` — `text-white/90` em `<Label>` (funciona hoje só porque L102 força `className="dark"` na raiz).
+
+### Passos sugeridos para o Front executar (T-006)
+
+```tsx
+// 1. src/components/theme-provider.tsx (novo)
+import { ThemeProvider as NextThemesProvider, type ThemeProviderProps } from "next-themes"
+
+export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
+  return <NextThemesProvider {...props}>{children}</NextThemesProvider>
+}
+
+// 2. src/App.tsx — envolver a árvore dentro do QueryClientProvider
+<QueryClientProvider client={queryClient}>
+  <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
+    <TooltipProvider>...</TooltipProvider>
+  </ThemeProvider>
+</QueryClientProvider>
+
+// 3. src/components/theme-toggle.tsx (novo)
+import { Moon, Sun } from "lucide-react"
+import { useTheme } from "next-themes"
+import { Button } from "@/components/ui/button"
+
+export function ThemeToggle() {
+  const { theme, setTheme } = useTheme()
+  return (
+    <Button variant="ghost" size="icon" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+      <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+      <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+      <span className="sr-only">Alternar tema</span>
+    </Button>
+  )
+}
+```
+
+Posicionar `<ThemeToggle />` no header de `src/layouts/AdminLayout.tsx` e `src/layouts/SuperAdminLayout.tsx` (perto do avatar/menu do usuário). Fixar os 2 bugs do `<main>` no mesmo PR.
+
+**Decisão de design pendente (alinhar com usuário antes de mergear):** manter ou remover o `className="dark"` forçado em `LoginPage.tsx:102`? Hoje a página de login é sempre dark independente da preferência. Sugestão: remover o force-dark — login passa a respeitar tema. Se mantiver, label cleanup (`text-foreground/90`) ainda alinha com tokens mas continua visualmente igual.
+
+### Áreas que **ficam fora** da Fase 1 (vão para T-007 e T-008)
+- **Charts dashboards** (`AtendimentoRealtimeCard`, `IAvsHumanCard`, `ResolucaoCard`, `BacklogCard`): constantes `CHART_BLUE/GREEN/YELLOW/RED/MUTED` hex hardcoded em JS. Refactor para `hsl(var(--chart-*))`.
+- **SVG donuts crus** (`IAvsHumanCard` L72, `ResolucaoCard` L119): `<circle stroke="#E5E7EB">` — track invisível no dark.
+- **`PaymentMethodChart`**: 7 cores hex por método + `stroke="#FFFFFF"` entre fatias.
+- **`RevenueChart`**: `<CartesianGrid stroke="#E5E7EB">` + ticks `fill: '#64748B'`.
+- **Bom referencial (já adaptativo):** `HourlyPeakChart`, `ServerConsumptionChart`, `WeeklyConsumptionChart`, `TemporalAnalysisChart`, `ConversionVelocity` usam `hsl(var(--chart-*))` corretamente. Copiar padrão na Fase 2.
+- **Logos**: `mychooice-logo-white.svg` (100% branco, único importado em 3 lugares) somiria em light; `gleps-logo.png` tem fundo roxo queimado sem alpha; favicon sem `prefers-color-scheme`.
+- **Cleanup shadcn**: `badge.tsx` variantes `success`/`warning` com hsl literal; `button.tsx` variant `gradient` com `text-white`; `input.tsx` `dark:text-white` redundante. **Os tokens `--success`/`--warning` JÁ EXISTEM em `:root` — só não foram cabeados em `tailwind.config.ts` como cores Tailwind.** Conectar é trivial.
+
+### Pseudo-problemas (NÃO TOCAR, são intencionais)
+- `CreateStageDialog` `PRESET_COLORS` — paleta de cor pro usuário **escolher** ao criar tag (são dados).
+- `AdminKanbanPage` seed de estágios — mesma coisa (dados, não chrome).
+- `EmailPreviewDialog` template HTML com `color:#1a1a1a;background:#fff;...` — vai ser **enviado por e-mail**, renderiza em Gmail/Outlook do destinatário onde CSS vars do app não existem. Manter literal.
+- Overlays `bg-black/80` em `dialog`/`alert-dialog`/`sheet`/`drawer` — padrão oficial shadcn, funciona em ambos.
+
+### Métricas brutas da auditoria (referência)
+- Total: 127 ocorrências hardcoded em 31 arquivos.
+- Risco por área: `ui/`=low, `pages/admin/`=low, `pages/super-admin/`=low, `comp-grupoB`=medium, `layouts/css`=medium, `comp-grupoA(dashboards)`=high, `charts`=high, `brand/assets`=high.
+- Charts e dashboards (10 arquivos) concentram ~70% do risco real → vão pro T-007.
+- Bugs no `<main>` dos layouts (2 ocorrências, 2 arquivos) + cleanup LoginPage (2 ocorrências, 1 arquivo) = **escopo cirúrgico do T-006**.
+
+### Esforço estimado
+| Fase | Cards | Horas | O que entrega |
+|---|---|---|---|
+| 1 (MVP) | T-006 | 4–6h | Toggle funciona, navegação principal dark coerente |
+| 2 (Charts) | T-007 | 6–10h | Dashboards adaptativos, sem buraco branco em gráficos |
+| 3 (Marca + polimento) | T-008 | 4–6h | Logos OK, tokens novos, cleanup, QA visual completo |
+| **Total** | 3 PRs | **14–22h** | Dark mode production-grade |
+
+---
+
 ## 2026-06-01 — T-004 e T-005 entregues (@dev-principal → @qa)
 
 **T-004 — `SALES.STATS` apontava para rota inexistente:**
