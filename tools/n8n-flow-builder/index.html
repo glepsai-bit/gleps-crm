@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>N8N Flow Builder — GLEPS CRM</title>
+  <meta name="description" content="Gera o JSON do fluxo n8n SDR customizado por cliente. Tudo client-side, credenciais nunca saem do navegador.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <h1>N8N Flow Builder</h1>
+      <p class="subtitle">Gera o JSON do fluxo SDR já customizado para o cliente. <strong>Tudo no navegador</strong> — credenciais não saem daqui.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+
+    <!-- ============================================ -->
+    <!-- 1. Galeria de prompts -->
+    <!-- ============================================ -->
+    <section class="card">
+      <h2>1. Escolha o template de prompt</h2>
+      <p class="hint">O template define o comportamento da IA (SDR, suporte, agendamento, etc). Os 2 prompts (classificador + respondedor) vão pro fluxo do n8n.</p>
+
+      <div id="gallery" class="gallery"></div>
+
+      <details class="adv">
+        <summary>Ver/editar os prompts do template selecionado</summary>
+        <div class="grid-2">
+          <div>
+            <label>Classificador (AI Agent — identifica intenção)</label>
+            <textarea id="classifier-preview" rows="14" placeholder="Selecione um template acima"></textarea>
+            <p class="hint">Substituições <code>{{variavel}}</code> são feitas no momento de gerar o JSON.</p>
+          </div>
+          <div>
+            <label>Respondedor (AI Agent8 — conversa com o lead)</label>
+            <textarea id="responder-preview" rows="14" placeholder="Selecione um template acima"></textarea>
+            <p class="hint">Você pode editar diretamente aqui; ajustes finos depois do export ficam melhor no próprio n8n.</p>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 2. Variáveis do template -->
+    <!-- ============================================ -->
+    <section class="card" id="vars-card" hidden>
+      <h2>2. Variáveis do template</h2>
+      <p class="hint">Esses valores substituem os <code>{{placeholders}}</code> nos prompts.</p>
+      <div id="vars-form" class="grid-2"></div>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 3. Credenciais e integrações (config1 do n8n) -->
+    <!-- ============================================ -->
+    <section class="card">
+      <h2>3. Credenciais e integrações</h2>
+      <p class="hint warn">Os 3 campos marcados como <strong>sensíveis</strong> só ficam em memória — nunca salvos no navegador. Feche a aba e somem.</p>
+
+      <div class="grid-2">
+        <div>
+          <label>URL da instância Chatwoot <span class="req">*</span></label>
+          <input type="url" id="chatwoot_url" placeholder="https://atendimento.cliente.com.br" autocomplete="off" required>
+        </div>
+        <div>
+          <label>Account ID no Chatwoot <span class="req">*</span></label>
+          <input type="text" id="chatwoot_account_id" placeholder="1" autocomplete="off" required>
+        </div>
+        <div>
+          <label>API Token Chatwoot <span class="req">*</span> <span class="sensitive">sensível</span></label>
+          <input type="password" id="chatwoot_token" placeholder="hzHbERLDqy47q74N62wn5yQ1" autocomplete="off" required>
+        </div>
+        <div>
+          <label>Backend URL (CRM Express) <span class="req">*</span></label>
+          <input type="url" id="backend_url" placeholder="https://goodleads.cliente.com.br" autocomplete="off" required>
+        </div>
+        <div>
+          <label>Webhook secret do backend <span class="req">*</span> <span class="sensitive">sensível</span></label>
+          <input type="password" id="backend_webhook_secret" placeholder="(mesmo CHATWOOT_WEBHOOK_SECRET do .env do backend)" autocomplete="off" required>
+        </div>
+        <div>
+          <label>MCP endpoint (Google Calendar) <span class="req">*</span></label>
+          <input type="url" id="mcp_endpoint" placeholder="https://hook.cliente.com.br/mcp/principal" autocomplete="off" required>
+        </div>
+        <div>
+          <label>Evolution URL</label>
+          <input type="url" id="evolution_url" placeholder="https://evolution-api.cliente.com.br" autocomplete="off">
+          <p class="hint">Não consumido pelo fluxo atual — preencha para versão futura.</p>
+        </div>
+        <div>
+          <label>Evolution API key <span class="sensitive">sensível</span></label>
+          <input type="password" id="evolution_apikey" placeholder="429683C4C977..." autocomplete="off">
+        </div>
+        <div>
+          <label>Evolution instance</label>
+          <input type="text" id="evolution_instance" value="Amanda" autocomplete="off">
+          <p class="hint">Geralmente o nome do bot. Default "Amanda".</p>
+        </div>
+        <div>
+          <label>Debounce (segundos)</label>
+          <input type="number" id="debounce_seconds" value="20" min="5" max="120" autocomplete="off">
+          <p class="hint">Tempo que o n8n espera antes de processar a msg (anti-flood). Default 20s.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- 4. Ações -->
+    <!-- ============================================ -->
+    <section class="card">
+      <h2>4. Gerar fluxo</h2>
+      <div id="validation" class="validation"></div>
+      <div class="actions">
+        <button type="button" class="primary" id="btn-generate">Gerar e baixar JSON</button>
+        <button type="button" id="btn-copy">Copiar JSON</button>
+        <button type="button" class="ghost" id="btn-clear">Limpar formulário</button>
+      </div>
+      <details class="adv">
+        <summary>Ver o JSON gerado (preview)</summary>
+        <pre id="json-preview" class="json-preview">Clique em "Gerar" pra preencher.</pre>
+      </details>
+    </section>
+
+    <footer>
+      <p>
+        Builder client-side, sem servidor, sem tracking. Tokens nunca trafegam.
+        Template baseado em <code>docs/n8n_flow_ia.json</code> (T-012, circuit breaker incluído).
+      </p>
+    </footer>
+
+  </main>
+
+  <!-- template do n8n (~87KB) -->
+  <script src="template.js"></script>
+  <!-- galeria de prompts (~30KB) -->
+  <script src="prompts/gallery.js"></script>
+  <!-- logica -->
+  <script src="app.js"></script>
+</body>
+</html>

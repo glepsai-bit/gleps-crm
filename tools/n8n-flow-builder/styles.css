@@ -1,0 +1,189 @@
+/* N8N Flow Builder — vanilla CSS, sem framework */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+  line-height: 1.5;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 1.5rem; }
+
+.topbar {
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  border-bottom: 1px solid #334155;
+  padding: 1.75rem 0 1.25rem;
+}
+.topbar h1 { margin: 0 0 .25rem; font-size: 1.5rem; letter-spacing: -0.01em; }
+.topbar .subtitle { margin: 0; color: #94a3b8; font-size: .95rem; }
+
+main.wrap { padding-top: 1.75rem; padding-bottom: 3rem; }
+
+.card {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 1.5rem;
+  margin-bottom: 1.25rem;
+}
+.card h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+.hint { margin: 0 0 1rem; color: #94a3b8; font-size: .85rem; }
+.hint.warn { color: #fbbf24; }
+.hint code { background: #0f172a; padding: 1px 6px; border-radius: 4px; }
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem 1.25rem;
+}
+@media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+
+label {
+  display: block;
+  margin-bottom: .35rem;
+  font-size: .85rem;
+  color: #cbd5e1;
+  font-weight: 500;
+}
+.req { color: #f87171; }
+.sensitive {
+  background: #7f1d1d;
+  color: #fecaca;
+  font-size: .7rem;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: .25rem;
+  font-weight: 400;
+}
+
+input, textarea, select {
+  width: 100%;
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: .55rem .75rem;
+  font-size: .9rem;
+  font-family: inherit;
+}
+input:focus, textarea:focus, select:focus {
+  outline: 2px solid #6366f1;
+  outline-offset: -1px;
+  border-color: transparent;
+}
+textarea {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: .8rem;
+  line-height: 1.45;
+}
+
+/* Galeria */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: .75rem;
+  margin-bottom: 1rem;
+}
+.gallery-item {
+  border: 2px solid #334155;
+  background: #0f172a;
+  border-radius: 8px;
+  padding: .9rem 1rem;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.gallery-item:hover { border-color: #6366f1; }
+.gallery-item.selected {
+  border-color: #6366f1;
+  background: #1e1b4b;
+}
+.gallery-item h3 { margin: 0 0 .35rem; font-size: .95rem; color: #e2e8f0; }
+.gallery-item p { margin: 0; font-size: .78rem; color: #94a3b8; line-height: 1.4; }
+
+/* Botoes */
+.actions {
+  display: flex;
+  gap: .75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+button {
+  background: #334155;
+  color: #e2e8f0;
+  border: none;
+  border-radius: 6px;
+  padding: .65rem 1.25rem;
+  font-size: .9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all .15s ease;
+  font-family: inherit;
+}
+button:hover { background: #475569; }
+button.primary { background: #6366f1; color: #fff; }
+button.primary:hover { background: #4f46e5; }
+button.ghost { background: transparent; border: 1px solid #334155; }
+button.ghost:hover { background: #1e293b; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Validacao */
+.validation {
+  margin-bottom: 1rem;
+  padding: .65rem .85rem;
+  border-radius: 6px;
+  font-size: .85rem;
+  display: none;
+}
+.validation.error {
+  display: block;
+  background: #7f1d1d;
+  color: #fecaca;
+}
+.validation.ok {
+  display: block;
+  background: #14532d;
+  color: #bbf7d0;
+}
+
+/* Preview JSON */
+.json-preview {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 1rem;
+  max-height: 400px;
+  overflow: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: .75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Detalhes (collapsible) */
+details.adv {
+  margin-top: 1rem;
+  border-top: 1px solid #334155;
+  padding-top: 1rem;
+}
+details.adv summary {
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: .85rem;
+  user-select: none;
+}
+details.adv summary:hover { color: #cbd5e1; }
+details.adv[open] summary { margin-bottom: 1rem; color: #e2e8f0; }
+
+footer {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #1e293b;
+  text-align: center;
+}
+footer p {
+  margin: 0;
+  font-size: .8rem;
+  color: #64748b;
+}
+footer code { background: #1e293b; padding: 1px 6px; border-radius: 4px; }
