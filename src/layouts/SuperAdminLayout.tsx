@@ -77,7 +77,7 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
           </button>
           <div className="flex items-center gap-2">
             <img src={mychooiceLogo} alt="MyChooice" className="w-6 h-6 sm:w-7 sm:h-7 object-contain" />
-            <span className="font-semibold text-sidebar-foreground text-sm sm:text-base">GoodLeads Admin</span>
+            <span className="font-semibold text-sidebar-foreground text-sm sm:text-base">Gleps IA Admin</span>
           </div>
         </div>
         <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
@@ -104,7 +104,7 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
           {!collapsed && (
             <div className="flex items-center gap-2">
               <img src={mychooiceLogo} alt="MyChooice" className="w-8 h-8 object-contain" />
-              <span className="font-bold text-lg text-sidebar-foreground">GoodLeads Admin</span>
+              <span className="font-bold text-lg text-sidebar-foreground">Gleps IA Admin</span>
             </div>
           )}
           {collapsed && (

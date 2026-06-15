@@ -116,10 +116,8 @@ export default function LoginPage() {
               className="w-48 h-16 object-contain logo-glow"
             />
           </div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-red-400 bg-clip-text text-transparent">GoodLeads</h1>
-          <p className="text-muted-foreground">
-            Powered by <span className="text-primary font-medium">MyChooice</span>
-          </p>
+          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-[#8A6CFF] bg-clip-text text-transparent">Gleps IA</h1>
+          <p className="text-sm text-muted-foreground mt-2">A inteligencia comercial que seu negocio precisa.</p>
         </div>
 
         {/* Login Card */}

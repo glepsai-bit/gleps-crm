@@ -52,7 +52,7 @@ export default function EmailPreviewDialog({
       const result = await emailService.testSendEmail(
         '__existing__',
         settings.sendgridFromEmail,
-        settings.sendgridFromName || 'GoodLeads CRM',
+        settings.sendgridFromName || 'Gleps IA CRM',
         testEmail,
         { subject: `[TESTE] ${subject}`, html: bodyHtml, text: bodyText }
       );
@@ -144,7 +144,7 @@ export default function EmailPreviewDialog({
                     <div className="w-3 h-3 rounded-full bg-success/60" />
                   </div>
                   <p className="text-xs text-muted-foreground truncate">
-                    <span className="font-medium">De:</span> GoodLeads &lt;noreply@empresa.com&gt;
+                    <span className="font-medium">De:</span> Gleps IA &lt;noreply@empresa.com&gt;
                   </p>
                   <p className="text-xs font-medium text-foreground truncate">{subject}</p>
                 </div>

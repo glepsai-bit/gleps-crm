@@ -100,7 +100,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           <div className="flex items-center gap-2">
             <img src={mychooiceLogo} alt="MyChooice" className="w-6 h-6 sm:w-7 sm:h-7 object-contain" />
             <span className="font-semibold text-sidebar-foreground truncate max-w-[120px] xs:max-w-[150px] sm:max-w-[180px] text-sm sm:text-base">
-              GoodLeads
+              Gleps IA
             </span>
           </div>
         </div>
@@ -129,7 +129,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             <div className="flex items-center gap-2 overflow-hidden">
               <img src={mychooiceLogo} alt="MyChooice" className="w-8 h-8 object-contain flex-shrink-0" />
               <span className="font-bold text-lg text-sidebar-foreground truncate">
-                GoodLeads
+                Gleps IA
               </span>
             </div>
           )}
