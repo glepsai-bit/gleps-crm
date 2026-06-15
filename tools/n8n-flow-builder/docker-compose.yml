@@ -1,0 +1,31 @@
+# ============================================
+# GoodLeads Flow Builder - Docker Compose
+# ============================================
+# App estatico (HTML + CSS + JS) servido por nginx:alpine.
+# Roda em EasyPanel como service separado (tipo Compose).
+#
+# Uso no EasyPanel:
+#   1. Source: Git -> repo do CRM, branch feat/t013-n8n-flow-builder
+#   2. Caminho de Build: tools/n8n-flow-builder
+#   3. Arquivo Docker Compose: docker-compose.yml
+#   4. Salvar -> aba Domains -> mapear builder.<seu-dominio> porta 80
+#   5. HTTPS automatico (Let's Encrypt via Traefik)
+#
+# Sem variaveis de ambiente. Sem volumes. Sem rede customizada.
+# Traefik do EasyPanel adiciona labels automaticamente na hora do deploy.
+# ============================================
+
+services:
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
