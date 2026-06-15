@@ -1,4 +1,4 @@
-# N8N Flow Builder — static site servido por nginx:alpine.
+# GoodLeads Flow Builder — static site servido por nginx:alpine.
 # Build no EasyPanel: criar app "Dockerfile", apontar Build Path para tools/n8n-flow-builder.
 FROM nginx:alpine
 

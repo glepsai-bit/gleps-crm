@@ -1,4 +1,4 @@
-// N8N Flow Builder — logica vanilla JS, client-side puro.
+// GoodLeads Flow Builder — logica vanilla JS, client-side puro.
 // Sem framework, sem build, sem dependencia externa. Roda em file:// e em servidor estatico.
 
 (function () {

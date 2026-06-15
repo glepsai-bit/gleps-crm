@@ -1,4 +1,4 @@
-# N8N Flow Builder
+# GoodLeads Flow Builder
 
 Página web standalone (HTML + CSS + JS puro, sem build, sem servidor) que **gera o JSON do fluxo n8n SDR já customizado por cliente**. Você preenche um formulário, escolhe um template de prompt da galeria, e baixa o JSON pronto pra importar no n8n.
 
