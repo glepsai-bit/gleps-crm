@@ -38,7 +38,7 @@ export const emailAiService = {
       throw new Error('Chave da OpenAI não configurada para esta conta.');
     }
 
-    const systemPrompt = `Você é um assistente especializado em criar e-mails de prospecção e vendas para o CRM GoodLeads.
+    const systemPrompt = `Você é um assistente especializado em criar e-mails de prospecção e vendas para o CRM Gleps IA.
 Empresa: ${account.nome}
 
 Regras:

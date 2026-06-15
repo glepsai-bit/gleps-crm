@@ -117,17 +117,17 @@ export const sendgridService = {
   ): Promise<SendGridResponse> {
     return this.sendEmail({
       to: toEmail,
-      subject: 'Teste de Conexão - GoodLeads CRM',
+      subject: 'Teste de Conexão - Gleps IA CRM',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
           <h2 style="color: #6366F1;">✅ Teste de E-mail</h2>
-          <p>Este é um e-mail de teste enviado pelo GoodLeads CRM.</p>
+          <p>Este é um e-mail de teste enviado pelo Gleps IA CRM.</p>
           <p>Se você recebeu este e-mail, sua integração com SendGrid está funcionando corretamente!</p>
           <hr style="border: 1px solid #e5e7eb; margin: 20px 0;">
-          <p style="color: #9ca3af; font-size: 12px;">Enviado por ${fromName} via GoodLeads CRM</p>
+          <p style="color: #9ca3af; font-size: 12px;">Enviado por ${fromName} via Gleps IA CRM</p>
         </div>
       `,
-      text: 'Este é um e-mail de teste enviado pelo GoodLeads CRM.',
+      text: 'Este é um e-mail de teste enviado pelo Gleps IA CRM.',
       fromEmail,
       fromName,
       apiKey,
@@ -154,7 +154,7 @@ export const sendgridService = {
     return {
       apiKey: account.sendgridApiKey,
       fromEmail: account.sendgridFromEmail,
-      fromName: account.sendgridFromName || 'GoodLeads CRM',
+      fromName: account.sendgridFromName || 'Gleps IA CRM',
     };
   },
 

@@ -353,7 +353,7 @@ export const emailController = {
     try {
       let apiKey = req.body.apiKey;
       let fromEmail = req.body.fromEmail;
-      let fromName = req.body.fromName || 'GoodLeads CRM';
+      let fromName = req.body.fromName || 'Gleps IA CRM';
       const accountId = getAccountId(req);
 
       // If using existing credentials from account
@@ -367,7 +367,7 @@ export const emailController = {
         fromName = fromName || creds.fromName;
       }
 
-      const subject = req.body.subject || 'Teste de E-mail - GoodLeads CRM';
+      const subject = req.body.subject || 'Teste de E-mail - Gleps IA CRM';
       const toEmail = req.body.toEmail;
 
       // If custom HTML body is provided, send that instead of the default test template
@@ -391,7 +391,7 @@ export const emailController = {
         fromName,
         toEmail,
       );
-      await logTestSend(accountId, toEmail, 'Teste de Conexão - GoodLeads CRM', result);
+      await logTestSend(accountId, toEmail, 'Teste de Conexão - Gleps IA CRM', result);
       res.json(result);
     } catch (error) { next(error); }
   },

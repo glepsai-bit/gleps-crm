@@ -1,0 +1,121 @@
+# ============================================
+# GLEPS IA CRM - Docker Compose (whitelabel isolado)
+# ============================================
+# IMPORTANTE: este stack eh TOTALMENTE INDEPENDENTE do GoodLeads.
+#
+# Isolamento garantido (vs docker-compose.yml original):
+#   - container_name com sufixo "-gleps-ia"  -> sem colisao no mesmo host
+#   - volume proprio: pgdata_gleps_ia        -> banco SEPARADO do GoodLeads
+#   - network propria: gleps_ia_network      -> sem cross-talk
+#   - DB_USER / DB_PASSWORD / DB_NAME proprios via .env.gleps-ia
+#   - JWT_SECRET / REFRESH_TOKEN_SECRET proprios (NAO reutilizar do GoodLeads)
+#   - FRONTEND_URL padrao = https://crm.gleps.com.br
+#
+# As portas internas continuam as mesmas (3000 / 80 / 5432) porque o Traefik
+# do EasyPanel faz o roteamento por dominio; o que precisa ser unico eh
+# container_name + volume + network.
+#
+# Uso no EasyPanel:
+#   1. Criar service "Docker Compose" apontando para docker-compose.gleps-ia.yml
+#   2. Carregar variaveis a partir de .env.gleps-ia (gerar a partir do .example)
+#   3. Mapear dominio crm.gleps.com.br -> service "frontend-gleps-ia" porta 80
+#   4. Deploy.
+#
+# Variaveis obrigatorias: ver .env.gleps-ia.example.
+# ============================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres-gleps-ia
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-gleps_ia}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gleps_ia_secret}
+      POSTGRES_DB: ${DB_NAME:-gleps_ia_crm}
+    volumes:
+      - pgdata_gleps_ia:/var/lib/postgresql/data
+    networks:
+      - gleps_ia_network
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-gleps_ia} -d ${DB_NAME:-gleps_ia_crm}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend-gleps-ia
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: "3000"
+      API_URL: ${API_URL:-http://backend:3000}
+      FRONTEND_URL: ${FRONTEND_URL:-https://crm.gleps.com.br}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://crm.gleps.com.br}
+      DATABASE_URL: postgresql://${DB_USER:-gleps_ia}:${DB_PASSWORD:-gleps_ia_secret}@postgres:5432/${DB_NAME:-gleps_ia_crm}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_gleps_ia_jwt_secret_min_32_chars}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET:-CHANGE_ME_gleps_ia_refresh_secret_min_32}
+      REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN:-7d}
+      BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-900000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      CHATWOOT_WEBHOOK_SECRET: ${CHATWOOT_WEBHOOK_SECRET:-}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BUILD_VERSION: "2026-06-15-whitelabel-gleps-ia"
+      RUN_SEED: ${RUN_SEED:-true}
+    networks:
+      - gleps_ia_network
+    expose:
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: /api
+        VITE_USE_BACKEND: "true"
+    container_name: frontend-gleps-ia
+    restart: unless-stopped
+    environment:
+      BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:3000}
+    networks:
+      - gleps_ia_network
+    expose:
+      - "80"
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata_gleps_ia:
+
+networks:
+  gleps_ia_network:
+    driver: bridge

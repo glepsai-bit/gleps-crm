@@ -554,7 +554,7 @@ export const emailService = {
       const creds = {
         apiKey: account.sendgridApiKey,
         fromEmail: account.sendgridFromEmail,
-        fromName: account.sendgridFromName || 'GoodLeads CRM',
+        fromName: account.sendgridFromName || 'Gleps IA CRM',
       };
 
       // ---- QUOTA CHECK (mensal + diário) ----
