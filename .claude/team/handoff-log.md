@@ -10,6 +10,49 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-15 — T-014 Whitelabel Gleps IA — branch criada, handoff p/ Front-end (@dev-principal → @frontend) {#2026-06-15-whitelabel-gleps-ia}
+
+**Contexto:** o usuário fechou um cliente novo (**Gleps IA**) que vai usar o mesmo código do GoodLeads, mas com identidade visual própria e stack 100% separada (backend + banco + redis + service EasyPanel próprios). Subdomínio alvo: `crm.gleps.com.br` (mesma VPS, novo service). Slogan oficial: **"A inteligência comercial que seu negócio precisa."**
+
+Branch `whitelabel/gleps-ia` criada a partir de `origin/main` (commit `08a1651`) no worktree `/tmp/crm-whitelabel-gleps-ia`. Doc consolidado: [WHITELABEL_GLEPS_IA.md](../../WHITELABEL_GLEPS_IA.md) na raiz do worktree — **fonte única de verdade para esta tarefa**, leia antes de começar.
+
+**Sua responsabilidade (Front-end) — arquivos para tocar:**
+
+| Arquivo | O que fazer |
+|---|---|
+| `src/index.css` | Trocar paleta `--primary` (vermelho `#EE3924`) por roxo Gleps IA. Use **HSL exato**: `--primary: 250 90% 60%` (`#5B3DF5`), `--primary-hover: 263 87% 51%` (uma escala mais escura do roxo principal — gere com a regra hover do CRM original), `--primary-soft: 252 100% 96%` (versão muito clara do roxo claro), `--accent: 252 100% 71%` (`#8A6CFF`), `--ring: 250 90% 60%`. **Atualize também as variáveis correspondentes do bloco `.dark`** (manter o mesmo tom de hue para consistência). `--sidebar-background` pode virar **roxo escuro `#22003D`** (= `273 100% 12%`) — opcional, escolha sua. Chart-1 / kanban-new / role-super-admin: trocar de vermelho para roxo principal. |
+| `src/pages/LoginPage.tsx` linha 119 | Trocar `GoodLeads` por `Gleps IA`. Trocar o gradient `from-primary to-red-400` por `from-primary to-[#8A6CFF]` (ou usar `--accent`). Adicione o slogan abaixo do título: "A inteligência comercial que seu negócio precisa." |
+| `src/layouts/AdminLayout.tsx` linhas 103 e 132 | `GoodLeads` → `Gleps IA` |
+| `src/layouts/SuperAdminLayout.tsx` linhas 80 e 107 | `GoodLeads Admin` → `Gleps IA Admin` |
+| `src/components/email/EmailPreviewDialog.tsx` linhas 55 e 147 | Substituir literais `GoodLeads CRM` e `GoodLeads` por `Gleps IA CRM` / `Gleps IA` (mantenha o fallback dinâmico `settings.sendgridFromName ||`) |
+| `index.html` linhas 6-10 | `<title>MyChooice GoodLeads` → `Gleps IA — CRM`. `description` e `og:title` idem. **Adicione** `<meta name="theme-color" content="#5B3DF5">`. |
+| `public/favicon.svg`, `favicon.png`, `favicon.ico` | **Substituir pelo logo Gleps IA.** O usuário vai entregar PNG; o Dev Principal (eu) vou salvar em `public/favicon.png` antes de você começar a UI — eu te aviso. Se precisar de SVG, gere a partir do PNG ou peça ao usuário. |
+
+**Cores Gleps IA (referência rápida):**
+- Roxo Escuro: `#22003D` = HSL `273 100% 12%`
+- Roxo Principal: `#5B3DF5` = HSL `250 90% 60%` → `--primary`
+- Roxo Claro: `#8A6CFF` = HSL `252 100% 71%` → `--accent`
+- Branco: `#FFFFFF` = HSL `0 0% 100%`
+
+**O que você NÃO mexe nesta branch:**
+- `/backend/*` — backend strings + docker-compose + env vars são minha responsabilidade
+- Schema Prisma — banco é o mesmo schema (multi-tenant), só a instância é nova
+- Lógica de negócio (rotas, services, métricas, integrações) — zero mudança funcional
+- Componentes shadcn/ui base (`src/components/ui/*.tsx`) — devem continuar reaproveitando os tokens, não hardcodar cor
+- Pasta `tools/n8n-flow-builder/` — não existe nessa branch (T-013 vive em branch separada)
+
+**Validação antes de me devolver:**
+1. `bun run lint` verde
+2. `bun run test` verde (vitest)
+3. `bun run build` (vite build) verde
+4. `bun run dev` local → login claro + escuro: nome "Gleps IA" aparece, paleta roxa em vez de vermelha, logo no canto superior esquerdo é o do cliente novo
+5. Print do login claro + login escuro + dashboard admin (escuro) + super-admin
+6. Console do navegador: 0 erros
+
+**Quando terminar:** commit na branch `whitelabel/gleps-ia`, push se autorizado pelo usuário, e me devolve pelo handoff-log que segue pro QA + meu trabalho de backend/infra (em paralelo ou sequencial, decide com o usuário).
+
+---
+
 ## 2026-06-14 — Dark Mode validado na UI + bateria verde → merge na main (@dev-principal → @usuário) {#2026-06-14-darkmode-merge-main}
 
 **Por instrução direta do usuário** (autorização de push na main), rodei a bateria de testes e, com tudo verde, fiz o merge do dark mode na `main` para deploy. O bloqueio T-009 deixou de valer na prática: o `.env` da raiz já tem `VITE_USE_BACKEND=true` e a stack local (Express :3000 + Postgres + Vite :8080) sobe — **login local funciona**, o que destravou a validação visual.
