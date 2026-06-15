@@ -11,6 +11,9 @@
   // Os outros campos podem viver na sessionStorage por conveniencia (some ao fechar a aba).
   const PERSIST_KEY = 'n8n_flow_builder_state_v1';
 
+  // Backend GoodLeads eh fixo -- nao depende de input do usuario.
+  const FIXED_BACKEND_URL = 'https://goodleads.mychooice.com';
+
   let selectedTemplateId = null;
   let varValues = {}; // {company_name: '...', persona_name: '...'}
 
@@ -122,9 +125,9 @@
       'chatwoot_url', 'chatwoot_token', 'chatwoot_account_id',
       'evolution_url', 'evolution_apikey', 'evolution_instance',
       'mcp_endpoint', 'debounce_seconds',
-      'backend_url', 'backend_webhook_secret',
+      'backend_webhook_secret',
     ];
-    const out = {};
+    const out = { backend_url: FIXED_BACKEND_URL };
     for (const f of fields) {
       const v = $(f).value;
       out[f] = (f === 'debounce_seconds') ? Number(v || 20) : v;
@@ -143,11 +146,10 @@
     if (!config.chatwoot_token) errors.push('chatwoot_token é obrigatório.');
     if (!config.chatwoot_account_id) errors.push('chatwoot_account_id é obrigatório.');
     if (!config.mcp_endpoint) errors.push('mcp_endpoint é obrigatório.');
-    if (!config.backend_url) errors.push('backend_url é obrigatório.');
     if (!config.backend_webhook_secret) errors.push('backend_webhook_secret é obrigatório (segurança do webhook).');
 
-    // URL sanity
-    for (const k of ['chatwoot_url', 'mcp_endpoint', 'backend_url', 'evolution_url']) {
+    // URL sanity (backend_url eh fixo e ja validado em FIXED_BACKEND_URL)
+    for (const k of ['chatwoot_url', 'mcp_endpoint', 'evolution_url']) {
       if (config[k] && !/^https?:\/\//.test(config[k])) {
         errors.push(`${k} deve começar com http:// ou https://.`);
       }
@@ -266,7 +268,8 @@
   function clearAll() {
     if (!confirm('Limpar todo o formulário? (templates de prompt e campos)')) return;
     document.querySelectorAll('input, textarea').forEach(i => {
-      if (i.type === 'number') i.value = i.defaultValue || '';
+      if (i.id === 'backend_url') i.value = FIXED_BACKEND_URL;
+      else if (i.type === 'number') i.value = i.defaultValue || '';
       else if (i.id === 'evolution_instance') i.value = 'Amanda';
       else if (i.id === 'debounce_seconds') i.value = '20';
       else i.value = '';

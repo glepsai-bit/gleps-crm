@@ -96,6 +96,16 @@ input:focus, textarea:focus, select:focus {
   border-color: #EE3924;
   box-shadow: 0 0 0 3px rgba(238, 57, 36, 0.15);
 }
+input[readonly] {
+  background: #1a2030;
+  color: #94a3b8;
+  cursor: not-allowed;
+  border-style: dashed;
+}
+input[readonly]:focus {
+  border-color: #334155;
+  box-shadow: none;
+}
 textarea {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: .8rem;
