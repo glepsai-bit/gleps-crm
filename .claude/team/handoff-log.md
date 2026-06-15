@@ -10,6 +10,21 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-15 — T-014 pendências cosméticas do Critic UI resolvidas (@dev-principal → @qa) {#2026-06-15-whitelabel-gleps-ia-critic-fixes}
+
+- **Contexto:** as 3 pendências do Critic UI no handoff abaixo foram TODAS corrigidas no commit `8041b8b`. T-014 agora limpo, sem vazamentos da marca antiga em runtime.
+- **Correções aplicadas:**
+  1. `src/index.css:759,762` — `.logo-glow` agora usa `hsl(250 90% 60% / 0.4)` e `hsl(252 100% 71% / 0.6)` (era vermelho MyChooice).
+  2. 7 ocorrências de `mychooieLogo` + `alt="MyChooice"` em `AdminLayout.tsx` / `SuperAdminLayout.tsx` / `LoginPage.tsx` → renomeadas para `glepsLogo` + `alt="Gleps IA"`. Import agora aponta para `src/assets/gleps-logo.png`.
+  3. `EmailPreviewDialog.tsx:37` — `a{color:#EE3924}` → `a{color:#5B3DF5}` no template HTML inline.
+- **Cleanup adicional:** removidos 3 assets MyChooice órfãos (`mychooice-logo-white.svg`, `mychooice-logo.png`, `mychooice-logo.svg`).
+- **Workdir sujo resolvido:**
+  - `package-lock.json` (só removia `"peer": true`, noise do bun) → `git checkout HEAD` (descartado).
+  - `public/favicon.png/ico` (haviam sido revertidos para 150x150 RGB inferiores) → `git checkout HEAD` (mantido HEAD 512x512 RGBA + ICO real).
+- **Validação:** `npm run build` PASS (3527 módulos), `npm test` 36/36 PASS, `grep "MyChooice|mychooice" src/ index.html public/` = 0 ocorrências.
+- **Status atual da branch `whitelabel/gleps-ia`:** 7 commits ahead de `origin/main`, sem push, workdir clean.
+- **Não há mais pendências pré-merge.** Pode ir pro QA visual + deploy quando o usuário autorizar.
+
 ## 2026-06-15 — T-014 whitelabel Gleps IA — pronto pra QA (@dev-principal+@frontend → @qa) {#2026-06-15-whitelabel-gleps-ia-qa}
 
 - **O que foi feito:** rebrand completo (UI + backend + infra) na branch `whitelabel/gleps-ia` pra deploy paralelo em `crm.gleps.com.br`, stack 100% isolada da do GoodLeads.
