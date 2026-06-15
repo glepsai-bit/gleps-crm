@@ -581,8 +581,58 @@ async function handleConversationCreated(accountId: string, event: ChatwootWebho
   });
 }
 
+/**
+ * Extrai a transição de status do changed_attributes do Chatwoot.
+ * Formato real: [{ status: { previous_value, current_value } }] — indexado pelo
+ * NOME do atributo. Retorna null se não houver mudança de status no payload.
+ */
+function getStatusTransition(
+  event: ChatwootWebhookEvent
+): { previous?: string; current?: string } | null {
+  const changes = event.changed_attributes;
+  if (!Array.isArray(changes)) return null;
+  for (const entry of changes) {
+    const statusChange = entry?.status;
+    if (statusChange && (statusChange.previous_value !== undefined || statusChange.current_value !== undefined)) {
+      return { previous: statusChange.previous_value, current: statusChange.current_value };
+    }
+  }
+  return null;
+}
+
+/**
+ * Reabertura (resolved -> open): zera os custom_attributes ligados a quem
+ * resolveu/respondeu por último, pra o próximo ciclo começar neutro e a próxima
+ * resolução ser atribuída ao ator certo. Idempotente e tolerante a falha — nunca
+ * derruba o webhook (só registra).
+ */
+async function clearAttributesOnReopen(accountId: string, conversationId: number) {
+  try {
+    await chatwootService.updateConversationCustomAttributes(accountId, conversationId, {
+      resolved_by: null,
+      ai_responded: null,
+      ai_participated: null,
+      handoff_to_human: null,
+      human_active: null,
+      human_intervened: null,
+      human_intervened_at: null,
+    });
+    logger.info('[Reopen] Cleared custom_attributes', { conversationId, accountId });
+  } catch (err: any) {
+    logger.warn('[Reopen] Failed to clear custom_attributes', { conversationId, error: err?.message });
+  }
+}
+
 async function handleConversationUpdated(accountId: string, event: ChatwootWebhookEvent) {
   if (!event.conversation) return;
+
+  // Reabertura detectada aqui: conversation_updated carrega o changed_attributes
+  // com o shape correto. (conversation_status_changed muitas vezes NÃO traz
+  // changed_attributes, por isso a detecção principal mora neste handler.)
+  const transition = getStatusTransition(event);
+  if (transition?.previous === 'resolved' && transition?.current === 'open') {
+    await clearAttributesOnReopen(accountId, event.conversation.id);
+  }
 
   // Normalize incoming labels: Chatwoot returns slugs (e.g. "em-atendimento"),
   // sometimes objects ({ title }), occasionally with underscores or display names.
@@ -734,8 +784,9 @@ async function handleConversationUpdated(accountId: string, event: ChatwootWebho
 async function handleStatusChanged(accountId: string, event: ChatwootWebhookEvent) {
   if (!event.conversation) return;
 
-  const previousStatus = event.changed_attributes?.[0]?.previous_value;
+  const transition = getStatusTransition(event);
   const currentStatus = event.conversation.status;
+  const previousStatus = transition?.previous;
 
   // Record event for metrics/dashboard
   await eventService.create({
@@ -750,38 +801,12 @@ async function handleStatusChanged(accountId: string, event: ChatwootWebhookEven
     },
   });
 
-  // Reabertura: cliente entrou em contato de novo e a conversa voltou pra 'open'.
-  // Antes de qualquer ator agir, zerar todos os custom_attributes ligados a quem
-  // resolveu/respondeu por último — assim o próximo ciclo começa neutro e a
-  // próxima resolução vai ser atribuída ao ator certo (IA ou humano).
-  // Faz isso no backend pra não depender do n8n nem do AgentBot fazer.
+  // Reabertura (resolved -> open): se este evento trouxer a transição, limpa aqui.
+  // Em muitos casos o conversation_status_changed NÃO traz changed_attributes —
+  // nesse cenário a limpeza acontece no handleConversationUpdated (que carrega o
+  // shape correto). Limpar duas vezes é inofensivo (idempotente).
   if (currentStatus === 'open' && previousStatus === 'resolved') {
-    try {
-      await chatwootService.updateConversationCustomAttributes(
-        accountId,
-        event.conversation.id,
-        {
-          resolved_by: null,
-          ai_responded: null,
-          ai_participated: null,
-          handoff_to_human: null,
-          human_active: null,
-          human_intervened: null,
-          human_intervened_at: null,
-        }
-      );
-      logger.info('[Reopen] Cleared custom_attributes', {
-        conversationId: event.conversation.id,
-        accountId,
-      });
-    } catch (err: any) {
-      // Não derruba o webhook — só registra. Próximo ciclo pode herdar atributos
-      // antigos até o n8n eventualmente limpar (fallback).
-      logger.warn('[Reopen] Failed to clear custom_attributes', {
-        conversationId: event.conversation.id,
-        error: err?.message,
-      });
-    }
+    await clearAttributesOnReopen(accountId, event.conversation.id);
   }
 }
 
@@ -805,7 +830,25 @@ async function handleMessageCreated(accountId: string, event: ChatwootWebhookEve
   const senderType = msg.sender_type;
   const messageType = msg.message_type;
 
-  if (senderType !== 'user' || messageType !== 'outgoing') return;
+  // Ignora o que não é resposta de agente ao cliente: incoming do contato,
+  // activity, e NOTAS PRIVADAS (anotação interna do agente não é intervenção que
+  // deva desligar a IA).
+  if (senderType !== 'user' || messageType !== 'outgoing' || msg.private === true) return;
+
+  // Distingue um HUMANO real da própria IA. A IA posta via token de agente
+  // (sender_type='user' + outgoing) — idêntico a um humano nesses campos. Só tratamos
+  // como intervenção humana se o autor (sender.id) for um agente Chatwoot importado
+  // como USUÁRIO do CRM (humano). O agente que a automação/IA usa não é usuário do
+  // CRM, então as mensagens da própria IA não disparam human_active (evita a IA se
+  // auto-desligar). Sem sender.id confiável → não marca (conservador: na dúvida,
+  // nunca desliga a IA por engano).
+  const senderAgentId = msg.sender?.id;
+  if (!senderAgentId) return;
+  const humanUser = await prisma.user.findFirst({
+    where: { accountId, chatwootAgentId: senderAgentId },
+    select: { id: true },
+  });
+  if (!humanUser) return;
 
   const custom: Record<string, any> = (conv as any).custom_attributes || {};
   const additional: Record<string, any> = (conv as any).additional_attributes || {};

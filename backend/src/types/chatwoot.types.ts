@@ -133,10 +133,10 @@ export interface ChatwootWebhookEvent {
   inbox?: ChatwootInbox;
   sender?: ChatwootAgent;
   labels?: ChatwootLabel[];
-  changed_attributes?: Array<{
-    previous_value?: any;
-    current_value?: any;
-  }>;
+  // Chatwoot envia indexado pelo NOME do atributo que mudou:
+  //   [{ status: { previous_value: 'resolved', current_value: 'open' } }]
+  // (ver getStatusTransition no controller). NÃO é [{ previous_value, current_value }].
+  changed_attributes?: Array<Record<string, { previous_value?: any; current_value?: any }>>;
   event_info?: Record<string, any>;
 }
 

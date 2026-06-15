@@ -710,35 +710,44 @@ class ChatwootMetricsService {
             // INSERT ... ON CONFLICT (account_id, conversation_id) que falhava em
             // runtime desde a migration 0019 ter dropado o índice unique.
             const DEDUP_WINDOW_MS = 5 * 60 * 1000;
-            const existing = await prisma.resolutionLog.findFirst({
-              where: {
-                accountId: dbAccountId,
-                conversationId: conv.id,
-                resolvedAt: {
-                  gte: new Date(resolvedAt.getTime() - DEDUP_WINDOW_MS),
-                  lte: new Date(resolvedAt.getTime() + DEDUP_WINDOW_MS),
-                },
-              },
-              select: { id: true },
-            });
+            // Serializa por (conta, conversa) com advisory lock pra evitar que duas
+            // execuções concorrentes de computeMetrics (várias abas/usuários em polling)
+            // criem linhas duplicadas — não há mais unique constraint desde a migration
+            // 0019. O orderBy torna o update determinístico (linha mais recente da janela).
+            await prisma.$transaction(async (tx) => {
+              await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${dbAccountId}:${conv.id}`}))`;
 
-            if (existing) {
-              await prisma.resolutionLog.update({
-                where: { id: existing.id },
-                data: { aiParticipated, resolvedAt },
-              });
-            } else {
-              await prisma.resolutionLog.create({
-                data: {
+              const existing = await tx.resolutionLog.findFirst({
+                where: {
                   accountId: dbAccountId,
                   conversationId: conv.id,
-                  resolvedBy: 'human',
-                  resolutionType: 'inferred',
-                  aiParticipated,
-                  resolvedAt,
+                  resolvedAt: {
+                    gte: new Date(resolvedAt.getTime() - DEDUP_WINDOW_MS),
+                    lte: new Date(resolvedAt.getTime() + DEDUP_WINDOW_MS),
+                  },
                 },
+                orderBy: { resolvedAt: 'desc' },
+                select: { id: true },
               });
-            }
+
+              if (existing) {
+                await tx.resolutionLog.update({
+                  where: { id: existing.id },
+                  data: { aiParticipated, resolvedAt },
+                });
+              } else {
+                await tx.resolutionLog.create({
+                  data: {
+                    accountId: dbAccountId,
+                    conversationId: conv.id,
+                    resolvedBy: 'human',
+                    resolutionType: 'inferred',
+                    aiParticipated,
+                    resolvedAt,
+                  },
+                });
+              }
+            });
           } catch (insertErr: any) {
             logger.warn('[Metrics] resolution_logs upsert failed (non-fatal)', {
               conversationId: conv.id,
