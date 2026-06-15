@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wiki de Implementação — GoodLeads</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f0502e'/%3E%3Ctext x='16' y='23' font-size='19' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'%3EG%3C/text%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #0b0e14;
+    --bg-soft: #11151f;
+    --card: #151b27;
+    --card-2: #1b2230;
+    --border: #232b3a;
+    --text: #e8edf5;
+    --text-soft: #9aa6b8;
+    --text-dim: #6b7689;
+    --brand: #f0502e;
+    --brand-2: #ff7a4d;
+    --success: #2ecc71;
+    --warning: #f4b740;
+    --info: #4d9fff;
+    --danger: #ff5a5a;
+    --radius: 14px;
+    --sb-w: 280px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--brand-2); text-decoration: none; }
+
+  /* ---------- Layout ---------- */
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: var(--sb-w);
+    flex-shrink: 0;
+    background: var(--bg-soft);
+    border-right: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 22px 16px;
+  }
+  .main { flex: 1; min-width: 0; }
+  .container { max-width: 920px; margin: 0 auto; padding: 40px 32px 120px; }
+
+  /* ---------- Sidebar ---------- */
+  .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 6px; padding: 0 8px; }
+  .brand .logo {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--brand), var(--brand-2));
+    display: grid; place-items: center; font-weight: 800; color: #fff; font-size: 15px;
+    box-shadow: 0 4px 14px rgba(240,80,46,.35);
+  }
+  .brand h1 { font-size: 15px; font-weight: 700; line-height: 1.15; }
+  .brand span { font-size: 11px; color: var(--text-dim); font-weight: 500; }
+
+  .progress-box { margin: 18px 8px 20px; }
+  .progress-box .pl { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-soft); margin-bottom: 7px; text-transform: uppercase; letter-spacing: .5px; }
+  .progress-track { height: 8px; background: var(--card-2); border-radius: 99px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--brand), var(--brand-2)); border-radius: 99px; transition: width .4s ease; }
+
+  .nav-group { margin-top: 16px; }
+  .nav-group > .gl { font-size: 10.5px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); padding: 6px 12px; font-weight: 700; }
+  .nav a {
+    display: flex; align-items: center; gap: 9px;
+    padding: 8px 12px; border-radius: 9px; color: var(--text-soft);
+    font-size: 13.5px; font-weight: 500; transition: all .15s; margin-bottom: 1px;
+  }
+  .nav a:hover { background: var(--card); color: var(--text); }
+  .nav a.active { background: var(--card-2); color: var(--text); box-shadow: inset 2px 0 0 var(--brand); }
+  .nav a .ico { width: 18px; text-align: center; opacity: .8; }
+
+  /* ---------- Content ---------- */
+  .hero { margin-bottom: 36px; }
+  .hero .eyebrow { color: var(--brand-2); font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; }
+  .hero h2 { font-size: 34px; font-weight: 800; margin: 8px 0 10px; letter-spacing: -.5px; }
+  .hero p { color: var(--text-soft); font-size: 15.5px; max-width: 640px; }
+  .hero .meta { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+  .chip { background: var(--card); border: 1px solid var(--border); padding: 5px 12px; border-radius: 99px; font-size: 12.5px; color: var(--text-soft); }
+  .chip b { color: var(--text); }
+
+  section { scroll-margin-top: 20px; margin-bottom: 44px; }
+  .sec-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .sec-num {
+    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--brand), var(--brand-2)); color: #fff;
+    display: grid; place-items: center; font-weight: 800; font-size: 14px;
+  }
+  .sec-head h3 { font-size: 21px; font-weight: 750; letter-spacing: -.3px; }
+  .sec-head .tag { margin-left: auto; font-size: 11px; color: var(--text-dim); background: var(--card); border: 1px solid var(--border); padding: 4px 10px; border-radius: 99px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; margin-bottom: 16px; }
+  .card h4 { font-size: 15px; margin-bottom: 10px; }
+  p.lead { color: var(--text-soft); margin-bottom: 16px; }
+
+  /* ---------- Mental model diagram ---------- */
+  .diagram { display: grid; gap: 12px; }
+  .flow {
+    display: grid; grid-template-columns: 120px 28px 1fr; align-items: center; gap: 12px;
+    background: var(--card-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    border-left: 4px solid var(--node-c, var(--brand));
+  }
+  .flow .from { font-weight: 700; font-size: 14px; text-align: right; }
+  .flow .arr { color: var(--node-c, var(--brand)); font-size: 20px; text-align: center; }
+  .flow .to b { display: block; font-size: 14px; }
+  .flow .to small { color: var(--text-soft); font-size: 12px; }
+  .flow .place { display: inline-block; margin-top: 4px; font-size: 11px; padding: 2px 9px; border-radius: 6px; background: rgba(255,255,255,.05); color: var(--node-c); border: 1px solid currentColor; }
+
+  /* ---------- Checklist ---------- */
+  .step { display: flex; gap: 13px; padding: 13px 0; border-bottom: 1px solid var(--border); }
+  .step:last-child { border-bottom: none; }
+  .step input[type=checkbox] { appearance: none; -webkit-appearance: none; width: 21px; height: 21px; flex-shrink: 0; margin-top: 2px;
+    border: 2px solid var(--text-dim); border-radius: 6px; cursor: pointer; position: relative; transition: all .15s; }
+  .step input[type=checkbox]:checked { background: var(--success); border-color: var(--success); }
+  .step input[type=checkbox]:checked::after { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; color: #06210f; font-weight: 900; font-size: 13px; }
+  .step .body { flex: 1; min-width: 0; }
+  .step .t { font-weight: 600; font-size: 14.5px; }
+  .step .t .k { color: var(--brand-2); font-weight: 700; margin-right: 6px; }
+  .step .d { color: var(--text-soft); font-size: 13.5px; margin-top: 3px; }
+  .step.done .t { color: var(--text-dim); text-decoration: line-through; }
+
+  ul.sub { list-style: none; margin: 8px 0 2px; padding-left: 2px; }
+  ul.sub li { color: var(--text-soft); font-size: 13px; padding: 3px 0 3px 18px; position: relative; }
+  ul.sub li::before { content: "›"; position: absolute; left: 2px; color: var(--brand-2); font-weight: 700; }
+  .no { color: var(--danger); font-weight: 700; }
+  .yes { color: var(--success); font-weight: 700; }
+
+  /* ---------- Callouts ---------- */
+  .callout { border-radius: 12px; padding: 14px 16px; margin: 14px 0; font-size: 13.5px; border: 1px solid; display: flex; gap: 11px; }
+  .callout .ci { font-size: 17px; line-height: 1.3; }
+  .callout.warn { background: rgba(244,183,64,.08); border-color: rgba(244,183,64,.3); color: #f6cf7e; }
+  .callout.info { background: rgba(77,159,255,.08); border-color: rgba(77,159,255,.3); color: #a9cdff; }
+  .callout.ok { background: rgba(46,204,113,.08); border-color: rgba(46,204,113,.3); color: #8ee6b3; }
+  .callout b { color: #fff; }
+
+  /* ---------- Code + copy ---------- */
+  .code { position: relative; background: #0a0d13; border: 1px solid var(--border); border-radius: 10px; padding: 13px 46px 13px 14px; margin: 10px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.8px; color: #c8d3e3; overflow-x: auto; }
+  .code .cp { position: absolute; top: 8px; right: 8px; background: var(--card-2); border: 1px solid var(--border); color: var(--text-soft); border-radius: 7px; padding: 4px 9px; font-size: 11px; cursor: pointer; font-family: inherit; }
+  .code .cp:hover { color: var(--text); border-color: var(--brand); }
+  .code .cmt { color: #5d6b82; }
+  .code .str { color: #8ee6b3; }
+  .code .kw { color: #ff9d7a; }
+
+  /* ---------- Ficha (form) ---------- */
+  .ficha { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .field label { display: block; font-size: 12px; color: var(--text-soft); margin-bottom: 5px; font-weight: 600; }
+  .field label .req { color: var(--brand-2); }
+  .field input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; color: var(--text); font-size: 13.5px; font-family: inherit; }
+  .field input:focus { outline: none; border-color: var(--brand); }
+  .field .hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+  /* ---------- Table ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 4px; }
+  th, td { text-align: left; padding: 11px 13px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-soft); font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; }
+  td:first-child { font-weight: 600; }
+  tbody tr:hover { background: var(--card-2); }
+
+  .accordion { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 10px; }
+  .accordion summary { padding: 13px 16px; cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; display: flex; justify-content: space-between; align-items: center; background: var(--card); }
+  .accordion summary::-webkit-details-marker { display: none; }
+  .accordion summary::after { content: "+"; color: var(--brand-2); font-size: 19px; }
+  .accordion[open] summary::after { content: "−"; }
+  .accordion .ac-body { padding: 4px 16px 16px; color: var(--text-soft); font-size: 13.5px; }
+
+  .toolbar { display: flex; gap: 8px; margin-bottom: 28px; flex-wrap: wrap; }
+  .btn { background: var(--card); border: 1px solid var(--border); color: var(--text-soft); padding: 7px 13px; border-radius: 9px; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+  .btn:hover { color: var(--text); border-color: var(--brand); }
+  .btn.print { margin-left: auto; }
+
+  .soon { text-align: center; padding: 30px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-dim); font-size: 14px; }
+
+  @media (max-width: 860px) {
+    .sidebar { display: none; }
+    .container { padding: 28px 18px 80px; }
+    .ficha { grid-template-columns: 1fr; }
+    .hero h2 { font-size: 27px; }
+    .flow { grid-template-columns: 1fr; text-align: left; gap: 6px; }
+    .flow .from { text-align: left; } .flow .arr { text-align: left; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">G</div>
+      <div><h1>Wiki de Implementação</h1><span>GoodLeads · CRM + Chatwoot + n8n</span></div>
+    </div>
+
+    <div class="progress-box">
+      <div class="pl"><span>Progresso</span><span id="progTxt">0/0</span></div>
+      <div class="progress-track"><div class="progress-fill" id="progFill"></div></div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-group">
+        <div class="gl">Onboarding de Cliente</div>
+        <a href="#visao" class="active"><span class="ico">🧭</span> Visão Geral</a>
+        <a href="#ficha"><span class="ico">📋</span> Ficha do Cliente</a>
+        <a href="#fase1"><span class="ico">①</span> Chatwoot (base)</a>
+        <a href="#fase2"><span class="ico">②</span> CRM (super admin)</a>
+        <a href="#fase3"><span class="ico">③</span> Webhook → Backend</a>
+        <a href="#fase4"><span class="ico">④</span> Automação → n8n</a>
+        <a href="#fase5"><span class="ico">⑤</span> n8n (config)</a>
+        <a href="#fase6"><span class="ico">✅</span> Validação</a>
+        <a href="#trouble"><span class="ico">🔧</span> Troubleshooting</a>
+      </div>
+      <div class="nav-group">
+        <div class="gl">Em breve</div>
+        <a href="#soon" style="opacity:.5"><span class="ico">➕</span> Novas seções</a>
+      </div>
+    </nav>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <div class="container">
+
+      <div class="hero">
+        <div class="eyebrow">Processo de Entrada</div>
+        <h2 id="heroTitle">Onboarding de Cliente</h2>
+        <p>Passo a passo para subir um novo cliente no sistema (CRM + Chatwoot + IA via n8n). Siga as fases na ordem; seu progresso fica salvo neste navegador.</p>
+        <div class="meta">
+          <span class="chip">⏱️ <b>~30–45 min</b> por cliente</span>
+          <span class="chip">🧱 <b>6 fases</b> + validação</span>
+          <span class="chip">🔁 Reaproveitável <b>por cliente</b></span>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button class="btn" onclick="resetProgress()">↺ Limpar progresso</button>
+        <button class="btn print" onclick="window.print()">🖨️ Imprimir / PDF</button>
+      </div>
+
+      <!-- ===== VISÃO GERAL ===== -->
+      <section id="visao">
+        <div class="sec-head"><div class="sec-num">🧭</div><h3>Visão Geral — o modelo mental</h3></div>
+        <p class="lead">Existem <b>4 comunicações</b> em <b>3 lugares de configuração</b>. Entender isso evita 90% da confusão (principalmente <b>Automação ≠ Integrations → Webhooks</b>).</p>
+        <div class="card">
+          <div class="diagram">
+            <div class="flow" style="--node-c:#f0502e">
+              <div class="from">n8n</div><div class="arr">→</div>
+              <div class="to"><b>Chatwoot API + Backend + Evolution</b><small>postar mensagem, ler dados, logar resolução</small><br><span class="place">SAÍDA · Form de credenciais (config1)</span></div>
+            </div>
+            <div class="flow" style="--node-c:#4d9fff">
+              <div class="from">Chatwoot</div><div class="arr">→</div>
+              <div class="to"><b>Backend &nbsp;<code>/api/chatwoot/webhook</code></b><small>detecta humano · limpa reabertura · métricas</small><br><span class="place">ENTRADA · Integrations → Webhooks (payload PADRÃO)</span></div>
+            </div>
+            <div class="flow" style="--node-c:#2ecc71">
+              <div class="from">Chatwoot</div><div class="arr">→</div>
+              <div class="to"><b>n8n (gatilho da IA)</b><small>faz a IA responder</small><br><span class="place">ENTRADA · Automação (payload body.messages[0])</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="callout warn"><span class="ci">⚠️</span><div><b>3 regras de ouro:</b><br>1. Backend e n8n são <b>lugares diferentes</b> (Integrations→Webhooks vs Automação) — formatos de payload diferentes, não dá pra trocar.<br>2. O <b>agente da IA NUNCA é importado no CRM</b> — é isso que separa IA de humano.<br>3. O <b>"Webhook secret"</b> do form é pro n8n→backend (log-resolution), <b>não</b> é o webhook do Chatwoot→backend.</div></div>
+      </section>
+
+      <!-- ===== FICHA ===== -->
+      <section id="ficha">
+        <div class="sec-head"><div class="sec-num">📋</div><h3>Ficha do Cliente</h3><span class="tag">salva neste navegador</span></div>
+        <p class="lead">Preencha antes de começar. Esses valores são usados nas fases seguintes. <b>Nada sai do seu navegador.</b></p>
+        <div class="card">
+          <div class="ficha">
+            <div class="field"><label>Nome do cliente</label><input data-f="cliente" placeholder="Ex.: Clínica X" /></div>
+            <div class="field"><label>URL da instância Chatwoot <span class="req">*</span></label><input data-f="chatwoot_url" placeholder="https://atendimento.cliente.com.br" /></div>
+            <div class="field"><label>Account ID no Chatwoot <span class="req">*</span></label><input data-f="account_id" placeholder="1" /></div>
+            <div class="field"><label>API Token Chatwoot (admin) <span class="req">*</span></label><input data-f="api_token" placeholder="token de admin da conta" /></div>
+            <div class="field"><label>Token do agente IA <span class="req">*</span></label><input data-f="ia_token" placeholder="Access Token do Assistente IA" /></div>
+            <div class="field"><label>Backend URL</label><input data-f="backend_url" value="https://goodleads.mychooice.com" /><div class="hint">Fixo — sempre o backend GoodLeads.</div></div>
+            <div class="field"><label>Webhook secret do backend</label><input data-f="webhook_secret" placeholder="= CHATWOOT_WEBHOOK_SECRET do .env" /></div>
+            <div class="field"><label>MCP endpoint (Google Calendar)</label><input data-f="mcp" placeholder="https://hook.../mcp/..." /></div>
+            <div class="field"><label>Evolution instance</label><input data-f="evo_instance" placeholder="Amanda" /></div>
+            <div class="field"><label>URL do webhook do n8n</label><input data-f="n8n_url" placeholder="https://n8n.../webhook/..." /></div>
+          </div>
+        </div>
+        <div class="callout info"><span class="ci">💡</span><div>A <b>URL do webhook do backend</b> (Fase 3) é a sua <b>Backend URL</b> + <code>/api/chatwoot/webhook</code>. Preenchendo a ficha, ela aparece pronta lá embaixo.</div></div>
+      </section>
+
+      <!-- ===== FASE 1 ===== -->
+      <section id="fase1">
+        <div class="sec-head"><div class="sec-num">1</div><h3>Chatwoot — base de comunicação</h3></div>
+        <div class="card">
+          <div class="step"><input type="checkbox" id="s1-1"><div class="body"><div class="t"><span class="k">1.1</span>Conectar a inbox de WhatsApp do cliente</div></div></div>
+          <div class="step"><input type="checkbox" id="s1-2"><div class="body"><div class="t"><span class="k">1.2</span>Garantir que os agentes humanos existem e estão na inbox</div></div></div>
+          <div class="step"><input type="checkbox" id="s1-3"><div class="body"><div class="t"><span class="k">1.3</span>Criar o agente dedicado da IA</div>
+            <ul class="sub">
+              <li><code>Settings → Agents → Add Agent</code></li>
+              <li>Nome <b>padronizado</b>: <code>Assistente IA</code> (use o mesmo em todo cliente)</li>
+              <li>E-mail dedicado · Papel: <b>Agent</b></li>
+              <li>Adicionar à(s) inbox(es) que vai atender</li>
+              <li>Logado como ele: <b>Profile Settings → Access Token</b> → copiar (vai no Form do n8n)</li>
+              <li><span class="no">NÃO</span> adicionar a Team · <span class="no">NÃO</span> importar no CRM</li>
+            </ul></div></div>
+        </div>
+        <div class="callout warn"><span class="ci">⚠️</span><div><b>Por que não importar no CRM:</b> o backend separa IA de humano pelo <code>sender.id</code>. Se a IA virar usuária do CRM, ela seria vista como humano e <b>se autodesligaria</b>.</div></div>
+      </section>
+
+      <!-- ===== FASE 2 ===== -->
+      <section id="fase2">
+        <div class="sec-head"><div class="sec-num">2</div><h3>CRM — logado como super admin</h3></div>
+        <div class="card">
+          <div class="step"><input type="checkbox" id="s2-1"><div class="body"><div class="t"><span class="k">2.1</span>Contas → Nova Conta → nome do cliente, status <b>active</b></div></div></div>
+          <div class="step"><input type="checkbox" id="s2-2"><div class="body"><div class="t"><span class="k">2.2</span>Ativar Chatwoot → URL + Account ID + API Token → <b>Testar Conexão</b></div><div class="d">Tem que ficar <span class="yes">verde</span>.</div></div></div>
+          <div class="step"><input type="checkbox" id="s2-3"><div class="body"><div class="t"><span class="k">2.3</span>Importar Agentes → criar usuários dos <b>humanos</b> (senha/role/permissões)</div><div class="d"><span class="no">Pular o agente da IA</span> na importação.</div></div></div>
+          <div class="step"><input type="checkbox" id="s2-4"><div class="body"><div class="t"><span class="k">2.4</span>Confirmar que um humano importado consegue logar</div></div></div>
+        </div>
+      </section>
+
+      <!-- ===== FASE 3 ===== -->
+      <section id="fase3">
+        <div class="sec-head"><div class="sec-num">3</div><h3>Webhook Chatwoot → Backend</h3><span class="tag">Integrations → Webhooks</span></div>
+        <p class="lead">Liga: <b>detecção de humano</b>, <b>limpeza na reabertura</b> e <b>métricas</b>. Lugar: <code>Settings → Integrations → Webhooks</code>.</p>
+        <div class="card">
+          <div class="step"><input type="checkbox" id="s3-1"><div class="body"><div class="t"><span class="k">3.1</span>Integrations → Webhooks → Adicionar novo webhook</div></div></div>
+          <div class="step"><input type="checkbox" id="s3-2"><div class="body"><div class="t"><span class="k">3.2</span>URL do Webhook</div>
+            <div class="code" id="webhookUrlBox"><span id="webhookUrl">https://goodleads.mychooice.com/api/chatwoot/webhook</span><button class="cp" onclick="copyEl('webhookUrl')">copiar</button></div></div></div>
+          <div class="step"><input type="checkbox" id="s3-3"><div class="body"><div class="t"><span class="k">3.3</span>Nome: <code>Backend GoodLeads</code></div></div></div>
+          <div class="step"><input type="checkbox" id="s3-4"><div class="body"><div class="t"><span class="k">3.4</span>Marcar os eventos obrigatórios</div>
+            <ul class="sub">
+              <li><span class="yes">✓</span> Mensagem criada (<code>message_created</code>)</li>
+              <li><span class="yes">✓</span> Conversa Atualizada (<code>conversation_updated</code>)</li>
+              <li><span class="yes">✓</span> Status de conversa alterado (<code>conversation_status_changed</code>)</li>
+              <li>opcionais p/ sync: <code>conversation_created</code>, <code>contact_created</code>, <code>contact_updated</code></li>
+            </ul></div></div>
+          <div class="step"><input type="checkbox" id="s3-5"><div class="body"><div class="t"><span class="k">3.5</span>Criar webhook</div></div></div>
+        </div>
+        <div class="callout info"><span class="ci">🔒</span><div>Não precisa de token nesse webhook — o backend identifica o cliente pelo <code>account.id</code> do payload.</div></div>
+      </section>
+
+      <!-- ===== FASE 4 ===== -->
+      <section id="fase4">
+        <div class="sec-head"><div class="sec-num">4</div><h3>Gatilho Chatwoot → n8n</h3><span class="tag">Automação</span></div>
+        <p class="lead">Faz a <b>IA responder</b>. Lugar <b>diferente</b> da Fase 3: <code>Chatwoot → Automação</code>.</p>
+        <div class="card">
+          <div class="step"><input type="checkbox" id="s4-1"><div class="body"><div class="t"><span class="k">4.1</span>Recriar as regras que enviam webhook pro n8n (apontando pra URL do n8n deste cliente)</div>
+            <ul class="sub">
+              <li><b>Mensagem nova</b> — gatilho principal da IA</li>
+              <li><b>Resolução</b> — status → resolvido</li>
+              <li><b>Reabertura</b> — resolvido → aberto <i>(opcional p/ n8n; a limpeza já é feita pelo backend na Fase 3)</i></li>
+            </ul></div></div>
+          <div class="step"><input type="checkbox" id="s4-2"><div class="body"><div class="t"><span class="k">4.2</span>Deixar ativas as regras que o fluxo usa</div></div></div>
+        </div>
+      </section>
+
+      <!-- ===== FASE 5 ===== -->
+      <section id="fase5">
+        <div class="sec-head"><div class="sec-num">5</div><h3>n8n — importar fluxo + credenciais</h3></div>
+        <div class="card">
+          <div class="step"><input type="checkbox" id="s5-1"><div class="body"><div class="t"><span class="k">5.1</span>Importar o JSON do fluxo (versão com circuit breaker corrigido)</div><div class="d">Lê <code>$json.body.custom_attributes</code>.</div></div></div>
+          <div class="step"><input type="checkbox" id="s5-2"><div class="body"><div class="t"><span class="k">5.2</span>Preencher o Form "Credenciais e integrações" (config1)</div>
+            <ul class="sub">
+              <li>URL Chatwoot · Account ID</li>
+              <li><b>API Token Chatwoot = Access Token do agente IA</b> ⬅️ o pulo do gato</li>
+              <li>Backend URL (fixo) · Webhook secret · MCP · Evolution · Debounce 20s</li>
+            </ul></div></div>
+          <div class="step"><input type="checkbox" id="s5-3"><div class="body"><div class="t"><span class="k">5.3</span>No node de seleção de agente, excluir a IA por nome</div>
+            <div class="code"><span class="kw">const</span> onlineAgents = agents.<span class="kw">filter</span>(<br>&nbsp;&nbsp;a =&gt; a.availability_status === <span class="str">'online'</span> &amp;&amp; !/<span class="str">assistente ia|bot</span>/i.<span class="kw">test</span>(a.name)<br>);<button class="cp" onclick="copyEl('filterCode')">copiar</button></div>
+            <span id="filterCode" style="display:none">const onlineAgents = agents.filter(
+  a =&gt; a.availability_status === 'online' &amp;&amp; !/assistente ia|bot/i.test(a.name)
+);</span></div></div>
+          <div class="step"><input type="checkbox" id="s5-4"><div class="body"><div class="t"><span class="k">5.4</span>Ativar o fluxo novo · desativar versão antiga</div></div></div>
+        </div>
+      </section>
+
+      <!-- ===== FASE 6 ===== -->
+      <section id="fase6">
+        <div class="sec-head"><div class="sec-num">✅</div><h3>Validação — smoke do cliente</h3></div>
+        <div class="card">
+          <div class="step"><input type="checkbox" id="s6-1"><div class="body"><div class="t"><span class="k">6.1</span>Msg de teste no WhatsApp → IA responde como "Assistente IA"</div><div class="d">Confirma token certo + <code>ai_responded</code>.</div></div></div>
+          <div class="step"><input type="checkbox" id="s6-2"><div class="body"><div class="t"><span class="k">6.2</span>Humano responde sem "Assumir" → IA cala na próxima</div><div class="d">Prova a Fase 3 + agente dedicado (<code>human_active</code>).</div></div></div>
+          <div class="step"><input type="checkbox" id="s6-3"><div class="body"><div class="t"><span class="k">6.3</span>Humano resolve → conta como humano em "Resolução (Quem Fechou)"</div></div></div>
+          <div class="step"><input type="checkbox" id="s6-4"><div class="body"><div class="t"><span class="k">6.4</span>Reabrir (cliente manda msg depois de resolvida) → atributos limpos, IA volta</div></div></div>
+          <div class="step"><input type="checkbox" id="s6-5"><div class="body"><div class="t"><span class="k">6.5</span>Dashboard ok: IA×humano separados · Eficiência IA ≠ %IA · Backlog "Não atribuídas"</div></div></div>
+        </div>
+        <div class="callout ok"><span class="ci">🎉</span><div><b>Passou nos 5?</b> Cliente no ar com IA + atendimento humano + métricas corretas.</div></div>
+      </section>
+
+      <!-- ===== TROUBLESHOOTING ===== -->
+      <section id="trouble">
+        <div class="sec-head"><div class="sec-num">🔧</div><h3>Troubleshooting</h3></div>
+        <div class="card" style="padding:6px 0">
+          <table>
+            <thead><tr><th>Sintoma</th><th>Causa provável</th><th>Fix</th></tr></thead>
+            <tbody>
+              <tr><td>IA some/erra como humano</td><td>Agente da IA foi importado no CRM</td><td>Tirar do CRM (usar agente dedicado)</td></tr>
+              <tr><td>IA não para quando humano responde</td><td>Falta o webhook da Fase 3</td><td>Criar webhook do backend (3 eventos)</td></tr>
+              <tr><td>IA "se desliga sozinha"</td><td>IA postando com identidade de agente humano</td><td>Usar token do agente dedicado no Form</td></tr>
+              <tr><td>Reabertura não limpa atributos</td><td>Webhook sem <code>conversation_updated</code></td><td>Marcar o evento na Fase 3</td></tr>
+              <tr><td>IA recebe transferência</td><td>IA num Team / sem filtro por nome</td><td>Tirar de Teams + filtro <code>!/assistente ia|bot/i</code></td></tr>
+              <tr><td>n8n não dispara</td><td>Regra de Automação ausente/inativa ou URL errada</td><td>Conferir Fase 4</td></tr>
+              <tr><td>n8n recebe mas quebra</td><td>Apontou n8n pra Integrations→Webhooks (formato errado)</td><td>n8n vai em <b>Automação</b></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== SOON ===== -->
+      <section id="soon">
+        <div class="sec-head"><div class="sec-num">➕</div><h3>Em breve</h3></div>
+        <div class="soon">Outras seções da wiki (configurações avançadas, integrações, FAQ do time…) entram aqui.</div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<script>
+  // ---------- Progresso (checkboxes) ----------
+  const LS = 'goodleads_impl_v1';
+  const boxes = [...document.querySelectorAll('.step input[type=checkbox]')];
+  function load() {
+    let data = {};
+    try { data = JSON.parse(localStorage.getItem(LS) || '{}'); } catch(e){}
+    boxes.forEach(b => { b.checked = !!data[b.id]; b.closest('.step').classList.toggle('done', b.checked); });
+    updateProg();
+  }
+  function save() {
+    const data = {}; boxes.forEach(b => data[b.id] = b.checked);
+    localStorage.setItem(LS, JSON.stringify(data));
+  }
+  function updateProg() {
+    const done = boxes.filter(b => b.checked).length;
+    const pct = boxes.length ? Math.round(done/boxes.length*100) : 0;
+    document.getElementById('progFill').style.width = pct + '%';
+    document.getElementById('progTxt').textContent = done + '/' + boxes.length;
+  }
+  boxes.forEach(b => b.addEventListener('change', () => {
+    b.closest('.step').classList.toggle('done', b.checked); save(); updateProg();
+  }));
+  function resetProgress(){ if(confirm('Limpar todo o progresso?')){ localStorage.removeItem(LS); load(); } }
+
+  // ---------- Ficha (form) ----------
+  const FLS = 'goodleads_impl_ficha_v1';
+  const fields = [...document.querySelectorAll('[data-f]')];
+  function loadFicha(){
+    let d={}; try{ d=JSON.parse(localStorage.getItem(FLS)||'{}'); }catch(e){}
+    fields.forEach(f => { if(d[f.dataset.f] !== undefined) f.value = d[f.dataset.f]; });
+    syncDerived();
+  }
+  function saveFicha(){
+    const d={}; fields.forEach(f => d[f.dataset.f]=f.value);
+    localStorage.setItem(FLS, JSON.stringify(d)); syncDerived();
+  }
+  function syncDerived(){
+    const get = k => (fields.find(f=>f.dataset.f===k)||{}).value || '';
+    const cliente = get('cliente').trim();
+    document.getElementById('heroTitle').textContent = cliente ? 'Onboarding — ' + cliente : 'Onboarding de Cliente';
+    let base = (get('backend_url').trim() || 'https://goodleads.mychooice.com').replace(/\/+$/,'');
+    document.getElementById('webhookUrl').textContent = base + '/api/chatwoot/webhook';
+  }
+  fields.forEach(f => f.addEventListener('input', saveFicha));
+
+  // ---------- Copy ----------
+  function copyEl(id){
+    const t = document.getElementById(id).innerText;
+    navigator.clipboard.writeText(t).then(()=>{
+      event.target.textContent='copiado!'; setTimeout(()=>event.target.textContent='copiar',1200);
+    });
+  }
+
+  // ---------- Nav active on scroll ----------
+  const links = [...document.querySelectorAll('.nav a')];
+  const map = {}; links.forEach(l => { const id=l.getAttribute('href').slice(1); if(id) map[id]=l; });
+  const obs = new IntersectionObserver(es => {
+    es.forEach(e => { if(e.isIntersecting && map[e.target.id]){ links.forEach(l=>l.classList.remove('active')); map[e.target.id].classList.add('active'); } });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+  document.querySelectorAll('section').forEach(s => obs.observe(s));
+
+  load(); loadFicha();
+</script>
+</body>
+</html>
