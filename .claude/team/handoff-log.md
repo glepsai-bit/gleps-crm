@@ -10,6 +10,20 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-15 — T-014 UI rebrand Gleps IA entregue (@frontend → @qa) {#2026-06-15-frontend-rebrand-entregue}
+
+- **O que mudou:** paleta CSS vars trocada de vermelho para roxo Gleps IA (#5B3DF5); strings "GoodLeads" substituidas por "Gleps IA" em todos os pontos de UI; slogan adicionado na LoginPage; theme-color roxo no index.html.
+- **Arquivos modificados (commit 8d8f459 em whitelabel/gleps-ia):**
+  - `src/index.css` — paleta :root e .dark (--primary, --accent, --ring, --info, --chart-1, --kanban-new, --role-super-admin, --sidebar-primary, --sidebar-ring) + header do comentario
+  - `src/pages/LoginPage.tsx` — nome Gleps IA, gradient roxo, slogan adicionado
+  - `src/layouts/AdminLayout.tsx` — nome Gleps IA (mobile header + sidebar desktop)
+  - `src/layouts/SuperAdminLayout.tsx` — nome Gleps IA Admin (mobile + sidebar)
+  - `src/components/email/EmailPreviewDialog.tsx` — fallback fromName e "De:" roxo
+  - `index.html` — title, description, author, og:title, og:description, twitter:site, theme-color
+- **Como testar:** abrir /login em claro e escuro — paleta roxa visivel, "Gleps IA" no titulo, slogan abaixo; sidebar admin/super-admin com nome correto; preview de e-mail mostra "Gleps IA" no campo De.
+- **Validacoes:** grep "GoodLeads" src/ index.html = 0 ocorrencias. vitest 36/36 PASS. vite build PASS. lint: 687 erros todos pre-existentes (baseline no-explicit-any, zero regressao).
+- **Pendencias:** QA visual (telas + dark mode); logo no favicon ja estava no commit anterior do Dev Principal.
+
 ## 2026-06-15 — T-014 Whitelabel Gleps IA — branch criada, handoff p/ Front-end (@dev-principal → @frontend) {#2026-06-15-whitelabel-gleps-ia}
 
 **Contexto:** o usuário fechou um cliente novo (**Gleps IA**) que vai usar o mesmo código do GoodLeads, mas com identidade visual própria e stack 100% separada (backend + banco + redis + service EasyPanel próprios). Subdomínio alvo: `crm.gleps.com.br` (mesma VPS, novo service). Slogan oficial: **"A inteligência comercial que seu negócio precisa."**
