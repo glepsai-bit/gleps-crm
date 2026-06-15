@@ -1,0 +1,6 @@
+services:
+  wiki:
+    build: .
+    restart: unless-stopped
+    expose:
+      - "80"
