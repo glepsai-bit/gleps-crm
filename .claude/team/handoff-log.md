@@ -10,6 +10,36 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-15 — T-014 whitelabel Gleps IA — pronto pra QA (@dev-principal+@frontend → @qa) {#2026-06-15-whitelabel-gleps-ia-qa}
+
+- **O que foi feito:** rebrand completo (UI + backend + infra) na branch `whitelabel/gleps-ia` pra deploy paralelo em `crm.gleps.com.br`, stack 100% isolada da do GoodLeads.
+- **Commits (5 ahead de origin/main):**
+  - `8dbb20a` chore(whitelabel): branch inicial Gleps IA com handoff completo (T-014)
+  - `cbb19c7` feat(whitelabel): adiciona logo Gleps IA + remove favicon MyChooice antigo
+  - `29ef505` feat(whitelabel): backend Gleps IA + docker-compose isolado pra deploy proprio
+  - `8d8f459` feat(whitelabel): rebrand UI completo Gleps IA (paleta roxa + nome + slogan)
+  - `64bb274` docs(team): handoff T-014 front-end -> QA (rebrand Gleps IA entregue)
+- **Arquivos tocados:**
+  - Front: `src/index.css`, `src/pages/LoginPage.tsx`, `src/layouts/AdminLayout.tsx`, `src/layouts/SuperAdminLayout.tsx`, `src/components/email/EmailPreviewDialog.tsx`, `index.html`
+  - Backend: `backend/src/controllers/email.controller.ts`, `backend/src/services/{sendgrid,email-ai,email}.service.ts`
+  - Infra (novos): `docker-compose.gleps-ia.yml`, `.env.gleps-ia.example`
+  - Doc: `WHITELABEL_GLEPS_IA.md` (fonte de verdade)
+- **Validacoes:** `grep GoodLeads` em src+backend+index.html = 0; `vitest` 36/36 PASS; `vite build` PASS (3525 modulos); `tsc backend` PASS; `docker compose -f docker-compose.gleps-ia.yml config --quiet` EXIT=0; isolamento ZERO-SHARING vs `docker-compose.yml` original confirmado (volume `pgdata_gleps_ia`, network `gleps_ia_network`, `container_name *-gleps-ia`).
+- **Criticas:**
+  - **Critic UI: REFUTADO** — 3 vazamentos cirurgicos pendentes (ver "Pendencias" abaixo).
+  - **Critic Infra: APROVADO** — isolamento OK, secrets como placeholder forte com aviso explicito de regerar.
+- **Pendencias pre-merge (REGISTRADAS, nao corrigidas):**
+  1. `src/index.css` linhas 759 e 762 — `.logo-glow` ainda usa drop-shadow vermelho MyChooice (`hsl(8 85% 54%)` e `hsl(8 85% 64%)`). Classe aplicada no logo da LoginPage (linha 116) — primeiro contato visual tem halo pulsante vermelho. Trocar para `hsl(250 90% 60%)` e `hsl(252 100% 71%)`.
+  2. `AdminLayout.tsx`, `SuperAdminLayout.tsx`, `LoginPage.tsx` — 7 ocorrencias de `alt="MyChooice"` e variavel `mychooiceLogo` expoem marca antiga em screen readers/DevTools. Renomear import para `glepsLogo` e `alt="Gleps IA"`. Considerar renomear asset `mychooice-logo-white.svg` -> `gleps-logo.svg`.
+  3. `EmailPreviewDialog.tsx` linha 37 — template HTML de e-mail tem `a{color:#EE3924}` (links vermelhos). Vaza paleta antiga no e-mail enviado ao lead. Trocar para `#5B3DF5`.
+  4. Workdir sujo: `package-lock.json`, `public/favicon.ico`, `public/favicon.png` modificados sem commit (provavel side-effect de `npm install` durante validacao). Avaliar `git checkout` ou commit dos favicons reais.
+- **Como testar (QA):**
+  - `/login` em claro e escuro: paleta roxa, "Gleps IA" no titulo, slogan abaixo, sem halo vermelho residual.
+  - Sidebar admin/super-admin: nome correto, sem leak "MyChooice" em DevTools (inspecionar `alt`).
+  - Preview e-mail: cor de link no template inline.
+  - Deploy stack isolada: `docker compose -f docker-compose.gleps-ia.yml up` apos gerar `JWT_SECRET`/`REFRESH_TOKEN_SECRET` com `openssl rand -base64 32`.
+- **Nao push:** branch `whitelabel/gleps-ia` mantida local, conforme instrucao.
+
 ## 2026-06-15 — T-014 UI rebrand Gleps IA entregue (@frontend → @qa) {#2026-06-15-frontend-rebrand-entregue}
 
 - **O que mudou:** paleta CSS vars trocada de vermelho para roxo Gleps IA (#5B3DF5); strings "GoodLeads" substituidas por "Gleps IA" em todos os pontos de UI; slogan adicionado na LoginPage; theme-color roxo no index.html.
