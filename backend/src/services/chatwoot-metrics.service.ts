@@ -515,6 +515,10 @@ class ChatwootMetricsService {
     const atendimento = { total: 0, ia: 0, humano: 0, semAssignee: 0 };
     const now = Date.now();
     const backlog = { ate15min: 0, de15a60min: 0, acima60min: 0 };
+    // Backlog de conversas SEM nenhum assignee (nem bot, nem humano).
+    // Antes ficavam invisíveis (só contabilizadas em atendimento.semAssignee).
+    // Agora aparecem aqui pra ninguém esquecer trabalho parado.
+    const backlogNaoAtribuidas = { ate15min: 0, de15a60min: 0, acima60min: 0 };
 
     const agentStats: Record<number, {
       name: string; email: string; thumbnail?: string;
@@ -548,7 +552,8 @@ class ChatwootMetricsService {
 
       const hasBotAssignee = conv.meta?.assignee?.type === 'AgentBot' || !!conv.agent_bot_id;
       const hasHumanAssignee = !!(conv.meta?.assignee?.id || conv.assignee_id) && !hasBotAssignee;
-      if (hasHumanAssignee) {
+
+      const computeWaitingMinutes = (): number => {
         let waitingMs: number;
         if (conv.waiting_since) {
           waitingMs = now - (conv.waiting_since * 1000);
@@ -558,10 +563,20 @@ class ChatwootMetricsService {
             : new Date(conv.created_at).getTime();
           waitingMs = now - lastActivity;
         }
-        const waitingMinutes = waitingMs / 60000;
+        return waitingMs / 60000;
+      };
+
+      if (hasHumanAssignee) {
+        const waitingMinutes = computeWaitingMinutes();
         if (waitingMinutes <= 15) backlog.ate15min++;
         else if (waitingMinutes <= 60) backlog.de15a60min++;
         else backlog.acima60min++;
+      } else if (handler === 'none') {
+        // Conversa sem ninguém atendendo. Esperando alguém pegar.
+        const waitingMinutes = computeWaitingMinutes();
+        if (waitingMinutes <= 15) backlogNaoAtribuidas.ate15min++;
+        else if (waitingMinutes <= 60) backlogNaoAtribuidas.de15a60min++;
+        else backlogNaoAtribuidas.acima60min++;
       }
     }
 
@@ -690,14 +705,45 @@ class ChatwootMetricsService {
               custom.handoff_to_human === true ||
               additional.handoff_to_human === true;
 
-            await prisma.$executeRaw`
-              INSERT INTO resolution_logs (account_id, conversation_id, resolved_by, resolution_type, ai_participated, resolved_at)
-              VALUES (${dbAccountId}::uuid, ${conv.id}, 'human', 'inferred', ${aiParticipated}, ${resolvedAt})
-              ON CONFLICT (account_id, conversation_id)
-              DO UPDATE SET ai_participated = ${aiParticipated}, resolved_at = ${resolvedAt}
-            `;
-          } catch (insertErr) {
-            // Non-fatal — skip duplicates silently
+            // Dedup por janela curta: se já existe linha pra (account, conversation)
+            // com resolved_at próximo, atualiza; senão, cria. Substitui o antigo
+            // INSERT ... ON CONFLICT (account_id, conversation_id) que falhava em
+            // runtime desde a migration 0019 ter dropado o índice unique.
+            const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+            const existing = await prisma.resolutionLog.findFirst({
+              where: {
+                accountId: dbAccountId,
+                conversationId: conv.id,
+                resolvedAt: {
+                  gte: new Date(resolvedAt.getTime() - DEDUP_WINDOW_MS),
+                  lte: new Date(resolvedAt.getTime() + DEDUP_WINDOW_MS),
+                },
+              },
+              select: { id: true },
+            });
+
+            if (existing) {
+              await prisma.resolutionLog.update({
+                where: { id: existing.id },
+                data: { aiParticipated, resolvedAt },
+              });
+            } else {
+              await prisma.resolutionLog.create({
+                data: {
+                  accountId: dbAccountId,
+                  conversationId: conv.id,
+                  resolvedBy: 'human',
+                  resolutionType: 'inferred',
+                  aiParticipated,
+                  resolvedAt,
+                },
+              });
+            }
+          } catch (insertErr: any) {
+            logger.warn('[Metrics] resolution_logs upsert failed (non-fatal)', {
+              conversationId: conv.id,
+              error: insertErr?.message,
+            });
           }
         }
       } catch (syncErr) {
@@ -813,8 +859,12 @@ class ChatwootMetricsService {
     const iniciadasPorIACount = resolucao.ia.total + resolucao.transbordoFinalizado;
     const taxaTransbordo = iniciadasPorIACount > 0
       ? Math.round((resolucao.transbordoFinalizado / iniciadasPorIACount) * 100) : 0;
-    const eficienciaIA = resolucao.total > 0
-      ? Math.round((resolucao.ia.total / resolucao.total) * 100) : 0;
+    // Eficiência da IA = das vezes em que a IA tentou (fechou sozinha + transbordou
+    // pra humano), em quantas % ela conseguiu finalizar sem chamar humano?
+    // Antes era ia/total (= participação, redundante com percentualIA). Agora é
+    // ia/(ia+transbordo) — métrica de qualidade real da automação.
+    const eficienciaIA = iniciadasPorIACount > 0
+      ? Math.round((resolucao.ia.total / iniciadasPorIACount) * 100) : 0;
 
     const taxas = {
       resolucaoIA: `${taxaResolucaoIA}%`,
@@ -904,7 +954,10 @@ class ChatwootMetricsService {
 
       conversasPorCanal,
       picoPorHora,
-      backlog,
+      backlog: {
+        ...backlog,
+        naoAtribuidas: backlogNaoAtribuidas,
+      },
 
       agentes: agentPerformance,
 

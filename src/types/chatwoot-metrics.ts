@@ -161,10 +161,18 @@ export interface DashboardMetricsResponse {
     }>;
     
     // Backlog
-    backlog: { 
-      ate15min: number; 
-      de15a60min: number; 
+    backlog: {
+      ate15min: number;
+      de15a60min: number;
       acima60min: number;
+      // Conversas SEM nenhum assignee (nem bot nem humano) — esperando
+      // alguém pegar. Antes ficavam invisíveis no card. Opcional pra
+      // retrocompatibilidade com payloads antigos.
+      naoAtribuidas?: {
+        ate15min: number;
+        de15a60min: number;
+        acima60min: number;
+      };
     };
     
     // Performance de agentes

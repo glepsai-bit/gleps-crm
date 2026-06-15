@@ -734,6 +734,9 @@ async function handleConversationUpdated(accountId: string, event: ChatwootWebho
 async function handleStatusChanged(accountId: string, event: ChatwootWebhookEvent) {
   if (!event.conversation) return;
 
+  const previousStatus = event.changed_attributes?.[0]?.previous_value;
+  const currentStatus = event.conversation.status;
+
   // Record event for metrics/dashboard
   await eventService.create({
     eventType: 'chatwoot.conversation.status_changed',
@@ -742,21 +745,104 @@ async function handleStatusChanged(accountId: string, event: ChatwootWebhookEven
     channel: 'chatwoot',
     payload: {
       conversationId: event.conversation.id,
-      status: event.conversation.status,
-      previousStatus: event.changed_attributes?.[0]?.previous_value,
+      status: currentStatus,
+      previousStatus,
     },
   });
+
+  // Reabertura: cliente entrou em contato de novo e a conversa voltou pra 'open'.
+  // Antes de qualquer ator agir, zerar todos os custom_attributes ligados a quem
+  // resolveu/respondeu por último — assim o próximo ciclo começa neutro e a
+  // próxima resolução vai ser atribuída ao ator certo (IA ou humano).
+  // Faz isso no backend pra não depender do n8n nem do AgentBot fazer.
+  if (currentStatus === 'open' && previousStatus === 'resolved') {
+    try {
+      await chatwootService.updateConversationCustomAttributes(
+        accountId,
+        event.conversation.id,
+        {
+          resolved_by: null,
+          ai_responded: null,
+          ai_participated: null,
+          handoff_to_human: null,
+          human_active: null,
+          human_intervened: null,
+          human_intervened_at: null,
+        }
+      );
+      logger.info('[Reopen] Cleared custom_attributes', {
+        conversationId: event.conversation.id,
+        accountId,
+      });
+    } catch (err: any) {
+      // Não derruba o webhook — só registra. Próximo ciclo pode herdar atributos
+      // antigos até o n8n eventualmente limpar (fallback).
+      logger.warn('[Reopen] Failed to clear custom_attributes', {
+        conversationId: event.conversation.id,
+        error: err?.message,
+      });
+    }
+  }
 }
 
 async function handleMessageCreated(accountId: string, event: ChatwootWebhookEvent) {
   if (!event.message || !event.conversation) return;
 
-  // Only log for audit, don't create events for every message
+  const msg = event.message;
+  const conv = event.conversation;
+
   logger.debug('Message received', {
-    conversationId: event.conversation.id,
-    messageType: event.message.message_type,
-    senderType: event.message.sender_type,
+    conversationId: conv.id,
+    messageType: msg.message_type,
+    senderType: msg.sender_type,
   });
+
+  // Detecta "humano intervindo sem handoff explícito": agente humano da empresa
+  // (sender_type === 'user') responde com mensagem outgoing em uma conversa
+  // onde a IA está atuando. Marca human_active no Chatwoot — isso aciona o
+  // critério #1 de classifyCurrentHandler e impede a IA de continuar respondendo
+  // (desde que o fluxo n8n da IA respeite o flag — escopo da T-012).
+  const senderType = msg.sender_type;
+  const messageType = msg.message_type;
+
+  if (senderType !== 'user' || messageType !== 'outgoing') return;
+
+  const custom: Record<string, any> = (conv as any).custom_attributes || {};
+  const additional: Record<string, any> = (conv as any).additional_attributes || {};
+
+  const hasBotAssignee = (conv as any).meta?.assignee?.type === 'AgentBot'
+    || !!(conv as any).agent_bot_id;
+  const aiResponded = custom.ai_responded === true || additional.ai_responded === true;
+  const aiHandling = hasBotAssignee || aiResponded;
+
+  const humanAlreadyMarked = custom.human_active === true
+    || additional.human_active === true
+    || custom.handoff_to_human === true
+    || additional.handoff_to_human === true;
+
+  if (!aiHandling || humanAlreadyMarked) return;
+
+  try {
+    await chatwootService.updateConversationCustomAttributes(
+      accountId,
+      conv.id,
+      {
+        human_active: true,
+        human_intervened: true,
+        human_intervened_at: new Date().toISOString(),
+        ai_participated: true,
+      }
+    );
+    logger.info('[HumanIntervention] Marked human_active=true', {
+      conversationId: conv.id,
+      accountId,
+    });
+  } catch (err: any) {
+    logger.warn('[HumanIntervention] Failed to set human_active', {
+      conversationId: conv.id,
+      error: err?.message,
+    });
+  }
 }
 
 async function handleContactCreated(accountId: string, event: ChatwootWebhookEvent) {

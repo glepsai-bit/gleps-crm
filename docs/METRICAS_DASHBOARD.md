@@ -183,10 +183,10 @@ Para cada conversa com `status = 'resolved'`:
 
 | Taxa | Fórmula | Descrição |
 |------|---------|-----------|
-| **% Resolução IA** | `resoluções_IA / (resoluções_IA + resoluções_humano) * 100` | Proporção das resoluções feitas pela IA |
+| **% Resolução IA** | `resoluções_IA / (resoluções_IA + resoluções_humano) * 100` | Proporção das resoluções feitas pela IA (participação no volume total) |
 | **% Resolução Humano** | `100 - % Resolução IA` | Proporção das resoluções feitas por humanos |
 | **Taxa de Transbordo** | `transbordo / (resoluções_IA + transbordo) * 100` | % de conversas que a IA iniciou mas humano finalizou |
-| **Eficiência da IA** | `resoluções_IA / total_resolvidas * 100` | % de todas as resoluções que a IA resolveu sozinha |
+| **Eficiência da IA** | `resoluções_IA / (resoluções_IA + transbordo) * 100` | **Das vezes em que a IA tentou** (fechou sozinha + transbordou), em quantas % ela finalizou sem chamar humano. **Atualizada em 2026-06-15 (T-011)** — antes era `resoluções_IA / total_resolvidas`, que duplicava a métrica `% Resolução IA`. A nova fórmula mede qualidade real da automação. |
 
 ---
 
@@ -219,6 +219,17 @@ Para cada hora (0-23):
 | **Até 15 min** | Tempo de espera ≤ 15 minutos |
 | **15 a 60 min** | 15 < tempo de espera ≤ 60 minutos |
 | **Acima de 60 min** | Tempo de espera > 60 minutos |
+
+### Backlog Não Atribuídas (adicionado em 2026-06-15 / T-011)
+
+Subseção complementar ao Backlog Humano. Mostra conversas **abertas e sem nenhum assignee** (`classifyCurrentHandler === 'none'` — nem bot, nem humano). Antes ficavam invisíveis no card, contadas apenas em `atendimento.semAssignee`. Agora aparecem aqui, nos mesmos buckets de tempo, sob o rótulo **"Não atribuídas"**.
+
+| Campo | Detalhe |
+|-------|---------|
+| **O que mostra** | Conversas abertas que ninguém pegou ainda (sem bot, sem humano) |
+| **Por que importa** | Esconder essas conversas mascarava trabalho parado. Agora a equipe enxerga e atribui. |
+| **Cálculo do tempo de espera** | Mesma fórmula do Backlog Humano (`waiting_since` ou `last_activity_at`) |
+| **Buckets** | Mesmos: Até 15 min / 15 a 60 min / Acima de 60 min |
 
 ---
 

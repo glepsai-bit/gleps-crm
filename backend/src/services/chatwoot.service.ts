@@ -362,6 +362,34 @@ class ChatwootService {
   }
 
   /**
+   * Update custom_attributes of a conversation in Chatwoot.
+   * Passa o objeto inteiro de custom_attributes — o Chatwoot faz merge com o existente.
+   * Para "limpar" um campo, passe-o com valor null/false conforme convenção do consumidor.
+   */
+  async updateConversationCustomAttributes(
+    accountId: string,
+    conversationId: number,
+    customAttributes: Record<string, any>
+  ): Promise<void> {
+    const config = await this.getAccountConfig(accountId);
+
+    await this.makeRequest(
+      config,
+      `/conversations/${conversationId}/custom_attributes`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ custom_attributes: customAttributes }),
+      }
+    );
+
+    logger.info('Conversation custom_attributes updated in Chatwoot', {
+      accountId,
+      conversationId,
+      keys: Object.keys(customAttributes),
+    });
+  }
+
+  /**
    * Add labels to a conversation
    */
   async addLabelsToConversation(
