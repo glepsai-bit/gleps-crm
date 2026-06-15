@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { AlertCircle, Eye, EyeOff, LogIn, Loader2 } from 'lucide-react';
-import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
+import glepsLogo from '@/assets/gleps-logo.png';
 
 // Helper function to get default route based on role and permissions
 function getSmartDefaultRoute(user: { role: string; permissions?: string[] }): string {
@@ -111,8 +111,8 @@ export default function LoginPage() {
           {/* Chip escuro: o logo é branco, então mantém um fundo escuro nos dois temas */}
           <div className="inline-flex items-center justify-center mb-2 rounded-2xl bg-sidebar px-8 py-4 shadow-lg">
             <img
-              src={mychooiceLogo}
-              alt="MyChooice"
+              src={glepsLogo}
+              alt="Gleps IA"
               className="w-48 h-16 object-contain logo-glow"
             />
           </div>

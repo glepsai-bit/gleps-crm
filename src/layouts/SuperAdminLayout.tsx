@@ -24,7 +24,7 @@ import {
   X,
   ArrowLeftRight,
 } from 'lucide-react';
-import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
+import glepsLogo from '@/assets/gleps-logo.png';
 import { ThemeToggle } from '@/components/theme-toggle';
 
 interface SidebarLayoutProps {
@@ -76,7 +76,7 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
             {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
           <div className="flex items-center gap-2">
-            <img src={mychooiceLogo} alt="MyChooice" className="w-6 h-6 sm:w-7 sm:h-7 object-contain" />
+            <img src={glepsLogo} alt="Gleps IA" className="w-6 h-6 sm:w-7 sm:h-7 object-contain" />
             <span className="font-semibold text-sidebar-foreground text-sm sm:text-base">Gleps IA Admin</span>
           </div>
         </div>
@@ -103,12 +103,12 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
         <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border">
           {!collapsed && (
             <div className="flex items-center gap-2">
-              <img src={mychooiceLogo} alt="MyChooice" className="w-8 h-8 object-contain" />
+              <img src={glepsLogo} alt="Gleps IA" className="w-8 h-8 object-contain" />
               <span className="font-bold text-lg text-sidebar-foreground">Gleps IA Admin</span>
             </div>
           )}
           {collapsed && (
-            <img src={mychooiceLogo} alt="MyChooice" className="w-8 h-8 object-contain mx-auto" />
+            <img src={glepsLogo} alt="Gleps IA" className="w-8 h-8 object-contain mx-auto" />
           )}
           <button
             onClick={() => setCollapsed(!collapsed)}

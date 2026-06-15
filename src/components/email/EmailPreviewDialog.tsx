@@ -34,7 +34,7 @@ export default function EmailPreviewDialog({
       .replace(/\{email\}/g, 'joao@exemplo.com')
       .replace(/\{empresa\}/g, 'Empresa Exemplo');
 
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:24px;color:#1a1a1a;background:#fff;font-size:14px;line-height:1.6}img{max-width:100%;height:auto}a{color:#EE3924}h1,h2,h3{margin:0 0 12px;color:#111}p{margin:0 0 16px}</style></head><body>${preview}</body></html>`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:24px;color:#1a1a1a;background:#fff;font-size:14px;line-height:1.6}img{max-width:100%;height:auto}a{color:#5B3DF5}h1,h2,h3{margin:0 0 12px;color:#111}p{margin:0 0 16px}</style></head><body>${preview}</body></html>`;
   }, [bodyHtml]);
 
   const handleSendTest = async () => {

@@ -756,10 +756,10 @@
 /* Logo glow animation - for dark sidebar only */
 @keyframes logoGlow {
   0%, 100% {
-    filter: drop-shadow(0 0 8px hsl(8 85% 54% / 0.4));
+    filter: drop-shadow(0 0 8px hsl(250 90% 60% / 0.4));
   }
   50% {
-    filter: drop-shadow(0 0 16px hsl(8 85% 64% / 0.6));
+    filter: drop-shadow(0 0 16px hsl(252 100% 71% / 0.6));
   }
 }
 

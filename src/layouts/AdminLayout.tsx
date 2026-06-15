@@ -33,7 +33,7 @@ import {
   Crosshair,
   Mail,
 } from 'lucide-react';
-import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
+import glepsLogo from '@/assets/gleps-logo.png';
 import { ThemeToggle } from '@/components/theme-toggle';
 
 interface AdminLayoutProps {
@@ -98,7 +98,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
           <div className="flex items-center gap-2">
-            <img src={mychooiceLogo} alt="MyChooice" className="w-6 h-6 sm:w-7 sm:h-7 object-contain" />
+            <img src={glepsLogo} alt="Gleps IA" className="w-6 h-6 sm:w-7 sm:h-7 object-contain" />
             <span className="font-semibold text-sidebar-foreground truncate max-w-[120px] xs:max-w-[150px] sm:max-w-[180px] text-sm sm:text-base">
               Gleps IA
             </span>
@@ -127,14 +127,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border">
           {!collapsed && (
             <div className="flex items-center gap-2 overflow-hidden">
-              <img src={mychooiceLogo} alt="MyChooice" className="w-8 h-8 object-contain flex-shrink-0" />
+              <img src={glepsLogo} alt="Gleps IA" className="w-8 h-8 object-contain flex-shrink-0" />
               <span className="font-bold text-lg text-sidebar-foreground truncate">
                 Gleps IA
               </span>
             </div>
           )}
           {collapsed && (
-            <img src={mychooiceLogo} alt="MyChooice" className="w-8 h-8 object-contain mx-auto" />
+            <img src={glepsLogo} alt="Gleps IA" className="w-8 h-8 object-contain mx-auto" />
           )}
           <button
             onClick={() => setCollapsed(!collapsed)}
