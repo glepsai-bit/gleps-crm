@@ -10,6 +10,22 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-16 — T-015 backlog unificado + empty state agentes (@frontend → @qa)
+
+- **O que mudou:** `BacklogCard.tsx` reescrito como tabela semântica única (Atendido / Não atendido / Total por faixa: até 15 min, 15-60 min, >60 min), substituindo o layout duplo anterior. `AgentPerformanceTable.tsx` ganhou empty state com ícone `Users` e `colSpan={5}`. Doc `METRICAS_DASHBOARD.md` renomeada: seção agora "Fila de Espera" com nota de migração ("Anteriormente chamado 'Backlog Humano'. Renomeado em T-015").
+- **Arquivos:**
+  - `src/components/dashboard/BacklogCard.tsx` (+152/-112, reescrita ~140→~165 linhas)
+  - `src/components/dashboard/AgentPerformanceTable.tsx` (+13/-4, empty state)
+  - `docs/METRICAS_DASHBOARD.md` (+36/-30, rename + nota de migração)
+- **SHA:** `dbfa032 feat(dashboard): unifica backlog em tabela Atendido/Nao atendido + empty state agentes (T-015)`
+- **Validações:** `npm run build` PASS (3525 módulos, 5.18s) · `npm test` 36/36 PASS · grep hex hardcoded `EE3924`/`5B3DF5` em `BacklogCard.tsx` = 0 ocorrências · tabela semântica `<table><thead><tbody>` confirmada · branch local 1 commit ahead de `origin/whitelabel/gleps-ia`, sem push.
+- **Crítica UX: REFUTADO** — 3 ajustes cirúrgicos pendentes (registrados, não corrigidos pelo frontend):
+  1. `BacklogCard.tsx:131` — `scope="row"` em `<td>` é inválido (atributo só vale em `<th>`). Trocar primeira `<td>` da linha por `<th scope="row" className="...font-normal">` para semântica correta de cabeçalho de linha.
+  2. `AgentPerformanceTable.tsx:89` — botão "Limpar filtro" usa `✕` literal sem `aria-label`. Adicionar `aria-label="Limpar filtro de agente"` e envolver o `✕` em `<span aria-hidden="true">` para leitores de tela.
+  3. `BacklogCard.tsx:153` — coluna "Total" não tem hierarquia visual real (mesmo `text-sm` das demais). Aplicar `text-base tabular-nums` nas células da coluna Total pra reforçar que é o agregado.
+- **Como testar:** abrir Dashboard → seção "Fila de Espera"; validar 3 faixas com colunas Atendido/Não atendido/Total; com `grandTotal=0` deve aparecer empty state ("Fila vazia. Tudo em dia."). Em `AgentPerformanceTable`, filtrar/limpar agentes valida empty state com ícone `Users`. Testar @375px (mobile): abreviações "Atend."/"Não atend." via `xs:hidden`, scroll horizontal funcional. Dark mode: tudo via tokens, sem cor literal.
+- **Pendências:** push pendente (branch 1 ahead de `origin/whitelabel/gleps-ia`). Aguarda autorização do usuário pra push + rebuild EasyPanel.
+
 ## 2026-06-15 — T-014 pendências cosméticas do Critic UI resolvidas (@dev-principal → @qa) {#2026-06-15-whitelabel-gleps-ia-critic-fixes}
 
 - **Contexto:** as 3 pendências do Critic UI no handoff abaixo foram TODAS corrigidas no commit `8041b8b`. T-014 agora limpo, sem vazamentos da marca antiga em runtime.
