@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Clock, AlertTriangle, AlertCircle, Inbox } from 'lucide-react';
+import { Inbox } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface BacklogBuckets {
@@ -10,8 +10,6 @@ interface BacklogBuckets {
 }
 
 interface BacklogData extends BacklogBuckets {
-  // Conversas sem nenhum assignee (nem bot, nem humano).
-  // Opcional pra retrocompatibilidade com payloads antigos.
   naoAtribuidas?: BacklogBuckets;
 }
 
@@ -20,119 +18,146 @@ interface BacklogCardProps {
   isLoading?: boolean;
 }
 
-// Chart colors from design system
-const CHART_GREEN = '#16A34A';  // chart-2 - success
-const CHART_YELLOW = '#F59E0B'; // chart-3 - warning
-const CHART_RED = '#DC2626';    // chart-4 - danger
-
-function buildBacklogItems(buckets: BacklogBuckets) {
-  const total = buckets.ate15min + buckets.de15a60min + buckets.acima60min;
-  return [
-    {
-      label: 'Até 15 minutos',
-      value: buckets.ate15min,
-      percentage: total > 0 ? (buckets.ate15min / total) * 100 : 0,
-      icon: Clock,
-      color: CHART_GREEN,
-      bgColor: 'bg-success-soft',
-    },
-    {
-      label: '15 a 60 minutos',
-      value: buckets.de15a60min,
-      percentage: total > 0 ? (buckets.de15a60min / total) * 100 : 0,
-      icon: AlertTriangle,
-      color: CHART_YELLOW,
-      bgColor: 'bg-warning-soft',
-    },
-    {
-      label: 'Acima de 60 minutos',
-      value: buckets.acima60min,
-      percentage: total > 0 ? (buckets.acima60min / total) * 100 : 0,
-      icon: AlertCircle,
-      color: CHART_RED,
-      bgColor: 'bg-destructive-soft',
-    },
-  ];
-}
-
-function BacklogSection({
-  items,
-}: {
-  items: ReturnType<typeof buildBacklogItems>;
-}) {
-  return (
-    <div className="space-y-3">
-      {items.map((item) => (
-        <div
-          key={item.label}
-          className={cn('p-4 rounded-lg', item.bgColor)}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <item.icon className="w-4 h-4" style={{ color: item.color }} />
-              <span className="text-sm font-medium text-foreground">{item.label}</span>
-            </div>
-            <span className="text-lg font-bold text-foreground">{item.value}</span>
-          </div>
-          <div className="h-2 bg-foreground/10 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{ width: `${item.percentage}%`, backgroundColor: item.color }}
-            />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+const BUCKETS = [
+  {
+    label: 'Até 15 min',
+    dotClass: 'bg-success',
+    atendidoKey: 'ate15min' as const,
+    naoAtribuidoKey: 'ate15min' as const,
+  },
+  {
+    label: '15 a 60 min',
+    dotClass: 'bg-warning',
+    atendidoKey: 'de15a60min' as const,
+    naoAtribuidoKey: 'de15a60min' as const,
+  },
+  {
+    label: 'Acima de 60 min',
+    dotClass: 'bg-destructive',
+    atendidoKey: 'acima60min' as const,
+    naoAtribuidoKey: 'acima60min' as const,
+  },
+] as const;
 
 export function BacklogCard({ data, isLoading = false }: BacklogCardProps) {
   if (isLoading) {
     return (
       <Card>
         <CardHeader>
-          <Skeleton className="h-5 w-48" />
+          <Skeleton className="h-5 w-36" />
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-16 w-full" />
+          <div className="space-y-3">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
           </div>
         </CardContent>
       </Card>
     );
   }
 
-  const humanoItems = buildBacklogItems(data);
-  const naoAtribuidas = data.naoAtribuidas;
-  const naoAtribuidasTotal = naoAtribuidas
-    ? naoAtribuidas.ate15min + naoAtribuidas.de15a60min + naoAtribuidas.acima60min
-    : 0;
-  const naoAtribuidasItems = naoAtribuidas ? buildBacklogItems(naoAtribuidas) : null;
+  const nao = data.naoAtribuidas ?? { ate15min: 0, de15a60min: 0, acima60min: 0 };
+
+  const grandTotal =
+    data.ate15min + data.de15a60min + data.acima60min +
+    nao.ate15min + nao.de15a60min + nao.acima60min;
+
+  const isEmpty = grandTotal === 0;
 
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
-          Backlog Humano
+          Fila de Espera
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <BacklogSection items={humanoItems} />
-
-        {naoAtribuidasItems && naoAtribuidasTotal > 0 && (
-          <div className="mt-6 pt-4 border-t border-border">
-            <div className="flex items-center gap-2 mb-3">
-              <Inbox className="w-4 h-4 text-muted-foreground" />
-              <span className="text-sm font-medium text-muted-foreground">
-                Não atribuídas
-              </span>
-              <span className="text-xs text-muted-foreground ml-auto">
-                {naoAtribuidasTotal} aguardando atendente
-              </span>
-            </div>
-            <BacklogSection items={naoAtribuidasItems} />
+        {isEmpty ? (
+          <div
+            role="status"
+            className="flex flex-col items-center justify-center py-8 gap-3 text-muted-foreground"
+          >
+            <Inbox className="w-8 h-8 opacity-40" />
+            <p className="text-sm text-center">Fila vazia. Tudo em dia.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  <th
+                    scope="col"
+                    className="pb-2 text-left font-medium text-muted-foreground w-1/2"
+                  >
+                    Faixa
+                  </th>
+                  <th
+                    scope="col"
+                    className="pb-2 text-center font-medium text-muted-foreground px-2 xs:px-3"
+                  >
+                    <span className="hidden xs:inline">Atendido</span>
+                    <span className="xs:hidden">Atend.</span>
+                  </th>
+                  <th
+                    scope="col"
+                    className="pb-2 text-center font-medium text-muted-foreground px-2 xs:px-3"
+                  >
+                    <span className="hidden xs:inline">Não atendido</span>
+                    <span className="xs:hidden">Não atend.</span>
+                  </th>
+                  <th
+                    scope="col"
+                    className="pb-2 text-center font-semibold text-foreground px-2 xs:px-3"
+                  >
+                    Total
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {BUCKETS.map((bucket) => {
+                  const atendido = data[bucket.atendidoKey];
+                  const naoAtendido = nao[bucket.naoAtribuidoKey];
+                  const total = atendido + naoAtendido;
+                  return (
+                    <tr
+                      key={bucket.label}
+                      className={cn(
+                        'border-b border-border/50 last:border-0',
+                        'transition-colors hover:bg-muted/30',
+                      )}
+                    >
+                      <td
+                        scope="row"
+                        className="py-3 pr-2 text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              'inline-block w-2 h-2 rounded-full shrink-0',
+                              bucket.dotClass,
+                            )}
+                            aria-hidden="true"
+                          />
+                          <span className="text-foreground text-xs sm:text-sm whitespace-nowrap">
+                            {bucket.label}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3 px-2 xs:px-3 text-center text-muted-foreground">
+                        {atendido}
+                      </td>
+                      <td className="py-3 px-2 xs:px-3 text-center text-muted-foreground">
+                        {naoAtendido}
+                      </td>
+                      <td className="py-3 px-2 xs:px-3 text-center font-semibold text-foreground">
+                        {total}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </CardContent>

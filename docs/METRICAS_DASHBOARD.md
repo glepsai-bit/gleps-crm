@@ -205,31 +205,37 @@ Para cada hora (0-23):
 
 ---
 
-## Backlog Humano
+## Fila de Espera
+
+> Anteriormente chamado "Backlog Humano". Renomeado em T-015 para linguagem mais próxima do operador.
 
 > **Ignora filtro de data** — mostra o estado atual da fila
 
 | Campo | Detalhe |
 |-------|---------|
-| **O que mostra** | Conversas abertas atribuídas a agentes humanos, agrupadas por tempo de espera |
+| **O que mostra** | Conversas abertas na fila, agrupadas por faixa de tempo de espera e por tipo (Atendido / Não atendido) |
 | **Cálculo do tempo de espera** | `agora - waiting_since` (se disponível) ou `agora - last_activity_at` |
 
-| Faixa | Critério |
-|-------|----------|
-| **Até 15 min** | Tempo de espera ≤ 15 minutos |
-| **15 a 60 min** | 15 < tempo de espera ≤ 60 minutos |
-| **Acima de 60 min** | Tempo de espera > 60 minutos |
+### Layout do card (T-015)
 
-### Backlog Não Atribuídas (adicionado em 2026-06-15 / T-011)
+O card exibe uma tabela unificada com 3 linhas (buckets de tempo) × 4 colunas:
 
-Subseção complementar ao Backlog Humano. Mostra conversas **abertas e sem nenhum assignee** (`classifyCurrentHandler === 'none'` — nem bot, nem humano). Antes ficavam invisíveis no card, contadas apenas em `atendimento.semAssignee`. Agora aparecem aqui, nos mesmos buckets de tempo, sob o rótulo **"Não atribuídas"**.
+| Coluna | Fonte de dados |
+|--------|---------------|
+| **Faixa** | Bucket de tempo com dot colorido (verde / amarelo / vermelho) |
+| **Atendido** | `backlog.ate15min` / `backlog.de15a60min` / `backlog.acima60min` (com assignee humano) |
+| **Não atendido** | `backlog.naoAtribuidas.ate15min` / `.de15a60min` / `.acima60min` (sem assignee) |
+| **Total** | Soma das duas colunas anteriores (negrito — métrica primária) |
 
-| Campo | Detalhe |
-|-------|---------|
-| **O que mostra** | Conversas abertas que ninguém pegou ainda (sem bot, sem humano) |
-| **Por que importa** | Esconder essas conversas mascarava trabalho parado. Agora a equipe enxerga e atribui. |
-| **Cálculo do tempo de espera** | Mesma fórmula do Backlog Humano (`waiting_since` ou `last_activity_at`) |
-| **Buckets** | Mesmos: Até 15 min / 15 a 60 min / Acima de 60 min |
+Quando a soma de todos os 9 valores é zero, o card exibe um empty state: "Fila vazia. Tudo em dia."
+
+| Faixa | Critério | Cor do dot |
+|-------|----------|-----------|
+| **Até 15 min** | Tempo de espera ≤ 15 minutos | `--success` (verde) |
+| **15 a 60 min** | 15 < tempo de espera ≤ 60 minutos | `--warning` (amarelo) |
+| **Acima de 60 min** | Tempo de espera > 60 minutos | `--destructive` (vermelho) |
+
+> **Nota (T-011 → T-015):** A subseção "Backlog Não Atribuídas" que existia como bloco separado foi unificada ao card principal como a coluna **"Não atendido"**. A lógica de cálculo é idêntica (`classifyCurrentHandler === 'none'`); apenas a apresentação mudou.
 
 ---
 
