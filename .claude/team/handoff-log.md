@@ -10,6 +10,61 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-16 -- T-016 QA: validar T-015 + investigar bug de metricas (@dev-principal -> @qa) {#2026-06-16-qa-t015-bug-metricas}
+
+### Parte A -- Validacao visual do T-015 (backlog unificado)
+- Branch: whitelabel/gleps-ia, 3 commits: dbfa032 + 7524bcd + c0606c9 (sem push)
+- URL pra testar (apos rebuild EasyPanel): https://360.gleps.com.br
+- Card "Fila de Espera" agora eh 1 tabela com 3 linhas (Ate 15 / 15-60 / Acima 60) e colunas Atendido / Nao atendido / Total
+- Empty state na tabela de Performance de Agentes quando vazio
+- Validar: dark mode, mobile, leitor de tela (Total destaca?, ✕ tem aria-label?)
+
+### Parte B -- Bug "Esta operacao requer uma conta vinculada"
+- Reproducao: Logar como super_admin (admin@gleps.com.br) em https://360.gleps.com.br -> Dashboard de Atendimento -> erro aparece intermitentemente
+- Pistas da investigacao paralela:
+
+  **Componente que renderiza a mensagem (Front-end)**
+  - `src/pages/admin/AdminDashboard.tsx:264-275` — Alert "Erro ao carregar métricas" com `{metricsError}` no AlertDescription.
+  - Hook `src/hooks/useChatwootMetrics.ts:302-324` propaga literalmente `err.message` quando nao eh 502/abort/offline -> frase exibida vem CRU do backend.
+
+  **Endpoint chamado**
+  - `POST /api/chatwoot/metrics` (`src/api/endpoints.ts:140` como `CHATWOOT.METRICS`) via `fetchChatwootMetricsViaBackend` (hook L144-177).
+
+  **Origem real do erro (Back-end)**
+  - Mensagem exata "Esta operação requer uma conta vinculada." vive em `backend/src/middlewares/auth.middleware.ts:225-243`, funcao `requireAccountId` (L237).
+  - Resposta: HTTP 400 com body `{ error: { code: 'ACCOUNT_REQUIRED', message: 'Esta operação requer uma conta vinculada.' } }`.
+  - Condicao: `if (!req.user.accountId)` (L233) — bloqueia quando `accountId` eh null/undefined/"" no JWT.
+  - Rota `/api/chatwoot/*` aplica middleware em `backend/src/routes/chatwoot.routes.ts:27` (`router.use(requireAccountId)`).
+  - JWT: `auth.service.ts` `generateAccessToken` (L294-316) coloca `accountId: user.accountId` no payload SEM fallback.
+  - Seed: `prisma/seed.ts` L20-32 cria super_admin via `upsert` SEM campo `accountId` no `create` -> schema nullable -> fica `null` -> JWT do super_admin carrega `accountId: null`.
+
+  **Rotas afetadas (todas montam `router.use(requireAccountId)`)**
+  - `dashboard.routes.ts` L9 (bloqueia `/kpis`, `/hourly-peak`, `/backlog`, `/agents-performance`, `/ia-vs-human`)
+  - `chatwoot.routes.ts` L27 (bloqueia `/metrics`, `/metrics/agents`, `/metrics/conversations`, `/inboxes`, `/labels`, `/conversations`, `/sync`)
+  - Tambem: `contact`, `audience`, `product`, `email`, `calendar`, `sale`, `prospecting`, `email-extended`, `leadTag`.
+  - Existem rotas globais super_admin (`adminRouter` em `dashboard.routes.ts` L20-26: `/kpis`, `/server-resources`, `/consumption-history`, `/weekly-consumption`) mas NAO ha equivalente super_admin para `chatwoot/metrics`.
+
+  **Root cause (hipotese forte)**
+  - Super_admin do seed eh criado SEM `accountId`. O dashboard chama rotas de TENANT (`/api/dashboard/*` e/ou `/api/chatwoot/metrics`) protegidas por `requireAccountId`. Middleware recusa corretamente -> 400 `ACCOUNT_REQUIRED`.
+
+  **Hipoteses do "intermitente"**
+  1. Super admin sem impersonar conta (mais provavel): abre `/admin` sem ter entrado em uma conta -> JWT vem `accountId=null` -> 400 garantido.
+  2. Refresh token expirado/recriado sem accountId: `refresh` em `auth.service.ts:193` rele `refreshToken.user.accountId` do DB; se super_admin teve `accountId` setado temporariamente (impersonacao) mas o registro nao persiste, todo refresh perde contexto -> erro so apos ~15 min (TTL do access token).
+  3. Race no boot: `AdminDashboard` dispara `useChatwootMetrics` antes do `AuthContext` rehidratar contexto de impersonacao; primeira chamada vai sem `accountId` -> queries seguintes funcionam quando contexto carrega -> "intermitente".
+  4. Cache de JWT cross-tab: multiplas abas compartilhando localStorage podem sobrescrever token impersonado por token "puro" de super_admin de outra aba.
+
+- Por que so na Gleps IA: hipotese inicial -- super_admin do seed eh criado sem accountId, e as rotas de metricas chamadas pelo dashboard exigem accountId. No GoodLeads voce loga com admin de conta (nao super_admin), entao o erro nao aparece.
+- Acao QA: confirmar a hipotese rodando os passos -> reportar achados sem fix (Dev Principal corrige depois)
+
+### Como testar
+- Logar com admin@gleps.com.br / Admin@123 -> abrir Dashboard -> reproduzir erro -> abrir DevTools Network -> capturar request que falhou (URL + status code + body)
+- Logar com admin de conta vinculada (carlos@clinicavidaplena.com / Admin@123) -> ver se o erro some -> confirma hipotese
+- Reportar no handoff: qual endpoint, qual status code, JWT decode (tem accountId? null?)
+
+### Pendencias / nao fazer
+- NAO faca push da branch nem rebuild EasyPanel sem autorizacao do usuario
+- NAO implemente fix do bug -- so investigue
+
 ## 2026-06-16 — T-015 backlog unificado + empty state agentes (@frontend → @qa)
 
 - **O que mudou:** `BacklogCard.tsx` reescrito como tabela semântica única (Atendido / Não atendido / Total por faixa: até 15 min, 15-60 min, >60 min), substituindo o layout duplo anterior. `AgentPerformanceTable.tsx` ganhou empty state com ícone `Users` e `colSpan={5}`. Doc `METRICAS_DASHBOARD.md` renomeada: seção agora "Fila de Espera" com nota de migração ("Anteriormente chamado 'Backlog Humano'. Renomeado em T-015").
