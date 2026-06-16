@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/table';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
+import { Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface AgentData {
@@ -110,8 +111,16 @@ export function AgentPerformanceTable({
             <TableBody>
               {data.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                    Nenhum dado de agente disponível
+                  <TableCell colSpan={5}>
+                    <div
+                      role="status"
+                      className="flex flex-col items-center justify-center py-10 gap-3 text-muted-foreground"
+                    >
+                      <Users className="w-8 h-8 opacity-40" />
+                      <p className="text-sm text-center max-w-xs">
+                        Nenhuma conversa atribuída a agentes no período. Quando um agente assumir ou responder, ele aparece aqui.
+                      </p>
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : (
