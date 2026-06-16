@@ -127,9 +127,9 @@ export function BacklogCard({ data, isLoading = false }: BacklogCardProps) {
                         'transition-colors hover:bg-muted/30',
                       )}
                     >
-                      <td
+                      <th
                         scope="row"
-                        className="py-3 pr-2 text-left"
+                        className="py-3 pr-2 text-left font-normal"
                       >
                         <div className="flex items-center gap-2">
                           <span
@@ -143,14 +143,14 @@ export function BacklogCard({ data, isLoading = false }: BacklogCardProps) {
                             {bucket.label}
                           </span>
                         </div>
-                      </td>
-                      <td className="py-3 px-2 xs:px-3 text-center text-muted-foreground">
+                      </th>
+                      <td className="py-3 px-2 xs:px-3 text-center text-sm text-muted-foreground tabular-nums">
                         {atendido}
                       </td>
-                      <td className="py-3 px-2 xs:px-3 text-center text-muted-foreground">
+                      <td className="py-3 px-2 xs:px-3 text-center text-sm text-muted-foreground tabular-nums">
                         {naoAtendido}
                       </td>
-                      <td className="py-3 px-2 xs:px-3 text-center font-semibold text-foreground">
+                      <td className="py-3 px-2 xs:px-3 text-center text-base font-semibold text-foreground tabular-nums">
                         {total}
                       </td>
                     </tr>

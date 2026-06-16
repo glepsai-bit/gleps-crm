@@ -83,10 +83,12 @@ export function AgentPerformanceTable({
           </CardTitle>
           {selectedAgentName && onAgentSelect && (
             <button
+              type="button"
               onClick={() => onAgentSelect(null)}
+              aria-label={`Limpar filtro do agente ${selectedAgentName}`}
               className="text-xs text-primary hover:text-primary/80 font-medium transition-colors flex items-center gap-1"
             >
-              ✕ Limpar filtro
+              <span aria-hidden="true">✕</span> Limpar filtro
             </button>
           )}
         </div>
