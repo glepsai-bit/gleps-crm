@@ -401,8 +401,8 @@ export default function SuperAdminUsersPage() {
     }
   };
 
-  const handleImpersonate = (user: UserWithRole) => {
-    impersonate(user.id);
+  const handleImpersonate = async (user: UserWithRole) => {
+    await impersonate(user.id);
     // Navigate based on user role
     if (user.role === 'admin') {
       navigate('/admin');
