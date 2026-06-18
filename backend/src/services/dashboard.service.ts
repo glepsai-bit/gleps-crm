@@ -239,6 +239,63 @@ class DashboardService {
   }
 
   /**
+   * Get "Dinheiro na Mesa" (T-017)
+   * Soma orcamentos pendentes (outcomeValue) por outcome, em uma janela.
+   * Retorna no formato esperado pelo frontend (RespostaDinheiroMesa):
+   *   { totalCents, count, breakdown: [{ outcome, count, sumCents }] }
+   *
+   * Mapeamento outcome -> string snake_case (compativel com o front).
+   */
+  async getDinheiroMesa(accountId: string, range: '7d' | '30d' | '90d') {
+    const days = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+    const since = subDays(new Date(), days);
+
+    // Considera apenas appointments com outcome registrado e valor informado.
+    // PENDING e NULL ficam de fora — sem outcome decidido, nao ha "dinheiro na mesa".
+    const events = await prisma.calendarEvent.findMany({
+      where: {
+        accountId,
+        type: 'appointment',
+        endTime: { gte: since },
+        outcomeValue: { not: null },
+        outcome: { in: ['CLOSED', 'CONSIDERING', 'NOT_INTERESTED', 'RETURN_REQUESTED'] },
+      },
+      select: { outcome: true, outcomeValue: true },
+    });
+
+    // Mapa enum Prisma -> chave snake_case do front
+    const outcomeKey: Record<string, string> = {
+      CLOSED: 'fechou_tratamento',
+      CONSIDERING: 'vai_pensar',
+      NOT_INTERESTED: 'sem_interesse',
+      RETURN_REQUESTED: 'pediu_retorno',
+    };
+
+    const grouped = new Map<string, { count: number; sumCents: number }>();
+    let totalCents = 0;
+    let count = 0;
+
+    for (const e of events) {
+      const key = outcomeKey[e.outcome as string];
+      if (!key) continue;
+      // outcomeValue eh Decimal(12,2) em reais — converte para centavos.
+      const cents = Math.round(Number(e.outcomeValue) * 100);
+      const cur = grouped.get(key) ?? { count: 0, sumCents: 0 };
+      cur.count += 1;
+      cur.sumCents += cents;
+      grouped.set(key, cur);
+      totalCents += cents;
+      count += 1;
+    }
+
+    const breakdown = Array.from(grouped.entries())
+      .map(([outcome, v]) => ({ outcome, count: v.count, sumCents: v.sumCents }))
+      .sort((a, b) => b.sumCents - a.sumCents);
+
+    return { totalCents, count, breakdown };
+  }
+
+  /**
    * Get server resources (Super Admin only) - Real metrics
    */
   async getServerResources() {

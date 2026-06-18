@@ -2,9 +2,10 @@
  * DinheiroNaMesaCard — KPI de orcamentos pendentes (outcome vai_pensar) ultimos 30d (T-017)
  * Visivel apenas para role=admin.
  *
- * TODO server-side: backend deve rejeitar role != admin em GET /dashboard/dinheiro-mesa
- * adicionando middleware requireRole('admin') antes do handler.
- * (Ressalva Critic UX T-017 — handoff para Dev Principal)
+ * Gate server-side: JA implementado em backend/src/routes/dashboard.routes.ts via
+ * requireRole('admin','super_admin') em GET /api/dashboard/dinheiro-mesa.
+ * Agents recebem 403 — o retry/fallback abaixo cobre o caso de defense in depth.
+ * (Ressalva Critic UX T-017 resolvida)
  */
 
 import { useQuery } from '@tanstack/react-query';

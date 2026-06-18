@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { dashboardController } from '../controllers/dashboard.controller';
-import { authenticate, requireSuperAdmin, requireAccountId } from '../middlewares/auth.middleware';
+import { authenticate, requireSuperAdmin, requireAccountId, requireRole } from '../middlewares/auth.middleware';
 
 const router = Router();
 
@@ -13,6 +13,15 @@ router.get('/hourly-peak', (req, res, next) => dashboardController.getHourlyPeak
 router.get('/backlog', (req, res, next) => dashboardController.getBacklog(req, res, next));
 router.get('/agents-performance', (req, res, next) => dashboardController.getAgentPerformance(req, res, next));
 router.get('/ia-vs-human', (req, res, next) => dashboardController.getIAvsHuman(req, res, next));
+
+// T-017 — Dinheiro na Mesa: KPI sensivel (valor potencial em aberto).
+// Server-side gate: agent NAO pode ver — bloqueado por requireRole.
+// super_admin entra porque pode administrar o tenant.
+router.get(
+  '/dinheiro-mesa',
+  requireRole('admin', 'super_admin'),
+  (req, res, next) => dashboardController.getDinheiroMesa(req, res, next),
+);
 
 export default router;
 

@@ -14,6 +14,10 @@ const consumptionSchema = z.object({
   period: z.enum(['24h', '7d', '30d']).default('24h'),
 });
 
+const dinheiroMesaSchema = z.object({
+  range: z.enum(['7d', '30d', '90d']).default('30d'),
+});
+
 export class DashboardController {
   /**
    * GET /dashboard/kpis
@@ -88,6 +92,22 @@ export class DashboardController {
       const result = await dashboardService.getIAvsHuman(req.user!.accountId!, dateRange);
 
       res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /dashboard/dinheiro-mesa (T-017)
+   * KPI de "dinheiro na mesa" — soma orcamentos com outcome=CONSIDERING
+   * (cliente disse "vai pensar") nos ultimos N dias. Sensivel: rota tem
+   * gate server-side via requireRole('admin', 'super_admin') no router.
+   */
+  async getDinheiroMesa(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const query = dinheiroMesaSchema.parse(req.query);
+      const result = await dashboardService.getDinheiroMesa(req.user!.accountId!, query.range);
+      res.json(result);
     } catch (error) {
       next(error);
     }
