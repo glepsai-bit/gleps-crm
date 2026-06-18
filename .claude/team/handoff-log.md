@@ -10,6 +10,33 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-18 -- QA FINAL FINAL pos-T-018 (@qa -> @usuario)
+
+### Veredicto global: **NO-GO** para fechar T-014..T-018 hoje
+
+### Resultados por item
+- **BUG-1 (banner impersonate pos-F5):** NAO RESOLVIDO. Screenshot `qa-bug1-02-pos-f5.png` confirma banner ausente; localStorage tem `original_token` mas `isImpersonating: null`. Causa: `AuthContext.backend.tsx:110` usa `useState(false)` e o `useEffect` (linhas 193-226) nao re-hidrata `isImpersonating` a partir do `original_token` no localStorage. Efeito colateral grave: super_admin pos-F5 vai pra `/unauthorized`. Fix esperado: 3 linhas no useEffect (`if (localStorage.original_token) { setIsImpersonating(true); setOriginalUser(JSON.parse(original_user_cache).user); }`).
+- **BUG-1 botao "Sair":** funcional ISOLADO (redirect /super-admin, header volta, original_token removido) — mas inutil porque banner some no F5.
+- **BUG-2 (hardcode acc-1):** NAO RESOLVIDO. Console capturou `GET /api/tags?accountId=acc-1 => 400` no inicio da sessao (bundle antigo `index-C_nzgM9M.js` ainda servido). Bundle atual em prod e `index-rVoNNK5o.js`, NAO bate com o hash anunciado pelo deploy (`index-4Hri5dG0.js`) — 3 hashes distintos = deploy inconsistente ou cache CDN servindo versoes mistas. Sem invalidacao de cache, clientes sem hard-reload continuam quebrados.
+- **BUG-2 modulos:** INCONCLUSIVO. Leads/Kanban/Vendas/Produtos redirecionam pra /insights por guard de permissao do agent Moacir. So Agenda confirmou 200 com UUID real. Falta reteste com admin pleno da iGreen.
+- **Regressao T-015/T-016/T-017/T-018:** APROVADO. `/api/chatwoot/metrics`, `/api/appointments/pending-status`, `/api/dashboard/dinheiro-mesa` todos 200. Card "Fila de Espera" com backlog real (12 conversas). Badge "Pendencias" sem erro 400. Nenhuma regressao.
+
+### Bloqueadores para fechar entrega
+1. Fix de 3 linhas no `AuthContext.backend.tsx` para rehidratar `isImpersonating` no boot.
+2. Forcar invalidacao de cache do `index.html` (Cache-Control: no-cache) + confirmar hash canonico deployado.
+3. Reteste BUG-2 com admin pleno da iGreen (nao agent Moacir).
+
+### Screenshots
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-bug1-01-pos-impersonate.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-bug1-02-pos-f5.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-bug1-03-pos-sair.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-bug2-01-leads.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-bug2-agenda.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-regress-01-fila-espera.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-regress-02-pendencias.png`
+
+---
+
 ## 2026-06-18 -- T-018 fixes impersonate iGreen (BUG-1 reload + BUG-2 acc-1 hardcode) (@dev -> @qa)
 
 ### SHAs
