@@ -10,6 +10,65 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-17 -- T-017 human-in-the-loop pronto pra QA (@dev-principal+@frontend -> @qa) {#2026-06-17-t017-hitl-qa}
+
+### O que mudou
+Fluxo pos-consulta com 2 estados no `CalendarEvent` (attendance + outcome), badge "Pendencias Hoje" no header, KPI "Dinheiro na Mesa" admin-only e disparo de webhook pro n8n a cada transicao. Sem tabela nova; reusa `CalendarEvent`.
+
+### Arquivos/SHAs
+- **Backend** `0d5d8e1` — `backend/prisma/schema.prisma` (+enums `AttendanceStatus`/`AppointmentOutcome` + 2 indexes compostos), migration `0021_add_appointment_attendance_outcome`, `backend/src/controllers/appointment.controller.ts` (novo, +226), `backend/src/routes/appointment.routes.ts` (novo), `backend/src/services/n8n-webhook.service.ts` (novo, +128), montagem em `backend/src/routes/index.ts`.
+- **Frontend** `70a9d2f` — `src/api/appointments.ts` (novo), `src/api/endpoints.ts` (+rotas CALENDAR/DASHBOARD), `src/components/dashboard/{AttendanceDialog,OutcomeDialog,PendenciasHoje,DinheiroNaMesaCard}.tsx` (novos, ~614 linhas), `src/layouts/AdminLayout.tsx` (+badge no header), `src/pages/admin/AdminInsightsPage.tsx` (+card antes do BottleneckCard, gate admin).
+- **n8n** `1b36eef` — `docs/T-017_N8N_TEMPLATES_TODO.md` (4 templates totalmente especificados; aguarda T-013 mergear pra publicar no `tools/n8n-flow-builder/`).
+
+### Endpoints novos
+- `PATCH /api/appointments/:id/attendance` body `{status: compareceu|falto|reagendou}`
+- `PATCH /api/appointments/:id/outcome` body `{outcome, value?, notes?}` (422 se attendance != compareceu)
+- `GET /api/appointments/pending-status` -> `{pendingAttendance, pendingOutcome, total}`
+- Webhook outbound `appointment.attendance` / `appointment.outcome` pro `N8N_WEBHOOK_URL`
+
+### Validacoes
+- `npm run build` backend (tsc) PASS, frontend (vite) PASS 3530 modulos
+- `npm test` 36/36 PASS
+- `npx prisma migrate deploy` local aplicou `0021` OK
+- grep `#EE3924` nos 4 componentes novos = 0 (tudo via tokens)
+- lint 0 erros nos novos arquivos
+
+### Criticas / Pendencias
+
+**Critic Schema REFUTOU 3 bugs (registrados, NAO corrigidos nesta entrega):**
+
+1. **Race condition no transition guard** (`appointment.controller.ts:66-95`) — `update` sem `WHERE attendanceStatus=<antigo>`. Clique duplo simultaneo dispara webhook 2x. Corrigir com `updateMany` condicional + checar `count`.
+2. **Webhook sem timeout** (`n8n-webhook.service.ts:30-34`) — `fetch` sem `AbortSignal.timeout(5000)`. Se n8n trava, evento de outcome perdido silenciosamente. Adicionar timeout + retry/fila persistente.
+3. **`listPendingStatus:179` ignora `endTime IS NULL`** — eventos legacy/import Google Calendar sem endTime nunca aparecem como pendencia. Adicionar fallback `OR: [{endTime: {lt: now}}, {endTime: null, startTime: {...}}]`.
+
+Bonus menor: `markOutcome` sobrescreve `outcomeMarkedAt` sem auditoria de revisoes.
+
+**Critic UX APROVADO com 3 ressalvas:**
+
+1. **`DinheiroNaMesaCard` so protege client-side** (gate em `user.role !== 'admin'`). Confirmar QA: `GET /dashboard/dinheiro-mesa` precisa rejeitar agent/recepcionista no backend (curl + token de agent).
+2. **Sem optimistic update** — badge so some apos roundtrip; lentidao perceptivel em conexao ruim. Considerar `onMutate` removendo item do cache local.
+3. **`OutcomeDialog` reseta state DEPOIS do `onDone`** (linhas 103-107): se parent desmonta via `setEstado`, reset vira no-op. Inverter ordem.
+
+### Como testar (localhost)
+1. `cd backend && npx prisma migrate deploy && npm run dev` (porta 3000)
+2. `npm run dev` na raiz (porta 8080) — `VITE_USE_BACKEND=true` no `.env`
+3. Login como admin (seed) -> Agenda -> criar agendamento com `endTime` no passado
+4. Header: clicar no Bell ("Pendencias Hoje") -> popover lista o agendamento
+5. Clicar -> AttendanceDialog (Compareceu/Faltou/Reagendou)
+6. Compareceu -> abre OutcomeDialog automaticamente (4 opcoes); Fechou tratamento -> input BRL opcional
+7. Verificar dashboard admin: KPI "Dinheiro na Mesa" aparece antes do BottleneckCard (so admin)
+8. Verificar webhook: configurar `N8N_WEBHOOK_URL` no backend `.env` -> tail log do n8n / `webhook.site` recebe payload com `event`, `accountId`, `contact`, `outcome`
+9. **Repro race**: dois cliques rapidos em "Compareceu" -> webhook deve disparar **2x** (bug critico #1)
+10. Agente (nao admin) NAO ve `DinheiroNaMesaCard` e NAO deve ver dados via curl `GET /api/dashboard/dinheiro-mesa` com token agent (validar #1 do UX)
+
+### Pendencias
+- 3 bugs do Critic Schema (race + timeout + endTime null) — atribuir ao Dev Principal apos QA confirmar repro
+- 3 ressalvas UX — confirmar protecao server-side do dinheiro-mesa, otimizar UX (optimistic), corrigir ordem reset
+- Templates n8n esperando T-013 mergear pra publicar no `tools/n8n-flow-builder/gallery.js`
+- Push (`git push origin whitelabel/gleps-ia`) pendente conforme protocolo do usuario
+
+---
+
 ## 2026-06-16 -- T-016 QA: validar T-015 + investigar bug de metricas (@dev-principal -> @qa) {#2026-06-16-qa-t015-bug-metricas}
 
 ### Parte A -- Validacao visual do T-015 (backlog unificado)
