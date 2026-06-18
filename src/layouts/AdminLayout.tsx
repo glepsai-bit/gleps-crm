@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import glepsLogo from '@/assets/gleps-logo.png';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { PendenciasHoje } from '@/components/dashboard/PendenciasHoje';
 
 interface AdminLayoutProps {
   children: ReactNode;
@@ -104,7 +105,10 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             </span>
           </div>
         </div>
-        <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
+        <div className="flex items-center gap-1">
+          <PendenciasHoje />
+          <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
+        </div>
       </header>
 
       {/* Mobile Overlay */}
@@ -173,7 +177,8 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
 
         {/* User Menu */}
         <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border space-y-1">
-          <div className={cn('flex', collapsed ? 'justify-center' : 'justify-end')}>
+          <div className={cn('flex items-center gap-1', collapsed ? 'justify-center' : 'justify-end')}>
+            <PendenciasHoje />
             <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
           </div>
           <DropdownMenu>

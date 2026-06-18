@@ -120,6 +120,10 @@ export const API_ENDPOINTS = {
     INTEGRATIONS: '/api/calendar/integrations',
     CONNECT_GOOGLE: '/api/calendar/connect/google',
     DISCONNECT_GOOGLE: '/api/calendar/disconnect/google',
+    // T-017 Human-in-the-Loop
+    ATTENDANCE: (id: string) => `/api/calendar/events/${id}/attendance`,
+    OUTCOME: (id: string) => `/api/calendar/events/${id}/outcome`,
+    PENDING_STATUS: '/api/calendar/events/pending-status',
   },
 
   // ============= EVENTS/AUDIT SERVICE =============
@@ -151,6 +155,8 @@ export const API_ENDPOINTS = {
     SERVER_RESOURCES: '/api/admin/server-resources',
     CONSUMPTION_HISTORY: '/api/admin/consumption-history',
     WEEKLY_CONSUMPTION: '/api/admin/weekly-consumption',
+    // T-017
+    DINHEIRO_MESA: '/api/dashboard/dinheiro-mesa',
   },
 
   // ============= PROSPECTING SERVICE =============

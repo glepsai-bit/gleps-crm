@@ -10,3 +10,7 @@ export { BacklogCard } from './BacklogCard';
 export { AgentPerformanceTable } from './AgentPerformanceTable';
 export { QualityCards } from './QualityCards';
 export { EmptyState } from './EmptyState';
+export { PendenciasHoje } from './PendenciasHoje';
+export { AttendanceDialog } from './AttendanceDialog';
+export { OutcomeDialog } from './OutcomeDialog';
+export { DinheiroNaMesaCard } from './DinheiroNaMesaCard';

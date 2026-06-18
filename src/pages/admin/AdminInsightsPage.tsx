@@ -32,6 +32,7 @@ import {
   Users,
   CalendarCheck,
 } from 'lucide-react';
+import { DinheiroNaMesaCard } from '@/components/dashboard/DinheiroNaMesaCard';
 import {
   startOfDay,
   endOfDay,
@@ -707,6 +708,9 @@ export default function AdminInsightsPage() {
         totalLeads={kpis.totalLeads}
         totalVendas={kpis.totalVendas}
       />
+
+      {/* Dinheiro na Mesa — admin only */}
+      {isAdmin && user?.role === 'admin' && <DinheiroNaMesaCard />}
 
       {/* Bottleneck Card */}
       <BottleneckCard
