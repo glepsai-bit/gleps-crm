@@ -14,6 +14,8 @@ interface AttendanceDialogProps {
   onDone?: () => void;
 }
 
+// BUG-2: valores enviados à API são os enums uppercase do BE (ATTENDED/NO_SHOW/RESCHEDULED).
+// Labels visíveis ao usuário continuam em PT-BR.
 const opcoes: Array<{
   status: StatusPresenca;
   label: string;
@@ -21,19 +23,19 @@ const opcoes: Array<{
   ariaLabel: string;
 }> = [
   {
-    status: 'compareceu',
+    status: 'ATTENDED',
     label: 'Compareceu',
     className: 'bg-success text-success-foreground hover:bg-success/90',
     ariaLabel: 'Marcar paciente como compareceu',
   },
   {
-    status: 'falto',
+    status: 'NO_SHOW',
     label: 'Faltou',
     className: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
     ariaLabel: 'Marcar paciente como faltou',
   },
   {
-    status: 'reagendou',
+    status: 'RESCHEDULED',
     label: 'Reagendou',
     className: 'bg-warning text-warning-foreground hover:bg-warning/90',
     ariaLabel: 'Marcar paciente como reagendou',
@@ -56,20 +58,22 @@ export function AttendanceDialog({
       const previous = queryClient.getQueryData(['pending-status']);
       queryClient.setQueryData(
         ['pending-status'],
-        (old: { total: number; items: { id: string }[] } | undefined) => {
+        // BUG-5: estrutura do cache agora usa pendingAttendance, nao items
+        (old: { total: number; pendingAttendance: { id: string }[]; pendingOutcome: { id: string }[] } | undefined) => {
           if (!old) return old;
-          const items = old.items.filter((p) => p.id !== appointmentId);
-          return { ...old, items, total: Math.max(0, old.total - 1) };
+          const pendingAttendance = old.pendingAttendance.filter((p) => p.id !== appointmentId);
+          return { ...old, pendingAttendance, total: Math.max(0, old.total - 1) };
         }
       );
       return { previous };
     },
     onSuccess: (_data, status) => {
-      if (status === 'compareceu') {
+      // BUG-2: comparacoes contra enums uppercase do BE
+      if (status === 'ATTENDED') {
         onCompareceu();
       } else {
         toast.success(
-          status === 'falto'
+          status === 'NO_SHOW'
             ? 'Falta registrada com sucesso.'
             : 'Reagendamento registrado com sucesso.'
         );

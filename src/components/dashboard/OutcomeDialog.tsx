@@ -26,6 +26,8 @@ interface OutcomeDialogProps {
   onDone?: () => void;
 }
 
+// BUG-3: valores enviados à API são os enums uppercase do BE.
+// Labels visíveis ao usuário continuam em PT-BR.
 const opcoes: Array<{
   outcome: ResultadoConsulta;
   label: string;
@@ -34,28 +36,28 @@ const opcoes: Array<{
   pedirValor: boolean;
 }> = [
   {
-    outcome: 'fechou_tratamento',
+    outcome: 'CLOSED',
     label: 'Fechou tratamento',
     className: 'bg-success text-success-foreground hover:bg-success/90',
     ariaLabel: 'Registrar que o paciente fechou o tratamento',
     pedirValor: true,
   },
   {
-    outcome: 'vai_pensar',
+    outcome: 'CONSIDERING',
     label: 'Vai pensar',
     className: 'bg-warning text-warning-foreground hover:bg-warning/90',
     ariaLabel: 'Registrar que o paciente vai pensar',
     pedirValor: false,
   },
   {
-    outcome: 'sem_interesse',
+    outcome: 'NOT_INTERESTED',
     label: 'Sem interesse',
     className: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
     ariaLabel: 'Registrar que o paciente nao tem interesse',
     pedirValor: false,
   },
   {
-    outcome: 'pediu_retorno',
+    outcome: 'RETURN_REQUESTED',
     label: 'Pediu retorno',
     className: 'bg-primary text-primary-foreground hover:bg-primary/90',
     ariaLabel: 'Registrar que o paciente pediu retorno',
@@ -63,11 +65,15 @@ const opcoes: Array<{
   },
 ];
 
-function centavosParaReal(valor: string): number | undefined {
+// BUG-4: BE espera { value: number } em BRL real (ex: 500.00), NAO centavos.
+// O campo do input já é digitado em R$ pelo usuário (ex: "3500,00" → 3500.00).
+// Prisma faz new Prisma.Decimal(body.value), portanto float BRL é o correto.
+function parsearValorBRL(valor: string): number | undefined {
   if (!valor.trim()) return undefined;
   const numerico = parseFloat(valor.replace(',', '.'));
   if (isNaN(numerico) || numerico <= 0) return undefined;
-  return Math.round(numerico * 100);
+  // Retorna diretamente em reais (ex: 3500.00), sem multiplicar por 100
+  return numerico;
 }
 
 export function OutcomeDialog({
@@ -88,11 +94,12 @@ export function OutcomeDialog({
   const mutation = useMutation({
     mutationFn: () => {
       if (!outcomeSelecionado) throw new Error('Selecione um resultado');
-      const valueCents = centavosParaReal(valor);
+      // BUG-4: value em BRL real, campo renomeado para refletir contrato do BE
+      const value = parsearValorBRL(valor);
       return marcarOutcome(
         appointmentId,
         outcomeSelecionado,
-        valueCents,
+        value,
         notas.trim() || undefined
       );
     },
@@ -149,8 +156,8 @@ export function OutcomeDialog({
             ))}
           </div>
 
-          {/* Campo valor — so se fechou_tratamento */}
-          {outcomeSelecionado === 'fechou_tratamento' && (
+          {/* Campo valor — so se CLOSED (fechou tratamento) */}
+          {outcomeSelecionado === 'CLOSED' && (
             <div className="space-y-1">
               <Label htmlFor="outcome-valor" className="text-xs">
                 Valor do tratamento (R$) — opcional

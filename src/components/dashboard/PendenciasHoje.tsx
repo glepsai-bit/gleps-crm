@@ -41,8 +41,10 @@ export function PendenciasHoje() {
     staleTime: 30_000,
   });
 
+  // BUG-5: BE retorna { pendingAttendance, pendingOutcome, total } — nao data.items
   const total = data?.total ?? 0;
-  const itens = data?.items ?? [];
+  const itensPendenciaPresenca = data?.pendingAttendance ?? [];
+  const itensPendenciaOutcome = data?.pendingOutcome ?? [];
 
   function abrirAttendance(ag: AgendamentoPendente) {
     setEstado({ tipo: 'attendance', agendamento: ag });
@@ -115,10 +117,11 @@ export function PendenciasHoje() {
             </p>
           </div>
 
-          {itens.length > 0 && (
-            <ScrollArea className="max-h-72">
+          {/* BUG-5: prioridade 1 — pendingAttendance (marcar comparecimento) */}
+          {itensPendenciaPresenca.length > 0 && (
+            <ScrollArea className="max-h-60">
               <div className="divide-y divide-border">
-                {itens.map((ag) => (
+                {itensPendenciaPresenca.map((ag) => (
                   <div
                     key={ag.id}
                     className="px-4 py-3 hover:bg-muted/50 transition-colors"
@@ -137,21 +140,56 @@ export function PendenciasHoje() {
                         variant="outline"
                         className="text-[10px] shrink-0"
                       >
-                        {ag.needs === 'attendance' ? 'Presenca' : 'Resultado'}
+                        Presenca
                       </Badge>
                     </div>
+                    <AttendanceDialog
+                      appointmentId={ag.id}
+                      contactName={ag.contactName}
+                      onCompareceu={() => {
+                        setEstado({ tipo: 'outcome', agendamento: ag });
+                        setOutcomeAberto(true);
+                      }}
+                      onDone={() => setPopoverAberto(false)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          )}
 
-                    {ag.needs === 'attendance' ? (
-                      <AttendanceDialog
-                        appointmentId={ag.id}
-                        contactName={ag.contactName}
-                        onCompareceu={() => {
-                          setEstado({ tipo: 'outcome', agendamento: ag });
-                          setOutcomeAberto(true);
-                        }}
-                        onDone={() => setPopoverAberto(false)}
-                      />
-                    ) : (
+          {/* BUG-5: prioridade 2 — pendingOutcome (awaiting outcome apos attendance=ATTENDED) */}
+          {itensPendenciaOutcome.length > 0 && (
+            <>
+              <div className="px-4 py-2 border-t border-border bg-muted/30">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Aguardando resultado
+                </p>
+              </div>
+              <ScrollArea className="max-h-48">
+                <div className="divide-y divide-border">
+                  {itensPendenciaOutcome.map((ag) => (
+                    <div
+                      key={ag.id}
+                      className="px-4 py-3 hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-foreground truncate">
+                            {ag.contactName}
+                          </p>
+                          <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                            <Clock className="w-3 h-3 shrink-0" />
+                            {formatarHora(ag.startTime)} – {formatarHora(ag.endTime)}
+                          </p>
+                        </div>
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] shrink-0"
+                        >
+                          Resultado
+                        </Badge>
+                      </div>
                       <Button
                         size="sm"
                         variant="outline"
@@ -161,14 +199,14 @@ export function PendenciasHoje() {
                       >
                         Registrar resultado
                       </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </ScrollArea>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </>
           )}
 
-          {!isLoading && itens.length === 0 && (
+          {!isLoading && itensPendenciaPresenca.length === 0 && itensPendenciaOutcome.length === 0 && (
             <div
               role="status"
               className="px-4 py-6 text-center text-xs text-muted-foreground"
