@@ -10,6 +10,10 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 
+// Timeout pra POST no n8n. 5s é folgado pra webhook saudável e curto o
+// suficiente pra não segurar o event loop quando o n8n está down.
+const N8N_TIMEOUT_MS = 5000;
+
 const appointmentWithRels = Prisma.validator<Prisma.CalendarEventDefaultArgs>()({
   include: { contact: true, account: true },
 });
@@ -26,11 +30,15 @@ function getWebhookUrl(): string | null {
 }
 
 async function postJson(url: string, body: unknown): Promise<{ ok: boolean; status: number }> {
-  // node 20+ tem fetch global; sem deps extras
+  // node 20+ tem fetch global; sem deps extras.
+  // AbortSignal.timeout garante que requests pro n8n não pendurem o processo
+  // quando o destino estiver down — chamador trata DOMException como falha
+  // best-effort no try/catch.
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(N8N_TIMEOUT_MS),
   });
   return { ok: res.ok, status: res.status };
 }

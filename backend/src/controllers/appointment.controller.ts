@@ -60,14 +60,27 @@ export class AppointmentController {
 
       const body = attendanceSchema.parse(req.body);
 
+      // Carrega só pra validar escopo (existência + multi-tenant + 404/403).
+      // Não confia no estado aqui pra decidir transição — usa updateMany atômico abaixo.
       const existing = await loadAppointmentScoped(id, accountId);
 
-      // Transition guard: só dispara webhook se realmente mudar (idempotência).
-      const willChange =
-        existing.attendanceStatus !== body.status as AttendanceStatus;
+      const newStatus = body.status as AttendanceStatus;
 
-      const updateData: Prisma.CalendarEventUpdateInput = {
-        attendanceStatus: body.status as AttendanceStatus,
+      // Se o status já é igual ao desejado, sai cedo sem disparar webhook
+      // (idempotência). Continua respondendo 200 com o estado atual.
+      if (existing.attendanceStatus === newStatus) {
+        res.json({
+          id: existing.id,
+          attendanceStatus: existing.attendanceStatus,
+          attendanceMarkedAt: existing.attendanceMarkedAt,
+          attendanceMarkedBy: existing.attendanceMarkedBy,
+          requiresOutcome: existing.attendanceStatus === 'ATTENDED',
+        });
+        return;
+      }
+
+      const updateData: Prisma.CalendarEventUncheckedUpdateManyInput = {
+        attendanceStatus: newStatus,
         attendanceMarkedAt: new Date(),
         attendanceMarkedBy: userId,
       };
@@ -84,16 +97,33 @@ export class AppointmentController {
         updateData.outcomeMarkedBy = null;
       }
 
-      const updated = await prisma.calendarEvent.update({
-        where: { id },
+      // Update atômico com guard de estado anterior. Race-safe: dois cliques
+      // simultâneos só passam o guard uma vez (count === 1); o segundo recebe
+      // count === 0 e devolve 409. Evita webhook duplicado.
+      const result = await prisma.calendarEvent.updateMany({
+        where: {
+          id,
+          accountId,
+          // Guard: só transiciona quando o estado anterior é "ainda não marcado"
+          // ou diferente do desejado. Como já checamos igualdade acima,
+          // basta confirmar que NÃO está no novo valor (evita double-mark).
+          NOT: { attendanceStatus: newStatus },
+        },
         data: updateData,
+      });
+
+      if (result.count === 0) {
+        res.status(409).json({ error: 'ALREADY_MARKED' });
+        return;
+      }
+
+      const updated = await prisma.calendarEvent.findUniqueOrThrow({
+        where: { id },
         include: APPOINTMENT_INCLUDE,
       });
 
-      if (willChange) {
-        // fire-and-forget: não bloqueia a resposta
-        void n8nWebhookService.emitAttendanceChanged(updated, { userId, name: userName });
-      }
+      // fire-and-forget: só dispara quando ganhamos a corrida (count === 1)
+      void n8nWebhookService.emitAttendanceChanged(updated, { userId, name: userName });
 
       res.json({
         id: updated.id,
@@ -121,30 +151,56 @@ export class AppointmentController {
 
       const body = outcomeSchema.parse(req.body);
 
+      // Carrega só pra escopo + 404/403 + checar pré-condição ATTENDED.
       const existing = await loadAppointmentScoped(id, accountId);
 
       if (existing.attendanceStatus !== 'ATTENDED') {
         throw new ValidationError('Outcome só pode ser registrado para agendamentos com presença confirmada (ATTENDED).');
       }
 
+      const newOutcome = body.outcome as AppointmentOutcome;
+      const newValue = body.value !== undefined ? new Prisma.Decimal(body.value) : null;
+      const newNotes = body.notes ?? null;
+
       const willChange =
-        existing.outcome !== body.outcome as AppointmentOutcome ||
+        existing.outcome !== newOutcome ||
         Number(existing.outcomeValue ?? 0) !== Number(body.value ?? 0) ||
         (existing.outcomeNotes ?? '') !== (body.notes ?? '');
 
-      const updated = await prisma.calendarEvent.update({
-        where: { id },
+      // Update atômico com guard duplo: (a) ainda está ATTENDED — evita race
+      // com markAttendance concorrente que desfaz ATTENDED; (b) outcome ainda
+      // é o estado lido — evita double-emit por cliques simultâneos.
+      // Quando dois cliques chegam juntos, só um vê count === 1 e dispara webhook.
+      const result = await prisma.calendarEvent.updateMany({
+        where: {
+          id,
+          accountId,
+          attendanceStatus: 'ATTENDED',
+          outcome: existing.outcome,
+          outcomeValue: existing.outcomeValue,
+          outcomeNotes: existing.outcomeNotes,
+        },
         data: {
-          outcome: body.outcome as AppointmentOutcome,
-          outcomeValue: body.value !== undefined ? new Prisma.Decimal(body.value) : null,
-          outcomeNotes: body.notes ?? null,
+          outcome: newOutcome,
+          outcomeValue: newValue,
+          outcomeNotes: newNotes,
           outcomeMarkedAt: new Date(),
           outcomeMarkedBy: userId,
         },
+      });
+
+      if (result.count === 0 && willChange) {
+        res.status(409).json({ error: 'ALREADY_MARKED' });
+        return;
+      }
+
+      const updated = await prisma.calendarEvent.findUniqueOrThrow({
+        where: { id },
         include: APPOINTMENT_INCLUDE,
       });
 
-      if (willChange) {
+      // Só dispara webhook se de fato ganhamos a corrida E o valor mudou.
+      if (result.count === 1 && willChange) {
         void n8nWebhookService.emitOutcomeChanged(updated, { userId, name: userName });
       }
 
@@ -166,6 +222,14 @@ export class AppointmentController {
    * GET /api/appointments/pending-status
    * Lista agendamentos já encerrados (endTime < now) que ainda precisam
    * de attendance ou de outcome. Limite por janela de 3 dias passados.
+   *
+   * Decisão sobre endTime NULL (T-017 Critic Schema):
+   * appointments com endTime IS NULL NÃO entram na lista de pendências.
+   * Racional: sem endTime explícito, não dá pra saber se a consulta já
+   * terminou (paciente pode estar em atendimento longo). Forçar como
+   * pendente geraria falso-positivo no painel. Quem cria appointment via
+   * UI sempre define endTime; integrações que omitirem ficam invisíveis
+   * de propósito até o operador editar. Se mudar a regra, ajustar aqui.
    */
   async listPendingStatus(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -173,6 +237,8 @@ export class AppointmentController {
       const now = new Date();
       const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
 
+      // endTime: { lt: now } já exclui linhas com endTime IS NULL no Postgres
+      // (NULL não é < now). Mantido explicitamente — comportamento documentado.
       const baseWhere = {
         accountId,
         type: 'appointment' as const,
