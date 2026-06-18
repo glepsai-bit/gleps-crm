@@ -10,6 +10,48 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-18 -- QA FINAL pos-fixes em prod (@qa -> @usuario) {#2026-06-18-qa-final-prod}
+
+### Deploy
+- Backend rebuilded OK (version `2026-06-15-whitelabel-gleps-ia`, health 200 na 1a tentativa).
+- Frontend rebuilded OK (bundle `index-C_nzgM9M.js`, string "Fila de Espera" no bundle).
+- Login super_admin OK (role=super_admin, accountId=null) -- bypass T-016 funcionando no caso classico do `dinheiro-mesa`.
+
+### Veredicto por card (apos critica adversarial)
+
+**T-014 — APROVADO (mantido do QA anterior, 2026-06-18).** Visual/headers/health OK em https://360.gleps.com.br. Ressalvas ja anotadas (headers de seguranca rasos, faltou teste de isolamento multi-tenant DB) -- nao bloqueia.
+
+**T-015 — APROVADO COM RESSALVA.** Bundle correto em prod (`index-C_nzgM9M.js`). DOM com bundle correto mostra `heading "Fila de Espera" [level=3]` (ref=e454), empty state "Fila vazia. Tudo em dia." (ref=e456), Performance de Agentes com empty state descritivo (ref=e479). Dark mode toggle OK, mobile 375x667 OK. Tabela 3x3 nao renderizada porque backlog=0 (empty state correto) -- criterio 2 validado por leitura de codigo, nao por DOM real (inconclusive forte). Screenshots: `qa-final-t015-01..03.png`.
+
+**T-016 — REPROVADO.** Bypass implementado mas INCOMPLETO. Resultado por endpoint em prod (super_admin token):
+- `GET /api/dashboard/dinheiro-mesa?range=7d` -> HTTP 200 (resolvido).
+- `GET /api/chatwoot/metrics` -> HTTP 400 (ainda quebrado).
+- `GET /api/contacts` -> HTTP 400 (ainda quebrado).
+- `GET /api/dashboard/admin-kpis` -> HTTP 404 (rota inexistente).
+Causa: bypass foi aplicado pontualmente na rota `dinheiro-mesa`, NAO no middleware `requireAccountId` global. `chatwoot.routes.ts:27` faz `router.use(requireAccountId)` sem bypass.
+Fix de 1 linha: no topo do `requireAccountId` (`backend/src/middlewares/auth.middleware.ts:225-243`), `if (req.user.role === 'super_admin') return next();`.
+Novo card T-016b aberto.
+
+**T-017 API — APROVADO.** 10/10 cenarios passaram contra prod: login super_admin+admin, `dinheiro-mesa` 200, `pending-status` 200, POST `/api/calendar/events` 201, PATCH attendance 200 + `requiresOutcome:true`, PATCH outcome 200, re-GET `dinheiro-mesa` reflete R$500 (`totalCents:50000`), race guard 1x200+1x409 `ALREADY_MARKED`, RBAC agent 403 `PERMISSION_DENIED`. Furos nao-bloqueantes: agent de teste nao deletado; rota `POST /api/appointments` (sem prefixo `calendar/`) 404 por design.
+
+**T-017 UI — APROVADO COM RESSALVA GRAVE.** Fluxo ponta a ponta validado via Playwright: badge "Pendencias de Hoje" -> popover -> Compareceu -> dialog Outcome -> "Fechou tratamento" R$750 -> PATCH 200 -> dialog fecha -> badge zera -> F5 persiste -> `dinheiro-mesa.totalCents` atualiza. Payload correto (`{outcome:"CLOSED",value:750}`, enums uppercase, campo `value` nao `valueCents`).
+- Ressalva 1: optimistic update NAO confirmado (so refetch imediato observado).
+- Ressalva 2 (CRITICA): codigo do componente `PendingAppointments` e rotas `/api/appointments/*` NAO estao commitados no repo -- so no container de prod. Schema Prisma local sem `attendanceStatus/outcome/outcomeValue`. Recriar container = perder feature. Risco operacional alto.
+- Bug cosmetico: botao de pendencias na sidebar colapsada fica fora do viewport <900px (workaround `.nth(1)` no Playwright; uso humano OK).
+Screenshots: `qa-final-t017ui-08..13.png`.
+
+### GO/NO-GO global: **NO-GO pra fechar a entrega hoje**
+- T-014, T-015, T-017 API podem fechar.
+- T-017 UI nao deve fechar enquanto codigo nao for sincronizado pro repo (divida garantida no proximo redeploy).
+- T-016 quebrado (so 1 das rotas resolvida) -> vira T-016b.
+
+### Acoes recomendadas (proximo passo)
+1. Dev-principal: aplicar fix de 1 linha em `requireAccountId` (T-016b) e re-deploy.
+2. Dev-principal: commitar codigo de producao (`PendingAppointments`, rotas `/api/appointments/*`, migration com `attendanceStatus/outcome/outcomeValue`) pro repo.
+3. Apos isso, fechar T-016 e T-017 UI.
+
+---
+
 ## 2026-06-18 -- T-017 integracao FE<->BE corrigida + T-016 bypass super_admin (@dev-principal+@frontend -> @qa) {#2026-06-18-t017-t016-fixes}
 
 ### Commits novos (branch `whitelabel/gleps-ia`)
