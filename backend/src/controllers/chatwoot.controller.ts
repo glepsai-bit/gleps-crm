@@ -11,6 +11,35 @@ import { AuthenticatedRequest } from '../types';
 import { ChatwootWebhookEvent } from '../types/chatwoot.types';
 import { normalizeStageKey, resolveLatestStageTagFromLabels } from '../utils/chatwoot-stage.util';
 
+/**
+ * T-020b: payload zerado pra getMetrics quando super_admin nao selecionou conta.
+ * Mantemos a mesma SHAPE que o front espera (chatwootMetricsService.computeMetrics)
+ * pra nenhum componente quebrar — todos os contadores zeram e expomos `message`
+ * como hint pra o painel exibir.
+ */
+function emptyMetricsPayload(message: string) {
+  return {
+    totalConversations: 0,
+    activeAgents: 0,
+    backlog: {
+      ate15min: 0,
+      de15a60min: 0,
+      acima60min: 0,
+      naoAtribuidas: {
+        ate15min: 0,
+        de15a60min: 0,
+        acima60min: 0,
+      },
+    },
+    atendimento: {
+      total: 0,
+      ia: 0,
+      humano: 0,
+    },
+    message,
+  };
+}
+
 class ChatwootController {
   // ============================================
   // Webhook Handler
@@ -213,7 +242,9 @@ class ChatwootController {
    */
   async getAgents(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const accountId = req.user!.accountId!;
+      // T-020b: super_admin sem conta selecionada -> lista vazia (nao 502).
+      if (!req.user!.accountId) return res.json([]);
+      const accountId = req.user!.accountId;
       const agents = await chatwootService.getAgents(accountId);
       res.json(agents);
     } catch (error) {
@@ -246,7 +277,9 @@ class ChatwootController {
    */
   async getInboxes(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const accountId = req.user!.accountId!;
+      // T-020b: super_admin sem conta selecionada -> lista vazia.
+      if (!req.user!.accountId) return res.json([]);
+      const accountId = req.user!.accountId;
       const inboxes = await chatwootService.getInboxes(accountId);
       res.json(inboxes);
     } catch (error) {
@@ -260,7 +293,9 @@ class ChatwootController {
    */
   async getLabels(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const accountId = req.user!.accountId!;
+      // T-020b: super_admin sem conta selecionada -> lista vazia.
+      if (!req.user!.accountId) return res.json([]);
+      const accountId = req.user!.accountId;
       const labels = await chatwootService.getLabels(accountId);
       res.json(labels);
     } catch (error) {
@@ -339,14 +374,16 @@ class ChatwootController {
    */
   async getMetrics(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      // T-016: chatwoot metrics depende de creds por tenant (baseUrl/api key).
-      // super_admin sem accountId nao tem como agregar — devolve 400 explicito.
-      // Quando houver seletor de conta no super-admin, ele setara accountId
-      // antes de chamar e cai no fluxo normal.
+      // T-020b: super_admin pode passar pelo requireAccountId sem accountId (T-016).
+      // Aqui as metricas dependem de creds Chatwoot POR TENANT — sem accountId nao
+      // ha o que agregar. Em vez de quebrar com 5xx (ou retornar 400 que aparece
+      // no console como erro), devolvemos 200 com payload zerado + message
+      // explicativa. O front consome esses zeros normalmente e mostra a mensagem
+      // como hint pra selecionar uma conta no painel super-admin.
       if (!req.user!.accountId) {
-        return res.status(400).json({
-          success: false,
-          error: 'Selecione uma conta para visualizar metricas do Chatwoot.',
+        return res.status(200).json({
+          success: true,
+          data: emptyMetricsPayload('Super admin: selecione uma conta no painel pra ver metricas Chatwoot.'),
         });
       }
       const accountId = req.user!.accountId;
@@ -386,7 +423,9 @@ class ChatwootController {
    */
   async getAgentMetrics(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const accountId = req.user!.accountId!;
+      // T-020b: super_admin sem conta -> lista vazia (nao 502).
+      if (!req.user!.accountId) return res.json([]);
+      const accountId = req.user!.accountId;
       const { since, until } = req.query;
       
       const dateRange = {
@@ -407,7 +446,9 @@ class ChatwootController {
    */
   async getConversationMetrics(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const accountId = req.user!.accountId!;
+      // T-020b: super_admin sem conta -> objeto vazio (nao 502).
+      if (!req.user!.accountId) return res.json({});
+      const accountId = req.user!.accountId;
       const { since, until } = req.query;
       
       const dateRange = {
@@ -428,7 +469,9 @@ class ChatwootController {
    */
   async getConversations(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const accountId = req.user!.accountId!;
+      // T-020b: super_admin sem conta -> lista vazia (nao 502).
+      if (!req.user!.accountId) return res.json([]);
+      const accountId = req.user!.accountId;
       const { status, inbox_id, assignee_type, page, labels } = req.query;
       
       const conversations = await chatwootService.getConversations(accountId, {
