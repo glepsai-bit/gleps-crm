@@ -10,6 +10,41 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-18 -- T-019 webhook n8n por-conta + cleanup arquitetural (@dev-principal+@frontend -> @qa)
+
+### SHAs
+- `4c6f1de` refactor(backend): webhook n8n por-conta + remove outcome_changed (T-019)
+- `a4a06d0` feat(ui): T-019 secao Automacao n8n nas Integracoes da conta
+
+### Mudanca arquitetural
+- Webhook n8n migrou de **env var global** (`N8N_WEBHOOK_URL`) para **campo por-conta** na tabela `Account` (`n8nWebhookUrl`, `n8nWebhookSecret`).
+- Removido o evento `outcome_changed` por completo (`emitOutcomeChanged` deletado). `markOutcome` agora apenas grava no banco; webhook so dispara em `attendance_changed`.
+- `emitAttendanceChanged(appointment, account, actor?)` assinatura nova; HMAC via `X-Webhook-Signature: sha256=<hex>` quando secret configurado.
+- Rota `PUT /api/accounts/:id` reusada: `requireSuperAdmin` virou per-route, controller faz gate role+ownership com allowlist (admin so pode mexer nos 2 campos n8n; super_admin tem acesso pleno).
+
+### Arquivos
+- **Criados:** `backend/prisma/migrations/0022_add_account_n8n_webhook/migration.sql`, `backend/src/__tests__/n8n-webhook-per-account.test.ts`.
+- **Modificados (backend):** `schema.prisma`, `services/n8n-webhook.service.ts` (refactor profundo), `services/account.service.ts`, `controllers/appointment.controller.ts`, `controllers/account.controller.ts`, `routes/account.routes.ts`.
+- **Modificados (UI):** `src/pages/super-admin/SuperAdminAccountDetailPage.tsx` (card readonly + secao no Dialog de Controle).
+- **Deletados:** nenhum.
+
+### Validacoes
+- `tsc` backend: PASS. `vite build` frontend: PASS (5.59s).
+- Backend tests: 9/9 (4 novos T-019: webhook nao dispara sem URL, dispara 1x com URL, header HMAC bate, `emitOutcomeChanged` undefined).
+- Frontend vitest: 36/36.
+- Cleanup strict: `process.env.N8N` = 0 hits; `N8N_WEBHOOK_URL` so em comentarios/docs; `outcome_changed`/`emitOutcomeChanged` so no regression test.
+- `curl /api/health` em prod: 200 (rebuild T-019 ainda nao publicado, esperado).
+
+### Critica (APROVADO com 2 ressalvas nao bloqueantes)
+1. UI: `setAccount` pos-update nao copia `n8n_*`/`openai_*`/`sendgrid_*` -> card readonly fica stale ate F5. UX bug latente.
+2. `account.service.update` espalha `undefined` quando admin so manda os 2 campos n8n; Prisma ignora mas a intencao fica fragil — preferir spread condicional.
+
+### Como testar (UX final)
+1. `/super-admin/accounts/<id>` -> Controle de Conta -> liga "Automacao n8n" -> cola URL (+ secret opcional) -> Salva.
+2. Marca Compareceu/Faltou em um appointment -> n8n recebe POST com `{event:"attendance_changed", appointment, contact, account}` e header `X-Webhook-Signature` se houver secret.
+
+---
+
 ## 2026-06-18 -- QA FINAL FINAL pos-T-018 (@qa -> @usuario)
 
 ### Veredicto global: **NO-GO** para fechar T-014..T-018 hoje
