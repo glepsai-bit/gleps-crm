@@ -34,6 +34,12 @@ model Account {
   googleClientSecret String? @map("google_client_secret") @db.VarChar(500)
   googleRedirectUri  String? @map("google_redirect_uri") @db.VarChar(500)
 
+  // T-019 — Webhook n8n por-conta (substitui N8N_WEBHOOK_URL global)
+  // n8nWebhookSecret opcional: quando setado, request leva header
+  // X-Webhook-Signature: sha256=HMAC(payload) pra o n8n validar origem.
+  n8nWebhookUrl    String? @map("n8n_webhook_url")    @db.VarChar(500)
+  n8nWebhookSecret String? @map("n8n_webhook_secret") @db.VarChar(500)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 

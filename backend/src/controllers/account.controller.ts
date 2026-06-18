@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { accountService } from '../services/account.service';
 import { AuthenticatedRequest } from '../types';
 import { getPaginationParams } from '../utils/helpers';
+import { ForbiddenError } from '../utils/errors';
 
 // Validation schemas
 const createAccountSchema = z.object({
@@ -19,6 +20,15 @@ const createAccountSchema = z.object({
   googleClientId: z.string().optional(),
   googleClientSecret: z.string().optional(),
   googleRedirectUri: z.string().url().optional(),
+  // T-019 — Webhook n8n por-conta. URL validada (http/https) quando vier;
+  // string vazia => null (apaga config). Secret opcional, sem validacao de
+  // formato (deixa o operador escolher comprimento/charset).
+  n8nWebhookUrl: z
+    .string()
+    .url('n8nWebhookUrl deve ser uma URL valida (http/https)')
+    .optional()
+    .nullable(),
+  n8nWebhookSecret: z.string().optional().nullable(),
 });
 
 const updateAccountSchema = createAccountSchema.partial().extend({
@@ -81,12 +91,41 @@ export class AccountController {
 
   /**
    * PUT /accounts/:id
+   *
+   * Autorizacao (T-019):
+   * - super_admin: pode editar qualquer conta (todos os campos).
+   * - admin: pode editar APENAS a propria conta (req.user.accountId === id).
+   *   Restricao: admin so pode tocar nos campos seguros pra ele (hoje:
+   *   n8nWebhookUrl, n8nWebhookSecret). Tentativas de alterar outros campos
+   *   sao silenciosamente ignoradas via allowlist abaixo — evita que admin
+   *   troque chaves Chatwoot/SendGrid ou limites de plano.
+   * - agent: bloqueado (ForbiddenError).
    */
   async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = req.params.id as string;
-      const body = updateAccountSchema.parse(req.body);
-      const result = await accountService.update(id, body, req.user!.id);
+      const user = req.user!;
+      const isSuperAdmin = user.role === 'super_admin';
+      const isAdminOfThisAccount = user.role === 'admin' && user.accountId === id;
+
+      if (!isSuperAdmin && !isAdminOfThisAccount) {
+        throw new ForbiddenError(
+          'Apenas super_admin ou admin da propria conta podem editar esta conta',
+        );
+      }
+
+      const parsed = updateAccountSchema.parse(req.body);
+
+      // Allowlist: admin so pode editar campos de integracao seguros (n8n).
+      // Chaves de API e limites continuam exclusivos do super_admin.
+      const body = isSuperAdmin
+        ? parsed
+        : {
+            n8nWebhookUrl: parsed.n8nWebhookUrl,
+            n8nWebhookSecret: parsed.n8nWebhookSecret,
+          };
+
+      const result = await accountService.update(id, body, user.id);
 
       res.json({ data: result });
     } catch (error) {

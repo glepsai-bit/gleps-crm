@@ -19,6 +19,9 @@ export interface CreateAccountInput {
   googleClientId?: string;
   googleClientSecret?: string;
   googleRedirectUri?: string;
+  // T-019 — webhook n8n por-conta
+  n8nWebhookUrl?: string | null;
+  n8nWebhookSecret?: string | null;
 }
 
 export interface UpdateAccountInput extends Partial<CreateAccountInput> {
@@ -133,6 +136,8 @@ class AccountService {
         googleClientId: input.googleClientId,
         googleClientSecret: input.googleClientSecret,
         googleRedirectUri: input.googleRedirectUri,
+        n8nWebhookUrl: input.n8nWebhookUrl,
+        n8nWebhookSecret: input.n8nWebhookSecret,
       },
     });
 
@@ -186,6 +191,8 @@ class AccountService {
         sendgridApiKey: input.sendgridApiKey,
         sendgridFromEmail: input.sendgridFromEmail,
         sendgridFromName: input.sendgridFromName,
+        n8nWebhookUrl: input.n8nWebhookUrl,
+        n8nWebhookSecret: input.n8nWebhookSecret,
       },
     });
 

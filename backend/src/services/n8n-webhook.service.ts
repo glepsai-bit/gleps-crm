@@ -1,17 +1,33 @@
 /**
- * T-017 — Disparo de webhooks pra n8n quando attendance/outcome de um
- * appointment muda. Reuso simples: lê N8N_WEBHOOK_URL do ambiente,
- * faz POST best-effort e nunca derruba o request principal.
+ * T-019 — Webhook n8n POR-CONTA.
  *
- * Caminho feliz: o n8n recebe o payload e roteia para flows da galeria
- * T-013. Caminho de erro: log + swallow (circuit breaker T-012 cobre a
- * idempotência de outras rotas).
+ * Arquitetura:
+ * - URL e secret vivem em Account.n8nWebhookUrl / Account.n8nWebhookSecret
+ *   (substitui o N8N_WEBHOOK_URL global do .env que existia em T-017).
+ * - Cada conta pode apontar pro proprio fluxo n8n, OU desligar a integracao
+ *   deixando o campo NULL (early return silencioso).
+ * - Unico evento emitido pro n8n: appointment.attendance. O evento
+ *   appointment.outcome foi removido em T-019 — markOutcome agora so grava
+ *   no banco (consultas via CRM, sem side-effect externo).
+ *
+ * Seguranca:
+ * - Se n8nWebhookSecret estiver setado, request leva header
+ *   X-Webhook-Signature: sha256=HMAC-SHA256(secret, body). O n8n valida
+ *   recomputando a HMAC com o mesmo segredo. Sem segredo, request vai sem
+ *   header (compat com flows simples de teste).
+ *
+ * Operacional:
+ * - POST best-effort: 5s timeout via AbortSignal.timeout, falhas logadas
+ *   mas nunca propagam (CRM continua funcionando mesmo com n8n down).
+ * - chamador SEMPRE passa o Account ja carregado (include: { account: true }
+ *   no findUnique) — evita N+1 e deixa explicito que a integracao depende
+ *   de config da conta, nao do ambiente global.
  */
-import { Prisma } from '@prisma/client';
-import { prisma } from '../config/database';
+import { createHmac } from 'crypto';
+import { Prisma, Account } from '@prisma/client';
 
-// Timeout pra POST no n8n. 5s é folgado pra webhook saudável e curto o
-// suficiente pra não segurar o event loop quando o n8n está down.
+// Timeout pra POST no n8n. 5s eh folgado pra webhook saudavel e curto o
+// suficiente pra nao segurar o event loop quando o n8n esta down.
 const N8N_TIMEOUT_MS = 5000;
 
 const appointmentWithRels = Prisma.validator<Prisma.CalendarEventDefaultArgs>()({
@@ -20,24 +36,29 @@ const appointmentWithRels = Prisma.validator<Prisma.CalendarEventDefaultArgs>()(
 
 export type AppointmentWithRels = Prisma.CalendarEventGetPayload<typeof appointmentWithRels>;
 
-export type N8nAppointmentEvent =
-  | 'appointment.attendance'
-  | 'appointment.outcome';
+export type N8nAppointmentEvent = 'appointment.attendance';
 
-function getWebhookUrl(): string | null {
-  const url = process.env.N8N_WEBHOOK_URL?.trim();
-  return url && url.length > 0 ? url : null;
-}
+type N8nAccountConfig = Pick<Account, 'id' | 'nome' | 'n8nWebhookUrl' | 'n8nWebhookSecret'>;
 
-async function postJson(url: string, body: unknown): Promise<{ ok: boolean; status: number }> {
+async function postJson(
+  url: string,
+  body: unknown,
+  secret: string | null,
+): Promise<{ ok: boolean; status: number }> {
   // node 20+ tem fetch global; sem deps extras.
-  // AbortSignal.timeout garante que requests pro n8n não pendurem o processo
+  // AbortSignal.timeout garante que requests pro n8n nao pendurem o processo
   // quando o destino estiver down — chamador trata DOMException como falha
   // best-effort no try/catch.
+  const payload = JSON.stringify(body);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (secret && secret.trim().length > 0) {
+    const sig = createHmac('sha256', secret).update(payload).digest('hex');
+    headers['X-Webhook-Signature'] = `sha256=${sig}`;
+  }
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers,
+    body: payload,
     signal: AbortSignal.timeout(N8N_TIMEOUT_MS),
   });
   return { ok: res.ok, status: res.status };
@@ -46,7 +67,7 @@ async function postJson(url: string, body: unknown): Promise<{ ok: boolean; stat
 function buildPayload(
   event: N8nAppointmentEvent,
   appointment: AppointmentWithRels,
-  actor?: { userId: string; name?: string }
+  actor?: { userId: string; name?: string },
 ) {
   return {
     event,
@@ -84,52 +105,46 @@ function buildPayload(
 
 export const n8nWebhookService = {
   /**
-   * Dispara appointment.attendance. Best-effort: erros são logados, não
-   * propagam pra cima.
+   * Dispara appointment.attendance para o webhook configurado na Account.
+   * Best-effort: erros sao logados, NUNCA propagam pra cima (nao bloqueia
+   * resposta HTTP do markAttendance).
+   *
+   * Se account.n8nWebhookUrl for NULL/vazio, sai cedo com delivered=false
+   * (conta com integracao desligada — comportamento esperado, log info).
    */
   async emitAttendanceChanged(
     appointment: AppointmentWithRels,
-    actor?: { userId: string; name?: string }
+    account: N8nAccountConfig | null,
+    actor?: { userId: string; name?: string },
   ): Promise<{ delivered: boolean; reason?: string }> {
-    const url = getWebhookUrl();
+    const url = account?.n8nWebhookUrl?.trim();
     if (!url) {
-      return { delivered: false, reason: 'N8N_WEBHOOK_URL não configurado' };
+      // info, nao warn — conta sem webhook configurado eh estado valido.
+      console.info('[n8n-webhook] skipped: account sem n8n_webhook_url', {
+        appointmentId: appointment.id,
+        accountId: appointment.accountId,
+      });
+      return { delivered: false, reason: 'account sem n8n_webhook_url configurado' };
     }
     try {
       const payload = buildPayload('appointment.attendance', appointment, actor);
-      const result = await postJson(url, payload);
+      const secret = account?.n8nWebhookSecret?.trim() || null;
+      const result = await postJson(url, payload, secret);
       if (!result.ok) {
-        console.warn('[n8n-webhook] attendance falhou', { status: result.status, appointmentId: appointment.id });
+        console.warn('[n8n-webhook] attendance falhou', {
+          status: result.status,
+          appointmentId: appointment.id,
+          accountId: appointment.accountId,
+        });
         return { delivered: false, reason: `HTTP ${result.status}` };
       }
       return { delivered: true };
     } catch (err) {
-      console.warn('[n8n-webhook] attendance exception', { err: (err as Error).message, appointmentId: appointment.id });
-      return { delivered: false, reason: (err as Error).message };
-    }
-  },
-
-  /**
-   * Dispara appointment.outcome. Best-effort.
-   */
-  async emitOutcomeChanged(
-    appointment: AppointmentWithRels,
-    actor?: { userId: string; name?: string }
-  ): Promise<{ delivered: boolean; reason?: string }> {
-    const url = getWebhookUrl();
-    if (!url) {
-      return { delivered: false, reason: 'N8N_WEBHOOK_URL não configurado' };
-    }
-    try {
-      const payload = buildPayload('appointment.outcome', appointment, actor);
-      const result = await postJson(url, payload);
-      if (!result.ok) {
-        console.warn('[n8n-webhook] outcome falhou', { status: result.status, appointmentId: appointment.id });
-        return { delivered: false, reason: `HTTP ${result.status}` };
-      }
-      return { delivered: true };
-    } catch (err) {
-      console.warn('[n8n-webhook] outcome exception', { err: (err as Error).message, appointmentId: appointment.id });
+      console.warn('[n8n-webhook] attendance exception', {
+        err: (err as Error).message,
+        appointmentId: appointment.id,
+        accountId: appointment.accountId,
+      });
       return { delivered: false, reason: (err as Error).message };
     }
   },

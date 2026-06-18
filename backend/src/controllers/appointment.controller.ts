@@ -126,8 +126,14 @@ export class AppointmentController {
         include: APPOINTMENT_INCLUDE,
       });
 
-      // fire-and-forget: só dispara quando ganhamos a corrida (count === 1)
-      void n8nWebhookService.emitAttendanceChanged(updated, { userId, name: userName });
+      // fire-and-forget: só dispara quando ganhamos a corrida (count === 1).
+      // T-019: webhook agora eh por-conta — passa Account (carregada via
+      // include acima) pro service ler n8nWebhookUrl/Secret. Se conta nao
+      // tem URL configurada, service faz early-return silencioso.
+      void n8nWebhookService.emitAttendanceChanged(updated, updated.account, {
+        userId,
+        name: userName,
+      });
 
       res.json({
         id: updated.id,
@@ -154,7 +160,6 @@ export class AppointmentController {
       }
       const accountId = req.user!.accountId;
       const userId = req.user!.id;
-      const userName = req.user!.nome;
       const id = req.params.id as string;
 
       const body = outcomeSchema.parse(req.body);
@@ -207,10 +212,11 @@ export class AppointmentController {
         include: APPOINTMENT_INCLUDE,
       });
 
-      // Só dispara webhook se de fato ganhamos a corrida E o valor mudou.
-      if (result.count === 1 && willChange) {
-        void n8nWebhookService.emitOutcomeChanged(updated, { userId, name: userName });
-      }
+      // T-019: evento appointment.outcome REMOVIDO. markOutcome agora apenas
+      // grava no banco — sem side-effect externo. CRM continua sendo a unica
+      // fonte de verdade pra outcome; consultas vivem nos endpoints proprios.
+      // markAttendance segue disparando appointment.attendance (unico evento
+      // que sai do CRM pro n8n).
 
       res.json({
         id: updated.id,
