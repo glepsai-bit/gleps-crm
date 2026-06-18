@@ -10,6 +10,7 @@
  */
 
 import React, { useState, useCallback, useEffect, ReactNode, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { apiClient, tokenManager } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
 import { toast } from 'sonner';
@@ -99,6 +100,7 @@ function clearAuthCache(): void {
 }
 
 export function BackendAuthProvider({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
   const [authState, setAuthState] = useState<AuthState>({
     user: null,
     account: null,
@@ -330,6 +332,9 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
       setIsImpersonating(true);
       setAuthState(prev => ({ ...prev, user: targetUser, account: targetAccount }));
       toast.success(`Assumindo identidade de ${targetUser.nome}`);
+      // Pos-impersonate: navegar pra /admin pra evitar /unauthorized se a rota
+      // atual exigir super_admin (ex: vinha de /super-admin/users)
+      navigate('/admin', { replace: true });
     } catch {
       // Restore original token on failure
       const originalToken = localStorage.getItem('original_token');
