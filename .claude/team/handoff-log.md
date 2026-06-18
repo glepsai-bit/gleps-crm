@@ -10,6 +10,36 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-18 -- T-017 integracao FE<->BE corrigida + T-016 bypass super_admin (@dev-principal+@frontend -> @qa) {#2026-06-18-t017-t016-fixes}
+
+### Commits novos (branch `whitelabel/gleps-ia`)
+- `50d0758` fix(frontend): T-017 alinha FE com contratos do backend (5 bugs integracao)
+- `9a77bd3` fix(backend): T-016 super_admin bypass requireAccountId (ve dados agregados)
+
+### T-017 (5 bugs FE<->BE corrigidos)
+- **BUG-1 URL**: `src/api/appointments.ts` agora chama `/api/appointments/:id/attendance`, `/api/appointments/:id/outcome`, `/api/appointments/pending-status` (antes era `/api/calendar/events/*`).
+- **BUG-2 enum attendance**: `AttendanceDialog.tsx` envia `'ATTENDED' | 'NO_SHOW' | 'RESCHEDULED'` (labels PT-BR preservados nos botoes).
+- **BUG-3 enum outcome**: `OutcomeDialog.tsx` envia `'CLOSED' | 'CONSIDERING' | 'NOT_INTERESTED' | 'RETURN_REQUESTED'`.
+- **BUG-4 valor**: payload agora `{ value: number }` (BRL float, ex `500.00`) em vez de `valueCents`; funcao antiga `centavosParaReal` removida.
+- **BUG-5 parser**: `PendenciasHoje.tsx` consome `data.pendingAttendance` (principal) + `data.pendingOutcome` (sub-secao "Aguardando resultado") — `data.items` removido. Cache optimistic em `AttendanceDialog` migrado pra `pendingAttendance`.
+
+### T-016 (bypass super_admin)
+- `backend/src/middlewares/auth.middleware.ts`: bypass `if (req.user.role === 'super_admin') return next();` em `requireAccountId`.
+- `backend/src/services/dashboard.service.ts`: assinaturas `accountId: string | null`; `accountFilter = accountId ? { accountId } : {}` em `getAdminKPIs`, `getHourlyPeak`, `getBacklog`, `getAgentPerformance`, `getIAvsHuman`, `getDinheiroMesa`. Super_admin ve dados agregados de todos tenants.
+- `backend/src/controllers/dashboard.controller.ts`: passa `req.user!.accountId ?? null` em 6 chamadas.
+- `backend/src/controllers/appointment.controller.ts`: `listPendingStatus` agrega quando `accountId=null`; mutacoes (`markAttendance`/`markOutcome`) continuam exigindo conta -> `ValidationError` pro super_admin sem tenant (politica "manter erro" do brief).
+- `backend/src/controllers/chatwoot.controller.ts`: `getMetrics` devolve HTTP 400 explicito pro super_admin (creds Chatwoot dependem de tenant; seletor de conta fica como melhoria futura).
+- Teste novo: `dashboard-dinheiro-mesa.test.ts` cobre bypass (super_admin passa) + erro 400 (admin sem conta).
+
+### Validacoes locais
+- `npm run build` backend + frontend: PASS
+- `npm test` frontend: 36/36 PASS; backend: 5/5 PASS (incl 2 novos T-016)
+- Greps confirmam: zero ocorrencias reais de `valueCents`, `'compareceu'`, `'fechou_tratamento'`, `data.items` ou `/calendar/events/*` em codigo de producao (so comentarios explicativos + constantes legadas usadas por `calendar.backend.service.ts` separado).
+- Critic 7/7 OK -> APROVADO.
+
+### Pendencia pro usuario
+- **Force Rebuild no EasyPanel (Compose inteiro: backend + frontend)** pra trazer os 2 SHAs novos. Apos ~90s, confirmar -> aciona re-QA em prod.
+
 ## 2026-06-18 -- QA validou T-014/T-015/T-016/T-017 em prod (@qa -> @usuario) {#2026-06-18-qa-final-prod}
 
 ### Resumo executivo (GO / NO-GO)
