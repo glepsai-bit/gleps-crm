@@ -1,6 +1,10 @@
 /**
  * DinheiroNaMesaCard — KPI de orcamentos pendentes (outcome vai_pensar) ultimos 30d (T-017)
  * Visivel apenas para role=admin.
+ *
+ * TODO server-side: backend deve rejeitar role != admin em GET /dashboard/dinheiro-mesa
+ * adicionando middleware requireRole('admin') antes do handler.
+ * (Ressalva Critic UX T-017 — handoff para Dev Principal)
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -34,11 +38,17 @@ export function DinheiroNaMesaCard() {
 }
 
 function DinheiroNaMesaCardInner() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['dinheiro-mesa'],
     queryFn: () => buscarDinheiroMesa('30d'),
     staleTime: 60_000,
     refetchInterval: 120_000,
+    retry: (failureCount, err: unknown) => {
+      // Nao tentar novamente em 401/403 (defense in depth: backend nao autorizou)
+      const status = (err as { status?: number })?.status;
+      if (status === 401 || status === 403) return false;
+      return failureCount < 2;
+    },
   });
 
   if (isLoading) {
@@ -54,6 +64,12 @@ function DinheiroNaMesaCardInner() {
         </CardContent>
       </Card>
     );
+  }
+
+  // Fallback silencioso para 401/403: nao quebra a UI (defense in depth)
+  const status = (error as { status?: number } | null)?.status;
+  if (error && (status === 401 || status === 403)) {
+    return null;
   }
 
   const total = data?.totalCents ?? 0;

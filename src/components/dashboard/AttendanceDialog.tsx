@@ -50,8 +50,21 @@ export function AttendanceDialog({
 
   const mutation = useMutation({
     mutationFn: (status: StatusPresenca) => marcarPresenca(appointmentId, status),
-    onSuccess: (data, status) => {
-      queryClient.invalidateQueries({ queryKey: ['pending-status'] });
+    onMutate: async () => {
+      // Optimistic update: remove o item da lista antes da resposta
+      await queryClient.cancelQueries({ queryKey: ['pending-status'] });
+      const previous = queryClient.getQueryData(['pending-status']);
+      queryClient.setQueryData(
+        ['pending-status'],
+        (old: { total: number; items: { id: string }[] } | undefined) => {
+          if (!old) return old;
+          const items = old.items.filter((p) => p.id !== appointmentId);
+          return { ...old, items, total: Math.max(0, old.total - 1) };
+        }
+      );
+      return { previous };
+    },
+    onSuccess: (_data, status) => {
       if (status === 'compareceu') {
         onCompareceu();
       } else {
@@ -63,8 +76,15 @@ export function AttendanceDialog({
         onDone?.();
       }
     },
-    onError: () => {
+    onError: (_err, _status, ctx) => {
+      // Reverte o optimistic update
+      if (ctx?.previous !== undefined) {
+        queryClient.setQueryData(['pending-status'], ctx.previous);
+      }
       toast.error('Erro ao registrar presença. Tente novamente.');
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['pending-status'] });
     },
   });
 

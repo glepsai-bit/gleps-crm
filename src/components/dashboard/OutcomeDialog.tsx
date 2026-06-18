@@ -100,11 +100,12 @@ export function OutcomeDialog({
       queryClient.invalidateQueries({ queryKey: ['pending-status'] });
       queryClient.invalidateQueries({ queryKey: ['dinheiro-mesa'] });
       toast.success('Resultado da consulta registrado com sucesso.');
-      onOpenChange(false);
-      onDone?.();
+      // Reset de estado ANTES de fechar/chamar onDone para evitar no-op apos desmontagem
       setOutcomeSelecionado(null);
       setValor('');
       setNotas('');
+      onOpenChange(false);
+      onDone?.();
     },
     onError: () => {
       toast.error('Erro ao registrar resultado. Tente novamente.');
