@@ -31,7 +31,7 @@ export class DashboardController {
       const effectiveAgentId = req.user!.role === 'agent' ? req.user!.id : agentId;
 
       const result = await dashboardService.getAdminKPIs(
-        req.user!.accountId!,
+        req.user!.accountId ?? null,
         dateRange,
         effectiveAgentId
       );
@@ -48,7 +48,7 @@ export class DashboardController {
   async getHourlyPeak(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const dateRange = getDateRangeFilter(req);
-      const result = await dashboardService.getHourlyPeak(req.user!.accountId!, dateRange);
+      const result = await dashboardService.getHourlyPeak(req.user!.accountId ?? null, dateRange);
 
       res.json({ data: result });
     } catch (error) {
@@ -61,7 +61,7 @@ export class DashboardController {
    */
   async getBacklog(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await dashboardService.getBacklog(req.user!.accountId!);
+      const result = await dashboardService.getBacklog(req.user!.accountId ?? null);
 
       res.json({ data: result });
     } catch (error) {
@@ -75,7 +75,7 @@ export class DashboardController {
   async getAgentPerformance(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const dateRange = getDateRangeFilter(req);
-      const result = await dashboardService.getAgentPerformance(req.user!.accountId!, dateRange);
+      const result = await dashboardService.getAgentPerformance(req.user!.accountId ?? null, dateRange);
 
       res.json({ data: result });
     } catch (error) {
@@ -89,7 +89,7 @@ export class DashboardController {
   async getIAvsHuman(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const dateRange = getDateRangeFilter(req);
-      const result = await dashboardService.getIAvsHuman(req.user!.accountId!, dateRange);
+      const result = await dashboardService.getIAvsHuman(req.user!.accountId ?? null, dateRange);
 
       res.json({ data: result });
     } catch (error) {
@@ -106,7 +106,7 @@ export class DashboardController {
   async getDinheiroMesa(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const query = dinheiroMesaSchema.parse(req.query);
-      const result = await dashboardService.getDinheiroMesa(req.user!.accountId!, query.range);
+      const result = await dashboardService.getDinheiroMesa(req.user!.accountId ?? null, query.range);
       res.json(result);
     } catch (error) {
       next(error);

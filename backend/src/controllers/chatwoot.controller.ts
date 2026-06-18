@@ -339,7 +339,17 @@ class ChatwootController {
    */
   async getMetrics(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const accountId = req.user!.accountId!;
+      // T-016: chatwoot metrics depende de creds por tenant (baseUrl/api key).
+      // super_admin sem accountId nao tem como agregar — devolve 400 explicito.
+      // Quando houver seletor de conta no super-admin, ele setara accountId
+      // antes de chamar e cai no fluxo normal.
+      if (!req.user!.accountId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Selecione uma conta para visualizar metricas do Chatwoot.',
+        });
+      }
+      const accountId = req.user!.accountId;
       const { dateFrom, dateTo, inboxId, agentId } = { ...req.query, ...req.body };
 
       if (!dateFrom || !dateTo) {

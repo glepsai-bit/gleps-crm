@@ -53,7 +53,11 @@ export class AppointmentController {
    */
   async markAttendance(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const accountId = req.user!.accountId!;
+      // T-016: mutacao exige accountId. super_admin sem conta vinculada nao pode marcar.
+      if (!req.user!.accountId) {
+        throw new ValidationError('Esta operação requer uma conta vinculada.');
+      }
+      const accountId = req.user!.accountId;
       const userId = req.user!.id;
       const userName = req.user!.nome;
       const id = req.params.id as string;
@@ -144,7 +148,11 @@ export class AppointmentController {
    */
   async markOutcome(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const accountId = req.user!.accountId!;
+      // T-016: mutacao exige accountId. super_admin sem conta vinculada nao pode marcar.
+      if (!req.user!.accountId) {
+        throw new ValidationError('Esta operação requer uma conta vinculada.');
+      }
+      const accountId = req.user!.accountId;
       const userId = req.user!.id;
       const userName = req.user!.nome;
       const id = req.params.id as string;
@@ -233,14 +241,15 @@ export class AppointmentController {
    */
   async listPendingStatus(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const accountId = req.user!.accountId!;
+      // T-016: super_admin (sem accountId) ve pendencias agregadas de todos tenants.
+      const accountId = req.user!.accountId ?? null;
       const now = new Date();
       const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
 
       // endTime: { lt: now } já exclui linhas com endTime IS NULL no Postgres
       // (NULL não é < now). Mantido explicitamente — comportamento documentado.
       const baseWhere = {
-        accountId,
+        ...(accountId ? { accountId } : {}),
         type: 'appointment' as const,
         startTime: { gte: threeDaysAgo },
         endTime: { lt: now },

@@ -220,7 +220,14 @@ export async function verifyPassword(
 }
 
 /**
- * Middleware to require accountId (blocks Super Admin without impersonation)
+ * Middleware to require accountId.
+ *
+ * T-016: super_admin sem accountId NAO eh bloqueado — passa adiante e ve dados
+ * agregados (todos tenants). Cada service/controller decide como tratar
+ * accountId nulo (tipicamente: omitir o filtro `where: { accountId }`).
+ * Trade-off escolhido pra fechar T-016: ver tudo. Seletor de conta fica como
+ * melhoria futura. Endpoints que EXIGEM accountId pra agir (ex.: criar
+ * recurso) precisam validar localmente e devolver erro pro super_admin.
  */
 export function requireAccountId(
   req: AuthenticatedRequest,
@@ -229,6 +236,10 @@ export function requireAccountId(
 ): void {
   if (!req.user) {
     return next(new UnauthorizedError());
+  }
+  // T-016: super_admin bypass — ve dados agregados de todos tenants.
+  if (req.user.role === 'super_admin') {
+    return next();
   }
   if (!req.user.accountId) {
     res.status(400).json({

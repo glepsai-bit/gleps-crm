@@ -6,9 +6,12 @@ import { metricsCollector } from './metrics-collector';
 class DashboardService {
   /**
    * Get KPIs for Admin Dashboard
+   *
+   * T-016: aceita accountId nulo (super_admin) — nesse caso, agrega todos tenants.
    */
-  async getAdminKPIs(accountId: string, filters: DateRangeFilter, agentId?: string) {
-    const where: any = { accountId };
+  async getAdminKPIs(accountId: string | null, filters: DateRangeFilter, agentId?: string) {
+    const accountFilter = accountId ? { accountId } : {};
+    const where: any = { ...accountFilter };
 
     if (agentId) {
       where.responsavelId = agentId;
@@ -32,8 +35,8 @@ class DashboardService {
       totalRevenue,
       conversionRate,
     ] = await Promise.all([
-      prisma.contact.count({ where: { accountId } }),
-      prisma.contact.count({ where: { accountId, createdAt: where.createdAt } }),
+      prisma.contact.count({ where: { ...accountFilter } }),
+      prisma.contact.count({ where: { ...accountFilter, createdAt: where.createdAt } }),
       prisma.sale.count({ where }),
       prisma.sale.count({ where: { ...where, status: 'paid' } }),
       prisma.sale.aggregate({
@@ -104,15 +107,17 @@ class DashboardService {
 
   /**
    * Get hourly peak data
+   *
+   * T-016: accountId nulo (super_admin) -> agrega eventos de todos tenants.
    */
-  async getHourlyPeak(accountId: string, filters: DateRangeFilter) {
+  async getHourlyPeak(accountId: string | null, filters: DateRangeFilter) {
     const startDate = filters.startDate || subDays(new Date(), 7);
     const endDate = filters.endDate || new Date();
 
     // Get events by hour
     const events = await prisma.event.findMany({
       where: {
-        accountId,
+        ...(accountId ? { accountId } : {}),
         createdAt: {
           gte: startDate,
           lte: endDate,
@@ -142,15 +147,18 @@ class DashboardService {
 
   /**
    * Get backlog metrics
+   *
+   * T-016: accountId nulo (super_admin) -> backlog agregado de todos tenants.
    */
-  async getBacklog(accountId: string) {
+  async getBacklog(accountId: string | null) {
+    const accountFilter = accountId ? { accountId } : {};
     const pendingSales = await prisma.sale.count({
-      where: { accountId, status: 'pending' },
+      where: { ...accountFilter, status: 'pending' },
     });
 
     const pendingLeads = await prisma.contact.count({
       where: {
-        accountId,
+        ...accountFilter,
         leadTags: {
           none: {
             tag: { type: 'stage' },
@@ -168,9 +176,12 @@ class DashboardService {
 
   /**
    * Get agent performance
+   *
+   * T-016: accountId nulo (super_admin) -> performance de agentes/admins de todos tenants.
    */
-  async getAgentPerformance(accountId: string, filters: DateRangeFilter) {
-    const where: any = { accountId, role: { in: ['admin', 'agent'] } };
+  async getAgentPerformance(accountId: string | null, filters: DateRangeFilter) {
+    const accountFilter = accountId ? { accountId } : {};
+    const where: any = { ...accountFilter, role: { in: ['admin', 'agent'] } };
 
     const users = await prisma.user.findMany({
       where,
@@ -182,7 +193,7 @@ class DashboardService {
       },
     });
 
-    const saleWhere: any = { accountId };
+    const saleWhere: any = { ...accountFilter };
     if (filters.startDate || filters.endDate) {
       saleWhere.createdAt = {};
       if (filters.startDate) {
@@ -225,8 +236,11 @@ class DashboardService {
 
   /**
    * Get IA vs Human metrics (placeholder - would integrate with Chatwoot)
+   *
+   * T-016: accountId nulo (super_admin) — quando integrar Chatwoot real, agregar
+   * por tenant; por ora retorna placeholder.
    */
-  async getIAvsHuman(accountId: string, filters: DateRangeFilter) {
+  async getIAvsHuman(accountId: string | null, filters: DateRangeFilter) {
     // This would typically integrate with Chatwoot to get actual bot vs human metrics
     // For now, return placeholder data
     return {
@@ -246,15 +260,16 @@ class DashboardService {
    *
    * Mapeamento outcome -> string snake_case (compativel com o front).
    */
-  async getDinheiroMesa(accountId: string, range: '7d' | '30d' | '90d') {
+  async getDinheiroMesa(accountId: string | null, range: '7d' | '30d' | '90d') {
     const days = range === '7d' ? 7 : range === '90d' ? 90 : 30;
     const since = subDays(new Date(), days);
 
+    // T-016: accountId nulo (super_admin) -> agrega "dinheiro na mesa" de todos tenants.
     // Considera apenas appointments com outcome registrado e valor informado.
     // PENDING e NULL ficam de fora — sem outcome decidido, nao ha "dinheiro na mesa".
     const events = await prisma.calendarEvent.findMany({
       where: {
-        accountId,
+        ...(accountId ? { accountId } : {}),
         type: 'appointment',
         endTime: { gte: since },
         outcomeValue: { not: null },
