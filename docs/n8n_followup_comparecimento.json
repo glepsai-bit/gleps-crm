@@ -1,0 +1,332 @@
+{
+  "name": "Gleps IA - Follow-up de Comparecimento",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "followup-comparecimento",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "responseData": "noData",
+        "options": {}
+      },
+      "id": "8e87b975-4941-44e4-b55a-84e5bf38f21d",
+      "name": "Webhook CRM",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "webhookId": "followup-comparecimento-webhook"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "evolution_url",
+              "value": "={{$env.EVOLUTION_API_URL || 'https://evolution.igreen.com.br'}}"
+            },
+            {
+              "name": "evolution_instance",
+              "value": "={{$env.EVOLUTION_INSTANCE || 'gleps'}}"
+            },
+            {
+              "name": "evolution_apikey",
+              "value": "={{$env.EVOLUTION_API_KEY}}"
+            },
+            {
+              "name": "backend_url",
+              "value": "={{$env.BACKEND_URL || 'https://crm.gleps.com.br'}}"
+            },
+            {
+              "name": "webhook_secret",
+              "value": "={{$env.GLEPS_WEBHOOK_SECRET || ''}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8d339df7-e051-4555-a901-f86eee8b6eca",
+      "name": "config1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Valida HMAC se secret configurado.\n// Body do webhook do Gleps vem em $input.first().json.body.\nconst webhookItem = $('Webhook CRM').first().json;\nconst body = webhookItem.body || webhookItem;\nconst headers = webhookItem.headers || {};\nconst secret = $('config1').first().json.webhook_secret;\nconst sig = headers['x-webhook-signature'] || headers['X-Webhook-Signature'];\n\nif (secret && sig) {\n  const crypto = require('crypto');\n  const raw = JSON.stringify(body);\n  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(raw).digest('hex');\n  if (expected !== sig) {\n    throw new Error('Assinatura HMAC invalida');\n  }\n}\n\nreturn [{ json: body }];"
+      },
+      "id": "3794aa84-1126-4e4a-9100-f5832914314b",
+      "name": "Validate HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "evt-check",
+              "leftValue": "={{$json.event}}",
+              "rightValue": "appointment.attendance",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f9ff68cf-8749-4209-965a-52699f71315e",
+      "name": "IF event=attendance",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{$json.appointment.attendanceStatus}}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "ATTENDED",
+              "operation": "equals"
+            },
+            {
+              "value2": "NO_SHOW",
+              "operation": "equals"
+            },
+            {
+              "value2": "RESCHEDULED",
+              "operation": "equals"
+            }
+          ]
+        },
+        "fallbackOutput": 3
+      },
+      "id": "3b923259-3fc7-4c35-b734-93966ddd4bf5",
+      "name": "Switch attendanceStatus",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "=Foi um prazer te receber hoje, {{$json.contact.nome}}! 💜 Qualquer duvida sobre o que conversamos, e so chamar."
+            },
+            {
+              "name": "telefone",
+              "value": "={{$json.contact.telefone}}"
+            },
+            {
+              "name": "accountId",
+              "value": "={{$json.accountId}}"
+            },
+            {
+              "name": "appointmentId",
+              "value": "={{$json.appointmentId}}"
+            },
+            {
+              "name": "branch",
+              "value": "ATTENDED"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "70e554ba-3e30-4f21-a326-9db792e99523",
+      "name": "Msg ATTENDED",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [1220, 140]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "=Oi {{$json.contact.nome}}, vi que nao conseguiu vir hoje. Aconteceu algo? Quer que eu te ajude a remarcar pra outro dia? 💜"
+            },
+            {
+              "name": "telefone",
+              "value": "={{$json.contact.telefone}}"
+            },
+            {
+              "name": "accountId",
+              "value": "={{$json.accountId}}"
+            },
+            {
+              "name": "appointmentId",
+              "value": "={{$json.appointmentId}}"
+            },
+            {
+              "name": "branch",
+              "value": "NO_SHOW"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f862f0c5-0237-48b2-bdb2-6d07c6bf103b",
+      "name": "Msg NO_SHOW",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [1220, 320]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "=Sem problema {{$json.contact.nome}}! Confirmamos sua remarcacao. Quando confirmar a nova data, te aviso aqui. 💜"
+            },
+            {
+              "name": "telefone",
+              "value": "={{$json.contact.telefone}}"
+            },
+            {
+              "name": "accountId",
+              "value": "={{$json.accountId}}"
+            },
+            {
+              "name": "appointmentId",
+              "value": "={{$json.appointmentId}}"
+            },
+            {
+              "name": "branch",
+              "value": "RESCHEDULED"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "96dae1fb-798a-4d5f-b090-a64029ee5475",
+      "name": "Msg RESCHEDULED",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [1220, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$('config1').first().json.evolution_url}}/message/sendText/{{$('config1').first().json.evolution_instance}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$('config1').first().json.evolution_apikey}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.telefone, text: $json.message }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1c2e3d4-5b6f-47a8-9c0d-1e2f3a4b5c6d",
+      "name": "Evolution sendText",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1440, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$('config1').first().json.backend_url}}/api/n8n/followup-log",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "={{$('config1').first().json.webhook_secret}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ accountId: $json.accountId, appointmentId: $json.appointmentId, branch: $json.branch, telefone: $json.telefone, sentAt: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 5000,
+          "ignoreResponseCode": true
+        }
+      },
+      "id": "b2d3e4f5-6a7b-48c9-9d0e-2f3a4b5c6d7e",
+      "name": "Log to Backend (opt)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1660, 320]
+    }
+  ],
+  "connections": {
+    "Webhook CRM": {
+      "main": [[{ "node": "config1", "type": "main", "index": 0 }]]
+    },
+    "config1": {
+      "main": [[{ "node": "Validate HMAC", "type": "main", "index": 0 }]]
+    },
+    "Validate HMAC": {
+      "main": [[{ "node": "IF event=attendance", "type": "main", "index": 0 }]]
+    },
+    "IF event=attendance": {
+      "main": [
+        [{ "node": "Switch attendanceStatus", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Switch attendanceStatus": {
+      "main": [
+        [{ "node": "Msg ATTENDED", "type": "main", "index": 0 }],
+        [{ "node": "Msg NO_SHOW", "type": "main", "index": 0 }],
+        [{ "node": "Msg RESCHEDULED", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Msg ATTENDED": {
+      "main": [[{ "node": "Evolution sendText", "type": "main", "index": 0 }]]
+    },
+    "Msg NO_SHOW": {
+      "main": [[{ "node": "Evolution sendText", "type": "main", "index": 0 }]]
+    },
+    "Msg RESCHEDULED": {
+      "main": [[{ "node": "Evolution sendText", "type": "main", "index": 0 }]]
+    },
+    "Evolution sendText": {
+      "main": [[{ "node": "Log to Backend (opt)", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "tags": [
+    { "name": "gleps" },
+    { "name": "followup" },
+    { "name": "T-020c" }
+  ]
+}
