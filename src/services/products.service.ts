@@ -92,7 +92,7 @@ export const productsService = {
       
       const newProduct: Product = {
         id: `prod-${Date.now()}`,
-        account_id: 'acc-1',
+        account_id: data.accountId ?? '',
         nome: data.nome,
         valor_padrao: data.valorPadrao,
         metodos_pagamento: data.metodosPagamento,

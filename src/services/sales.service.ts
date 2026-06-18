@@ -99,7 +99,7 @@ export const salesService = {
       
       const newSale: Sale = {
         id: `sale-${Date.now()}`,
-        account_id: 'acc-1',
+        account_id: data.accountId ?? '',
         contact_id: data.contactId,
         items: data.items.map((item, index) => ({
           id: `item-${Date.now()}-${index}`,

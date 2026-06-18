@@ -88,7 +88,7 @@ export const contactsService = {
       
       const newContact: Contact = {
         id: `contact-${Date.now()}`,
-        account_id: 'acc-1',
+        account_id: data.accountId ?? '',
         nome: data.nome,
         telefone: data.telefone || null,
         email: data.email || null,

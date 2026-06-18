@@ -52,8 +52,13 @@ const queryClient = new QueryClient();
 // TagProvider must be outside FinanceProvider because FinanceContext uses TagContext
 function AdminFinanceWrapper({ children }: { children: React.ReactNode }) {
   const { account, user } = useAuth();
-  const accountId = account?.id || 'acc-1';
+  const accountId = account?.id;
   const userId = user?.id || '';
+
+  // Não montar providers enquanto accountId não estiver disponível
+  // (super_admin sem conta selecionada ou hidratação ainda em andamento)
+  if (!accountId) return null;
+
   return (
     <TagProvider accountId={accountId}>
       <FinanceProvider accountId={accountId}>

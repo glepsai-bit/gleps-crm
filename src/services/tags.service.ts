@@ -93,7 +93,7 @@ export const tagsService = {
       
       const newTag: Tag = {
         id: `tag-${Date.now()}`,
-        account_id: 'acc-1',
+        account_id: data.accountId ?? '',
         funnel_id: data.funnelId,
         name: data.name,
         slug: data.name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, ''),

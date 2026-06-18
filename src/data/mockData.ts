@@ -18,11 +18,13 @@ import {
   LeadTag,
   TagHistory,
 } from '@/types/crm';
+import { MOCK_ACCOUNT_ID } from '@/mocks/constants';
+export { MOCK_ACCOUNT_ID };
 
 // ============= ACCOUNTS =============
 export const mockAccounts: Account[] = [
   {
-    id: 'acc-1',
+    id: MOCK_ACCOUNT_ID,
     nome: 'Clínica Vida Plena',
     timezone: 'America/Sao_Paulo',
     plano: 'pro',
@@ -79,7 +81,7 @@ export const mockUsers: User[] = [
   // Account 1 Users
   {
     id: 'user-admin-1',
-    account_id: 'acc-1',
+    account_id: MOCK_ACCOUNT_ID,
     nome: 'Dr. Carlos Silva',
     email: 'carlos@clinicavidaplena.com',
     role: 'admin',
@@ -90,7 +92,7 @@ export const mockUsers: User[] = [
   },
   {
     id: 'user-agent-1',
-    account_id: 'acc-1',
+    account_id: MOCK_ACCOUNT_ID,
     nome: 'Ana Paula Costa',
     email: 'ana@clinicavidaplena.com',
     role: 'agent',
@@ -102,7 +104,7 @@ export const mockUsers: User[] = [
   },
   {
     id: 'user-agent-2',
-    account_id: 'acc-1',
+    account_id: MOCK_ACCOUNT_ID,
     nome: 'Pedro Oliveira',
     email: 'pedro@clinicavidaplena.com',
     role: 'agent',
@@ -154,7 +156,7 @@ export const mockUsers: User[] = [
 export const mockAgentBots: AgentBot[] = [
   {
     id: 'bot-1',
-    account_id: 'acc-1',
+    account_id: MOCK_ACCOUNT_ID,
     nome: 'Marília IA',
     provider: 'openai',
     ativo: true,
@@ -175,14 +177,14 @@ export const mockAgentBots: AgentBot[] = [
 // ============= CONTACTS =============
 export const mockContacts: Contact[] = [
   // Account 1 Contacts
-  { id: 'contact-1', account_id: 'acc-1', nome: 'Maria Souza', telefone: '+55 11 99999-1111', email: 'maria@email.com', origem: 'whatsapp', created_at: '2025-01-10T10:00:00Z', updated_at: '2025-01-19T08:00:00Z' },
-  { id: 'contact-2', account_id: 'acc-1', nome: 'João Santos', telefone: '+55 11 99999-2222', email: 'joao@email.com', origem: 'instagram', created_at: '2025-01-12T14:00:00Z', updated_at: '2025-01-18T16:00:00Z' },
-  { id: 'contact-3', account_id: 'acc-1', nome: 'Fernanda Lima', telefone: '+55 11 99999-3333', email: 'fernanda@email.com', origem: 'site', created_at: '2025-01-15T09:00:00Z', updated_at: '2025-01-19T07:30:00Z' },
-  { id: 'contact-4', account_id: 'acc-1', nome: 'Ricardo Almeida', telefone: '+55 11 99999-4444', email: 'ricardo@email.com', origem: 'whatsapp', created_at: '2025-01-16T11:00:00Z', updated_at: '2025-01-19T09:00:00Z' },
-  { id: 'contact-5', account_id: 'acc-1', nome: 'Camila Rocha', telefone: '+55 11 99999-5555', email: 'camila@email.com', origem: 'indicacao', created_at: '2025-01-17T08:00:00Z', updated_at: '2025-01-17T08:00:00Z' },
-  { id: 'contact-6', account_id: 'acc-1', nome: 'Bruno Costa', telefone: '+55 11 99999-6666', email: 'bruno@email.com', origem: 'whatsapp', created_at: '2025-01-18T13:00:00Z', updated_at: '2025-01-19T10:00:00Z' },
-  { id: 'contact-7', account_id: 'acc-1', nome: 'Juliana Martins', telefone: '+55 11 99999-7777', email: 'juliana@email.com', origem: 'instagram', created_at: '2025-01-18T15:00:00Z', updated_at: '2025-01-19T11:00:00Z' },
-  { id: 'contact-8', account_id: 'acc-1', nome: 'André Silva', telefone: '+55 11 99999-8888', email: 'andre@email.com', origem: 'site', created_at: '2025-01-19T07:00:00Z', updated_at: '2025-01-19T07:00:00Z' },
+  { id: 'contact-1', account_id: MOCK_ACCOUNT_ID, nome: 'Maria Souza', telefone: '+55 11 99999-1111', email: 'maria@email.com', origem: 'whatsapp', created_at: '2025-01-10T10:00:00Z', updated_at: '2025-01-19T08:00:00Z' },
+  { id: 'contact-2', account_id: MOCK_ACCOUNT_ID, nome: 'João Santos', telefone: '+55 11 99999-2222', email: 'joao@email.com', origem: 'instagram', created_at: '2025-01-12T14:00:00Z', updated_at: '2025-01-18T16:00:00Z' },
+  { id: 'contact-3', account_id: MOCK_ACCOUNT_ID, nome: 'Fernanda Lima', telefone: '+55 11 99999-3333', email: 'fernanda@email.com', origem: 'site', created_at: '2025-01-15T09:00:00Z', updated_at: '2025-01-19T07:30:00Z' },
+  { id: 'contact-4', account_id: MOCK_ACCOUNT_ID, nome: 'Ricardo Almeida', telefone: '+55 11 99999-4444', email: 'ricardo@email.com', origem: 'whatsapp', created_at: '2025-01-16T11:00:00Z', updated_at: '2025-01-19T09:00:00Z' },
+  { id: 'contact-5', account_id: MOCK_ACCOUNT_ID, nome: 'Camila Rocha', telefone: '+55 11 99999-5555', email: 'camila@email.com', origem: 'indicacao', created_at: '2025-01-17T08:00:00Z', updated_at: '2025-01-17T08:00:00Z' },
+  { id: 'contact-6', account_id: MOCK_ACCOUNT_ID, nome: 'Bruno Costa', telefone: '+55 11 99999-6666', email: 'bruno@email.com', origem: 'whatsapp', created_at: '2025-01-18T13:00:00Z', updated_at: '2025-01-19T10:00:00Z' },
+  { id: 'contact-7', account_id: MOCK_ACCOUNT_ID, nome: 'Juliana Martins', telefone: '+55 11 99999-7777', email: 'juliana@email.com', origem: 'instagram', created_at: '2025-01-18T15:00:00Z', updated_at: '2025-01-19T11:00:00Z' },
+  { id: 'contact-8', account_id: MOCK_ACCOUNT_ID, nome: 'André Silva', telefone: '+55 11 99999-8888', email: 'andre@email.com', origem: 'site', created_at: '2025-01-19T07:00:00Z', updated_at: '2025-01-19T07:00:00Z' },
   // Account 2 Contacts
   { id: 'contact-9', account_id: 'acc-2', nome: 'Patricia Nunes', telefone: '+55 21 99999-1111', email: 'patricia@company.com', origem: 'whatsapp', created_at: '2025-01-14T10:00:00Z', updated_at: '2025-01-19T08:00:00Z' },
   { id: 'contact-10', account_id: 'acc-2', nome: 'Eduardo Gomes', telefone: '+55 21 99999-2222', email: 'eduardo@company.com', origem: 'site', created_at: '2025-01-16T14:00:00Z', updated_at: '2025-01-18T16:00:00Z' },
@@ -190,7 +192,7 @@ export const mockContacts: Contact[] = [
 
 // ============= FUNNEL & STAGES =============
 export const mockFunnels: Funnel[] = [
-  { id: 'funnel-1', account_id: 'acc-1', nome: 'Funil Principal', ativo: true, created_at: '2024-06-15T10:00:00Z' },
+  { id: 'funnel-1', account_id: MOCK_ACCOUNT_ID, nome: 'Funil Principal', ativo: true, created_at: '2024-06-15T10:00:00Z' },
   { id: 'funnel-2', account_id: 'acc-2', nome: 'Pipeline de Vendas', ativo: true, created_at: '2024-08-20T14:00:00Z' },
 ];
 
@@ -224,33 +226,33 @@ export const mockLeadFunnelStates: LeadFunnelState[] = [
 
 // ============= CONVERSATIONS =============
 export const mockConversations: Conversation[] = [
-  { id: 'conv-1', account_id: 'acc-1', contact_id: 'contact-1', channel: 'whatsapp', status: 'resolved', assignee_type: 'user', assignee_id: 'user-agent-1', opened_at: '2025-01-10T10:00:00Z', resolved_at: '2025-01-10T11:30:00Z' },
-  { id: 'conv-2', account_id: 'acc-1', contact_id: 'contact-2', channel: 'instagram', status: 'open', assignee_type: 'agent_bot', assignee_id: 'bot-1', opened_at: '2025-01-18T14:00:00Z', resolved_at: null },
-  { id: 'conv-3', account_id: 'acc-1', contact_id: 'contact-3', channel: 'webchat', status: 'open', assignee_type: 'user', assignee_id: 'user-agent-2', opened_at: '2025-01-19T07:30:00Z', resolved_at: null },
-  { id: 'conv-4', account_id: 'acc-1', contact_id: 'contact-4', channel: 'whatsapp', status: 'pending', assignee_type: null, assignee_id: null, opened_at: '2025-01-19T09:00:00Z', resolved_at: null },
-  { id: 'conv-5', account_id: 'acc-1', contact_id: 'contact-6', channel: 'whatsapp', status: 'resolved', assignee_type: 'user', assignee_id: 'user-agent-1', opened_at: '2025-01-18T13:00:00Z', resolved_at: '2025-01-19T10:00:00Z' },
-  { id: 'conv-6', account_id: 'acc-1', contact_id: 'contact-7', channel: 'instagram', status: 'open', assignee_type: 'agent_bot', assignee_id: 'bot-1', opened_at: '2025-01-18T15:00:00Z', resolved_at: null },
+  { id: 'conv-1', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-1', channel: 'whatsapp', status: 'resolved', assignee_type: 'user', assignee_id: 'user-agent-1', opened_at: '2025-01-10T10:00:00Z', resolved_at: '2025-01-10T11:30:00Z' },
+  { id: 'conv-2', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-2', channel: 'instagram', status: 'open', assignee_type: 'agent_bot', assignee_id: 'bot-1', opened_at: '2025-01-18T14:00:00Z', resolved_at: null },
+  { id: 'conv-3', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-3', channel: 'webchat', status: 'open', assignee_type: 'user', assignee_id: 'user-agent-2', opened_at: '2025-01-19T07:30:00Z', resolved_at: null },
+  { id: 'conv-4', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-4', channel: 'whatsapp', status: 'pending', assignee_type: null, assignee_id: null, opened_at: '2025-01-19T09:00:00Z', resolved_at: null },
+  { id: 'conv-5', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-6', channel: 'whatsapp', status: 'resolved', assignee_type: 'user', assignee_id: 'user-agent-1', opened_at: '2025-01-18T13:00:00Z', resolved_at: '2025-01-19T10:00:00Z' },
+  { id: 'conv-6', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-7', channel: 'instagram', status: 'open', assignee_type: 'agent_bot', assignee_id: 'bot-1', opened_at: '2025-01-18T15:00:00Z', resolved_at: null },
   { id: 'conv-7', account_id: 'acc-2', contact_id: 'contact-9', channel: 'whatsapp', status: 'open', assignee_type: 'user', assignee_id: 'user-agent-3', opened_at: '2025-01-19T08:00:00Z', resolved_at: null },
 ];
 
 // ============= PRODUCTS =============
 export const mockProducts: Product[] = [
-  { id: 'prod-1', account_id: 'acc-1', nome: 'Consulta Inicial', valor_padrao: 350.00, metodos_pagamento: ['pix', 'credito', 'dinheiro'], convenios_aceitos: [], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
-  { id: 'prod-2', account_id: 'acc-1', nome: 'Acompanhamento Mensal', valor_padrao: 280.00, metodos_pagamento: ['pix', 'credito', 'boleto'], convenios_aceitos: [], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
-  { id: 'prod-3', account_id: 'acc-1', nome: 'Avaliação Completa', valor_padrao: 950.00, metodos_pagamento: ['pix', 'credito', 'boleto', 'convenio'], convenios_aceitos: ['Unimed', 'Bradesco Saúde', 'Amil'], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
-  { id: 'prod-4', account_id: 'acc-1', nome: 'Procedimento Especial', valor_padrao: 1500.00, metodos_pagamento: ['pix', 'credito', 'debito'], convenios_aceitos: [], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
-  { id: 'prod-5', account_id: 'acc-1', nome: 'Retorno', valor_padrao: 150.00, metodos_pagamento: ['pix', 'credito', 'dinheiro', 'convenio'], convenios_aceitos: ['Unimed', 'SulAmérica'], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
+  { id: 'prod-1', account_id: MOCK_ACCOUNT_ID, nome: 'Consulta Inicial', valor_padrao: 350.00, metodos_pagamento: ['pix', 'credito', 'dinheiro'], convenios_aceitos: [], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
+  { id: 'prod-2', account_id: MOCK_ACCOUNT_ID, nome: 'Acompanhamento Mensal', valor_padrao: 280.00, metodos_pagamento: ['pix', 'credito', 'boleto'], convenios_aceitos: [], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
+  { id: 'prod-3', account_id: MOCK_ACCOUNT_ID, nome: 'Avaliação Completa', valor_padrao: 950.00, metodos_pagamento: ['pix', 'credito', 'boleto', 'convenio'], convenios_aceitos: ['Unimed', 'Bradesco Saúde', 'Amil'], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
+  { id: 'prod-4', account_id: MOCK_ACCOUNT_ID, nome: 'Procedimento Especial', valor_padrao: 1500.00, metodos_pagamento: ['pix', 'credito', 'debito'], convenios_aceitos: [], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
+  { id: 'prod-5', account_id: MOCK_ACCOUNT_ID, nome: 'Retorno', valor_padrao: 150.00, metodos_pagamento: ['pix', 'credito', 'dinheiro', 'convenio'], convenios_aceitos: ['Unimed', 'SulAmérica'], ativo: true, created_at: '2024-06-15T10:00:00Z', updated_at: '2024-06-15T10:00:00Z' },
   { id: 'prod-6', account_id: 'acc-2', nome: 'Consultoria Tech', valor_padrao: 5000.00, metodos_pagamento: ['pix', 'credito', 'boleto'], convenios_aceitos: [], ativo: true, created_at: '2024-08-20T14:00:00Z', updated_at: '2024-08-20T14:00:00Z' },
 ];
 
 // ============= SALES =============
 export const mockSales: Sale[] = [
-  { id: 'sale-1', account_id: 'acc-1', contact_id: 'contact-1', items: [{ id: 'item-1', product_id: 'prod-4', quantidade: 1, valor_unitario: 1500.00, valor_total: 1500.00 }], valor: 1500.00, status: 'paid', metodo_pagamento: 'pix', responsavel_id: 'user-agent-1', created_at: '2025-01-10T12:00:00Z', paid_at: '2025-01-10T12:05:00Z', refunded_at: null },
-  { id: 'sale-2', account_id: 'acc-1', contact_id: 'contact-6', items: [{ id: 'item-2', product_id: 'prod-1', quantidade: 1, valor_unitario: 2800.00, valor_total: 2800.00 }], valor: 2800.00, status: 'paid', metodo_pagamento: 'credito', responsavel_id: 'user-agent-1', created_at: '2025-01-19T10:30:00Z', paid_at: '2025-01-19T10:35:00Z', refunded_at: null },
-  { id: 'sale-3', account_id: 'acc-1', contact_id: 'contact-2', items: [{ id: 'item-3', product_id: 'prod-3', quantidade: 1, valor_unitario: 950.00, valor_total: 950.00 }], valor: 950.00, status: 'pending', metodo_pagamento: 'boleto', responsavel_id: 'user-agent-2', created_at: '2025-01-18T16:00:00Z', paid_at: null, refunded_at: null },
-  { id: 'sale-4', account_id: 'acc-1', contact_id: 'contact-3', items: [{ id: 'item-4', product_id: 'prod-2', quantidade: 1, valor_unitario: 3200.00, valor_total: 3200.00 }], valor: 3200.00, status: 'pending', metodo_pagamento: null, responsavel_id: 'user-admin-1', created_at: '2025-01-19T08:00:00Z', paid_at: null, refunded_at: null },
+  { id: 'sale-1', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-1', items: [{ id: 'item-1', product_id: 'prod-4', quantidade: 1, valor_unitario: 1500.00, valor_total: 1500.00 }], valor: 1500.00, status: 'paid', metodo_pagamento: 'pix', responsavel_id: 'user-agent-1', created_at: '2025-01-10T12:00:00Z', paid_at: '2025-01-10T12:05:00Z', refunded_at: null },
+  { id: 'sale-2', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-6', items: [{ id: 'item-2', product_id: 'prod-1', quantidade: 1, valor_unitario: 2800.00, valor_total: 2800.00 }], valor: 2800.00, status: 'paid', metodo_pagamento: 'credito', responsavel_id: 'user-agent-1', created_at: '2025-01-19T10:30:00Z', paid_at: '2025-01-19T10:35:00Z', refunded_at: null },
+  { id: 'sale-3', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-2', items: [{ id: 'item-3', product_id: 'prod-3', quantidade: 1, valor_unitario: 950.00, valor_total: 950.00 }], valor: 950.00, status: 'pending', metodo_pagamento: 'boleto', responsavel_id: 'user-agent-2', created_at: '2025-01-18T16:00:00Z', paid_at: null, refunded_at: null },
+  { id: 'sale-4', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-3', items: [{ id: 'item-4', product_id: 'prod-2', quantidade: 1, valor_unitario: 3200.00, valor_total: 3200.00 }], valor: 3200.00, status: 'pending', metodo_pagamento: null, responsavel_id: 'user-admin-1', created_at: '2025-01-19T08:00:00Z', paid_at: null, refunded_at: null },
   { id: 'sale-5', account_id: 'acc-2', contact_id: 'contact-9', items: [{ id: 'item-5', product_id: 'prod-6', quantidade: 1, valor_unitario: 15000.00, valor_total: 15000.00 }], valor: 15000.00, status: 'paid', metodo_pagamento: 'pix', responsavel_id: 'user-agent-3', created_at: '2025-01-15T14:00:00Z', paid_at: '2025-01-15T14:30:00Z', refunded_at: null },
-  { id: 'sale-6', account_id: 'acc-1', contact_id: 'contact-1', items: [{ id: 'item-6', product_id: 'prod-5', quantidade: 1, valor_unitario: 500.00, valor_total: 500.00 }], valor: 500.00, status: 'refunded', metodo_pagamento: 'pix', responsavel_id: 'user-agent-1', created_at: '2025-01-05T10:00:00Z', paid_at: '2025-01-05T10:05:00Z', refunded_at: '2025-01-08T09:00:00Z' },
+  { id: 'sale-6', account_id: MOCK_ACCOUNT_ID, contact_id: 'contact-1', items: [{ id: 'item-6', product_id: 'prod-5', quantidade: 1, valor_unitario: 500.00, valor_total: 500.00 }], valor: 500.00, status: 'refunded', metodo_pagamento: 'pix', responsavel_id: 'user-agent-1', created_at: '2025-01-05T10:00:00Z', paid_at: '2025-01-05T10:05:00Z', refunded_at: '2025-01-08T09:00:00Z' },
 ];
 
 // ============= EVENTS =============
@@ -291,7 +293,7 @@ function generateAuthEvents(): CRMEvent[] {
       // Login success
       events.push({
         id: `evt-gen-${dayOffset}-${userIndex}-login`,
-        account_id: 'acc-1',
+        account_id: MOCK_ACCOUNT_ID,
         event_type: 'auth.login.success',
         actor_type: 'user',
         actor_id: user.id,
@@ -310,7 +312,7 @@ function generateAuthEvents(): CRMEvent[] {
       // Logout
       events.push({
         id: `evt-gen-${dayOffset}-${userIndex}-logout`,
-        account_id: 'acc-1',
+        account_id: MOCK_ACCOUNT_ID,
         event_type: 'auth.logout',
         actor_type: 'user',
         actor_id: user.id,
@@ -330,7 +332,7 @@ function generateAuthEvents(): CRMEvent[] {
         
         events.push({
           id: `evt-gen-${dayOffset}-${userIndex}-failed`,
-          account_id: 'acc-1',
+          account_id: MOCK_ACCOUNT_ID,
           event_type: 'auth.login.failed',
           actor_type: 'user',
           actor_id: user.id,
@@ -419,19 +421,19 @@ export const mockEvents: CRMEvent[] = generateAuthEvents();
 export const mockTags: Tag[] = [
   // Tags de Etapa (type === 'stage') - Account 1, Funnel 1
   // Cada tag de etapa É uma coluna do Kanban
-  { id: 'tag-1', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Novo', slug: 'novo', type: 'stage', color: '#0EA5E9', ordem: 1, ativo: true, created_at: '2024-06-15T10:00:00Z' },
-  { id: 'tag-2', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Contato', slug: 'contato', type: 'stage', color: '#8B5CF6', ordem: 2, ativo: true, created_at: '2024-06-15T10:00:00Z' },
-  { id: 'tag-3', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Interessado', slug: 'interessado', type: 'stage', color: '#F59E0B', ordem: 3, ativo: true, created_at: '2024-06-15T10:00:00Z' },
-  { id: 'tag-4', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Qualificado', slug: 'qualificado', type: 'stage', color: '#22C55E', ordem: 4, ativo: true, created_at: '2024-06-15T10:00:00Z' },
-  { id: 'tag-5', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Convertido', slug: 'convertido', type: 'stage', color: '#A855F7', ordem: 5, ativo: true, created_at: '2024-06-15T10:00:00Z' },
+  { id: 'tag-1', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Novo', slug: 'novo', type: 'stage', color: '#0EA5E9', ordem: 1, ativo: true, created_at: '2024-06-15T10:00:00Z' },
+  { id: 'tag-2', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Contato', slug: 'contato', type: 'stage', color: '#8B5CF6', ordem: 2, ativo: true, created_at: '2024-06-15T10:00:00Z' },
+  { id: 'tag-3', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Interessado', slug: 'interessado', type: 'stage', color: '#F59E0B', ordem: 3, ativo: true, created_at: '2024-06-15T10:00:00Z' },
+  { id: 'tag-4', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Qualificado', slug: 'qualificado', type: 'stage', color: '#22C55E', ordem: 4, ativo: true, created_at: '2024-06-15T10:00:00Z' },
+  { id: 'tag-5', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Convertido', slug: 'convertido', type: 'stage', color: '#A855F7', ordem: 5, ativo: true, created_at: '2024-06-15T10:00:00Z' },
   
   // Tags Operacionais (type === 'operational') - Account 1
-  { id: 'tag-op-1', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Urgente', slug: 'urgente', type: 'operational', color: '#EF4444', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
-  { id: 'tag-op-2', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Sem Resposta', slug: 'sem-resposta', type: 'operational', color: '#F97316', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
-  { id: 'tag-op-3', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Retorno Agendado', slug: 'retorno-agendado', type: 'operational', color: '#06B6D4', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
-  { id: 'tag-op-4', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Lead Frio', slug: 'lead-frio', type: 'operational', color: '#64748B', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
-  { id: 'tag-op-5', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Lead Quente', slug: 'lead-quente', type: 'operational', color: '#DC2626', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
-  { id: 'tag-op-6', account_id: 'acc-1', funnel_id: 'funnel-1', name: 'Já é Cliente', slug: 'ja-e-cliente', type: 'operational', color: '#10B981', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
+  { id: 'tag-op-1', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Urgente', slug: 'urgente', type: 'operational', color: '#EF4444', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
+  { id: 'tag-op-2', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Sem Resposta', slug: 'sem-resposta', type: 'operational', color: '#F97316', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
+  { id: 'tag-op-3', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Retorno Agendado', slug: 'retorno-agendado', type: 'operational', color: '#06B6D4', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
+  { id: 'tag-op-4', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Lead Frio', slug: 'lead-frio', type: 'operational', color: '#64748B', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
+  { id: 'tag-op-5', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Lead Quente', slug: 'lead-quente', type: 'operational', color: '#DC2626', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
+  { id: 'tag-op-6', account_id: MOCK_ACCOUNT_ID, funnel_id: 'funnel-1', name: 'Já é Cliente', slug: 'ja-e-cliente', type: 'operational', color: '#10B981', ordem: 0, ativo: true, created_at: '2024-07-01T10:00:00Z' },
 
   // Tags de Etapa - Account 2, Funnel 2
   { id: 'tag-6', account_id: 'acc-2', funnel_id: 'funnel-2', name: 'Lead', slug: 'lead', type: 'stage', color: '#0EA5E9', ordem: 1, ativo: true, created_at: '2024-08-20T14:00:00Z' },

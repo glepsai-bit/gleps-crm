@@ -205,12 +205,28 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
       });
     }
 
+    // BUG-1 fix: restaurar estado de impersonação após F5
+    const originalToken = localStorage.getItem('original_token');
+    if (originalToken) {
+      setIsImpersonating(true);
+      const rawOriginalUser = localStorage.getItem('original_user_cache');
+      if (rawOriginalUser) {
+        try {
+          setOriginalUser(JSON.parse(rawOriginalUser) as User);
+        } catch {
+          // cache corrompido — ignora; exitImpersonation ainda funciona via token
+        }
+      }
+    }
+
     hydrateFromToken();
 
     const handleUnauthorized = () => {
       if (!mountedRef.current) return;
       tokenManager.clearTokens();
       clearAuthCache();
+      localStorage.removeItem('original_token');
+      localStorage.removeItem('original_user_cache');
       setAuthState({
         user: null, account: null, isAuthenticated: false, isLoading: false, authError: null,
       });
@@ -271,6 +287,8 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
     } finally {
       tokenManager.clearTokens();
       clearAuthCache();
+      localStorage.removeItem('original_token');
+      localStorage.removeItem('original_user_cache');
       setAuthState({
         user: null, account: null, isAuthenticated: false, isLoading: false, authError: null,
       });
@@ -287,6 +305,10 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
       const originalToken = tokenManager.getToken();
       if (originalToken) {
         localStorage.setItem('original_token', originalToken);
+      }
+      // Persist original user so we can restore after F5
+      if (authState.user) {
+        localStorage.setItem('original_user_cache', JSON.stringify(authState.user));
       }
 
       const raw = await apiClient.post<any>(
@@ -320,15 +342,23 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
   }, [authState.user]);
 
   const exitImpersonation = useCallback(() => {
-    if (!originalUser) return;
     // Restore original super admin token
     const originalToken = localStorage.getItem('original_token');
-    if (originalToken) {
-      tokenManager.setToken(originalToken);
-      localStorage.removeItem('original_token');
+    if (!originalToken) return;
+    tokenManager.setToken(originalToken);
+    localStorage.removeItem('original_token');
+
+    // Restore originalUser from memory or from persisted cache
+    const resolvedOriginalUser = originalUser ?? (() => {
+      const raw = localStorage.getItem('original_user_cache');
+      return raw ? (JSON.parse(raw) as User) : null;
+    })();
+    localStorage.removeItem('original_user_cache');
+
+    if (resolvedOriginalUser) {
+      writeAuthCache(resolvedOriginalUser, null);
+      setAuthState(prev => ({ ...prev, user: resolvedOriginalUser, account: null }));
     }
-    writeAuthCache(originalUser, null);
-    setAuthState(prev => ({ ...prev, user: originalUser, account: null }));
     setOriginalUser(null);
     setIsImpersonating(false);
     toast.success('Voltou para sua conta original');

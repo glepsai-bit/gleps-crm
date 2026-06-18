@@ -71,6 +71,7 @@ export interface CreateContactRequest {
   telefone?: string;
   email?: string;
   origem?: 'whatsapp' | 'instagram' | 'site' | 'indicacao';
+  accountId?: string;
 }
 
 export interface UpdateContactRequest {
@@ -109,6 +110,7 @@ export interface CreateSaleRequest {
   convenioNome?: string;
   responsavelId: string;
   isRecurring?: boolean;
+  accountId?: string;
 }
 
 export interface RefundSaleRequest {
@@ -141,6 +143,7 @@ export interface CreateProductRequest {
   valorPadrao: number;
   metodosPagamento: ('pix' | 'boleto' | 'debito' | 'credito' | 'dinheiro' | 'convenio')[];
   conveniosAceitos?: string[];
+  accountId?: string;
 }
 
 export interface UpdateProductRequest {
@@ -165,6 +168,7 @@ export interface CreateTagRequest {
   color: string;
   funnelId: string;
   ordem?: number;
+  accountId?: string;
 }
 
 export interface UpdateTagRequest {
