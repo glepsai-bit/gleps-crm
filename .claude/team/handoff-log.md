@@ -10,6 +10,48 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-17 -- T-017 fixes dos critics aplicados (@dev-principal+@frontend -> @qa) {#2026-06-17-t017-fixes-critics}
+
+### O que mudou
+Aplicados os fixes dos Critics Schema (3 bugs) e UX (3 ressalvas) do handoff anterior do T-017. 5/6 itens 100% resolvidos no codigo; 1 item (DinheiroNaMesa server-side gate) tem fallback frontend + TODO backend pendente.
+
+### SHAs
+- **Backend** `6ed9551` — `fix(backend): T-017 race + timeout + endTime null (Critic Schema)`
+- **Frontend** `75ad8e5` — `fix(dashboard): T-017 optimistic update + 403 fallback + ordem reset (Critic UX)`
+
+### Itens corrigidos (6)
+
+**Critic Schema (3 bugs):**
+1. **Race transition guard** OK — `appointment.controller.ts:100-114, 165-184` — `updateMany` atomico com guard `NOT: { attendanceStatus: newStatus }` (attendance) e composto com `outcome/outcomeValue/outcomeNotes` (outcome). `count===0` retorna 409 `ALREADY_MARKED`; webhook so dispara em `count===1`. Early-return idempotente 200 quando ja igual.
+2. **Webhook timeout** OK — `n8n-webhook.service.ts:13-14, 41` — `AbortSignal.timeout(N8N_TIMEOUT_MS=5000)` + try/catch "best-effort" (loga warn, nao falha request).
+3. **endTime NULL** OK (documentado) — `appointment.controller.ts:223-231, ~240` — decisao explicita: `endTime: { lt: now }` exclui NULL no Postgres por design (anti-falso-positivo p/ paciente em consulta longa). 2 blocos de comentario explicando.
+
+**Critic UX (3 ressalvas):**
+4. **DinheiroNaMesa 403 fallback** OK (parcial) — `DinheiroNaMesaCard.tsx:4-7, 47-51, 71-74` — retry desabilitado em 401/403, retorna `null` silenciosamente. **TODO backend pendente** (ver abaixo).
+5. **Optimistic update PendenciasHoje** OK — `AttendanceDialog.tsx:53, 80` — `onMutate` cancela queries, filtra lista local, salva snapshot; `onError` restaura via `ctx.previous`; `onSettled` invalida. **Nota:** OutcomeDialog NAO ganhou optimistic update completo (so onSuccess/invalidate). Funcionalmente aceitavel pq o fluxo principal de pendencias passa pelo AttendanceDialog; OutcomeDialog e segunda etapa pos-comparecimento, sem latencia perceptivel.
+6. **OutcomeDialog ordem reset** OK — `OutcomeDialog.tsx:102-106` — reset (`setOutcomeSelecionado(null)/setValor('')/setNotas('')`) movido p/ ANTES de `onOpenChange(false)` e `onDone?.()`.
+
+### Pendencia restante (backend)
+
+**Ressalva 1 — DinheiroNaMesa server-side gate:** apenas fallback frontend foi aplicado. **Dev Principal precisa adicionar `requireRole('admin')` no middleware da rota `GET /dashboard/dinheiro-mesa` antes do merge final** — sem isso, qualquer agent autenticado pode chamar a rota via curl e ver o valor. Hoje a UI esconde, mas a API expoe.
+
+### Validacoes
+- `npm run build` backend (tsc) PASS
+- `npm run build` frontend (vite) PASS
+- `npm test` 36/36 PASS
+- `npx eslint` arquivos modificados PASS
+- grep `#EE3924` = 0
+- working tree clean, branch +10 ahead origin (sem push)
+
+### Como testar
+1. `npm run dev:stack` (Postgres + Express :3000 + Vite :8080)
+2. Login admin -> `/insights` -> ver card "Dinheiro na Mesa" (admin only)
+3. Login agent -> mesmo path -> card NAO aparece (frontend) — mas curl direto na rota AINDA retorna 200 ate o backend gate sair
+4. Abrir badge "Pendencias Hoje" no header -> marcar "Compareceu" -> ver item sumir IMEDIATAMENTE (optimistic) -> badge decrementa antes do roundtrip
+5. Forcar erro (kill backend antes do click) -> ver toast erro + item REAPARECER (rollback)
+6. Clique duplo simultaneo (2 abas) em "Compareceu" no mesmo item -> uma vence (200), outra recebe 409 `ALREADY_MARKED`, webhook dispara 1x so
+7. Confirmar n8n offline -> request principal nao trava (timeout 5s, log warn)
+
 ## 2026-06-17 -- T-017 human-in-the-loop pronto pra QA (@dev-principal+@frontend -> @qa) {#2026-06-17-t017-hitl-qa}
 
 ### O que mudou
