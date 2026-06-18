@@ -10,6 +10,47 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-18 -- QA validou T-014/T-015/T-016/T-017 em prod (@qa -> @usuario) {#2026-06-18-qa-final-prod}
+
+### Resumo executivo (GO / NO-GO)
+**NO-GO pra finalizar deploy hoje.** T-016 (bug confirmado) + T-017 (5 bugs bloqueantes na camada de integracao FE<->BE) impedem a feature humana-in-the-loop de funcionar em prod. T-014 visual aprovado com ressalva (faltou teste de isolamento multi-tenant de DB + headers CSP/HSTS). T-015 reprovado por causa de bundle pre-T-015 servido em prod (rebuild Vite pendente dos commits `0c5fe6b` + `17d3beb`).
+
+### Tabela por card
+
+| Card | Veredito | Bloqueio principal | Evidencia |
+|---|---|---|---|
+| T-014 (whitelabel) | **APROVADO COM RESSALVA** | Faltou teste de isolamento multi-tenant DB; headers de seguranca rasos (so XFO+nosniff, sem CSP/HSTS); login real nao testado (sessao reaproveitada) | `qa-t014-login.png`, `qa-t014-dashboard.png`, curl `/api/health` 200 `version 2026-06-15-whitelabel-gleps-ia` |
+| T-015 (backlog unificado) | **REPROVADO** | Bundle em prod e pre-T-015. `document.body.innerHTML` ainda tem "Backlog Humano", nao tem "Fila de Espera". Empty state "Performance de Agentes" tambem do layout antigo. Rebuild Vite pendente (commits `0c5fe6b` + `17d3beb`) | `.playwright-mcp/qa-t015-dashboard-{light-full,dark,mobile}.png`, `vitest 36/36` PASS local |
+| T-016 (super_admin accountId=null) | **APROVADO (bug confirmado)** | Bug real. `POST /api/auth/login` retorna `accountId: null` pro super_admin. Rotas com `requireAccountId` (`/chatwoot/metrics`, `/dashboard`) retornam HTTP 400 `ACCOUNT_REQUIRED`. Admin com conta passa middleware normal. Severidade ALTA pra API/ferramentas; nao bloqueia UI final (super_admin e redirecionado pra `/super-admin`) | `qa-t016-super-admin-dashboard.png`, `qa-t016-admin-conta-dashboard.png`, 3 chamadas HTTP comparativas |
+| T-017 (human-in-the-loop) | **REPROVADO** | 5 bugs bloqueantes confirmados ao vivo: (BUG-1) URL mismatch `/calendar/events/*` no FE vs `/appointments/*` no BE -> 404/500; (BUG-2) enum attendance `compareceu` vs `ATTENDED` -> 400; (BUG-3) enum outcome `fechou_tratamento` vs `CLOSED` -> 400; (BUG-4) campo `valueCents` ignorado, BE espera `value` -> `outcomeValue:null` silencioso; (BUG-5) `PendenciasHoje` consome `data.items` mas BE retorna `{pendingAttendance,pendingOutcome,total}`. **Lacunas:** RBAC agent INCONCLUSO (deveria ter resetado senha de um agent); webhook timeout so revisao de codigo, sem runtime | `qa-t017-01..03.png`, curls com HTTP 404/400/500 |
+
+### Bugs novos pos-deploy
+- **T-016** ja registrado como card no board (super_admin accountId=null).
+- **T-017** 5 bugs bloqueantes na integracao FE<->BE (URL/enum/payload). Fix com Dev Principal antes de re-QA.
+
+### Bloqueios criticos pra fechar entrega
+1. **T-017 BUG-1/2/3/4/5** — feature de pendencias 100% quebrada. Nao deployar como esta.
+2. **T-015** — rebuild Vite e novo deploy do frontend (commits `0c5fe6b` + `17d3beb`).
+3. **T-016** — decidir bypass do `requireAccountId` pra super_admin ou injetar accountId no JWT.
+4. **T-014** — exigir teste de isolamento multi-tenant DB antes de assinar whitelabel; adicionar CSP + HSTS.
+
+### Screenshots
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-t014-login.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-t014-dashboard.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-t016-super-admin-dashboard.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-t016-admin-conta-dashboard.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-t017-01-dashboard-deploy-atual.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-t017-02-insights-page.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/qa-t017-03-dashboard-sem-t017-ui.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/.playwright-mcp/qa-t015-dashboard-light-full.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/.playwright-mcp/qa-t015-dashboard-dark.png`
+- `/Users/arthurhenrique/Desktop/crm-whitelabel-leandro-cc86c936-main/.playwright-mcp/qa-t015-dashboard-mobile.png`
+
+### Proximo passo
+Dev Principal corrige BUG-1..5 do T-017 + decisao sobre T-016 (bypass vs JWT); Frontend dispara rebuild/redeploy pra trazer T-015 pra prod; novo ciclo de QA cobrindo isolamento multi-tenant DB pro T-014.
+
+---
+
 ## 2026-06-17 -- T-017 RBAC server-side fechado, PRONTO PRO QA (@dev-principal -> @qa) {#2026-06-17-t017-rbac-pronto-qa}
 
 ### O que mudou
