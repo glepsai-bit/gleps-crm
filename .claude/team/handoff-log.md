@@ -10,6 +10,38 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-17 -- T-017 RBAC server-side fechado, PRONTO PRO QA (@dev-principal -> @qa) {#2026-06-17-t017-rbac-pronto-qa}
+
+### O que mudou
+Ultimo TODO do T-017 fechado: `GET /dashboard/dinheiro-mesa` agora tem `requireRole('admin','super_admin')` server-side. Sem isso, qualquer agent autenticado podia chamar a rota via curl e ver o valor. Hoje o gate esta na API, nao so na UI.
+
+### SHA
+- **Backend** `654a8a4` — `fix(backend): requireRole(admin) em GET /dashboard/dinheiro-mesa (T-017 ultimo TODO)`
+
+### Arquivos
+- `backend/src/routes/dashboard.routes.ts` — registra `GET /dinheiro-mesa` com `requireRole('admin','super_admin')` (padrao do `chatwoot.routes.ts`).
+- `backend/src/controllers/dashboard.controller.ts` — handler `getDinheiroMesa` + schema zod (`range: 7d|30d|90d`).
+- `backend/src/services/dashboard.service.ts` — agregacao de `outcomeValue` por outcome (CalendarEvent, type=appointment), Prisma->snake_case que o front espera.
+- `backend/package.json` — script `test` com `node --import tsx --test` (zero deps novas).
+- `backend/tsconfig.json` — exclui `__tests__` e `*.test.ts` do build.
+- `backend/src/__tests__/dashboard-dinheiro-mesa.test.ts` (novo) — 3 testes RBAC: agent->403, admin->200, super_admin->200.
+- `src/components/dashboard/DinheiroNaMesaCard.tsx` — TODO removido; comentario indica gate server-side OK.
+
+### Validacoes (8/8 PASS)
+1. `git log -5` PASS (HEAD=654a8a4)
+2. `git status` clean PASS (whitelabel/gleps-ia +12 ahead)
+3. `cd backend && npm run build` (tsc) PASS sem warnings
+4. `npm run build` (vite) PASS 3530 modulos, 5.58s
+5. `npm test` (frontend) PASS 36/36
+6. `cd backend && npm test` PASS 3/3 incl. agent->403 e admin->200
+7. grep `requireRole|requireAdmin` em `backend/src/routes/` PASS (`dashboard.routes.ts:22`)
+8. grep `TODO.*server` em `DinheiroNaMesaCard.tsx` PASS (sem output)
+
+### Pendencias
+Nenhuma. T-017 PRONTO PRO QA SEM RESSALVAS. Push da branch nao foi feito (autorizacao do usuario necessaria antes).
+
+---
+
 ## 2026-06-17 -- T-017 fixes dos critics aplicados (@dev-principal+@frontend -> @qa) {#2026-06-17-t017-fixes-critics}
 
 ### O que mudou
