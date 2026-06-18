@@ -10,6 +10,37 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-18 -- T-018 fixes impersonate iGreen (BUG-1 reload + BUG-2 acc-1 hardcode) (@dev -> @qa)
+
+### SHAs
+- `68547a7` fix(frontend): impersonate -- hidrata isImpersonating no reload + remove hardcode acc-1 (BUG-1/BUG-2)
+
+### O que mudou
+- **BUG-1 (isImpersonating perdido no F5):** `AuthContext.backend.tsx` agora persiste `original_user_cache` no `impersonate()`, hidrata `originalUser`+`isImpersonating=true` no `useEffect` lendo `localStorage.original_token`, e `exitImpersonation()` restaura via cache (nao depende mais de state em memoria). Botao "Sair da Impersonacao" volta a aparecer pos-reload.
+- **BUG-2 (hardcode `acc-1`):** Removido fallback `|| 'acc-1'` em `App.tsx:55` (AdminFinanceWrapper agora renderiza `null` se `!accountId`). Services mock (contacts/products/sales/tags) trocaram `'acc-1'` por `data.accountId ?? ''`. `mockData.ts` agora importa `MOCK_ACCOUNT_ID` de novo arquivo `src/mocks/constants.ts` (isola mocks). Grep de literal `'acc-1'` em `src/` fora de `mocks/` = 0.
+
+### Arquivos
+- `src/contexts/AuthContext.backend.tsx` (hidratacao, impersonate, exitImpersonation, logout)
+- `src/App.tsx` (AdminFinanceWrapper sem fallback)
+- `src/api/types.ts` (Create*Request aceitam `accountId?`)
+- `src/services/{contacts,products,sales,tags}.service.ts` (mock create usa data.accountId)
+- `src/data/mockData.ts` (usa MOCK_ACCOUNT_ID)
+- `src/mocks/constants.ts` (novo, MOCK_ACCOUNT_ID)
+
+### Validacoes
+- `npm run build`: PASS (5.91s)
+- `npm test`: PASS 36/36
+- grep `'acc-1'`/`"acc-1"` em src fora de mocks: 0 literais (1 ocorrencia restante em `mockData.ts:265` e comentario, nao codigo)
+
+### Critica adversarial
+APROVADO com nits cosmeticos (comentario em mockData.ts; services usam `?? ''` silencioso ao inves de throw). Nenhum bloqueador. Bugs genuinamente corrigidos.
+
+### Pendencias
+- Force Rebuild no EasyPanel (frontend) para trazer T-018.
+- Aguardar 90s e re-QA do fluxo impersonate iGreen pos-reload.
+
+---
+
 ## 2026-06-18 -- QA FINAL pos-fixes em prod (@qa -> @usuario) {#2026-06-18-qa-final-prod}
 
 ### Deploy
