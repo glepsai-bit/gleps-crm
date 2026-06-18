@@ -66,6 +66,9 @@ interface EditFormData {
   sendgridApiKey: string;
   sendgridFromEmail: string;
   sendgridFromName: string;
+  n8nEnabled: boolean;
+  n8nWebhookUrl: string;
+  n8nWebhookSecret: string;
 }
 
 type ConnectionStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -103,6 +106,9 @@ export default function SuperAdminAccountDetailPage() {
     sendgridApiKey: '',
     sendgridFromEmail: '',
     sendgridFromName: '',
+    n8nEnabled: false,
+    n8nWebhookUrl: '',
+    n8nWebhookSecret: '',
   });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
 
@@ -181,6 +187,9 @@ export default function SuperAdminAccountDetailPage() {
       sendgridApiKey: (account as any).sendgrid_api_key || '',
       sendgridFromEmail: (account as any).sendgrid_from_email || '',
       sendgridFromName: (account as any).sendgrid_from_name || '',
+      n8nEnabled: !!(account as any).n8n_webhook_url,
+      n8nWebhookUrl: (account as any).n8n_webhook_url || '',
+      n8nWebhookSecret: (account as any).n8n_webhook_secret || '',
     });
     setConnectionStatus('idle');
     setIsControlOpen(true);
@@ -252,6 +261,8 @@ export default function SuperAdminAccountDetailPage() {
         sendgrid_api_key: editFormData.sendgridEnabled ? editFormData.sendgridApiKey : undefined,
         sendgrid_from_email: editFormData.sendgridEnabled ? editFormData.sendgridFromEmail : undefined,
         sendgrid_from_name: editFormData.sendgridEnabled ? editFormData.sendgridFromName : undefined,
+        n8n_webhook_url: editFormData.n8nEnabled ? editFormData.n8nWebhookUrl : null,
+        n8n_webhook_secret: editFormData.n8nEnabled ? editFormData.n8nWebhookSecret : null,
       } as any);
       setAccount({
         ...account,
@@ -525,6 +536,35 @@ export default function SuperAdminAccountDetailPage() {
         </CardContent>
       </Card>
 
+      {/* n8n Integration (readonly) */}
+      <Card className="card-gradient border-border/50">
+        <CardHeader>
+          <CardTitle className="text-lg">Automacao n8n (Follow-up)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="flex items-center justify-between py-2 border-b border-border/50">
+              <span className="text-muted-foreground">Webhook URL</span>
+              {(account as any).n8n_webhook_url ? (
+                <code className="text-sm font-mono bg-muted px-2 py-1 rounded max-w-[200px] truncate">
+                  {(account as any).n8n_webhook_url}
+                </code>
+              ) : (
+                <Badge variant="outline" className="text-muted-foreground">Nao configurado</Badge>
+              )}
+            </div>
+            <div className="flex items-center justify-between py-2 border-b border-border/50">
+              <span className="text-muted-foreground">Secret HMAC</span>
+              {(account as any).n8n_webhook_secret ? (
+                <code className="text-sm font-mono bg-muted px-2 py-1 rounded">••••••••</code>
+              ) : (
+                <Badge variant="outline" className="text-muted-foreground">Nao configurado</Badge>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Users List */}
       <Card className="card-gradient border-border/50">
         <CardHeader>
@@ -789,6 +829,51 @@ export default function SuperAdminAccountDetailPage() {
                       Deve corresponder ao URI autorizado no Google Cloud Console
                     </p>
                   </div>
+                </div>
+              )}
+            </div>
+
+            {/* n8n Automation Integration */}
+            <div className="space-y-4 pt-4 border-t border-border/50">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="edit-n8n">Automacao n8n (Follow-up)</Label>
+                  <p className="text-xs text-muted-foreground">Webhook acionado ao marcar Compareceu/Faltou</p>
+                </div>
+                <Switch
+                  id="edit-n8n"
+                  checked={editFormData.n8nEnabled}
+                  onCheckedChange={(checked) => setEditFormData({ ...editFormData, n8nEnabled: checked })}
+                />
+              </div>
+              {editFormData.n8nEnabled && (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-n8n-url">URL do Webhook n8n</Label>
+                    <Input
+                      id="edit-n8n-url"
+                      value={editFormData.n8nWebhookUrl}
+                      onChange={(e) => setEditFormData({ ...editFormData, n8nWebhookUrl: e.target.value })}
+                      placeholder="https://n8n.exemplo.com/webhook/abc-123"
+                    />
+                    {editFormData.n8nWebhookUrl && !/^https?:\/\/.+/.test(editFormData.n8nWebhookUrl) && (
+                      <p className="text-xs text-destructive">URL deve comecar com http:// ou https://</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-n8n-secret">Secret (opcional, HMAC)</Label>
+                    <Input
+                      id="edit-n8n-secret"
+                      type="password"
+                      value={editFormData.n8nWebhookSecret}
+                      onChange={(e) => setEditFormData({ ...editFormData, n8nWebhookSecret: e.target.value })}
+                      placeholder="Chave secreta para validar assinatura"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Quando a recepcionista marca Compareceu/Faltou no CRM, esta URL recebe um POST com o evento.
+                    Configure 1 webhook trigger no seu n8n e cole a URL aqui.
+                  </p>
                 </div>
               )}
             </div>
