@@ -501,6 +501,16 @@ model CalendarEvent {
   googleEventId    String? @map("google_event_id") @db.VarChar(255)
   googleCalendarId String? @map("google_calendar_id") @db.VarChar(255)
 
+  // Human-in-the-loop attendance (T-017)
+  attendanceStatus   AttendanceStatus?   @default(PENDING) @map("attendance_status")
+  attendanceMarkedAt DateTime?           @map("attendance_marked_at") @db.Timestamptz
+  attendanceMarkedBy String?             @map("attendance_marked_by") @db.Uuid
+  outcome            AppointmentOutcome? @default(PENDING) @map("outcome")
+  outcomeValue       Decimal?            @map("outcome_value") @db.Decimal(12, 2)
+  outcomeNotes       String?             @map("outcome_notes")
+  outcomeMarkedAt    DateTime?           @map("outcome_marked_at") @db.Timestamptz
+  outcomeMarkedBy    String?             @map("outcome_marked_by") @db.Uuid
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -513,7 +523,24 @@ model CalendarEvent {
   @@index([accountId])
   @@index([startTime])
   @@index([googleEventId])
+  @@index([accountId, attendanceStatus])
+  @@index([accountId, outcome])
   @@map("calendar_events")
+}
+
+enum AttendanceStatus {
+  PENDING
+  ATTENDED
+  NO_SHOW
+  RESCHEDULED
+}
+
+enum AppointmentOutcome {
+  PENDING
+  CLOSED
+  CONSIDERING
+  NOT_INTERESTED
+  RETURN_REQUESTED
 }
 
 enum CalendarEventType {
