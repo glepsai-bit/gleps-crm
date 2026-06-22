@@ -10,6 +10,7 @@ export interface Account {
   chatwoot_base_url: string | null;
   chatwoot_account_id: string | null;
   chatwoot_api_key: string | null;
+  chatwoot_webhook_secret?: string | null;
   google_client_id?: string | null;
   google_client_secret?: string | null;
    google_redirect_uri?: string | null;
@@ -46,17 +47,18 @@ export interface UpdateAccountInput {
   plano?: string;
   chatwoot_base_url?: string;
   chatwoot_account_id?: string;
-   chatwoot_api_key?: string;
-   monthly_extraction_limit?: number;
-   monthly_email_limit?: number;
-   daily_email_limit?: number;
-   google_client_id?: string;
-   google_client_secret?: string;
-   google_redirect_uri?: string;
-   openai_api_key?: string;
-   sendgrid_api_key?: string;
-   sendgrid_from_email?: string;
-   sendgrid_from_name?: string;
+  chatwoot_api_key?: string;
+  chatwoot_webhook_secret?: string | null;
+  monthly_extraction_limit?: number;
+  monthly_email_limit?: number;
+  daily_email_limit?: number;
+  google_client_id?: string;
+  google_client_secret?: string;
+  google_redirect_uri?: string;
+  openai_api_key?: string;
+  sendgrid_api_key?: string;
+  sendgrid_from_email?: string;
+  sendgrid_from_name?: string;
 }
 
 export const accountsCloudService = {

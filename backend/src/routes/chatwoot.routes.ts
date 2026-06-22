@@ -6,6 +6,8 @@ const router = Router();
 
 // ============================================
 // Webhook (No JWT auth, validated by signature)
+// T-021: assinatura HMAC validada POR CONTA via account.chatwootWebhookSecret;
+// CHATWOOT_WEBHOOK_SECRET do env permanece como fallback opcional.
 // ============================================
 router.post('/webhook', (req, res, next) => chatwootController.handleWebhook(req, res, next));
 

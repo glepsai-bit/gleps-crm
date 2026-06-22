@@ -51,17 +51,15 @@ class ChatwootController {
    */
   async handleWebhook(req: Request, res: Response, next: NextFunction) {
     try {
-      // Validate webhook signature if secret is configured
-      if (env.CHATWOOT_WEBHOOK_SECRET) {
-        const isValid = validateWebhookSignature(req, env.CHATWOOT_WEBHOOK_SECRET);
-        if (!isValid) {
-          logger.warn('Invalid Chatwoot webhook signature');
-          return res.status(401).json({ error: 'Invalid signature' });
-        }
-      }
-
+      // T-021: a validacao HMAC agora eh PER-TENANT. Pra isso precisamos ler o
+      // body PRIMEIRO (extrair event.account.id), resolver a conta no banco e
+      // so entao validar com account.chatwootWebhookSecret. Se a conta nao
+      // tiver secret cadastrado, caimos no CHATWOOT_WEBHOOK_SECRET do env como
+      // FALLBACK (retrocompat com setup antigo single-tenant). Se nenhum
+      // existir, pulamos validacao (com log warn) — comportamento aberto, mas
+      // explicito.
       const event: ChatwootWebhookEvent = req.body;
-      
+
       logger.info('Chatwoot webhook received', {
         event: event.event,
         accountId: event.account?.id,
@@ -76,6 +74,40 @@ class ChatwootController {
       if (!account) {
         logger.warn('No CRM account found for Chatwoot account', { chatwootAccountId: event.account?.id });
         return res.json({ received: true, processed: false, reason: 'Unknown account' });
+      }
+
+      // Resolve qual secret usar pra validar HMAC:
+      //  - account.chatwootWebhookSecret  -> per-tenant (preferido)
+      //  - env.CHATWOOT_WEBHOOK_SECRET    -> fallback global (retrocompat)
+      //  - nenhum                          -> aceita sem validacao + log warn
+      const accountSecret = account.chatwootWebhookSecret || null;
+      const fallbackSecret = env.CHATWOOT_WEBHOOK_SECRET || null;
+      const secret = accountSecret || fallbackSecret;
+      const secretSource: 'account_specific' | 'fallback_env' | 'none' = accountSecret
+        ? 'account_specific'
+        : fallbackSecret
+          ? 'fallback_env'
+          : 'none';
+
+      if (secret) {
+        const isValid = validateWebhookSignature(req, secret);
+        if (!isValid) {
+          logger.warn('Invalid Chatwoot webhook signature', {
+            accountId: account.id,
+            chatwootAccountId: event.account?.id,
+            secretSource,
+          });
+          return res.status(401).json({ error: 'Invalid signature' });
+        }
+        logger.debug('Chatwoot webhook signature validated', {
+          accountId: account.id,
+          secretSource,
+        });
+      } else {
+        logger.warn('Chatwoot webhook accepted WITHOUT signature validation (no secret configured)', {
+          accountId: account.id,
+          chatwootAccountId: event.account?.id,
+        });
       }
 
       // Process event based on type

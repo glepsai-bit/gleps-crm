@@ -17,6 +17,9 @@ const createAccountSchema = z.object({
   chatwootBaseUrl: z.string().url().optional(),
   chatwootAccountId: z.string().optional(),
   chatwootApiKey: z.string().optional(),
+  // T-021 — Secret HMAC pra validar webhook Chatwoot por-conta. Opcional;
+  // string vazia => null (apaga e cai no fallback env, se houver).
+  chatwootWebhookSecret: z.string().optional().nullable(),
   googleClientId: z.string().optional(),
   googleClientSecret: z.string().optional(),
   googleRedirectUri: z.string().url().optional(),

@@ -25,9 +25,13 @@ model Account {
   dailyEmailLimit        Int?  @default(100)  @map("daily_email_limit")
 
   // Chatwoot Integration
-  chatwootBaseUrl   String? @map("chatwoot_base_url") @db.VarChar(500)
-  chatwootAccountId String? @map("chatwoot_account_id") @db.VarChar(100)
-  chatwootApiKey    String? @map("chatwoot_api_key") @db.VarChar(500)
+  chatwootBaseUrl       String? @map("chatwoot_base_url") @db.VarChar(500)
+  chatwootAccountId     String? @map("chatwoot_account_id") @db.VarChar(100)
+  chatwootApiKey        String? @map("chatwoot_api_key") @db.VarChar(500)
+  // T-021 — Secret por-conta pra validar HMAC do header X-Chatwoot-Signature
+  // (substitui CHATWOOT_WEBHOOK_SECRET global). Quando nulo, o backend usa o
+  // env como fallback (retrocompat) — ver chatwoot.controller.handleWebhook.
+  chatwootWebhookSecret String? @map("chatwoot_webhook_secret") @db.VarChar(500)
 
   // Google Calendar OAuth (stored in DB, not env vars)
   googleClientId     String? @map("google_client_id") @db.VarChar(500)

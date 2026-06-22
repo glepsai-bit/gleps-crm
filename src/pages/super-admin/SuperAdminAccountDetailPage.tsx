@@ -56,6 +56,7 @@ interface EditFormData {
   chatwootBaseUrl: string;
   chatwootAccountId: string;
   chatwootApiKey: string;
+  chatwootWebhookSecret: string;
   googleEnabled: boolean;
   googleClientId: string;
   googleClientSecret: string;
@@ -96,6 +97,7 @@ export default function SuperAdminAccountDetailPage() {
     chatwootBaseUrl: '',
     chatwootAccountId: '',
     chatwootApiKey: '',
+    chatwootWebhookSecret: '',
     googleEnabled: false,
     googleClientId: '',
     googleClientSecret: '',
@@ -177,6 +179,7 @@ export default function SuperAdminAccountDetailPage() {
       chatwootBaseUrl: account.chatwoot_base_url || '',
       chatwootAccountId: account.chatwoot_account_id || '',
       chatwootApiKey: account.chatwoot_api_key || '',
+      chatwootWebhookSecret: account.chatwoot_webhook_secret || '',
       googleEnabled: !!(account.google_client_id || account.google_client_secret || account.google_redirect_uri),
       googleClientId: account.google_client_id || '',
       googleClientSecret: account.google_client_secret || '',
@@ -254,6 +257,7 @@ export default function SuperAdminAccountDetailPage() {
         chatwoot_base_url: editFormData.chatwootEnabled ? editFormData.chatwootBaseUrl : undefined,
         chatwoot_account_id: editFormData.chatwootEnabled ? editFormData.chatwootAccountId : undefined,
         chatwoot_api_key: editFormData.chatwootEnabled ? editFormData.chatwootApiKey : undefined,
+        chatwoot_webhook_secret: editFormData.chatwootEnabled ? (editFormData.chatwootWebhookSecret || null) : null,
         google_client_id: editFormData.googleEnabled ? editFormData.googleClientId : undefined,
         google_client_secret: editFormData.googleEnabled ? editFormData.googleClientSecret : undefined,
         google_redirect_uri: editFormData.googleEnabled ? editFormData.googleRedirectUri : undefined,
