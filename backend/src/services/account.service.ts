@@ -16,6 +16,8 @@ export interface CreateAccountInput {
   chatwootBaseUrl?: string;
   chatwootAccountId?: string;
   chatwootApiKey?: string;
+  // T-021 — HMAC secret do webhook Chatwoot, per-account
+  chatwootWebhookSecret?: string | null;
   googleClientId?: string;
   googleClientSecret?: string;
   googleRedirectUri?: string;
@@ -133,6 +135,7 @@ class AccountService {
         chatwootBaseUrl: input.chatwootBaseUrl,
         chatwootAccountId: input.chatwootAccountId,
         chatwootApiKey: input.chatwootApiKey,
+        chatwootWebhookSecret: input.chatwootWebhookSecret,
         googleClientId: input.googleClientId,
         googleClientSecret: input.googleClientSecret,
         googleRedirectUri: input.googleRedirectUri,
