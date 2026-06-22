@@ -426,6 +426,7 @@ export default function SuperAdminAccountsPage() {
         chatwoot_base_url: editingAccount.chatwoot_base_url,
          chatwoot_account_id: editingAccount.chatwoot_account_id,
          chatwoot_api_key: editingAccount.chatwoot_api_key,
+         chatwoot_webhook_secret: (editingAccount as any).chatwoot_webhook_secret,
          monthly_extraction_limit: (editingAccount as any).monthly_extraction_limit,
         monthly_email_limit: (editingAccount as any).monthly_email_limit,
         daily_email_limit: (editingAccount as any).daily_email_limit,
@@ -1261,7 +1262,23 @@ export default function SuperAdminAccountsPage() {
                     Encontre em Configurações → Conta → Token de Acesso
                   </p>
                 </div>
-                
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-chatwoot-webhook-secret">Webhook Secret</Label>
+                  <Input
+                    id="edit-chatwoot-webhook-secret"
+                    type="password"
+                    value={(editingAccount as any)?.chatwoot_webhook_secret || ''}
+                    onChange={(e) =>
+                      setEditingAccount({ ...editingAccount, chatwoot_webhook_secret: e.target.value } as any)
+                    }
+                    placeholder="Valor que o Chatwoot devolve ao criar o webhook"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    HMAC secret gerado pelo Chatwoot quando você cria o webhook. Cola aqui pra validar assinatura.
+                  </p>
+                </div>
+
                 {/* Test Connection Button */}
                 <Button
                   type="button"
