@@ -8,7 +8,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Trash2, Loader2, Send } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Plus, Trash2, Loader2, Send, Calendar } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { listTemplates } from '@/services/whatsapp-templates.backend.service';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
@@ -32,6 +36,19 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
   const [messages, setMessages] = useState<string[]>(['']);
   const [isSending, setIsSending] = useState(false);
   const [loadingInboxes, setLoadingInboxes] = useState(false);
+  const [tipoAgendamento, setTipoAgendamento] = useState<'agora' | 'data_hora' | 'daqui_x'>('agora');
+  const [scheduledDate, setScheduledDate] = useState('');
+  const [scheduledTime, setScheduledTime] = useState('');
+  const [daquiQuantidade, setDaquiQuantidade] = useState('2');
+  const [daquiUnidade, setDaquiUnidade] = useState<'horas' | 'dias'>('horas');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [customMessage, setCustomMessage] = useState(false);
+
+  const { data: templates = [] } = useQuery({
+    queryKey: ['whatsapp-templates'],
+    queryFn: listTemplates,
+    enabled: open,
+  });
 
   useEffect(() => {
     if (!open || !accountId) return;
@@ -89,6 +106,34 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
     setMessages(next);
   };
 
+  const calcScheduledAt = (): string | undefined => {
+    if (tipoAgendamento === 'agora') return undefined;
+    if (tipoAgendamento === 'data_hora') {
+      if (!scheduledDate || !scheduledTime) return undefined;
+      return new Date(`${scheduledDate}T${scheduledTime}`).toISOString();
+    }
+    if (tipoAgendamento === 'daqui_x') {
+      const mult = daquiUnidade === 'horas' ? 3600000 : 86400000;
+      return new Date(Date.now() + Number(daquiQuantidade) * mult).toISOString();
+    }
+  };
+
+  const handleTemplateSelect = (templateId: string) => {
+    setSelectedTemplateId(templateId);
+    if (!templateId) return;
+    const tmpl = templates.find(t => t.id === templateId);
+    if (tmpl) {
+      setMessages([tmpl.content]);
+      setCustomMessage(false);
+    }
+  };
+
+  const handleMessageUpdate = (idx: number, value: string) => {
+    updateMessage(idx, value);
+    setCustomMessage(true);
+    if (customMessage) setSelectedTemplateId('');
+  };
+
   const handleDispatch = async () => {
     const validMessages = messages.filter(m => m.trim());
     if (selectedInboxes.length === 0 || validMessages.length === 0) {
@@ -109,12 +154,15 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
         assignments[assignIdx].contacts.push({ nome: lead.nome, telefone: lead.telefone });
       });
 
+      const scheduledAt = calcScheduledAt();
+
       let data: any;
       if (useBackend) {
         const response = await apiClient.post(API_ENDPOINTS.PROSPECTING.DISPATCH, {
           inbox_assignments: assignments,
           delay_seconds: Number(delay) || 30,
           messages: validMessages,
+          ...(scheduledAt ? { scheduled_at: scheduledAt, source: 'manual_scheduled' } : { source: 'manual' }),
         });
         data = (response as any).data || response;
       } else {
@@ -218,6 +266,71 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
           </div>
 
           <div className="space-y-2">
+            <Label>Template (opcional)</Label>
+            <Select
+              value={selectedTemplateId}
+              onValueChange={handleTemplateSelect}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Selecionar template..." />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Sem template (mensagem livre)</SelectItem>
+                {templates.map(t => (
+                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Ao selecionar um template, o conteúdo será preenchido automaticamente
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Agendamento</Label>
+            <RadioGroup value={tipoAgendamento} onValueChange={(v) => setTipoAgendamento(v as 'agora' | 'data_hora' | 'daqui_x')}>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="agora" id="agora" />
+                <Label htmlFor="agora" className="font-normal cursor-pointer">Disparar agora</Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="data_hora" id="data_hora" />
+                <Label htmlFor="data_hora" className="font-normal cursor-pointer">Agendar para data/hora específica</Label>
+              </div>
+              {tipoAgendamento === 'data_hora' && (
+                <div className="ml-6 flex gap-2">
+                  <Input type="date" value={scheduledDate} onChange={e => setScheduledDate(e.target.value)} className="flex-1" />
+                  <Input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)} className="w-32" />
+                </div>
+              )}
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="daqui_x" id="daqui_x" />
+                <Label htmlFor="daqui_x" className="font-normal cursor-pointer">Daqui X horas/dias</Label>
+              </div>
+              {tipoAgendamento === 'daqui_x' && (
+                <div className="ml-6 flex gap-2">
+                  <Input
+                    type="number"
+                    min={1}
+                    value={daquiQuantidade}
+                    onChange={e => setDaquiQuantidade(e.target.value)}
+                    className="w-24"
+                  />
+                  <Select value={daquiUnidade} onValueChange={(v) => setDaquiUnidade(v as 'horas' | 'dias')}>
+                    <SelectTrigger className="w-28">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="horas">Horas</SelectItem>
+                      <SelectItem value="dias">Dias</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </RadioGroup>
+          </div>
+
+          <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label>Variantes de Mensagem ({messages.length}/10)</Label>
               <Button type="button" variant="outline" size="sm" onClick={addMessage} disabled={messages.length >= 10}>
@@ -233,7 +346,7 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
                 <Textarea
                   placeholder={`Mensagem ${idx + 1}... Use {nome} para o nome do contato`}
                   value={msg}
-                  onChange={e => updateMessage(idx, e.target.value)}
+                  onChange={e => handleMessageUpdate(idx, e.target.value)}
                   rows={2}
                   className="flex-1"
                 />

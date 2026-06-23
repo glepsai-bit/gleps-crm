@@ -32,6 +32,7 @@ import {
   Lightbulb,
   Crosshair,
   Mail,
+  MessageSquare,
 } from 'lucide-react';
 import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -51,6 +52,7 @@ const adminNavItems = [
   { title: 'Insights', href: '/admin/insights', icon: Lightbulb },
   { title: 'Prospecção', href: '/admin/prospeccao', icon: Crosshair },
   { title: 'E-mails', href: '/admin/emails', icon: Mail },
+  { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },
 ];
 
 export default function AdminLayout({ children }: AdminLayoutProps) {

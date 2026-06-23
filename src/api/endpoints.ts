@@ -165,6 +165,17 @@ export const API_ENDPOINTS = {
     BATCH_LOGS: (batchId: string) => `/api/prospecting/batches/${batchId}/logs`,
     AUDIENCES: '/api/prospecting/audiences',
     AUDIENCE: (id: string) => `/api/prospecting/audiences/${id}`,
+    BATCHES_SCHEDULED: '/api/dispatch/batches',
+    DISPATCH_START: '/api/dispatch/start',
+    BATCH_CANCEL: (id: string) => `/api/dispatch/batches/${id}/cancel`,
+  },
+
+  // ============= WHATSAPP TEMPLATES =============
+  WHATSAPP_TEMPLATES: {
+    LIST: '/api/whatsapp-templates',
+    CREATE: '/api/whatsapp-templates',
+    UPDATE: (id: string) => `/api/whatsapp-templates/${id}`,
+    DELETE: (id: string) => `/api/whatsapp-templates/${id}`,
   },
 
   // ============= INSIGHTS/REPORTS =============

@@ -1,23 +1,174 @@
- import { useState, useCallback, useEffect } from 'react';
- import { supabase } from '@/integrations/supabase/client';
+import { useState, useCallback, useEffect } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
 import { useAuth } from '@/contexts/AuthContext';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ExtractionSearchForm } from '@/components/extracao/ExtractionSearchForm';
 import { ExtractionResultsTable } from '@/components/extracao/ExtractionResultsTable';
 import { DispatchDialog } from '@/components/extracao/DispatchDialog';
 import { DispatchMonitor } from '@/components/extracao/DispatchMonitor';
 import { SaveAudienceDialog } from '@/components/extracao/SaveAudienceDialog';
 import { SavedAudiencesTab } from '@/components/extracao/SavedAudiencesTab';
+import { CampaignDashboard } from '@/components/extracao/CampaignDashboard';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { Download, Send, Search, Zap, Save, Users } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Download, Send, Search, Zap, Save, Users, Calendar, BarChart2, X as XIcon } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { ExtractedLead, ApiUsage } from '@/components/extracao/types';
+
+function AgendadasTab({ accountId }: { accountId: string }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [cancelingId, setCancelingId] = useState<string | null>(null);
+
+  // TODO: backend pendente — endpoint GET /api/dispatch/batches?status=scheduled
+  const { data: agendadas = [], isLoading } = useQuery<any[]>({
+    queryKey: ['batches-agendadas', accountId],
+    queryFn: async () => {
+      try {
+        const res = await apiClient.get<any>(API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED, {
+          params: { status: 'scheduled' }
+        });
+        const data = (res as any).data ?? res;
+        return Array.isArray(data) ? data : [];
+      } catch {
+        return [];
+      }
+    },
+    retry: false,
+    refetchInterval: 30000,
+  });
+
+  const mutateCancelar = useMutation({
+    mutationFn: async (batchId: string) => {
+      // TODO: backend pendente — PATCH /api/dispatch/batches/:id/cancel
+      await apiClient.patch(API_ENDPOINTS.PROSPECTING.BATCH_CANCEL(batchId), { status: 'cancelled' });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['batches-agendadas'] });
+      toast({ title: 'Agendamento cancelado.' });
+      setCancelingId(null);
+    },
+    onError: (err: any) => {
+      toast({ title: 'Erro ao cancelar', description: err.message, variant: 'destructive' });
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="py-8 space-y-3">
+          {[1, 2, 3].map(i => <Skeleton key={i} className="h-10 w-full" />)}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Disparos agendados</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {agendadas.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+              <Calendar className="w-10 h-10 mb-3 opacity-30" />
+              <p className="text-sm font-medium">Nenhum disparo agendado</p>
+              <p className="text-xs mt-1">Configure um agendamento ao criar um disparo</p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Nome do lote</TableHead>
+                  <TableHead>Qtd. contatos</TableHead>
+                  <TableHead>Template</TableHead>
+                  <TableHead>Agendado para</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Ações</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {agendadas.map((b: any) => (
+                  <TableRow key={b.id}>
+                    <TableCell className="font-medium">{b.keyword ?? b.triggerName ?? 'Disparo manual'}</TableCell>
+                    <TableCell>{b.total_contacts ?? b.totalContacts ?? '—'}</TableCell>
+                    <TableCell className="text-muted-foreground text-xs">{b.template_name ?? b.templateName ?? '—'}</TableCell>
+                    <TableCell className="text-xs">
+                      {b.scheduled_at ?? b.scheduledAt
+                        ? new Date(b.scheduled_at ?? b.scheduledAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
+                        : '—'}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-xs">Agendado</Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive h-7 text-xs"
+                        onClick={() => setCancelingId(b.id)}
+                      >
+                        <XIcon className="w-3 h-3 mr-1" />
+                        Cancelar
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <AlertDialog open={!!cancelingId} onOpenChange={open => { if (!open) setCancelingId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancelar agendamento?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O disparo agendado será cancelado e não será mais executado.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Voltar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => cancelingId && mutateCancelar.mutate(cancelingId)}
+              disabled={mutateCancelar.isPending}
+            >
+              {mutateCancelar.isPending ? 'Cancelando...' : 'Cancelar agendamento'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
 
 export default function AdminExtracaoPage() {
   const { account } = useAuth();
@@ -159,15 +310,21 @@ export default function AdminExtracaoPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-        <TabsList className="grid w-full grid-cols-3 max-w-xl">
-          <TabsTrigger value="extracao" className="gap-2">
+        <TabsList className="grid w-full grid-cols-5 max-w-2xl">
+          <TabsTrigger value="extracao" className="gap-1 text-xs sm:text-sm">
             <Search className="w-4 h-4" /> Extração
           </TabsTrigger>
-          <TabsTrigger value="publicos" className="gap-2">
+          <TabsTrigger value="publicos" className="gap-1 text-xs sm:text-sm">
             <Users className="w-4 h-4" /> Públicos
           </TabsTrigger>
-          <TabsTrigger value="disparos" className="gap-2">
+          <TabsTrigger value="disparos" className="gap-1 text-xs sm:text-sm">
             <Zap className="w-4 h-4" /> Disparos
+          </TabsTrigger>
+          <TabsTrigger value="agendadas" className="gap-1 text-xs sm:text-sm">
+            <Calendar className="w-4 h-4" /> Agendadas
+          </TabsTrigger>
+          <TabsTrigger value="dashboard" className="gap-1 text-xs sm:text-sm">
+            <BarChart2 className="w-4 h-4" /> Dashboard
           </TabsTrigger>
         </TabsList>
 
@@ -229,6 +386,14 @@ export default function AdminExtracaoPage() {
 
         <TabsContent value="disparos" className="space-y-4">
           <DispatchMonitor accountId={account?.id || ''} activeBatchId={activeBatchId} />
+        </TabsContent>
+
+        <TabsContent value="agendadas" className="space-y-4">
+          <AgendadasTab accountId={account?.id || ''} />
+        </TabsContent>
+
+        <TabsContent value="dashboard" className="space-y-4">
+          <CampaignDashboard accountId={account?.id || ''} />
         </TabsContent>
       </Tabs>
 
