@@ -12,6 +12,43 @@
 
 ---
 
+## 2026-06-23 T-022 Rebranding QA — validação identidade visual FitPark (@qa)
+
+- **O que foi validado:**
+  - Varredura completa por referências de branding antigo (MyChooice, GoodLeads, GlepsIA) em `src/` — 0 ocorrências após rebranding
+  - `index.html`: título `FitPark — Atendimento & Vendas`, og tags FitPark, `theme-color: #10B981`, author FitPark — CORRETO
+  - `src/index.css`: paleta `:root` com `--primary: 160 84% 39%` (verde #10B981) e `--accent: 24 95% 53%` (laranja #F97316); `.dark` com mesma paleta (sem regressão ao vermelho antigo #EE3924) — CORRETO
+  - `src/components/branding/Logo.tsx`: componente SVG inline criado, com variant `full` (haltere + wordmark) e `icon` (só haltere), usa `currentColor`, `role=img`, `aria-label=FitPark` — CORRETO
+  - `public/favicon.svg` + `public/fitpark-logo.svg`: ambos existem com ícone haltere verde FitPark — CORRETO
+  - `AdminLayout.tsx`: usa `Logo` componente em mobile header (variant=icon) e sidebar desktop (variant=full e icon) — CORRETO
+  - `SuperAdminLayout.tsx`: usa `Logo` componente, texto "FitPark Admin" — CORRETO
+  - `LoginPage.tsx`: usa `Logo variant=full`, gradiente `from-primary to-accent` (sem `red-400` hardcoded), título "FitPark", subtítulo "Atendimento & Gestão de Alunos" — CORRETO
+  - `EmailPreviewDialog.tsx`: "GoodLeads CRM" → "FitPark CRM" — CORRETO
+  - Dark mode: ambos `:root` e `.dark` atualizados com paleta verde/laranja FitPark — SEM REGRESSAO
+  - Cores hardcoded emerald/orange em componentes (ChatwootAgentImport, StepRecipientsPanel, EmailQuotaCard, etc.) são uso SEMANTICO de status — nao sao cores de brand; nao sao blocker
+
+- **Testes rodados:**
+  - `npx tsc --noEmit -p tsconfig.app.json` → 0 erros
+  - `cd backend && npx tsc --noEmit` → 0 erros
+  - `npx vite build` → build OK, 4.66s (chunk size warning pre-existente, nao regressao)
+  - `npm test` (vitest) → 36/36 tests pass
+  - `cd backend && npm test` → 59/59 tests pass
+  - `npm run lint` → 832 problemas pre-existentes (verificado via git stash; nao sao do rebranding)
+
+- **Bugs encontrados e corrigidos pelo QA:**
+  - NENHUM: o rebranding foi entregue completo e funcional pelo @frontend
+
+- **Bugs reportados (nao blocker):**
+  - Cores hardcoded `bg-emerald-*`, `text-emerald-*`, `bg-orange-*` em ~8 componentes (chat, email, kanban) sao indicadores de STATUS (online/delivered/urgente), nao brand. Podem ser migradas para tokens `--success`/`--warning` em iteracao futura.
+
+- **Commit do rebranding:** `91c95fb feat(t022): rebranding visual FitPark — identidade academia completa`
+  - 9 arquivos, 164 inserções, 126 deleções
+  - Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+- **VEREDITO: APROVADO** — rebranding completo, sem regressao tecnica, sem referencia a branding antigo em producao, dark mode preservado.
+
+---
+
 ## 2026-06-23 T-022 Sprint 3 Front-end — Webhook genérico + Compliance + Anti-ban (@frontend → @qa)
 
 - **O que mudou:**
