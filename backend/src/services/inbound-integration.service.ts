@@ -227,6 +227,12 @@ class InboundIntegrationService {
     }
 
     // HMAC validation (secret garantido acima)
+    // BREAKING CHANGE (anti-replay): clientes precisam enviar o header
+    // X-Webhook-Timestamp (ISO-8601 ou epoch em ms) e usá-lo na assinatura.
+    // Janela aceita: ±5min do relógio do servidor (rejeita replays).
+    // Fórmula da assinatura agora:
+    //   hmac_sha256(secret, `${timestamp}.${rawBody}`)
+    // Quem ainda assina apenas o rawBody passará a receber 401.
     {
       const signatureHeader =
         (headers['x-webhook-signature'] as string | undefined) ??
@@ -236,19 +242,62 @@ class InboundIntegrationService {
         throw new ValidationError('Assinatura HMAC ausente (x-webhook-signature)');
       }
 
+      const timestampHeader =
+        (headers['x-webhook-timestamp'] as string | undefined) ??
+        (headers['X-Webhook-Timestamp'] as string | undefined);
+
+      if (!timestampHeader) {
+        throw new UnauthorizedError(
+          'Header x-webhook-timestamp ausente — obrigatório para proteção anti-replay'
+        );
+      }
+
+      // Aceita epoch ms (string numérica) ou ISO-8601
+      const tsTrimmed = String(timestampHeader).trim();
+      let tsMs: number;
+      if (/^\d+$/.test(tsTrimmed)) {
+        tsMs = Number(tsTrimmed);
+      } else {
+        const parsed = Date.parse(tsTrimmed);
+        tsMs = Number.isFinite(parsed) ? parsed : NaN;
+      }
+
+      if (!Number.isFinite(tsMs)) {
+        throw new UnauthorizedError(
+          'Header x-webhook-timestamp inválido — use epoch em ms ou ISO-8601'
+        );
+      }
+
+      const REPLAY_WINDOW_MS = 5 * 60 * 1000;
+      if (Math.abs(Date.now() - tsMs) >= REPLAY_WINDOW_MS) {
+        logger.warn('[inbound-integration] timestamp fora da janela anti-replay', {
+          accountId,
+          slug,
+          tsMs,
+          now: Date.now(),
+        });
+        throw new UnauthorizedError(
+          'Timestamp do webhook fora da janela de ±5min (possível replay)'
+        );
+      }
+
       // BUG-007: assinatura HMAC deve usar o RAW body recebido na request,
       // não JSON.stringify(body) — qualquer re-serialização (espaços, ordem
       // de chaves, escapes Unicode) muda os bytes e quebra a verificação,
       // mesmo quando o cliente assinou o payload "correto". O rawBody é
       // capturado pelo express.json({ verify }) no server.ts.
-      const payloadForHmac: string | Buffer = rawBody && rawBody.length > 0
+      const rawForHmac: string | Buffer = rawBody && rawBody.length > 0
         ? rawBody
         : JSON.stringify(body); // fallback graceful (não deveria ocorrer em prod)
 
-      const expected = crypto
-        .createHmac('sha256', integration.secret)
-        .update(payloadForHmac)
-        .digest('hex');
+      // Anti-replay: prefixa o timestamp original (string como recebida) ao body
+      // e assina o conjunto. Assim, mesmo que um atacante replique o body, ele
+      // não consegue regenerar uma assinatura válida sem o secret + ts novo.
+      const hmac = crypto.createHmac('sha256', integration.secret);
+      hmac.update(tsTrimmed);
+      hmac.update('.');
+      hmac.update(rawForHmac);
+      const expected = hmac.digest('hex');
 
       const provided = signatureHeader.trim();
       const expectedBuf = Buffer.from(expected, 'utf8');
@@ -332,32 +381,53 @@ class InboundIntegrationService {
       );
     }
 
-    // Busca por telefone OU email, escopado por accountId
-    const orClauses: any[] = [];
-    if (telefone) orClauses.push({ telefone });
-    if (email) orClauses.push({ email });
+    // Lookup priorizado: telefone primeiro (identificador mais forte para
+    // WhatsApp/CRM), depois email. Um único OR poderia retornar match
+    // diferente em cada chamada (Prisma não garante ordem em findFirst sem
+    // orderBy) e, pior, mascarar conflitos quando telefone e email pertencem
+    // a contatos distintos.
+    let existing: { id: string } | null = null;
+    let matchedByPhone: { id: string } | null = null;
+    let matchedByEmail: { id: string } | null = null;
 
-    const existing = await prisma.contact.findFirst({
-      where: {
-        accountId,
-        OR: orClauses,
-      },
-      select: { id: true },
-    });
+    if (telefone) {
+      matchedByPhone = await prisma.contact.findFirst({
+        where: { accountId, telefone },
+        select: { id: true },
+      });
+    }
+    if (email) {
+      matchedByEmail = await prisma.contact.findFirst({
+        where: { accountId, email },
+        select: { id: true },
+      });
+    }
+
+    if (matchedByPhone && matchedByEmail && matchedByPhone.id !== matchedByEmail.id) {
+      throw new ConflictError(
+        `Conflito de identidade: telefone "${telefone}" pertence ao contato ` +
+        `${matchedByPhone.id} e email "${email}" pertence ao contato ` +
+        `${matchedByEmail.id}. Resolva manualmente antes de prosseguir.`
+      );
+    }
+
+    existing = matchedByPhone ?? matchedByEmail;
 
     let contactId: string;
     let created = false;
 
     if (existing) {
-      const updated = await prisma.contact.update({
-        where: { id: existing.id },
-        data: {
+      // Usa contactService.update para emitir o evento 'lead.updated'
+      // (auditoria + integrações outbound dependem dele).
+      const updated = await contactService.update(
+        existing.id,
+        {
           nome: payload.nome ?? undefined,
           telefone: telefone ?? undefined,
           email: email ?? undefined,
         },
-        select: { id: true },
-      });
+        accountId
+      );
       contactId = updated.id;
     } else {
       const newContact = await contactService.create({
@@ -365,6 +435,7 @@ class InboundIntegrationService {
         nome: payload.nome,
         telefone,
         email,
+        origem: 'integration',
       });
       contactId = newContact.id;
       created = true;
@@ -480,6 +551,27 @@ class InboundIntegrationService {
       throw new ValidationError(
         'campaign_trigger requer templateId ou content'
       );
+    }
+
+    // Multi-tenancy: valida ownership de TODOS os contactIds antes de disparar.
+    // Filtragem silenciosa permitiria que uma conta dispare contra contatos de
+    // outra; falhamos cedo e informamos exatamente quais ids são inválidos.
+    if (payload.contactIds && payload.contactIds.length > 0) {
+      const owned = await prisma.contact.findMany({
+        where: {
+          id: { in: payload.contactIds },
+          accountId,
+        },
+        select: { id: true },
+      });
+
+      if (owned.length < payload.contactIds.length) {
+        const ownedSet = new Set(owned.map(c => c.id));
+        const invalid = payload.contactIds.filter(id => !ownedSet.has(id));
+        throw new ValidationError(
+          `contactIds inválidos ou de outra conta: ${invalid.join(', ')}`
+        );
+      }
     }
 
     // Normaliza phones: aceita string[] ou objeto rico

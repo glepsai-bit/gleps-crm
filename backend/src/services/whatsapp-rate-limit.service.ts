@@ -115,6 +115,65 @@ export class WhatsappRateLimitService {
   }
 
   /**
+   * Atomic check+record (TOCTOU-safe within process).
+   * Prefira tryAcquire ao invés de check+record separados.
+   * NOTA: ainda in-memory; sem sincronização entre réplicas. TODO Redis.
+   */
+  tryAcquire(accountId: string, phone: string): RateLimitCheckResult {
+    if (!accountId || !phone) {
+      return { allowed: false, reason: 'missing_account_or_phone' };
+    }
+
+    const now = Date.now();
+    const phoneKey = this.buildPhoneKey(accountId, phone);
+
+    const phoneTimestamps = this.pruneAndGet(this.perPhone, phoneKey, now);
+    const accountTimestamps = this.pruneAndGet(this.perAccount, accountId, now);
+
+    // 1) intervalo minimo por numero
+    if (phoneTimestamps.length > 0) {
+      const last = phoneTimestamps[phoneTimestamps.length - 1];
+      const elapsed = now - last;
+      if (elapsed < this.config.perPhoneMinIntervalMs) {
+        const waitMs = this.config.perPhoneMinIntervalMs - elapsed;
+        return {
+          allowed: false,
+          reason: 'per_phone_min_interval',
+          waitMs,
+        };
+      }
+    }
+
+    // 2) teto por numero / hora
+    if (phoneTimestamps.length >= this.config.perPhoneMaxPerHour) {
+      const oldest = phoneTimestamps[0];
+      const waitMs = Math.max(0, ONE_HOUR_MS - (now - oldest));
+      return {
+        allowed: false,
+        reason: 'per_phone_hourly_limit',
+        waitMs,
+      };
+    }
+
+    // 3) teto por conta / hora
+    if (accountTimestamps.length >= this.config.perAccountMaxPerHour) {
+      const oldest = accountTimestamps[0];
+      const waitMs = Math.max(0, ONE_HOUR_MS - (now - oldest));
+      return {
+        allowed: false,
+        reason: 'per_account_hourly_limit',
+        waitMs,
+      };
+    }
+
+    // check passou — registra imediatamente, sem await/yield no meio
+    this.appendTimestamp(this.perPhone, phoneKey, now);
+    this.appendTimestamp(this.perAccount, accountId, now);
+
+    return { allowed: true };
+  }
+
+  /**
    * Registra um envio bem-sucedido. Chamar apos `check()` retornar `allowed: true`
    * e o dispatch real ter sido feito (ou enfileirado).
    */

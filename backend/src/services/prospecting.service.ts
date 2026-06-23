@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { evolutionService } from './evolution.service';
 import { whatsappConsentService } from './whatsapp-consent.service';
 import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
+import { ValidationError } from '../utils/errors';
 
 interface ChatwootDispatchConfig {
   transport: 'chatwoot';
@@ -320,6 +321,10 @@ class ProspectingService {
     keyword?: string,
     location?: string
   ) {
+    if (!messages || messages.length === 0) {
+      throw new ValidationError('Pelo menos 1 mensagem é obrigatória');
+    }
+
     const config = await this.resolveDispatchConfig(accountId);
 
     const totalContacts = inboxAssignments.reduce((sum, a) => sum + a.contacts.length, 0);
@@ -337,7 +342,9 @@ class ProspectingService {
       },
     });
 
-    // Create log entries
+    // Create log entries — usar createManyAndReturn para obter IDs (necessário
+    // para evitar updateMany por (batchId, phone, inboxId) que afeta múltiplas
+    // linhas quando o mesmo telefone aparece duplicado no mesmo inbox).
     const logEntries = inboxAssignments.flatMap(assignment =>
       assignment.contacts.map(c => ({
         accountId,
@@ -349,10 +356,21 @@ class ProspectingService {
         status: 'pending',
       }))
     );
-    await prisma.dispatchLog.createMany({ data: logEntries });
+    const createdLogs = await prisma.dispatchLog.createManyAndReturn({ data: logEntries });
+
+    // Mapeia logId por (assignmentIdx, contactIdx) preservando a ordem do flatMap.
+    const logIdsByAssignment: string[][] = [];
+    let cursor = 0;
+    for (const assignment of inboxAssignments) {
+      const ids: string[] = [];
+      for (let c = 0; c < assignment.contacts.length; c++) {
+        ids.push(createdLogs[cursor++].id);
+      }
+      logIdsByAssignment.push(ids);
+    }
 
     // Process in background (non-blocking)
-    this.processDispatch(batch.id, config, inboxAssignments, messages, delayMs).catch(err => {
+    this.processDispatch(batch.id, config, inboxAssignments, logIdsByAssignment, messages, delayMs).catch(err => {
       console.error('[dispatch] Background error:', err);
       prisma.dispatchBatch.update({
         where: { id: batch.id },
@@ -367,16 +385,24 @@ class ProspectingService {
     batchId: string,
     config: DispatchConfig,
     inboxAssignments: InboxAssignment[],
+    logIdsByAssignment: string[][],
     messages: string[],
     delayMs: number
   ) {
-    // Build round-robin task list
-    const allTasks: Array<{ contact: Contact; inboxId: number; inboxName: string }> = [];
+    // Build round-robin task list — cada task carrega o logId específico
+    // para que os updates usem where:{id} (evita updateMany afetar duplicatas).
+    const allTasks: Array<{ contact: Contact; inboxId: number; inboxName: string; logId: string }> = [];
     const maxLen = Math.max(...inboxAssignments.map(a => a.contacts.length));
     for (let i = 0; i < maxLen; i++) {
-      for (const assignment of inboxAssignments) {
+      for (let a = 0; a < inboxAssignments.length; a++) {
+        const assignment = inboxAssignments[a];
         if (i < assignment.contacts.length) {
-          allTasks.push({ contact: assignment.contacts[i], inboxId: assignment.inbox_id, inboxName: assignment.inbox_name });
+          allTasks.push({
+            contact: assignment.contacts[i],
+            inboxId: assignment.inbox_id,
+            inboxName: assignment.inbox_name,
+            logId: logIdsByAssignment[a][i],
+          });
         }
       }
     }
@@ -402,8 +428,8 @@ class ProspectingService {
           const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
           if (!hasConsent) {
             failedCount++;
-            await prisma.dispatchLog.updateMany({
-              where: { batchId, phone: task.contact.telefone, inboxId: task.inboxId },
+            await prisma.dispatchLog.update({
+              where: { id: task.logId },
               data: {
                 status: 'blocked_optout',
                 errorMessage: 'Contato com opt-out',
@@ -421,8 +447,8 @@ class ProspectingService {
           const rl = await whatsappRateLimitService.check(config.accountId, normalized);
           if (!rl.allowed) {
             failedCount++;
-            await prisma.dispatchLog.updateMany({
-              where: { batchId, phone: task.contact.telefone, inboxId: task.inboxId },
+            await prisma.dispatchLog.update({
+              where: { id: task.logId },
               data: {
                 status: 'rate_limited',
                 errorMessage: rl.reason ?? 'rate_limited',
@@ -444,14 +470,14 @@ class ProspectingService {
         }
 
         sentCount++;
-        await prisma.dispatchLog.updateMany({
-          where: { batchId, phone: task.contact.telefone, inboxId: task.inboxId },
+        await prisma.dispatchLog.update({
+          where: { id: task.logId },
           data: { status: 'sent', sentAt: new Date() },
         });
       } catch (err: any) {
         failedCount++;
-        await prisma.dispatchLog.updateMany({
-          where: { batchId, phone: task.contact.telefone, inboxId: task.inboxId },
+        await prisma.dispatchLog.update({
+          where: { id: task.logId },
           data: { status: 'failed', errorMessage: err.message, sentAt: new Date() },
         });
       }
@@ -496,6 +522,10 @@ class ProspectingService {
    * Resume a cancelled batch
    */
   async resumeBatch(accountId: string, batchId: string, messages: string[], delaySeconds?: number) {
+    if (!messages || messages.length === 0) {
+      throw new ValidationError('Pelo menos 1 mensagem é obrigatória');
+    }
+
     const batch = await prisma.dispatchBatch.findFirst({
       where: { id: batchId, accountId, status: 'cancelled' },
     });

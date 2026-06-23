@@ -99,10 +99,12 @@ export class EvolutionController {
    * Recebe eventos da Evolution API (messages.upsert, connection.update, etc).
    * Endpoint PÚBLICO — não passa pelo middleware authenticate.
    *
-   * BUG-018: valida HMAC SHA-256 do raw body via header `x-evolution-signature`
-   * quando `account.evolutionWebhookSecret` está configurado. Se o secret está
-   * setado mas a assinatura não bate (ou está ausente), responde 401.
-   * Se o secret é null/undefined, ainda aceita por compatibilidade (TODO: forçar).
+   * BUG-018 (HARDENED): valida HMAC SHA-256 do raw body via header `x-evolution-signature`.
+   * O secret `account.evolutionWebhookSecret` é OBRIGATÓRIO — se não estiver configurado,
+   * o webhook responde 401 e NÃO processa o payload. Isso fecha a janela onde uma conta
+   * sem secret aceitava qualquer requisição não autenticada (vetor de injeção de mensagens
+   * e disparo de opt-out via JID forjado). Para habilitar o webhook, o admin deve
+   * configurar `evolutionWebhookSecret` na conta antes de apontar a Evolution API para cá.
    *
    * BUG-006: após HMAC válido, processa keyword opt-out em mensagens inbound.
    */
@@ -125,55 +127,64 @@ export class EvolutionController {
         return;
       }
 
-      if (account.evolutionWebhookSecret) {
-        const headerSig = req.headers['x-evolution-signature'];
-        const providedSig = Array.isArray(headerSig) ? headerSig[0] : headerSig;
-
-        if (!providedSig || typeof providedSig !== 'string') {
-          logger.warn('[evolution-webhook] header x-evolution-signature ausente', {
-            accountId,
-            event,
-          });
-          res.status(401).json({
-            error: { code: 'INVALID_SIGNATURE', message: 'Missing signature header' },
-          });
-          return;
-        }
-
-        const rawBody: Buffer | undefined = (req as any).rawBody;
-        if (!rawBody) {
-          logger.error('[evolution-webhook] rawBody indisponível para validar HMAC', undefined, {
-            accountId,
-          });
-          res.status(401).json({
-            error: { code: 'INVALID_SIGNATURE', message: 'Raw body not available' },
-          });
-          return;
-        }
-
-        const expectedSig = crypto
-          .createHmac('sha256', account.evolutionWebhookSecret)
-          .update(rawBody)
-          .digest('hex');
-
-        // Permite tanto `<hex>` quanto `sha256=<hex>` (compat com diferentes clientes)
-        const normalizedProvided = providedSig.startsWith('sha256=')
-          ? providedSig.slice('sha256='.length)
-          : providedSig;
-
-        if (!this.safeSignatureEqual(expectedSig, normalizedProvided)) {
-          logger.warn('[evolution-webhook] assinatura HMAC inválida', { accountId, event });
-          res.status(401).json({
-            error: { code: 'INVALID_SIGNATURE', message: 'Invalid signature' },
-          });
-          return;
-        }
-      } else {
-        // TODO(BUG-018): tornar o secret obrigatório após migração de contas existentes.
+      // BUG-018 (hardening): secret é OBRIGATÓRIO. Sem secret, recusa antes de
+      // qualquer processamento do payload — evita injeção de mensagens / opt-out forjado.
+      if (!account.evolutionWebhookSecret) {
         logger.warn(
-          '[evolution-webhook] evolutionWebhookSecret não configurado — aceitando sem HMAC',
+          '[evolution-webhook] evolutionWebhookSecret ausente — recusando webhook (HMAC obrigatório)',
           { accountId, event }
         );
+        res.status(401).json({
+          error: {
+            code: 'HMAC_SECRET_NOT_CONFIGURED',
+            message:
+              'Webhook requires HMAC secret — configure evolutionWebhookSecret on account',
+          },
+        });
+        return;
+      }
+
+      const headerSig = req.headers['x-evolution-signature'];
+      const providedSig = Array.isArray(headerSig) ? headerSig[0] : headerSig;
+
+      if (!providedSig || typeof providedSig !== 'string') {
+        logger.warn('[evolution-webhook] header x-evolution-signature ausente', {
+          accountId,
+          event,
+        });
+        res.status(401).json({
+          error: { code: 'INVALID_SIGNATURE', message: 'Missing signature header' },
+        });
+        return;
+      }
+
+      const rawBody: Buffer | undefined = (req as any).rawBody;
+      if (!rawBody) {
+        logger.error('[evolution-webhook] rawBody indisponível para validar HMAC', undefined, {
+          accountId,
+        });
+        res.status(401).json({
+          error: { code: 'INVALID_SIGNATURE', message: 'Raw body not available' },
+        });
+        return;
+      }
+
+      const expectedSig = crypto
+        .createHmac('sha256', account.evolutionWebhookSecret)
+        .update(rawBody)
+        .digest('hex');
+
+      // Permite tanto `<hex>` quanto `sha256=<hex>` (compat com diferentes clientes)
+      const normalizedProvided = providedSig.startsWith('sha256=')
+        ? providedSig.slice('sha256='.length)
+        : providedSig;
+
+      if (!this.safeSignatureEqual(expectedSig, normalizedProvided)) {
+        logger.warn('[evolution-webhook] assinatura HMAC inválida', { accountId, event });
+        res.status(401).json({
+          error: { code: 'INVALID_SIGNATURE', message: 'Invalid signature' },
+        });
+        return;
       }
 
       logger.info('Evolution webhook received', {

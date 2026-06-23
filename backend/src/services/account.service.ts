@@ -5,6 +5,34 @@ import { NotFoundError, ConflictError, ErrorCodes } from '../utils/errors';
 import { getPaginationMeta } from '../utils/helpers';
 import { eventService } from './event.service';
 
+const SENSITIVE_KEYS = [
+  'evolutionApiKey',
+  'evolutionWebhookSecret',
+  'chatwootApiKey',
+  'openaiApiKey',
+  'sendgridApiKey',
+  'googleClientSecret',
+] as const;
+
+/**
+ * Replace sensitive credential fields with '***SET***' (if value provided)
+ * or null (if explicitly cleared), so audit/event payloads never store secrets in plain text.
+ */
+function maskSensitiveFields<T extends Record<string, any>>(input: T): T {
+  const masked: Record<string, any> = { ...input };
+  for (const key of SENSITIVE_KEYS) {
+    if (key in masked) {
+      const value = masked[key];
+      if (value === null || value === undefined || value === '') {
+        masked[key] = null;
+      } else {
+        masked[key] = '***SET***';
+      }
+    }
+  }
+  return masked as T;
+}
+
 export interface CreateAccountInput {
   nome: string;
   plano?: string;
@@ -122,46 +150,50 @@ class AccountService {
    * Create a new account
    */
   async create(input: CreateAccountInput, createdById?: string) {
-    const account = await prisma.account.create({
-      data: {
-        nome: input.nome,
-        plano: input.plano,
-        limiteUsuarios: input.limiteUsuarios ?? 10,
-        monthlyExtractionLimit: input.monthlyExtractionLimit ?? 500,
-        monthlyEmailLimit: input.monthlyEmailLimit ?? 3000,
-        dailyEmailLimit: input.dailyEmailLimit ?? 100,
-        timezone: input.timezone ?? 'America/Sao_Paulo',
-        chatwootBaseUrl: input.chatwootBaseUrl,
-        chatwootAccountId: input.chatwootAccountId,
-        chatwootApiKey: input.chatwootApiKey,
-        evolutionBaseUrl: input.evolutionBaseUrl,
-        evolutionApiKey: input.evolutionApiKey,
-        evolutionInstance: input.evolutionInstance,
-        evolutionWebhookSecret: input.evolutionWebhookSecret,
-        googleClientId: input.googleClientId,
-        googleClientSecret: input.googleClientSecret,
-        googleRedirectUri: input.googleRedirectUri,
-      },
-    });
+    const account = await prisma.$transaction(async (tx) => {
+      const created = await tx.account.create({
+        data: {
+          nome: input.nome,
+          plano: input.plano,
+          limiteUsuarios: input.limiteUsuarios ?? 10,
+          monthlyExtractionLimit: input.monthlyExtractionLimit ?? 500,
+          monthlyEmailLimit: input.monthlyEmailLimit ?? 3000,
+          dailyEmailLimit: input.dailyEmailLimit ?? 100,
+          timezone: input.timezone ?? 'America/Sao_Paulo',
+          chatwootBaseUrl: input.chatwootBaseUrl,
+          chatwootAccountId: input.chatwootAccountId,
+          chatwootApiKey: input.chatwootApiKey,
+          evolutionBaseUrl: input.evolutionBaseUrl,
+          evolutionApiKey: input.evolutionApiKey,
+          evolutionInstance: input.evolutionInstance,
+          evolutionWebhookSecret: input.evolutionWebhookSecret,
+          googleClientId: input.googleClientId,
+          googleClientSecret: input.googleClientSecret,
+          googleRedirectUri: input.googleRedirectUri,
+        },
+      });
 
-    // Create default funnel
-    await prisma.funnel.create({
-      data: {
-        accountId: account.id,
-        name: 'Funil Principal',
-        slug: 'principal',
-        isDefault: true,
-      },
-    });
+      // Create default funnel
+      await tx.funnel.create({
+        data: {
+          accountId: created.id,
+          name: 'Funil Principal',
+          slug: 'principal',
+          isDefault: true,
+        },
+      });
 
-    await eventService.create({
-      eventType: 'account.created',
-      accountId: account.id,
-      actorType: createdById ? 'user' : 'system',
-      actorId: createdById,
-      entityType: 'account',
-      entityId: account.id,
-      payload: { nome: account.nome, plano: account.plano },
+      await eventService.create({
+        eventType: 'account.created',
+        accountId: created.id,
+        actorType: createdById ? 'user' : 'system',
+        actorId: createdById,
+        entityType: 'account',
+        entityId: created.id,
+        payload: { nome: created.nome, plano: created.plano },
+      });
+
+      return created;
     });
 
     return account;
@@ -208,7 +240,7 @@ class AccountService {
       actorId: updatedById,
       entityType: 'account',
       entityId: account.id,
-      payload: { changes: input },
+      payload: { changes: maskSensitiveFields(input) },
     });
 
     return account;

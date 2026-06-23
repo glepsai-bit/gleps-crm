@@ -115,12 +115,17 @@ class EvolutionService {
   }
 
   /**
-   * Make authenticated request to Evolution API
+   * Make authenticated request to Evolution API.
+   *
+   * `timeoutMs` permite ajustar o timeout por tipo de chamada:
+   * - sendText/getStatus/getQrCode/disconnect → 15s (default)
+   * - sendMedia/sendAudio → 60s (base64 grande pode estourar 15s)
    */
   private async makeRequest<T>(
     config: EvolutionConfig,
     path: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    timeoutMs: number = 15000
   ): Promise<T> {
     const url = `${config.baseUrl}${path}`;
 
@@ -139,7 +144,7 @@ class EvolutionService {
       response = await fetch(url, {
         ...options,
         headers: baseHeaders,
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       logger.error('Evolution Request Failed', { url, error });
@@ -197,6 +202,10 @@ class EvolutionService {
    * Send a plain text WhatsApp message via Evolution API
    */
   async sendText(accountId: string, input: SendTextInput): Promise<SendResult> {
+    if (!input.text || input.text.trim() === '') {
+      throw new ValidationError('text é obrigatório');
+    }
+
     const config = await this.getAccountConfig(accountId);
     const number = this.normalizeNumber(input.number);
 
@@ -229,6 +238,18 @@ class EvolutionService {
    * `mediaUrl` may be a public URL or a base64-encoded payload.
    */
   async sendMedia(accountId: string, input: SendMediaInput): Promise<SendResult> {
+    if (!input.mediaUrl) {
+      throw new ValidationError('mediaUrl é obrigatório');
+    }
+    if (
+      !/^https?:\/\//i.test(input.mediaUrl) &&
+      !/^data:/i.test(input.mediaUrl)
+    ) {
+      throw new ValidationError(
+        'mediaUrl inválido — esperado http(s):// ou data:'
+      );
+    }
+
     const config = await this.getAccountConfig(accountId);
     const number = this.normalizeNumber(input.number);
 
@@ -252,7 +273,8 @@ class EvolutionService {
       {
         method: 'POST',
         body: JSON.stringify(body),
-      }
+      },
+      60000
     );
 
     const messageId = this.extractMessageId(raw);
@@ -271,6 +293,18 @@ class EvolutionService {
    * `audioUrl` may be a public URL or base64-encoded payload.
    */
   async sendAudio(accountId: string, input: SendAudioInput): Promise<SendResult> {
+    if (!input.audioUrl) {
+      throw new ValidationError('audioUrl é obrigatório');
+    }
+    if (
+      !/^https?:\/\//i.test(input.audioUrl) &&
+      !/^data:/i.test(input.audioUrl)
+    ) {
+      throw new ValidationError(
+        'audioUrl inválido — esperado http(s):// ou data:'
+      );
+    }
+
     const config = await this.getAccountConfig(accountId);
     const number = this.normalizeNumber(input.number);
 
@@ -285,7 +319,8 @@ class EvolutionService {
       {
         method: 'POST',
         body: JSON.stringify(body),
-      }
+      },
+      60000
     );
 
     const messageId = this.extractMessageId(raw);
@@ -381,19 +416,24 @@ class EvolutionService {
   async disconnect(accountId: string): Promise<DisconnectResult> {
     const config = await this.getAccountConfig(accountId);
 
+    // makeRequest já lança em HTTP não-2xx, então chegar aqui implica 2xx.
+    // Default ok=true; só negamos se houver marcador explícito de erro no corpo.
     const raw = await this.makeRequest<any>(
       config,
       `/instance/logout/${encodeURIComponent(config.instance)}`,
       { method: 'DELETE' }
     );
 
-    const ok = Boolean(
-      raw?.status === 'SUCCESS' ||
-        raw?.success === true ||
-        raw?.error === false ||
-        raw?.ok === true ||
-        raw === ''
-    );
+    let ok = true;
+    if (raw && typeof raw === 'object') {
+      const hasError =
+        (raw.error !== undefined && raw.error !== false && raw.error !== null) ||
+        raw.success === false ||
+        raw.ok === false;
+      if (hasError) {
+        ok = false;
+      }
+    }
 
     logger.info('Evolution disconnect', { accountId, ok });
 

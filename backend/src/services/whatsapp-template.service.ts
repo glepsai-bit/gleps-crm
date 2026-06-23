@@ -59,7 +59,7 @@ export function renderTemplate(
   if (!content) return '';
   return content.replace(TEMPLATE_VAR_REGEX, (_match, name: string) => {
     const value = variables[name];
-    if (value === undefined || value === null || value === '') {
+    if (value === undefined || value === null) {
       if (onMissing) {
         try {
           onMissing(name);
@@ -67,7 +67,7 @@ export function renderTemplate(
           // callback nunca deve quebrar o render
         }
       }
-      return value !== undefined && value !== null ? String(value) : '';
+      return '';
     }
     return String(value);
   });

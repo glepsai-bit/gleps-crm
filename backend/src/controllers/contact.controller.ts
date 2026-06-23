@@ -34,12 +34,12 @@ const queryForApiSchema = z.object({
   aniversario: z.string().optional(),
   tag: z.union([z.string(), z.array(z.string())]).optional(),
   stage: z.string().optional(),
-  lastActivityBefore: z
+  lastFollowupBefore: z
     .string()
     .datetime({ offset: true })
     .or(z.string().datetime())
     .optional(),
-  lastActivityAfter: z
+  lastFollowupAfter: z
     .string()
     .datetime({ offset: true })
     .or(z.string().datetime())
@@ -286,11 +286,11 @@ export class ContactController {
         aniversario: parsed.aniversario,
         tag: parsed.tag,
         stage: parsed.stage,
-        lastActivityBefore: parsed.lastActivityBefore
-          ? new Date(parsed.lastActivityBefore)
+        lastFollowupBefore: parsed.lastFollowupBefore
+          ? new Date(parsed.lastFollowupBefore)
           : undefined,
-        lastActivityAfter: parsed.lastActivityAfter
-          ? new Date(parsed.lastActivityAfter)
+        lastFollowupAfter: parsed.lastFollowupAfter
+          ? new Date(parsed.lastFollowupAfter)
           : undefined,
         customAttribute: parsed.customAttribute,
         limit: parsed.limit,

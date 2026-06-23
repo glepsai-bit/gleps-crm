@@ -273,7 +273,7 @@ class WebhookOutboundService {
       return;
     }
 
-    const deliveries = await Promise.all(
+    const results = await Promise.allSettled(
       subscriptions.map(sub =>
         prisma.webhookDelivery.create({
           data: {
@@ -288,16 +288,29 @@ class WebhookOutboundService {
       )
     );
 
-    for (const delivery of deliveries) {
-      // Fire-and-forget — do not await
-      this.processDelivery(delivery.id).catch(err => {
-        logger.error('[webhook-outbound] processDelivery failed', err, {
-          deliveryId: delivery.id,
-          eventType,
-          accountId,
+    results.forEach((result, idx) => {
+      if (result.status === 'fulfilled') {
+        const delivery = result.value;
+        // Fire-and-forget — do not await
+        this.processDelivery(delivery.id).catch(err => {
+          logger.error('[webhook-outbound] processDelivery failed', err, {
+            deliveryId: delivery.id,
+            eventType,
+            accountId,
+          });
         });
-      });
-    }
+      } else {
+        logger.error(
+          '[webhook-outbound] failed to create delivery row',
+          result.reason instanceof Error ? result.reason : new Error(String(result.reason)),
+          {
+            subscriptionId: subscriptions[idx]?.id,
+            eventType,
+            accountId,
+          }
+        );
+      }
+    });
   }
 
   /**
@@ -305,6 +318,24 @@ class WebhookOutboundService {
    * Handles success, retry scheduling (exponential backoff) and DLQ.
    */
   async processDelivery(deliveryId: string): Promise<void> {
+    // Atomic claim: somente prossegue se a delivery estiver em um status
+    // elegivel (pending / failed / retrying). Isso evita POST duplicado quando
+    // processDelivery e chamado em paralelo (ex.: emit + cron) para o mesmo id.
+    const claimed = await prisma.webhookDelivery.updateMany({
+      where: {
+        id: deliveryId,
+        status: { in: ['pending', 'failed', 'retrying'] },
+      },
+      data: { status: 'in_flight' },
+    });
+
+    if (claimed.count === 0) {
+      logger.warn('[webhook-outbound] delivery already in-flight or terminal', {
+        deliveryId,
+      });
+      return;
+    }
+
     const delivery = await prisma.webhookDelivery.findUnique({
       where: { id: deliveryId },
       include: { subscription: true },
@@ -318,6 +349,26 @@ class WebhookOutboundService {
     const { subscription } = delivery;
     if (!subscription) {
       logger.warn('[webhook-outbound] subscription missing for delivery', { deliveryId });
+      return;
+    }
+
+    // Revalidar subscription.active no momento do envio. O admin pode ter
+    // desativado a subscription entre o enqueue e a tentativa atual (inclusive
+    // entre retries da fila), e nesse caso nao devemos disparar POST externo.
+    if (!subscription.active) {
+      await prisma.webhookDelivery.update({
+        where: { id: deliveryId },
+        data: {
+          status: 'cancelled',
+          completedAt: new Date(),
+          nextRetryAt: null,
+        },
+      });
+      logger.warn('[webhook-outbound] delivery cancelled: subscription inactive', {
+        deliveryId,
+        subscriptionId: subscription.id,
+        eventType: delivery.eventType,
+      });
       return;
     }
 

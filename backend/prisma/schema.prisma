@@ -316,6 +316,7 @@ enum ContactOrigin {
   instagram
   site
   indicacao
+  integration
   outro
 }
 

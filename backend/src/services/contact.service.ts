@@ -551,8 +551,8 @@ class ContactService {
       aniversario?: 'today' | 'tomorrow' | string;
       tag?: string | string[];
       stage?: string;
-      lastActivityBefore?: Date;
-      lastActivityAfter?: Date;
+      lastFollowupBefore?: Date;
+      lastFollowupAfter?: Date;
       customAttribute?: Record<string, string>;
       limit?: number;
       offset?: number;
@@ -596,14 +596,15 @@ class ContactService {
       });
     }
 
-    // --- Last activity filters ---
-    // TODO: campo lastActivityAt não existe ainda — adicionar em Sprint futuro.
-    // Workaround: usar lastFollowupAt como proxy (campo mais próximo no schema atual).
-    if (filters.lastActivityBefore || filters.lastActivityAfter) {
-      const activityRange: any = {};
-      if (filters.lastActivityBefore) activityRange.lt = filters.lastActivityBefore;
-      if (filters.lastActivityAfter) activityRange.gt = filters.lastActivityAfter;
-      andConditions.push({ lastFollowupAt: activityRange });
+    // --- Last followup filters ---
+    // Filtra pelo campo lastFollowupAt do Contact. Nome explícito para deixar
+    // claro aos consumidores externos (n8n) que NÃO inclui qualquer atividade
+    // (mensagem inbound, mudança de stage etc.), apenas follow-ups registrados.
+    if (filters.lastFollowupBefore || filters.lastFollowupAfter) {
+      const followupRange: any = {};
+      if (filters.lastFollowupBefore) followupRange.lt = filters.lastFollowupBefore;
+      if (filters.lastFollowupAfter) followupRange.gt = filters.lastFollowupAfter;
+      andConditions.push({ lastFollowupAt: followupRange });
     }
 
     if (andConditions.length > 0) {

@@ -34,12 +34,23 @@ export interface ListOptedOutResult {
 // Constants
 // ============================================
 
-// BUG-006: regex relaxada — aceita palavra-chave em qualquer posição da mensagem
-// e cobre mais variantes (descadastrar, remover, opt-out / opt_out / optout).
-// BUG-041: relaxa ainda mais — antes do test() normalizamos acentos via NFD
-// (cancelár → cancelar, descadastrár → descadastrar) para aceitar variações
-// em texto livre digitadas pelo usuário no WhatsApp.
-const OPT_OUT_KEYWORD_REGEX = /\b(sair|parar|stop|cancelar|opt[\s\-_]?out|descadastrar|remover)\b/i;
+// BUG-006: regex original cobria variantes (descadastrar, remover, opt-out…).
+// BUG-041: stripDiacritics antes do test() (cancelár → cancelar).
+// BUG-045 (HIGH, false positive academia FitPark): a regex pegava "PARAR a aula",
+// "remover do treino", "vou sair do crossfit" etc. Estreitamos em 3 eixos:
+//   1) `remover` foi REMOVIDO do regex de palavra simples (ambíguo demais —
+//      "remover do treino", "remover horário", "remover meu nome do grupo");
+//   2) bordas reforçadas: além de \b, exigimos que o caractere imediatamente
+//      antes/depois NÃO seja letra (cobre casos onde \b sozinho não basta
+//      após acentos/diacríticos removidos);
+//   3) phrases multi-palavra dedicadas (`sair lista`, `cancelar inscricao`,
+//      `parar mensagens`, `descadastrar`) — quando o usuário usa uma frase
+//      específica, aceitamos independente do tamanho da mensagem.
+// O regex single-word só dispara para mensagens curtas (≤ 30 chars), conforme
+// gate aplicado em `handleInboundOptOut`.
+const OPT_OUT_SINGLE_WORD_REGEX = /(?:^|[^\p{L}])(sair|parar|stop|cancelar|opt[\s\-_]?out|descadastrar)(?:$|[^\p{L}])/iu;
+const OPT_OUT_PHRASE_REGEX = /\b(sair\s+(da\s+)?lista|cancelar\s+inscricao|parar\s+mensagens|descadastrar)\b/i;
+const OPT_OUT_MAX_SHORT_LEN = 30;
 
 /**
  * Remove acentos/diacríticos de uma string usando decomposição NFD.
@@ -51,8 +62,66 @@ function stripDiacritics(input: string): string {
   return input.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+/**
+ * BUG-044: mitigacao de CSV injection.
+ *
+ * Planilhas (Excel, Google Sheets, LibreOffice) interpretam celulas que comecam
+ * com `=`, `+`, `-`, `@`, `\t`, `\r` ou `\n` como formulas. Se um atacante
+ * conseguir injetar uma string como `=cmd|'/c calc'!A1` em qualquer campo
+ * exportado (ex.: `reason` no opt-out automatico por palavra-chave), abrir o
+ * CSV pode disparar execucao arbitraria / exfiltracao via planilha.
+ *
+ * Estrategia: se o primeiro caractere for um dos acima, prefixar `'`
+ * (aspas simples) \u2014 convencao amplamente reconhecida que faz a planilha
+ * tratar a celula como texto literal. Em seguida aplicar o quoting padrao
+ * de CSV (RFC 4180): dobrar aspas duplas e envolver em `"..."` quando a
+ * celula contem `"`, `,`, `\n` ou `\r`.
+ *
+ * Aplicar em TODAS as celulas de qualquer CSV exportado.
+ */
+function escapeCsv(value: unknown): string {
+  let str = value === null || value === undefined ? '' : String(value);
+
+  // Mitigacao CSV injection \u2014 prefixa aspas simples se primeiro char e perigoso.
+  if (str.length > 0 && /^[=+\-@\t\r\n]/.test(str)) {
+    str = `'${str}`;
+  }
+
+  // RFC 4180 \u2014 escape de aspas e wrap quando necessario.
+  if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
+
+// ============================================
+// Consent policy
+// ============================================
+
+/**
+ * Política de consent suportada pelo `hasConsent`:
+ * - 'implicit_optin': ausência de registro = consent presumido (default histórico).
+ * - 'strict_optin'  : ausência de registro = SEM consent (exige opt-in explícito).
+ */
+export type ConsentPolicy = 'strict_optin' | 'implicit_optin';
+
+/**
+ * Default GLOBAL atual do sistema. Re-exportado para que outros services
+ * (campaigns, broadcasts, cadências) possam referenciá-lo sem hard-code.
+ *
+ * TODO (Sprint futuro — BUG-042): tornar configurável por conta via
+ * `account.consentPolicy`. Quando essa coluna existir, callers devem
+ * resolver a política da conta antes de chamar `hasConsent` e passar
+ * via `options.policy`.
+ */
+export const CONSENT_POLICY_DEFAULT: ConsentPolicy = 'implicit_optin';
+
+export interface HasConsentOptions {
+  policy?: ConsentPolicy;
+}
 
 // ============================================
 // Service
@@ -101,34 +170,36 @@ class WhatsappConsentService {
   // ============================================
 
   /**
-   * Política de consent — DEFAULT: **opt-in implícito**.
+   * Política de consent — DEFAULT: `CONSENT_POLICY_DEFAULT` ('implicit_optin').
    *
-   * Regra atual (single policy global):
-   * - Se NÃO existe registro em `whatsapp_consent` para o par (accountId, phone),
-   *   o contato é considerado **com consent** (opt-in implícito). Isso significa
-   *   que o sistema pode disparar campanhas/mensagens para qualquer número que
-   *   ainda não solicitou opt-out.
-   * - Se existe registro, o consent depende exclusivamente do `status`:
-   *     - `opted_in`  → true
-   *     - `opted_out` → false
+   * Comportamento por política:
+   * - 'implicit_optin' (default):
+   *     - Sem registro → true (consent implícito).
+   *     - Com registro → true se status='opted_in', false se 'opted_out'.
+   * - 'strict_optin':
+   *     - Sem registro → false (exige opt-in explícito antes de qualquer disparo).
+   *     - Com registro → true só se status='opted_in'.
    *
-   * Justificativa: no fluxo atual a maior parte dos contatos vem de leads
-   * inbound (formulário, chatwoot, conversas WhatsApp já iniciadas pelo cliente),
-   * onde o consent é considerado implícito pela própria iniciativa do contato.
-   * O opt-out é registrado quando o usuário pede explicitamente (palavra-chave
-   * ou ação manual no CRM) e bloqueia novos disparos.
+   * Justificativa do default: no fluxo atual a maior parte dos contatos vem de
+   * leads inbound (formulário, chatwoot, conversas WhatsApp já iniciadas pelo
+   * cliente), onde o consent é considerado implícito pela própria iniciativa do
+   * contato. O opt-out é registrado quando o usuário pede explicitamente
+   * (palavra-chave ou ação manual no CRM) e bloqueia novos disparos.
    *
-   * BUG-042 / TODO (Sprint futuro): tornar a política configurável por conta via
-   * `account.consentPolicy` ('opt_in_implicit' | 'opt_in_explicit'). Em
-   * 'opt_in_explicit', a ausência de registro deve retornar `false` e exigir
-   * opt-in explícito antes de qualquer disparo (requisito comum para contas
-   * sujeitas a regulação mais estrita ou políticas internas de LGPD/GDPR).
-   *
-   * → true se NÃO existe registro OU registro tem status='opted_in'.
+   * TODO (Sprint futuro — BUG-042): tornar a política configurável por conta via
+   * `account.consentPolicy` ('implicit_optin' | 'strict_optin'). Hoje a escolha
+   * é feita pelo caller via `options.policy`; quando a coluna existir, o caller
+   * deverá resolver a política da conta e passar aqui.
    */
-  async hasConsent(accountId: string, phone: string): Promise<boolean> {
+  async hasConsent(
+    accountId: string,
+    phone: string,
+    options: HasConsentOptions = {}
+  ): Promise<boolean> {
     const normalized = this.normalizePhone(phone);
     if (!normalized) return false;
+
+    const policy: ConsentPolicy = options.policy ?? CONSENT_POLICY_DEFAULT;
 
     const record = await prisma.whatsappConsent.findUnique({
       where: {
@@ -140,7 +211,9 @@ class WhatsappConsentService {
       select: { status: true },
     });
 
-    if (!record) return true;
+    if (!record) {
+      return policy === 'implicit_optin';
+    }
     return record.status === 'opted_in';
   }
 
@@ -375,12 +448,23 @@ class WhatsappConsentService {
 
   /**
    * Gera CSV (string) com colunas: phone,contactName,optedOutAt,source,reason.
+   *
+   * BUG-043 (HIGH): `listOptedOut` aplica `MAX_LIMIT=500` silenciosamente. Aqui
+   * contamos o total separadamente e, se houver truncamento, anexamos uma linha
+   * de aviso ao final do CSV (em vez de remover o cap — manter o cap protege
+   * o processo de OOM em contas com volume muito alto).
+   *
+   * BUG-044 (HIGH): CSV injection — campos como `reason` podem vir do usuário
+   * final (mensagem WhatsApp em `handleInboundOptOut`). Se a célula começa com
+   * `=`, `+`, `-`, `@`, `\t`, `\r` ou `\n`, planilhas (Excel/Google Sheets)
+   * interpretam como fórmula. `escapeCsv` prefixa `'` nesses casos e ainda
+   * faz o escape padrão de aspas/quebra de linha/vírgula.
    */
   async exportOptedOutCsv(
     accountId: string,
     filters: { fromDate?: Date; toDate?: Date } = {}
   ): Promise<string> {
-    const { data } = await this.listOptedOut(accountId, {
+    const { data, total } = await this.listOptedOut(accountId, {
       fromDate: filters.fromDate,
       toDate: filters.toDate,
       limit: MAX_LIMIT,
@@ -396,18 +480,19 @@ class WhatsappConsentService {
       r.reason ?? '',
     ]);
 
-    const escape = (value: string): string => {
-      const str = String(value ?? '');
-      if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
     const lines = [
       header.join(','),
-      ...rows.map(row => row.map(escape).join(',')),
+      ...rows.map(row => row.map(v => escapeCsv(v)).join(',')),
     ];
+
+    if (total > data.length) {
+      // Linha-comentário visível em qualquer editor de texto / planilha.
+      // Não usa caracteres perigosos no início, então não precisa de `escapeCsv`
+      // (mas mantemos o `#` como convenção de comentário).
+      lines.push(
+        `# TRUNCATED at ${data.length} rows — total was ${total}. Use filters (fromDate/toDate) para reduzir o resultado.`
+      );
+    }
 
     return lines.join('\n');
   }
@@ -435,7 +520,18 @@ class WhatsappConsentService {
     // "cancelár", "descadastrár", "não quero mais — sair" etc.
     const sanitized = stripDiacritics(trimmed);
 
-    if (!OPT_OUT_KEYWORD_REGEX.test(sanitized)) {
+    // BUG-045: dois caminhos de match com critérios diferentes para reduzir
+    // falsos positivos (ex.: "PARAR a aula", "vou sair do crossfit"):
+    //   - PHRASE: frase específica multi-palavra → aceita em qualquer tamanho.
+    //   - SINGLE-WORD: palavra isolada (sair, parar, stop, cancelar, opt-out,
+    //     descadastrar) só conta se a mensagem inteira for curta (≤30 chars),
+    //     intenção típica de quem está respondendo "PARAR" / "Sair" sozinho.
+    const phraseMatch = OPT_OUT_PHRASE_REGEX.test(sanitized);
+    const shortSingleWordMatch =
+      sanitized.length <= OPT_OUT_MAX_SHORT_LEN &&
+      OPT_OUT_SINGLE_WORD_REGEX.test(sanitized);
+
+    if (!phraseMatch && !shortSingleWordMatch) {
       return false;
     }
 
