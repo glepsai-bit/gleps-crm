@@ -12,6 +12,56 @@
 
 ---
 
+## 2026-06-23 T-022 Sprint 3 Front-end — Webhook genérico + Compliance + Anti-ban (@frontend → @qa)
+
+- **O que mudou:**
+  - `src/services/webhooks.backend.service.ts` (novo) — `listWebhooks`, `createWebhook`, `updateWebhook`, `deleteWebhook`, `getDeliveries`, `testWebhook`; tipos exportados `WebhookSubscription`, `CreatedWebhook`, `WebhookDelivery`, `WebhookEvent`, `WEBHOOK_EVENTS`; graceful degradation em `list` e `getDeliveries` (retorna `[]` se backend retornar 404/500)
+  - `src/services/inbound-integrations.backend.service.ts` (novo) — `listInbound`, `createInbound`, `deleteInbound`; tipos `InboundIntegration`, `InboundHandler`, `INBOUND_HANDLERS`; constrói `webhookUrl` local como fallback enquanto backend não retorna o campo
+  - `src/services/whatsapp-consents.backend.service.ts` (novo) — `listOptedOut` (filtro período + busca), `optIn`, `optOut`, `exportCsv` (fetch nativo com token JWT + `createObjectURL` para download do arquivo)
+  - `src/pages/admin/AdminIntegracoesPage.tsx` (novo) — 3 abas com TanStack Query + toast + AlertDialogs:
+    - Aba "Webhooks de saída": tabela com badges de eventos, switch active, botões Editar/Testar/Excluir; Dialog criar/editar com MultiSelect de 7 eventos via Checkbox + toggle Active; pós-criação exibe secret HMAC com aviso "Copie agora"
+    - Aba "Webhooks de entrada": lista de handlers com URL copiável; Dialog criar com slug, Select handler, config JSON livre, preview da URL gerada + exemplo cURL
+    - Aba "Logs": Select de webhook + tabela de deliveries (eventName/url/status badge/latência ms/retryCount/data)
+  - `src/pages/admin/AdminOptOutsPage.tsx` (novo) — tabela de opt-outs com filtro período (7d/30d/all) + busca cliente + server-side; botão "Exportar CSV"; AlertDialog de re-opt-in com aviso de consentimento explícito; empty state "Nenhum opt-out registrado. Bom sinal!"
+  - `src/components/extracao/ComplianceWarning.tsx` (novo) — banner Alert amarelo (shadcn) que recebe `totalLote` e `totalOptOut`; renderiza null se totalOptOut === 0; mostra "X contatos com opt-out serão automaticamente excluídos do disparo"; pronto para ser integrado no DispatchDialog
+  - `src/api/endpoints.ts` — adicionados grupos `WEBHOOKS`, `INBOUND_INTEGRATIONS`, `WHATSAPP_CONSENTS` (Sprint 3); todos os services usam strings literais de URL diretamente (o arquivo de endpoints serve como documentação centralizada)
+  - `src/layouts/AdminLayout.tsx` — imports `Webhook` e `Ban` de lucide-react; itens "Integrações" (`/admin/integracoes`) e "Opt-outs WA" (`/admin/opt-outs`) adicionados ao `adminNavItems`
+  - `src/App.tsx` — imports das 2 novas páginas; rotas `/admin/integracoes` e `/admin/opt-outs` protegidas com `allowedRoles: ['admin', 'super_admin']`
+
+- **Arquivos/rotas afetadas:**
+  - Novas rotas: `/admin/integracoes` e `/admin/opt-outs`
+  - Modificados: `src/App.tsx`, `src/layouts/AdminLayout.tsx`, `src/api/endpoints.ts`
+  - Novos: 3 services + 2 páginas + 1 componente
+
+- **Commits:**
+  - `275418c` — feat(t022): services Sprint 3 - webhooks, inbound integrations e whatsapp-consents
+  - `d8e4c7c` — feat(t022): UI Sprint 3 - Integrações, Opt-outs e ComplianceWarning
+  - `62e3f32` — feat(t022): rotas e sidebar Sprint 3 - integracoes e opt-outs
+
+- **Como testar:**
+  1. Acesse `/admin/integracoes` como admin → 3 abas devem aparecer com empty states (backend pendente)
+  2. Aba "Webhooks de saída": clicar "+ Novo Webhook", preencher nome/URL (`https://exemplo.com/hook`), selecionar eventos via checkboxes, salvar → deve aparecer dialog com secret HMAC
+  3. Aba "Webhooks de entrada": clicar "+ Novo Handler", preencher slug `pacto-checkin`, selecionar handler `Criar/atualizar contato`, ver URL gerada e exemplo cURL no próprio dialog
+  4. Aba "Logs": selecionar um webhook no Select → deve mostrar empty state ou logs se houver entregas
+  5. Acesse `/admin/opt-outs` → empty state "Nenhum opt-out registrado. Bom sinal!" deve aparecer
+  6. Filtrar por período (7d/30d/all) e buscar por nome/telefone
+  7. Botão "Exportar CSV" → deve tentar download (ou toast de erro se backend não disponível)
+  8. Na sidebar: itens "Integrações" (ícone Webhook) e "Opt-outs WA" (ícone Ban) visíveis para admin
+  9. Verificar que `ComplianceWarning` exporta corretamente: `import { ComplianceWarning } from '@/components/extracao/ComplianceWarning'`
+  10. `tsc --noEmit -p tsconfig.app.json` → exit 0 (confirmado); `vite build` → 3537 módulos, sem erros
+
+- **Pendências/suposições sobre contratos:**
+  - `GET /api/webhooks` — backend Sprint 3 ainda não roteado; UI retorna empty state silenciosamente (`[]`)
+  - `POST /api/webhooks`, `PATCH/DELETE`, `GET /:id/deliveries`, `POST /:id/test` — idem; mutations lançam erro com toast
+  - `GET /api/integrations/inbound` — idem; `[]` enquanto não implementado
+  - `GET /api/whatsapp-consents?status=opted_out` — idem; `[]` enquanto não implementado
+  - `GET /api/whatsapp-consents/export?format=csv` — fetch nativo; toast de erro se backend retornar 404
+  - Suposição: `InboundIntegration.webhookUrl` vem do backend; se ausente, o frontend constrói a URL como fallback com `window.location.origin`
+  - `ComplianceWarning` ainda NÃO está integrado no `DispatchDialog` — integrar quando o backend expuser `GET /api/whatsapp-consents/check-batch` (ou similar) que identifica quais contatos do lote têm opt-out. O componente está pronto para receber `totalLote` e `totalOptOut` como props.
+  - Build TypeScript: `npx tsc --noEmit -p tsconfig.app.json` → exit 0 confirmado. `npx eslint` nos 6 arquivos novos → 0 erros. `vite build` → 3537 módulos, ✅
+
+---
+
 ## 2026-06-23 T-022 Sprint 2 QA — Campanhas WhatsApp (@qa → @dev-principal)
 
 ### O que foi testado
