@@ -10,6 +10,47 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-23 T-022 Sprint 2 Front-end — Campanhas WhatsApp (@frontend → @qa)
+
+- **O que mudou:**
+  - `src/api/endpoints.ts` — novo grupo `WHATSAPP_TEMPLATES` (LIST, CREATE, UPDATE, DELETE) + endpoints `BATCHES_SCHEDULED`, `DISPATCH_START`, `BATCH_CANCEL` dentro de `PROSPECTING`
+  - `src/services/whatsapp-templates.backend.service.ts` (novo) — `listTemplates`, `createTemplate`, `updateTemplate`, `deleteTemplate` usando `apiClient`
+  - `src/pages/admin/AdminWhatsappTemplatesPage.tsx` (novo) — CRUD completo: tabela, Dialog criar/editar (react-hook-form + zod), AlertDialog excluir, Dialog preview com placeholders substituídos por valores fake, skeleton + empty state, TanStack Query + toast
+  - `src/layouts/AdminLayout.tsx` — item "Templates WA" com ícone `MessageSquare` adicionado ao `adminNavItems`
+  - `src/App.tsx` — import + rota `/admin/whatsapp-templates` (ProtectedRoute allowedRoles admin/super_admin)
+  - `src/components/extracao/DispatchDialog.tsx` — adicionados: Select de template (popula mensagem automaticamente; deseleciona se mensagem for editada), RadioGroup de agendamento (3 opções: agora, data/hora específica, daqui X horas/dias), `scheduled_at` ISO + `source` no payload do dispatch
+  - `src/components/extracao/CampaignDashboard.tsx` (novo) — 4 cards de métricas (total enviadas, taxa entrega, opt-outs, campanhas ativas), filtros por período/fonte/triggerName, tabela de batches com graceful fallback para backend ainda não implementado
+  - `src/pages/admin/AdminExtracaoPage.tsx` — tabs expandidas de 3 para 5 colunas (+ "Agendadas" e "Dashboard"), componente `AgendadasTab` inline com tabela de batches agendados + cancelamento via AlertDialog + TanStack Query
+
+- **Arquivos/rotas afetadas:**
+  - Nova rota: `/admin/whatsapp-templates`
+  - Rota modificada: `/admin/prospeccao` (novas abas Agendadas e Dashboard)
+  - Dialog de disparo modificado (compatível com comportamento anterior — "Disparar agora" é o default)
+
+- **Como testar:**
+  1. Acesse `/admin/whatsapp-templates` como admin — lista de templates deve carregar (ou empty state se backend não respondeu)
+  2. Criar template: clicar "+ Novo Template", preencher nome/categoria/conteúdo com `{nome}` e salvar
+  3. Clicar no ícone olho (Eye) para ver preview com "João Silva" substituído no lugar de `{nome}`
+  4. Editar e excluir template (confirmar AlertDialog)
+  5. Na sidebar, item "Templates WA" deve aparecer com ícone de balão
+  6. Em Prospecção (`/admin/prospeccao`), verificar que abas "Agendadas" e "Dashboard" aparecem
+  7. Clicar em "Disparar" em qualquer lead selecionado → DispatchDialog deve mostrar seções "Template (opcional)" e "Agendamento" antes dos botões
+  8. Selecionar um template → campo de mensagem deve ser preenchido automaticamente
+  9. Escolher "Agendar para data/hora específica" → campos de data e hora devem aparecer
+  10. Escolher "Daqui X horas/dias" → input numérico + select de unidade devem aparecer
+
+- **Pendências e suposições sobre contratos:**
+  - `GET /api/whatsapp-templates` — backend ainda não existe; endpoint retornará 404 até ser implementado. UI trata com empty state.
+  - `POST/PATCH/DELETE /api/whatsapp-templates/:id` — idem.
+  - `GET /api/dispatch/batches?status=scheduled` — endpoint novo; UI faz graceful fallback (retorna `[]` em caso de erro).
+  - `PATCH /api/dispatch/batches/:id/cancel` — contrato assumido; pode ser necessário ajustar para DELETE ou body diferente.
+  - `GET /api/dispatch/metrics` — endpoint de métricas de campanha; não existe ainda; retorna zeros enquanto não implementado.
+  - `POST /api/dispatch/start` com `scheduled_at` e `source` — o DispatchDialog ainda usa `POST /api/prospecting/dispatch` (endpoint existente). O campo `scheduled_at` e `source` foram adicionados ao payload, mas o backend atual pode ignorá-los até a implementação Sprint 2 estar completa.
+  - Suposição: `DispatchBatch.source` e `DispatchBatch.scheduled_at` são campos opcionais — não quebra serialização com batches antigos que não têm esses campos.
+  - Build TypeScript: `npx tsc --noEmit` passou sem erros no commit `197a845`.
+
+---
+
 ## 2026-06-23 T-022 Sprint 1 QA — Evolution API + ApiKey infra (@qa → @dev-principal) {#2026-06-23-t022-sprint1-qa}
 
 ### O que foi testado
