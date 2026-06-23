@@ -35,6 +35,14 @@ const adminOnlyRoutes = new Set<string>([
   '/admin/whatsapp-templates',
   '/admin/integracoes',
   '/admin/opt-outs',
+  // Atendimento (T-022) - apenas admin/super_admin
+  '/admin/chat',
+  '/admin/chat/dashboard',
+  '/admin/inboxes',
+  '/admin/teams',
+  '/admin/canned-responses',
+  '/admin/sla-policies',
+  '/admin/custom-attributes',
 ]);
 
 export function usePermissions() {

@@ -296,6 +296,125 @@ export const API_ENDPOINTS = {
     EXPORT: '/api/whatsapp-consents/export',
     CHECK_BATCH: '/api/whatsapp-consents/check-batch',
   },
+
+  // ============= INBOXES (T-022 — canais de atendimento) =============
+  // CRUD do modelo Prisma `Inbox` (whatsapp/email/facebook/instagram).
+  INBOXES: {
+    LIST: '/api/inboxes',
+    GET: (id: string) => `/api/inboxes/${id}`,
+    CREATE: '/api/inboxes',
+    UPDATE: (id: string) => `/api/inboxes/${id}`,
+    DELETE: (id: string) => `/api/inboxes/${id}`,
+  },
+
+  // ============= TEAMS (T-022 — times de atendimento) =============
+  // CRUD de Team + membership (TeamMember).
+  TEAMS: {
+    LIST: '/api/teams',
+    GET: (id: string) => `/api/teams/${id}`,
+    CREATE: '/api/teams',
+    UPDATE: (id: string) => `/api/teams/${id}`,
+    DELETE: (id: string) => `/api/teams/${id}`,
+    MEMBERS: (id: string) => `/api/teams/${id}/members`,
+    REMOVE_MEMBER: (id: string, userId: string) => `/api/teams/${id}/members/${userId}`,
+    BY_USER_ME: '/api/teams/by-user/me',
+  },
+
+  // ============= AGENT AVAILABILITY (T-022 — presença no chat interno) =============
+  // Status (online/away/busy/offline) por agente + heartbeat + lista de online.
+  AVAILABILITY: {
+    ME: '/api/availability/me',
+    HEARTBEAT: '/api/availability/heartbeat',
+    ONLINE: '/api/availability/online',
+  },
+
+  // ============= CANNED RESPONSES (T-022 — respostas prontas) =============
+  // Escopadas por accountId. shortCode é normalizado server-side
+  // (lowercase, sem barra inicial). Filtro `search` faz busca case-insensitive
+  // em shortCode/content/description.
+  CANNED_RESPONSES: {
+    LIST: '/api/canned-responses',
+    GET: (id: string) => `/api/canned-responses/${id}`,
+    CREATE: '/api/canned-responses',
+    UPDATE: (id: string) => `/api/canned-responses/${id}`,
+    DELETE: (id: string) => `/api/canned-responses/${id}`,
+  },
+
+  // ============= SLA POLICIES (T-022 — políticas de SLA) =============
+  // CRUD + aplicação em conversation + listagem dos N=50 breaches mais
+  // recentes da policy.
+  SLA_POLICIES: {
+    LIST: '/api/sla-policies',
+    GET: (id: string) => `/api/sla-policies/${id}`,
+    CREATE: '/api/sla-policies',
+    UPDATE: (id: string) => `/api/sla-policies/${id}`,
+    DELETE: (id: string) => `/api/sla-policies/${id}`,
+    BREACHES: (id: string) => `/api/sla-policies/${id}/breaches`,
+    APPLY_TO_CONVERSATION: (conversationId: string) =>
+      `/api/conversations/${conversationId}/sla`,
+  },
+
+  // ============= CUSTOM ATTRIBUTES (T-022 — campos customizados) =============
+  // Definições de campos customizados por conta.
+  // scopes suportados: conversation | contact | account
+  // types suportados: text | number | date | list | boolean
+  CUSTOM_ATTRIBUTES: {
+    LIST: '/api/custom-attributes',
+    GET: (id: string) => `/api/custom-attributes/${id}`,
+    CREATE: '/api/custom-attributes',
+    UPDATE: (id: string) => `/api/custom-attributes/${id}`,
+    DELETE: (id: string) => `/api/custom-attributes/${id}`,
+  },
+
+  // ============= CHAT METRICS (T-022 — métricas do chat interno) =============
+  // Métricas agregadas (conversations / messages / SLA breaches) calculadas
+  // a partir dos models do chat interno. Escopo automático por accountId
+  // do usuário autenticado (super_admin precisa estar impersonando).
+  CHAT_METRICS: {
+    METRICS: '/api/chat/metrics',
+    AGENT_METRICS: (userId: string) => `/api/chat/metrics/agent/${userId}`,
+  },
+
+  // ============= CONVERSATIONS (T-022 — Chat interno) =============
+  // Ciclo de vida da conversa: status, prioridade, atribuição, transferência,
+  // snooze/resolve/reopen, labels, participants e custom attributes. Todas as
+  // rotas exigem JWT + accountId. Filtros de listagem aceitam string 'null'
+  // para assigneeId/teamId (= "não atribuído").
+  CONVERSATIONS: {
+    LIST: '/api/conversations',
+    GET: (id: string) => `/api/conversations/${id}`,
+    CREATE: '/api/conversations',
+    UPDATE_STATUS: (id: string) => `/api/conversations/${id}/status`,
+    UPDATE_PRIORITY: (id: string) => `/api/conversations/${id}/priority`,
+    ASSIGN: (id: string) => `/api/conversations/${id}/assign`,
+    ASSIGN_TEAM: (id: string) => `/api/conversations/${id}/assign-team`,
+    TRANSFER: (id: string) => `/api/conversations/${id}/transfer`,
+    SNOOZE: (id: string) => `/api/conversations/${id}/snooze`,
+    RESOLVE: (id: string) => `/api/conversations/${id}/resolve`,
+    REOPEN: (id: string) => `/api/conversations/${id}/reopen`,
+    ADD_LABEL: (id: string) => `/api/conversations/${id}/labels`,
+    REMOVE_LABEL: (id: string, tagId: string) =>
+      `/api/conversations/${id}/labels/${tagId}`,
+    ADD_PARTICIPANT: (id: string) => `/api/conversations/${id}/participants`,
+    REMOVE_PARTICIPANT: (id: string, userId: string) =>
+      `/api/conversations/${id}/participants/${userId}`,
+    CUSTOM_ATTRIBUTES: (id: string) =>
+      `/api/conversations/${id}/custom-attributes`,
+    MARK_READ: (id: string) => `/api/conversations/${id}/read`,
+  },
+
+  // ============= MESSAGES (T-022 — Chat interno) =============
+  // Listagem/envio de mensagens por conversa, marcação de leitura por
+  // mensagem e busca textual (ILIKE em content escopado por accountId).
+  // LIST/SEND compartilham a mesma URL — diferem pelo método HTTP.
+  MESSAGES: {
+    LIST: (conversationId: string) =>
+      `/api/conversations/${conversationId}/messages`,
+    SEND: (conversationId: string) =>
+      `/api/conversations/${conversationId}/messages`,
+    MARK_READ: (id: string) => `/api/messages/${id}/read`,
+    SEARCH: '/api/messages/search',
+  },
 } as const;
 
 export default API_ENDPOINTS;

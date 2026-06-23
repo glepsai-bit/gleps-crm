@@ -1,4 +1,4 @@
-import { ReactNode, useState, useMemo, useCallback } from 'react';
+import { ReactNode, useState, useMemo, useCallback, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -6,6 +6,15 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { chatSocket, type MentionPayload } from '@/services/socket.client';
+import { agentAvailabilityBackendService } from '@/services/agent-availability.backend.service';
+import { tokenManager } from '@/api/client';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,6 +43,13 @@ import {
   MessageSquare,
   Webhook,
   Ban,
+  Bell,
+  MessageCircle,
+  BarChart3,
+  Inbox,
+  Zap,
+  Clock,
+  Settings2,
 } from 'lucide-react';
 import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -56,6 +72,14 @@ const adminNavItems = [
   { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },
   { title: 'Integrações', href: '/admin/integracoes', icon: Webhook },
   { title: 'Opt-outs WA', href: '/admin/opt-outs', icon: Ban },
+  // Atendimento (T-022)
+  { title: 'Chat', href: '/admin/chat', icon: MessageCircle },
+  { title: 'Dashboard Chat', href: '/admin/chat/dashboard', icon: BarChart3 },
+  { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox },
+  { title: 'Times', href: '/admin/teams', icon: Users },
+  { title: 'Respostas Rápidas', href: '/admin/canned-responses', icon: Zap },
+  { title: 'SLA', href: '/admin/sla-policies', icon: Clock },
+  { title: 'Atributos Custom', href: '/admin/custom-attributes', icon: Settings2 },
 ];
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
@@ -76,10 +100,70 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     navigate('/super-admin');
   }, [exitImpersonation, navigate]);
 
+  // ============================================
+  // Socket.IO presence + mentions (T-022 Sprint 4)
+  // ============================================
+  // Lista de menções não lidas recebidas em tempo real (sino do header).
+  const [mentions, setMentions] = useState<MentionPayload[]>([]);
+  const [mentionsOpen, setMentionsOpen] = useState(false);
+
+  // Conecta socket + marca online + heartbeat 30s enquanto autenticado.
+  useEffect(() => {
+    if (!user?.id) return;
+    const token = tokenManager.getToken();
+    if (!token) return;
+
+    // Conecta no namespace /chat
+    chatSocket.connect(token);
+
+    // Marca status online no login (best-effort)
+    agentAvailabilityBackendService
+      .setMyStatus('online')
+      .catch(() => { /* permissões podem negar p/ super_admin sem conta */ });
+
+    // Heartbeat REST a cada 30s (mantém lastActiveAt e promove offline→online)
+    const heartbeatInterval = setInterval(() => {
+      agentAvailabilityBackendService.heartbeat().catch(() => {});
+      // Heartbeat via socket também (não-bloqueante)
+      try { chatSocket.sendHeartbeat(); } catch { /* ignore */ }
+    }, 30_000);
+
+    // Recebe menções em tempo real (acumula até o usuário ler)
+    const offMention = chatSocket.onMention((payload) => {
+      setMentions((prev) => {
+        if (prev.some((m) => m.id === payload.id)) return prev;
+        return [payload, ...prev].slice(0, 20);
+      });
+    });
+
+    return () => {
+      clearInterval(heartbeatInterval);
+      offMention();
+    };
+  }, [user?.id]);
+
   const handleLogout = async () => {
+    // Marca offline antes de derrubar o token (best-effort)
+    try {
+      await agentAvailabilityBackendService.setMyStatus('offline');
+    } catch {
+      /* ignore */
+    }
+    chatSocket.disconnect();
     await logout();
     navigate('/login');
   };
+
+  function openMentionConversation(m: MentionPayload) {
+    setMentions((prev) => prev.filter((x) => x.id !== m.id));
+    setMentionsOpen(false);
+    navigate(`/admin/chat?conversationId=${m.conversationId}`);
+  }
+
+  function clearMentions() {
+    setMentions([]);
+    setMentionsOpen(false);
+  }
 
   const getInitials = (name: string) => {
     return name
@@ -109,7 +193,18 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             </span>
           </div>
         </div>
-        <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
+        <div className="flex items-center gap-1">
+          <MentionsBell
+            count={mentions.length}
+            open={mentionsOpen}
+            onOpenChange={setMentionsOpen}
+            mentions={mentions}
+            onOpenMention={openMentionConversation}
+            onClearAll={clearMentions}
+            tone="sidebar"
+          />
+          <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
+        </div>
       </header>
 
       {/* Mobile Overlay */}
@@ -178,7 +273,21 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
 
         {/* User Menu */}
         <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border space-y-1">
-          <div className={cn('flex', collapsed ? 'justify-center' : 'justify-end')}>
+          <div
+            className={cn(
+              'flex items-center gap-1',
+              collapsed ? 'justify-center' : 'justify-end'
+            )}
+          >
+            <MentionsBell
+              count={mentions.length}
+              open={mentionsOpen}
+              onOpenChange={setMentionsOpen}
+              mentions={mentions}
+              onOpenMention={openMentionConversation}
+              onClearAll={clearMentions}
+              tone="sidebar"
+            />
             <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
           </div>
           <DropdownMenu>
@@ -289,5 +398,97 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         {children}
       </main>
     </div>
+  );
+}
+
+// ============================================
+// MentionsBell — sino do header com badge de menções não lidas (T-022)
+// ============================================
+interface MentionsBellProps {
+  count: number;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  mentions: MentionPayload[];
+  onOpenMention: (m: MentionPayload) => void;
+  onClearAll: () => void;
+  tone?: 'sidebar' | 'default';
+}
+
+function MentionsBell({
+  count,
+  open,
+  onOpenChange,
+  mentions,
+  onOpenMention,
+  onClearAll,
+  tone = 'default',
+}: MentionsBellProps) {
+  const triggerCls = cn(
+    'relative p-2 rounded-lg transition-colors touch-target',
+    tone === 'sidebar'
+      ? 'text-sidebar-foreground hover:bg-sidebar-accent'
+      : 'text-foreground hover:bg-accent'
+  );
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={triggerCls}
+          aria-label={count > 0 ? `${count} menções não lidas` : 'Menções'}
+        >
+          <Bell className="w-5 h-5" />
+          {count > 0 && (
+            <Badge
+              className="absolute -top-0.5 -right-0.5 h-4 min-w-[16px] px-1 text-[10px] bg-destructive text-destructive-foreground border-0"
+            >
+              {count > 9 ? '9+' : count}
+            </Badge>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-2">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold uppercase text-muted-foreground">
+            Menções
+          </p>
+          {mentions.length > 0 && (
+            <button
+              type="button"
+              onClick={onClearAll}
+              className="text-[11px] text-muted-foreground hover:text-foreground"
+            >
+              Limpar
+            </button>
+          )}
+        </div>
+        {mentions.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-3 text-center">
+            Sem menções novas
+          </p>
+        ) : (
+          <div className="space-y-1 max-h-80 overflow-y-auto">
+            {mentions.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => onOpenMention(m)}
+                className="w-full text-left rounded px-2 py-1.5 text-xs hover:bg-accent"
+              >
+                <p className="font-medium truncate">
+                  Nova menção em conversa
+                </p>
+                <p className="text-[11px] text-muted-foreground truncate">
+                  {m.createdAt
+                    ? new Date(m.createdAt).toLocaleString('pt-BR')
+                    : 'agora'}
+                </p>
+              </button>
+            ))}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
