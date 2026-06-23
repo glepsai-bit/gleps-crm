@@ -29,6 +29,9 @@ function mapAccount(raw: any): Account {
     google_client_id: raw.googleClientId ?? raw.google_client_id ?? null,
     google_client_secret: raw.googleClientSecret ?? raw.google_client_secret ?? null,
     google_redirect_uri: raw.googleRedirectUri ?? raw.google_redirect_uri ?? null,
+    evolution_base_url: raw.evolutionBaseUrl ?? raw.evolution_base_url ?? null,
+    evolution_api_key: raw.evolutionApiKey ?? raw.evolution_api_key ?? null,
+    evolution_instance: raw.evolutionInstance ?? raw.evolution_instance ?? null,
     created_at: raw.createdAt ?? raw.created_at ?? new Date().toISOString(),
     updated_at: raw.updatedAt ?? raw.updated_at ?? new Date().toISOString(),
     users_count: raw.usersCount ?? raw.users_count ?? 0,
@@ -82,6 +85,9 @@ export const accountsBackendService = {
       sendgridApiKey: input.sendgrid_api_key,
       sendgridFromEmail: input.sendgrid_from_email,
       sendgridFromName: input.sendgrid_from_name,
+      evolutionBaseUrl: input.evolution_base_url,
+      evolutionApiKey: input.evolution_api_key,
+      evolutionInstance: input.evolution_instance,
     });
     const raw = response?.data ?? response;
     return mapAccount(raw);

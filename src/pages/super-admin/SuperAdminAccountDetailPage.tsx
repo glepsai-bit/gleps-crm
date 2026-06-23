@@ -42,9 +42,14 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
+  QrCode,
+  Smartphone,
+  Key,
+  ChevronRight,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
 import { toast } from 'sonner';
+import { apiClient } from '@/api/client';
 
 type AccountStatus = 'active' | 'paused' | 'cancelled';
 
@@ -106,6 +111,15 @@ export default function SuperAdminAccountDetailPage() {
   });
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
 
+  // Evolution API (WhatsApp) states
+  const [evolutionBaseUrl, setEvolutionBaseUrl] = useState('');
+  const [evolutionApiKey, setEvolutionApiKey] = useState('');
+  const [evolutionInstance, setEvolutionInstance] = useState('');
+  const [qrCodeBase64, setQrCodeBase64] = useState<string | null>(null);
+  const [evolutionStatus, setEvolutionStatus] = useState<string | null>(null);
+  const [isCheckingEvolutionStatus, setIsCheckingEvolutionStatus] = useState(false);
+  const [isGeneratingQrCode, setIsGeneratingQrCode] = useState(false);
+
   // Fetch account data from Supabase
   useEffect(() => {
     const fetchAccount = async () => {
@@ -119,6 +133,11 @@ export default function SuperAdminAccountDetailPage() {
         setIsLoading(true);
         const accountData = await accountsCloudOrBackend.getById(accountId);
         setAccount(accountData);
+        if (accountData) {
+          setEvolutionBaseUrl((accountData as any).evolution_base_url || '');
+          setEvolutionApiKey((accountData as any).evolution_api_key || '');
+          setEvolutionInstance((accountData as any).evolution_instance || '');
+        }
         setError(null);
       } catch (err: any) {
         console.error('Error fetching account:', err);
@@ -252,6 +271,9 @@ export default function SuperAdminAccountDetailPage() {
         sendgrid_api_key: editFormData.sendgridEnabled ? editFormData.sendgridApiKey : undefined,
         sendgrid_from_email: editFormData.sendgridEnabled ? editFormData.sendgridFromEmail : undefined,
         sendgrid_from_name: editFormData.sendgridEnabled ? editFormData.sendgridFromName : undefined,
+        evolution_base_url: evolutionBaseUrl,
+        evolution_api_key: evolutionApiKey,
+        evolution_instance: evolutionInstance,
       } as any);
       setAccount({
         ...account,
@@ -263,8 +285,11 @@ export default function SuperAdminAccountDetailPage() {
         google_client_id: editFormData.googleEnabled ? editFormData.googleClientId : undefined,
         google_client_secret: editFormData.googleEnabled ? editFormData.googleClientSecret : undefined,
         google_redirect_uri: editFormData.googleEnabled ? editFormData.googleRedirectUri : undefined,
+        evolution_base_url: evolutionBaseUrl,
+        evolution_api_key: evolutionApiKey,
+        evolution_instance: evolutionInstance,
         updated_at: new Date().toISOString(),
-      });
+      } as any);
       setIsPasswordConfirmOpen(false);
       setIsControlOpen(false);
       toast.success('Conta atualizada com sucesso!');
@@ -277,6 +302,56 @@ export default function SuperAdminAccountDetailPage() {
 
   const getIdiomaLabel = (idioma: string) => {
     return idioma === 'pt' ? 'Português' : 'English';
+  };
+
+  const handleCheckEvolutionStatus = async () => {
+    if (!account) return;
+    setIsCheckingEvolutionStatus(true);
+    try {
+      const response = await apiClient.get<any>(`/api/evolution/accounts/${account.id}/status`);
+      const state = response?.state ?? response?.status ?? response?.data?.state ?? response?.data?.status ?? 'unknown';
+      setEvolutionStatus(String(state));
+      toast.success(`Status Evolution: ${state}`);
+    } catch (error: any) {
+      setEvolutionStatus('error');
+      toast.error('Erro ao verificar status: ' + (error?.message || 'Erro desconhecido'));
+    } finally {
+      setIsCheckingEvolutionStatus(false);
+    }
+  };
+
+  const handleGenerateQrCode = async () => {
+    if (!account) return;
+    setIsGeneratingQrCode(true);
+    try {
+      const response = await apiClient.get<any>(`/api/evolution/accounts/${account.id}/qrcode`);
+      const base64 =
+        response?.base64 ??
+        response?.qrcode ??
+        response?.qrCode ??
+        response?.data?.base64 ??
+        response?.data?.qrcode ??
+        null;
+      if (base64) {
+        const clean = String(base64).replace(/^data:image\/png;base64,/, '');
+        setQrCodeBase64(clean);
+        toast.success('QR Code gerado. Escaneie no WhatsApp.');
+      } else {
+        toast.error('Resposta sem QR Code.');
+      }
+    } catch (error: any) {
+      toast.error('Erro ao gerar QR Code: ' + (error?.message || 'Erro desconhecido'));
+    } finally {
+      setIsGeneratingQrCode(false);
+    }
+  };
+
+  const getEvolutionStatusVariant = (status: string | null): 'default' | 'secondary' | 'destructive' | 'outline' => {
+    if (!status) return 'outline';
+    if (status === 'open') return 'default';
+    if (status === 'connecting') return 'secondary';
+    if (status === 'close' || status === 'error') return 'destructive';
+    return 'outline';
   };
 
   const handleDelete = async () => {
@@ -522,6 +597,123 @@ export default function SuperAdminAccountDetailPage() {
               )}
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* API Keys */}
+      <Card className="card-gradient border-border/50">
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Key className="w-5 h-5" />
+            API Keys
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">
+            Gere e gerencie as chaves de API usadas por integrações externas
+            desta conta.
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => navigate(`/super-admin/accounts/${accountId}/api-keys`)}
+            className="gap-2 flex-shrink-0"
+          >
+            Gerenciar API Keys
+            <ChevronRight className="w-4 h-4" />
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Evolution API (WhatsApp) Integration */}
+      <Card className="card-gradient border-border/50">
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Smartphone className="w-5 h-5" />
+            Evolution API (WhatsApp)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="evolution-base-url">URL Base</Label>
+              <Input
+                id="evolution-base-url"
+                value={evolutionBaseUrl}
+                onChange={(e) => setEvolutionBaseUrl(e.target.value)}
+                placeholder="https://evolution.exemplo.com"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="evolution-api-key">API Key</Label>
+              <Input
+                id="evolution-api-key"
+                type="password"
+                value={evolutionApiKey}
+                onChange={(e) => setEvolutionApiKey(e.target.value)}
+                placeholder="API Key da Evolution"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="evolution-instance">Instance Name</Label>
+              <Input
+                id="evolution-instance"
+                value={evolutionInstance}
+                onChange={(e) => setEvolutionInstance(e.target.value)}
+                placeholder="nome-da-instancia"
+              />
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            Configure URL, API Key e instance, salve em <strong>Controle</strong> e use os botões abaixo para conectar o WhatsApp.
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCheckEvolutionStatus}
+              disabled={isCheckingEvolutionStatus}
+              className="gap-2"
+            >
+              {isCheckingEvolutionStatus ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4" />
+              )}
+              Verificar Status
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleGenerateQrCode}
+              disabled={isGeneratingQrCode}
+              className="gap-2"
+            >
+              {isGeneratingQrCode ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <QrCode className="w-4 h-4" />
+              )}
+              Gerar QR Code
+            </Button>
+            {evolutionStatus && (
+              <Badge variant={getEvolutionStatusVariant(evolutionStatus)}>
+                {evolutionStatus}
+              </Badge>
+            )}
+          </div>
+
+          {qrCodeBase64 && (
+            <div className="flex flex-col items-start gap-2 pt-2">
+              <Label>QR Code (escaneie no WhatsApp)</Label>
+              <img
+                src={`data:image/png;base64,${qrCodeBase64}`}
+                alt="QR Code Evolution"
+                className="w-64 h-64 rounded border border-border bg-white p-2"
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 

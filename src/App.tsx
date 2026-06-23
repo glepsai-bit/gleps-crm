@@ -30,6 +30,7 @@ import SuperAdminLayout from "./layouts/SuperAdminLayout";
 import SuperAdminDashboard from "./pages/super-admin/SuperAdminDashboard";
 import SuperAdminAccountsPage from "./pages/super-admin/SuperAdminAccountsPage";
 import SuperAdminAccountDetailPage from "./pages/super-admin/SuperAdminAccountDetailPage";
+import SuperAdminApiKeysPage from "./pages/super-admin/SuperAdminApiKeysPage";
 import SuperAdminUsersPage from "./pages/super-admin/SuperAdminUsersPage";
 
 // Admin
@@ -84,6 +85,7 @@ const App = () => (
             <Route path="/super-admin" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminDashboard /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
             <Route path="/super-admin/accounts" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminAccountsPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
             <Route path="/super-admin/accounts/:accountId" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminAccountDetailPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
+            <Route path="/super-admin/accounts/:accountId/api-keys" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminApiKeysPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
             <Route path="/super-admin/users" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminUsersPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
 
             {/* Admin Routes */}

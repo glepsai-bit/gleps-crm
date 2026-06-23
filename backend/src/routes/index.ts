@@ -16,6 +16,8 @@ import prospectingRoutes from './prospecting.routes';
 import emailRoutes from './email.routes';
 import emailExtendedRoutes from './email-extended.routes';
 import audienceRoutes from './audience.routes';
+import evolutionRoutes from './evolution.routes';
+import apiKeyRoutes from './api-key.routes';
 import { Router as LeadTagRouter } from 'express';
 import { contactController } from '../controllers/contact.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
@@ -57,6 +59,8 @@ router.use('/prospecting', prospectingRoutes);
 router.use('/email', emailRoutes);
 router.use('/email', emailExtendedRoutes);
 router.use('/email/audiences', audienceRoutes);
+router.use('/evolution', evolutionRoutes);
+router.use('/api-keys', apiKeyRoutes);
 router.use('/lead-tags', leadTagRouter);
 
 export default router;

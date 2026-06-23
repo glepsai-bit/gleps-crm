@@ -20,6 +20,9 @@ export interface Account {
    sendgrid_api_key?: string | null;
    sendgrid_from_email?: string | null;
    sendgrid_from_name?: string | null;
+   evolution_base_url?: string | null;
+   evolution_api_key?: string | null;
+   evolution_instance?: string | null;
   created_at: string;
   updated_at: string;
   users_count?: number;
@@ -38,6 +41,9 @@ export interface CreateAccountInput {
    sendgrid_api_key?: string;
    sendgrid_from_email?: string;
    sendgrid_from_name?: string;
+   evolution_base_url?: string;
+   evolution_api_key?: string;
+   evolution_instance?: string;
 }
 
 export interface UpdateAccountInput {
@@ -57,6 +63,9 @@ export interface UpdateAccountInput {
    sendgrid_api_key?: string;
    sendgrid_from_email?: string;
    sendgrid_from_name?: string;
+   evolution_base_url?: string;
+   evolution_api_key?: string;
+   evolution_instance?: string;
 }
 
 export const accountsCloudService = {

@@ -16,6 +16,9 @@ export interface CreateAccountInput {
   chatwootBaseUrl?: string;
   chatwootAccountId?: string;
   chatwootApiKey?: string;
+  evolutionBaseUrl?: string;
+  evolutionApiKey?: string;
+  evolutionInstance?: string;
   googleClientId?: string;
   googleClientSecret?: string;
   googleRedirectUri?: string;
@@ -130,6 +133,9 @@ class AccountService {
         chatwootBaseUrl: input.chatwootBaseUrl,
         chatwootAccountId: input.chatwootAccountId,
         chatwootApiKey: input.chatwootApiKey,
+        evolutionBaseUrl: input.evolutionBaseUrl,
+        evolutionApiKey: input.evolutionApiKey,
+        evolutionInstance: input.evolutionInstance,
         googleClientId: input.googleClientId,
         googleClientSecret: input.googleClientSecret,
         googleRedirectUri: input.googleRedirectUri,
@@ -179,6 +185,9 @@ class AccountService {
         chatwootBaseUrl: input.chatwootBaseUrl,
         chatwootAccountId: input.chatwootAccountId,
         chatwootApiKey: input.chatwootApiKey,
+        evolutionBaseUrl: input.evolutionBaseUrl,
+        evolutionApiKey: input.evolutionApiKey,
+        evolutionInstance: input.evolutionInstance,
         googleClientId: input.googleClientId,
         googleClientSecret: input.googleClientSecret,
         googleRedirectUri: input.googleRedirectUri,
