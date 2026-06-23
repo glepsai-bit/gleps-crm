@@ -78,6 +78,14 @@ model Account {
   inboundIntegrations  InboundIntegration[]
   whatsappConsents     WhatsappConsent[]
 
+  // T-022 Sprint 4 — Chat interno
+  inboxes                    Inbox[]
+  teams                      Team[]
+  conversations              Conversation[]
+  cannedResponses            CannedResponse[]
+  customAttributeDefinitions CustomAttributeDefinition[]
+  slaPolicies                SLAPolicy[]
+
   @@index([status])
   @@map("accounts")
 }
@@ -225,6 +233,17 @@ model User {
   refreshTokens   RefreshToken[]
   whatsappTemplatesCreated WhatsappTemplate[] @relation("WhatsappTemplateCreatedBy")
 
+  // T-022 Sprint 4 — Chat interno
+  conversationsAssigned     Conversation[]            @relation("ConversationAssignee")
+  messagesSent              Message[]
+  conversationParticipations ConversationParticipant[]
+  conversationNotes         ConversationNote[]
+  cannedResponsesCreated    CannedResponse[]
+  teamMemberships           TeamMember[]
+  mentions                  Mention[]
+  readReceipts              ReadReceipt[]
+  availability              AgentAvailability?
+
   @@index([accountId])
   @@index([email])
   @@index([role])
@@ -303,6 +322,9 @@ model Contact {
   emailAudienceContacts EmailAudienceContact[]
   whatsappConsents      WhatsappConsent[]
 
+  // T-022 Sprint 4 — Chat interno
+  conversations Conversation[]
+
   @@index([accountId])
   @@index([telefone])
   @@index([email])
@@ -366,6 +388,9 @@ model Tag {
   funnel     Funnel       @relation(fields: [funnelId], references: [id], onDelete: Cascade)
   leadTags   LeadTag[]
   tagHistory TagHistory[]
+
+  // T-022 Sprint 4 — Chat interno
+  conversationLabels ConversationLabel[]
 
   @@unique([accountId, slug])
   @@index([accountId])
@@ -1139,4 +1164,309 @@ model EmailAudienceContact {
   @@index([audienceId])
   @@index([contactId])
   @@map("email_audience_contacts")
+}
+
+// ============================================
+// CHAT INTERNO (T-022 Sprint 4) - Paridade Chatwoot
+// ============================================
+
+model Inbox {
+  id              String   @id @default(uuid()) @db.Uuid
+  accountId       String   @map("account_id") @db.Uuid
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name            String   @db.VarChar(120)
+  channelType     String   @default("whatsapp") @map("channel_type") @db.VarChar(40) // whatsapp | email | facebook | instagram (futuro)
+  evolutionInstance String? @map("evolution_instance") @db.VarChar(120) // pra channelType=whatsapp
+  greeting        String?  @db.Text
+  businessHours   Json?    @map("business_hours") // {monday: {open: "09:00", close: "18:00"}, ...}
+  defaultTeamId   String?  @map("default_team_id") @db.Uuid
+  defaultTeam     Team?    @relation("DefaultTeam", fields: [defaultTeamId], references: [id], onDelete: SetNull)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  conversations  Conversation[]
+  slaPolicies    SLAPolicy[]
+
+  @@index([accountId])
+  @@index([active])
+  @@map("inboxes")
+}
+
+model Team {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @map("account_id") @db.Uuid
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String   @db.VarChar(120)
+  description String?  @db.Text
+  allowAutoAssign Boolean @default(true) @map("allow_auto_assign")
+  businessHours Json? @map("business_hours")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  members         TeamMember[]
+  inboxesAsDefault Inbox[]      @relation("DefaultTeam")
+  conversations   Conversation[]
+  slaPolicies     SLAPolicy[]
+
+  @@unique([accountId, name])
+  @@index([accountId])
+  @@map("teams")
+}
+
+model TeamMember {
+  id       String @id @default(uuid()) @db.Uuid
+  teamId   String @map("team_id") @db.Uuid
+  team     Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId   String @map("user_id") @db.Uuid
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     String @default("member") @db.VarChar(20) // member | leader
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([teamId, userId])
+  @@index([teamId])
+  @@index([userId])
+  @@map("team_members")
+}
+
+model Conversation {
+  id              String   @id @default(uuid()) @db.Uuid
+  accountId       String   @map("account_id") @db.Uuid
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  inboxId         String   @map("inbox_id") @db.Uuid
+  inbox           Inbox    @relation(fields: [inboxId], references: [id], onDelete: Cascade)
+  contactId       String?  @map("contact_id") @db.Uuid
+  contact         Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  status          String   @default("open") @db.VarChar(20) // open | pending | resolved | snoozed
+  priority        String   @default("medium") @db.VarChar(20) // urgent | high | medium | low
+  assigneeId      String?  @map("assignee_id") @db.Uuid
+  assignee        User?    @relation("ConversationAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  teamId          String?  @map("team_id") @db.Uuid
+  team            Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  slaPolicyId     String?  @map("sla_policy_id") @db.Uuid
+  slaPolicy       SLAPolicy? @relation(fields: [slaPolicyId], references: [id], onDelete: SetNull)
+  snoozedUntil    DateTime? @map("snoozed_until") @db.Timestamptz
+  firstResponseAt DateTime? @map("first_response_at") @db.Timestamptz
+  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz
+  resolvedBy      String?   @map("resolved_by") @db.VarChar(20) // ai | human | timeout
+  externalId      String?   @map("external_id") @db.VarChar(120) // remoteJid do WhatsApp
+  customAttributes Json?    @map("custom_attributes") @default("{}")
+  unreadCount     Int      @default(0) @map("unread_count")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  messages       Message[]
+  labels         ConversationLabel[]
+  participants   ConversationParticipant[]
+  notes          ConversationNote[]
+  mentions       Mention[]
+  slaBreaches    SLABreach[]
+
+  @@index([accountId])
+  @@index([inboxId])
+  @@index([contactId])
+  @@index([assigneeId])
+  @@index([teamId])
+  @@index([status])
+  @@index([externalId])
+  @@map("conversations")
+}
+
+model Message {
+  id              String   @id @default(uuid()) @db.Uuid
+  conversationId  String   @map("conversation_id") @db.Uuid
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderType      String   @map("sender_type") @db.VarChar(20) // customer | agent | ai_bot | system | integration
+  senderId        String?  @map("sender_id") @db.Uuid // userId quando agent; null para customer/system
+  sender          User?    @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  content         String?  @db.Text
+  contentType     String   @default("text") @map("content_type") @db.VarChar(40) // text | media | audio | document | system_note | template
+  isPrivate       Boolean  @default(false) @map("is_private") // notas internas
+  status          String   @default("sent") @db.VarChar(20) // sending | sent | delivered | read | failed
+  externalId      String?  @map("external_id") @db.VarChar(120) // messageId do Evolution
+  replyToId       String?  @map("reply_to_id") @db.Uuid
+  replyTo         Message? @relation("MessageReply", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies         Message[] @relation("MessageReply")
+  deliveredAt     DateTime? @map("delivered_at") @db.Timestamptz
+  readAt          DateTime? @map("read_at") @db.Timestamptz
+  metadata        Json?    @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  attachments    Attachment[]
+  readReceipts   ReadReceipt[]
+
+  @@index([conversationId])
+  @@index([senderType])
+  @@index([externalId])
+  @@index([createdAt])
+  @@map("messages")
+}
+
+model Attachment {
+  id           String   @id @default(uuid()) @db.Uuid
+  messageId    String   @map("message_id") @db.Uuid
+  message      Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileType     String   @map("file_type") @db.VarChar(40) // image | video | audio | document
+  fileUrl      String   @map("file_url") @db.VarChar(2000)
+  fileSize     Int?     @map("file_size")
+  fileName     String?  @map("file_name") @db.VarChar(255)
+  mimeType     String?  @map("mime_type") @db.VarChar(120)
+  thumbnailUrl String?  @map("thumbnail_url") @db.VarChar(2000)
+  duration     Int?     // segundos pra audio/video
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([messageId])
+  @@map("attachments")
+}
+
+model ConversationLabel {
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tagId          String   @map("tag_id") @db.Uuid
+  tag            Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([conversationId, tagId])
+  @@index([conversationId])
+  @@index([tagId])
+  @@map("conversation_labels")
+}
+
+model ConversationParticipant {
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String   @map("user_id") @db.Uuid
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([conversationId, userId])
+  @@index([conversationId])
+  @@index([userId])
+  @@map("conversation_participants")
+}
+
+model ConversationNote {
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String   @map("user_id") @db.Uuid
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content        String   @db.Text
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([conversationId])
+  @@map("conversation_notes")
+}
+
+model CannedResponse {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @map("account_id") @db.Uuid
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  shortCode   String   @map("short_code") @db.VarChar(80) // /saudacao
+  content     String   @db.Text
+  description String?  @db.Text
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdBy   User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([accountId, shortCode])
+  @@index([accountId])
+  @@map("canned_responses")
+}
+
+model CustomAttributeDefinition {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @map("account_id") @db.Uuid
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  scope       String   @db.VarChar(20) // conversation | contact | account
+  key         String   @db.VarChar(80)
+  label       String   @db.VarChar(120)
+  type        String   @db.VarChar(20) // text | number | date | list | boolean
+  options     Json?    // pra type=list
+  required    Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([accountId, scope, key])
+  @@index([accountId, scope])
+  @@map("custom_attribute_definitions")
+}
+
+model SLAPolicy {
+  id                String   @id @default(uuid()) @db.Uuid
+  accountId         String   @map("account_id") @db.Uuid
+  account           Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name              String   @db.VarChar(120)
+  firstResponseMin  Int      @map("first_response_min") // minutos pra primeira resposta
+  resolutionMin     Int      @map("resolution_min") // minutos pra resolver
+  businessHoursOnly Boolean  @default(true) @map("business_hours_only")
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  inboxes       Inbox[]
+  teams         Team[]
+  conversations Conversation[]
+  breaches      SLABreach[]
+
+  @@unique([accountId, name])
+  @@index([accountId])
+  @@map("sla_policies")
+}
+
+model SLABreach {
+  id              String   @id @default(uuid()) @db.Uuid
+  conversationId  String   @map("conversation_id") @db.Uuid
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  slaPolicyId     String   @map("sla_policy_id") @db.Uuid
+  slaPolicy       SLAPolicy @relation(fields: [slaPolicyId], references: [id], onDelete: Cascade)
+  breachType      String   @map("breach_type") @db.VarChar(40) // first_response | resolution
+  expectedAt      DateTime @map("expected_at") @db.Timestamptz
+  breachedAt      DateTime @map("breached_at") @db.Timestamptz
+  notifiedAt      DateTime? @map("notified_at") @db.Timestamptz
+
+  @@index([conversationId])
+  @@index([slaPolicyId])
+  @@map("sla_breaches")
+}
+
+model Mention {
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String   @map("user_id") @db.Uuid
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageId      String?  @map("message_id") @db.Uuid
+  read           Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([userId, read])
+  @@index([conversationId])
+  @@map("mentions")
+}
+
+model ReadReceipt {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageId String   @map("message_id") @db.Uuid
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  readAt    DateTime @default(now()) @map("read_at") @db.Timestamptz
+
+  @@unique([userId, messageId])
+  @@index([messageId])
+  @@map("read_receipts")
+}
+
+model AgentAvailability {
+  userId       String   @id @map("user_id") @db.Uuid
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status       String   @default("offline") @db.VarChar(20) // online | away | busy | offline
+  lastActiveAt DateTime @default(now()) @map("last_active_at") @db.Timestamptz
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([status])
+  @@map("agent_availability")
 }

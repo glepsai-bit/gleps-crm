@@ -1,9 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
-import { inboxService } from '../services/inbox.service';
+import { z } from 'zod';
+import { inboxService, inboxChannelService } from '../services/inbox.service';
 import { sendgridService } from '../services/sendgrid.service';
 import { emailAiService } from '../services/email-ai.service';
 import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
+import { AuthenticatedRequest } from '../types';
 
 const prisma = new PrismaClient();
 
@@ -222,3 +224,135 @@ Responda em formato JSON: {"subject":"...","bodyHtml":"...","bodyText":"..."}`;
     } catch (error) { next(error); }
   },
 };
+
+// ============================================
+// Inbox Channel Controller (canais de atendimento — T-022)
+// CRUD do modelo Prisma `Inbox` (whatsapp/email/facebook/instagram).
+// Usa inboxChannelService (class singleton) + Zod + requireAccountId.
+// ============================================
+
+const channelTypeSchema = z.enum(['whatsapp', 'email', 'facebook', 'instagram']);
+
+const businessHoursSchema = z
+  .record(
+    z.object({
+      open: z.string().regex(/^\d{2}:\d{2}$/, 'Formato HH:MM'),
+      close: z.string().regex(/^\d{2}:\d{2}$/, 'Formato HH:MM'),
+    })
+  )
+  .optional();
+
+const createInboxChannelSchema = z.object({
+  name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres').max(120),
+  channelType: channelTypeSchema,
+  evolutionInstance: z.string().min(1).max(120).nullable().optional(),
+  greeting: z.string().nullable().optional(),
+  businessHours: businessHoursSchema,
+  defaultTeamId: z.string().uuid().nullable().optional(),
+});
+
+const updateInboxChannelSchema = z.object({
+  name: z.string().min(2).max(120).optional(),
+  channelType: channelTypeSchema.optional(),
+  evolutionInstance: z.string().min(1).max(120).nullable().optional(),
+  greeting: z.string().nullable().optional(),
+  businessHours: businessHoursSchema,
+  defaultTeamId: z.string().uuid().nullable().optional(),
+  active: z.boolean().optional(),
+});
+
+export class InboxChannelController {
+  /**
+   * GET /inboxes
+   */
+  async list(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const result = await inboxChannelService.list(req.user!.accountId!);
+      res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /inboxes/:id
+   */
+  async getById(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const result = await inboxChannelService.get(id, req.user!.accountId!);
+      res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /inboxes
+   */
+  async create(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const body = createInboxChannelSchema.parse(req.body);
+      const result = await inboxChannelService.create(
+        req.user!.accountId!,
+        body
+      );
+      res.status(201).json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PUT /inboxes/:id
+   */
+  async update(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const body = updateInboxChannelSchema.parse(req.body);
+      const result = await inboxChannelService.update(
+        id,
+        req.user!.accountId!,
+        body
+      );
+      res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * DELETE /inboxes/:id
+   */
+  async delete(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      await inboxChannelService.delete(id, req.user!.accountId!);
+      res.json({ data: { success: true } });
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export const inboxChannelController = new InboxChannelController();

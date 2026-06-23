@@ -27,6 +27,18 @@ import {
   publicRouter as inboundIntegrationPublicRoutes,
 } from './inbound-integration.routes';
 import whatsappConsentRoutes from './whatsapp-consent.routes';
+// T-022 — chat interno / atendimento (inboxes, teams, conversations, etc.)
+import inboxRoutes from './inbox.routes';
+import teamRoutes from './team.routes';
+import conversationRoutes from './conversation.routes';
+import {
+  jwtRouter as messageJwtRoutes,
+  apiKeyRouter as messageApiKeyRoutes,
+} from './message.routes';
+import customAttributeRoutes from './custom-attribute.routes';
+import slaRoutes, { conversationsRouter as slaConversationsRouter } from './sla.routes';
+import chatMetricsRoutes from './chat-metrics.routes';
+import agentAvailabilityRoutes from './agent-availability.routes';
 import { Router as LeadTagRouter } from 'express';
 import { contactController } from '../controllers/contact.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
@@ -85,5 +97,24 @@ router.use('/integrations/inbound-receive', inboundIntegrationPublicRoutes);
 router.use('/integrations/inbound', inboundIntegrationJwtRoutes);
 router.use('/whatsapp-consents', whatsappConsentRoutes);
 router.use('/lead-tags', leadTagRouter);
+
+// ============================================
+// T-022 — Chat interno / atendimento
+// ============================================
+router.use('/inboxes', inboxRoutes);
+router.use('/teams', teamRoutes);
+router.use('/conversations', conversationRoutes);
+// Aplica policy SLA a uma conversa específica: POST /conversations/:id/sla
+router.use('/conversations', slaConversationsRouter);
+// messageJwtRoutes usa paths absolutos (/conversations/:id/messages,
+// /messages/:id/read, /messages/search) — montamos na raiz para cobrir
+// ambos os prefixos (/conversations e /messages) com um único mount.
+router.use('/', messageJwtRoutes);
+// API Key router p/ integrações externas (n8n, agente IA)
+router.use('/integrations/chat', messageApiKeyRoutes);
+router.use('/custom-attributes', customAttributeRoutes);
+router.use('/sla-policies', slaRoutes);
+router.use('/chat', chatMetricsRoutes);
+router.use('/availability', agentAvailabilityRoutes);
 
 export default router;

@@ -3,6 +3,13 @@ import * as crypto from 'crypto';
 import { prisma } from '../config/database';
 import { evolutionService } from '../services/evolution.service';
 import { whatsappConsentService } from '../services/whatsapp-consent.service';
+import { inboxChannelService } from '../services/inbox.service';
+import { conversationService } from '../services/conversation.service';
+import {
+  messageService,
+  MessageContentType,
+  CreateAttachmentInput,
+} from '../services/message.service';
 import { logger } from '../utils/logger';
 import { AuthenticatedRequest } from '../types';
 import { ForbiddenError, ErrorCodes } from '../utils/errors';
@@ -224,9 +231,326 @@ export class EvolutionController {
         }
       }
 
+      // ============================================
+      // T-022 Sprint 4 — dispatcher de eventos Evolution → motor de conversas
+      // ============================================
+      try {
+        await this.dispatchEvolutionEvent(accountId, event, req.body);
+      } catch (err: any) {
+        // Falha de dispatcher NÃO derruba o webhook — Evolution faz retry caso 5xx,
+        // o que pode causar reprocesso e duplicar dados se a idempotência tropeçar.
+        // Logamos e devolvemos 200 pra que o provider não fique martelando.
+        logger.error(
+          '[evolution-webhook] falha ao processar evento Evolution',
+          err instanceof Error ? err : undefined,
+          {
+            accountId,
+            event,
+            error: err?.message ?? String(err),
+          }
+        );
+      }
+
       res.status(200).json({ received: true });
     } catch (error) {
       next(error);
+    }
+  }
+
+  // ============================================
+  // Dispatcher Evolution → motor de conversas (T-022 Sprint 4)
+  // ============================================
+
+  /**
+   * Roteia eventos Evolution conhecidos para handlers especializados.
+   * Eventos não mapeados são apenas logados em debug e ignorados.
+   */
+  private async dispatchEvolutionEvent(
+    accountId: string,
+    event: string,
+    body: any
+  ): Promise<void> {
+    switch (event) {
+      case 'messages.upsert':
+        await this.processNewMessage(accountId, body);
+        return;
+      case 'connection.update':
+        await this.processConnectionState(accountId, body);
+        return;
+      case 'contacts.update':
+        await this.processContactUpdate(accountId, body);
+        return;
+      default:
+        logger.debug('[evolution-webhook] evento ignorado', { accountId, event });
+        return;
+    }
+  }
+
+  /**
+   * Extrai conteúdo + tipo a partir do objeto `message` do Evolution.
+   * Cobre os formatos mais comuns: text, extendedText, image, video, document, audio.
+   * Para mídias, monta também o array de attachments com a melhor URL/base64 disponível.
+   */
+  private extractMessagePayload(rawMessage: any): {
+    content: string | null;
+    contentType: MessageContentType;
+    attachments: CreateAttachmentInput[];
+  } {
+    const m = rawMessage || {};
+
+    // texto puro
+    if (typeof m.conversation === 'string' && m.conversation.length > 0) {
+      return { content: m.conversation, contentType: 'text', attachments: [] };
+    }
+    if (typeof m.extendedTextMessage?.text === 'string') {
+      return {
+        content: m.extendedTextMessage.text,
+        contentType: 'text',
+        attachments: [],
+      };
+    }
+
+    // mídia (image, video, document, audio)
+    const buildAttachment = (
+      fileType: CreateAttachmentInput['fileType'],
+      node: any
+    ): CreateAttachmentInput | null => {
+      if (!node || typeof node !== 'object') return null;
+      const url: string | undefined =
+        node.url || node.mediaUrl || node.directPath || node.downloadUrl;
+      if (!url) return null;
+      return {
+        fileType,
+        fileUrl: url,
+        fileName: node.fileName ?? null,
+        mimeType: node.mimetype ?? node.mimeType ?? null,
+        fileSize:
+          typeof node.fileLength === 'number'
+            ? node.fileLength
+            : typeof node.fileSize === 'number'
+              ? node.fileSize
+              : null,
+        thumbnailUrl: node.jpegThumbnail || node.thumbnailUrl || null,
+        duration: typeof node.seconds === 'number' ? node.seconds : null,
+      } as CreateAttachmentInput;
+    };
+
+    if (m.imageMessage) {
+      const att = buildAttachment('image', m.imageMessage);
+      return {
+        content: m.imageMessage.caption ?? null,
+        contentType: 'media',
+        attachments: att ? [att] : [],
+      };
+    }
+    if (m.videoMessage) {
+      const att = buildAttachment('video', m.videoMessage);
+      return {
+        content: m.videoMessage.caption ?? null,
+        contentType: 'media',
+        attachments: att ? [att] : [],
+      };
+    }
+    if (m.documentMessage) {
+      const att = buildAttachment('document', m.documentMessage);
+      return {
+        content: m.documentMessage.caption ?? m.documentMessage.fileName ?? null,
+        contentType: 'document',
+        attachments: att ? [att] : [],
+      };
+    }
+    if (m.audioMessage) {
+      const att = buildAttachment('audio', m.audioMessage);
+      return { content: null, contentType: 'audio', attachments: att ? [att] : [] };
+    }
+
+    return { content: null, contentType: 'text', attachments: [] };
+  }
+
+  /**
+   * Processa um evento `messages.upsert` da Evolution e cria a Message correspondente,
+   * abrindo/reabrindo a Conversation conforme necessário.
+   * Idempotente: se já existe Message com o mesmo externalId na conversa, faz skip.
+   */
+  private async processNewMessage(accountId: string, body: any): Promise<void> {
+    const data: any = body?.data ?? body ?? {};
+    const instance: string | undefined = body?.instance || body?.instanceName;
+    const remoteJid: string | undefined = data?.key?.remoteJid;
+    const messageId: string | undefined = data?.key?.id;
+    const fromMe = Boolean(data?.key?.fromMe);
+    const pushName: string | undefined = data?.pushName;
+
+    if (!instance) {
+      logger.warn('[evolution-webhook] messages.upsert sem instance — ignorando', {
+        accountId,
+        remoteJid,
+      });
+      return;
+    }
+    if (!remoteJid) {
+      logger.warn('[evolution-webhook] messages.upsert sem remoteJid — ignorando', {
+        accountId,
+        instance,
+      });
+      return;
+    }
+    if (!messageId) {
+      logger.warn('[evolution-webhook] messages.upsert sem key.id — ignorando', {
+        accountId,
+        instance,
+        remoteJid,
+      });
+      return;
+    }
+
+    // Roteamento: descobre o inbox WhatsApp configurado pra essa instância na conta.
+    const inbox = await inboxChannelService.listByEvolutionInstance(accountId, instance);
+    if (!inbox) {
+      logger.warn('[evolution-webhook] mensagem recebida em instance não configurada', {
+        accountId,
+        instance,
+        remoteJid,
+      });
+      return;
+    }
+
+    // Ignora mensagens em grupos/broadcasts por enquanto — só DMs (@s.whatsapp.net).
+    if (!remoteJid.endsWith('@s.whatsapp.net')) {
+      logger.debug('[evolution-webhook] remoteJid não-DM — ignorando', {
+        accountId,
+        remoteJid,
+      });
+      return;
+    }
+
+    const phone = remoteJid.split('@')[0];
+
+    // Cria/reabre conversa (cria contato implicitamente se não existir, via phone).
+    const conversation = await conversationService.findOrCreateForCustomer(
+      accountId,
+      inbox.id,
+      {
+        externalId: remoteJid,
+        contactPhone: phone,
+        contactName: !fromMe && pushName ? pushName : null,
+      }
+    );
+
+    // Idempotência: se já temos Message com este externalId nesta conversa, skip.
+    const existing = await prisma.message.findFirst({
+      where: { conversationId: conversation.id, externalId: messageId },
+      select: { id: true },
+    });
+    if (existing) {
+      logger.debug('[evolution-webhook] message externalId já existe — skip', {
+        accountId,
+        conversationId: conversation.id,
+        messageId,
+      });
+      return;
+    }
+
+    const { content, contentType, attachments } = this.extractMessagePayload(data?.message);
+
+    // Sem content e sem attachments → nada útil pra persistir (ex: reactions, status updates).
+    if ((!content || content.trim() === '') && attachments.length === 0) {
+      logger.debug('[evolution-webhook] message sem conteúdo nem mídia — skip', {
+        accountId,
+        conversationId: conversation.id,
+        messageId,
+      });
+      return;
+    }
+
+    await messageService.create(accountId, {
+      conversationId: conversation.id,
+      senderType: fromMe ? 'agent' : 'customer',
+      content: content ?? null,
+      contentType,
+      externalId: messageId,
+      attachments: attachments.length > 0 ? attachments : undefined,
+      metadata: {
+        source: 'evolution',
+        pushName: pushName ?? null,
+        remoteJid,
+        instance,
+      },
+    });
+
+    // TODO[T-022/sprint5]: emitir Socket.IO ('conversation:new_message') quando
+    // o gateway WS estiver disponível. Por ora, frontends polling ou consumers
+    // n8n recebem via webhookOutbound 'message.created' (disparado por messageService.create).
+
+    logger.info('[evolution-webhook] message persistida', {
+      accountId,
+      conversationId: conversation.id,
+      messageId,
+      senderType: fromMe ? 'agent' : 'customer',
+      contentType,
+    });
+  }
+
+  /**
+   * Processa `connection.update` — apenas log estruturado por ora.
+   * Futuro: atualizar `Inbox.active` ou expor status numa view de admin.
+   */
+  private async processConnectionState(accountId: string, body: any): Promise<void> {
+    const instance: string | undefined = body?.instance || body?.instanceName;
+    const state: string | undefined =
+      body?.data?.state || body?.data?.connection || body?.state;
+
+    logger.info('[evolution-webhook] connection.update', {
+      accountId,
+      instance,
+      state,
+    });
+
+    // TODO[T-022/sprint5]: marcar Inbox.active=false quando state==='close'/'logout'.
+    // Por enquanto só logamos — flag manual no admin continua sendo a fonte de verdade.
+  }
+
+  /**
+   * Processa `contacts.update` — atualiza nome do contato se o pushName/notify mudou.
+   * Matching por telefone dentro da conta (multi-tenant safe).
+   */
+  private async processContactUpdate(accountId: string, body: any): Promise<void> {
+    // Evolution pode mandar array ou objeto único em data
+    const rawList: any[] = Array.isArray(body?.data) ? body.data : body?.data ? [body.data] : [];
+    if (rawList.length === 0) {
+      logger.debug('[evolution-webhook] contacts.update sem data', { accountId });
+      return;
+    }
+
+    for (const item of rawList) {
+      const jid: string | undefined = item?.id || item?.remoteJid;
+      const name: string | undefined = item?.pushName || item?.notify || item?.name;
+      if (!jid || !jid.endsWith('@s.whatsapp.net') || !name) continue;
+
+      const phone = jid.split('@')[0];
+
+      const contact = await prisma.contact.findFirst({
+        where: { accountId, telefone: phone },
+        select: { id: true, nome: true },
+      });
+      if (!contact) {
+        logger.debug('[evolution-webhook] contacts.update — sem contato local', {
+          accountId,
+          phone,
+        });
+        continue;
+      }
+      if (contact.nome === name) continue;
+
+      await prisma.contact.update({
+        where: { id: contact.id },
+        data: { nome: name },
+      });
+
+      logger.info('[evolution-webhook] contato atualizado via contacts.update', {
+        accountId,
+        contactId: contact.id,
+        phone,
+      });
     }
   }
 }

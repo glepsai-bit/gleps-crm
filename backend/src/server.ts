@@ -1,3 +1,4 @@
+import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -9,9 +10,12 @@ import { emailService } from './services/email.service';
 import { whatsappCampaignService } from './services/whatsapp-campaign.service';
 import { whatsappRateLimitService } from './services/whatsapp-rate-limit.service';
 import { webhookOutboundService } from './services/webhook-outbound.service';
+import { slaService } from './services/sla.service';
+import { agentAvailabilityService } from './services/agent-availability.service';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import routes from './routes';
 import { logger } from './utils/logger';
+import { initSocket } from './socket';
 
 async function bootstrap() {
   // Connect to database
@@ -80,6 +84,33 @@ async function bootstrap() {
       } catch (err) { logger.error('Webhook retry cron error:', err); }
     }, WH_CRON_INTERVAL_MS);
     logger.info(`🔁 Webhook retry cron started (interval: ${WH_CRON_INTERVAL_MS / 1000}s)`);
+  }
+
+  // T-022 Sprint 4 — cron de checagem de breaches de SLA (1 min)
+  {
+    const SLA_CRON_INTERVAL_MS = 60 * 1000;
+    setInterval(async () => {
+      try {
+        await slaService.checkBreaches();
+      } catch (err) {
+        logger.error('SLA breach check cron error:', err);
+      }
+    }, SLA_CRON_INTERVAL_MS);
+    logger.info(`⏱️  SLA breach check cron started (interval: ${SLA_CRON_INTERVAL_MS / 1000}s)`);
+  }
+
+  // T-022 Sprint 4 — cron de "agente offline por inatividade" (1 min, 2min idle = offline)
+  {
+    const AGENT_OFFLINE_INTERVAL_MS = 60 * 1000;
+    const AGENT_IDLE_THRESHOLD_MS = 2 * 60 * 1000;
+    setInterval(async () => {
+      try {
+        await agentAvailabilityService.markOfflineAfterTimeout(AGENT_IDLE_THRESHOLD_MS);
+      } catch (err) {
+        logger.error('Agent offline timeout cron error:', err);
+      }
+    }, AGENT_OFFLINE_INTERVAL_MS);
+    logger.info(`👤 Agent offline timeout cron started (interval: ${AGENT_OFFLINE_INTERVAL_MS / 1000}s, idle threshold: ${AGENT_IDLE_THRESHOLD_MS / 1000}s)`);
   }
 
   const app = express();
@@ -214,8 +245,14 @@ async function bootstrap() {
   app.use(notFoundHandler);
   app.use(errorHandler);
 
+  // T-022 Sprint 4 — HTTP server + Socket.IO (chat interno em tempo real)
+  // Trocamos app.listen() por http.createServer(app) pra que o Socket.IO
+  // possa anexar no mesmo servidor e compartilhar a porta com o REST.
+  const httpServer = http.createServer(app);
+  initSocket(httpServer);
+
   // Start server
-  app.listen(env.PORT, () => {
+  httpServer.listen(env.PORT, () => {
     logger.info(`🚀 Server running on port ${env.PORT}`);
     logger.info(`📍 Environment: ${env.NODE_ENV}`);
     logger.info(`🔗 API URL: ${env.API_URL}`);
