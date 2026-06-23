@@ -4,7 +4,41 @@
 > Formato do card: `- [ID] Título — @papel — branch: <branch> — (notas)`
 > IDs sequenciais: T-001, T-002, ...
 
-## 📋 A Fazer
+## 🎯 T-022 FitPark — Variação cliente academia (branch `Variação-FitPark`)
+> Sistema autônomo; n8n é opcional. Todo disparo passa pelo CRM (regra de ouro).
+> Roadmap completo: [docs/fitpark/ROADMAP.md](../../docs/fitpark/ROADMAP.md)
+
+### Sprint 1 — Evolution + ApiKey infra — ✅ COMMITADO (b115f15)
+- [T-022.1.a] Schema Account.evolution* + model ApiKey + migration 0021 — @dev-principal — ✅
+- [T-022.1.b] Backend services (evolution, api-key, middleware) — @dev-principal — ✅
+- [T-022.1.c] Backend controllers/routes (evolution, api-key, account update) — @dev-principal — ✅
+- [T-022.1.d] Frontend super-admin (Evolution config, QR code, ApiKeys page) — @dev-principal — ✅
+- [T-022.1.e] QA: validar Sprint 1 end-to-end (curl + UI + testes vitest) — @qa — ✅ APROVADO COM RESSALVAS (2026-06-23, commit caa34a0)
+
+### Sprint 2 — Campanhas WhatsApp + cron + API REST (em paralelo @dev-principal + @frontend)
+- [T-022.2.a] Backend: `scheduledAt`/`source`/`triggerName`/`metadata` no DispatchBatch + migration 0022
+- [T-022.2.b] Backend: cron scheduler 5min para campanhas agendadas
+- [T-022.2.c] Backend: model + service + controller + routes WhatsappTemplate
+- [T-022.2.d] Backend: transport Evolution no prospecting.service
+- [T-022.2.e] Backend: API `POST /api/campaigns/send-single` + `send-batch`
+- [T-022.2.f] Backend: API `GET /api/campaigns` + `GET /:id` + `GET /:id/logs`
+- [T-022.2.g] Backend: API `GET /api/contatos?aniversario=&tag=&last_activity_before=`
+- [T-022.2.h] Frontend: form de agendamento no DispatchDialog
+- [T-022.2.i] Frontend: aba "Agendadas" no AdminExtracaoPage
+- [T-022.2.j] Frontend: CRUD WhatsappTemplate
+- [T-022.2.k] Frontend: Dashboard de campanha unificado (filtros source/trigger)
+
+### Sprint 3 — Webhook genérico + Compliance + Anti-ban (planejado)
+- Webhook OUTBOUND + INBOUND, `whatsapp_consents`, opt-out, rate-limit, página Integrações
+
+### Sprint 4-7 — Chat interno paridade Chatwoot total (planejado)
+Schema + endpoints + Socket.IO + UI completa + Teams/Departamentos + SLA + Custom Attrs + Migração
+
+### Sprint final — Multi-instância Evolution + Hardening (planejado)
+
+---
+
+## 📋 A Fazer (legacy fora do T-022)
 - [T-009] **Dev Principal: dev local não funciona como produção (login local quebrado)** — @dev-principal — **Sinalização do Front (não é da minha alçada resolver).** O usuário quer rodar local igual a produção e focar tudo em uma stack só, funcional. Observado: em produção/Docker o app usa Express, mas o `vite dev` local sobe em modo Supabase Cloud (o `.env` do front não tem `VITE_USE_BACKEND`), então não consigo logar no localhost com as credenciais de seed do Express. **Necessidade:** que o ambiente local funcione como o de prod (mesma tecnologia, login funcionando) — o caminho/arquitetura fica a seu critério. **Bloqueia:** a validação visual do dark mode pelo usuário, que só consegue logar localmente depois disto. Contexto no handoff [2026-06-14 dev local](handoff-log.md#2026-06-14-dev-local-prod). **UPDATE 2026-06-14:** o `.env` da raiz já tem `VITE_USE_BACKEND=true` e a stack local (Express :3000 + Postgres + Vite :8080) sobe → **login local funciona** e a validação do dark mode foi feita/mergeada. **Não bloqueia mais.** Resta só empacotar `npm run dev:stack` + `npm run qa:smoke:local` no package.json (rodar local = prod com um comando só).
 
 <!-- novas tarefas entram aqui -->

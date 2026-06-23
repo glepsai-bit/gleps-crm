@@ -10,6 +10,90 @@
 > - **Pendências/observações:** ...
 > ```
 
+## 2026-06-23 T-022 Sprint 1 QA — Evolution API + ApiKey infra (@qa → @dev-principal) {#2026-06-23-t022-sprint1-qa}
+
+### O que foi testado
+
+**Análise estática completa** dos arquivos do escopo (schema, migration, services, controllers, routes, UI):
+
+- `backend/prisma/schema.prisma` — campos `Account.evolution*` + model `ApiKey`
+- `backend/prisma/migrations/0021_add_evolution_and_api_key/migration.sql`
+- `backend/src/services/evolution.service.ts` (sendText, sendMedia, sendAudio, getStatus, getQrCode, disconnect)
+- `backend/src/services/api-key.service.ts` (generate, list, validate, revoke)
+- `backend/src/middlewares/apiKey.middleware.ts` (requireApiKey — Bearer + x-api-key)
+- `backend/src/controllers/evolution.controller.ts` + `evolution.routes.ts`
+- `backend/src/controllers/api-key.controller.ts` + `api-key.routes.ts`
+- `backend/src/controllers/account.controller.ts` + `backend/src/services/account.service.ts`
+- `backend/src/routes/index.ts`
+- `src/pages/super-admin/SuperAdminAccountDetailPage.tsx`
+- `src/pages/super-admin/SuperAdminApiKeysPage.tsx`
+- `src/services/api-keys.backend.service.ts`
+- `src/services/accounts.backend.service.ts`
+- `src/services/accounts.cloud.service.ts`
+- `src/App.tsx` (rota `/super-admin/accounts/:accountId/api-keys`)
+
+**Testes unitários:** 13 testes vitest para `api-key.service.ts` (generate, list, validate, revoke) — todos passando 13/13.
+
+**Bateria geral:**
+- `npx tsc -p tsconfig.app.json --noEmit` → ✅ exit 0
+- `backend npx tsc --noEmit` → ✅ exit 0
+- `npx vitest run` (frontend) → ✅ 36/36
+- `cd backend && npx vitest run` → ✅ 13/13
+- `npx vite build` → ✅ 3531 modules, build ok (aviso chunk size é pré-existente)
+
+**Testes de integração curl:** não executados (sem DB Postgres + Evolution rodando localmente). Relatado abaixo.
+
+---
+
+### Bugs encontrados
+
+#### BUG-1 (CRITICO — corrigido pelo QA)
+**Arquivo:** `src/pages/super-admin/SuperAdminAccountDetailPage.tsx` linha 328–334
+**Problema:** `handleGenerateQrCode` buscava o base64 do QR Code nas propriedades `response?.base64 ?? response?.qrcode ?? response?.qrCode ?? response?.data?.base64 ?? response?.data?.qrcode`. O backend Evolution Controller retorna `res.json({ data: result })` onde `result` é `QrCodeResult = { qrcodeBase64, code, raw }`. A propriedade real é `response.data.qrcodeBase64` — nunca testada na cadeia original. Resultado: o QR Code nunca exibia na UI.
+**Correção aplicada (commit caa34a0):** adicionou `response?.data?.qrcodeBase64` como primeiro candidato na cadeia.
+
+#### BUG-2 (BAIXA — reportar, não bloqueia)
+**Arquivo:** `src/services/accounts.backend.service.ts` linha 55–68 (`create` method)
+**Problema:** O método `create` não inclui os campos Evolution (`evolutionBaseUrl`, `evolutionApiKey`, `evolutionInstance`) no payload enviado ao backend. O `update` (linha 70+) inclui corretamente. Impacto na UI atual: nenhum (configuração Evolution só é feita via update na `SuperAdminAccountDetailPage`). Impacto se alguém chamar a API diretamente: campos Evolution perdidos no create.
+**Ação:** corrigir no próximo sprint antes de expor a criação de contas com Evolution via API REST.
+
+---
+
+### O que NÃO tem bug (validado):
+
+- **Multi-tenancy:** todos os endpoints de Evolution e ApiKeys exigem `accountId` no path e o controller faz `assertCanAccessAccount` com validação de role. `apiKeyService.list()` filtra por `accountId`. `apiKeyService.revoke()` usa `where: { id, accountId }` — sem vazamento.
+- **Vazamento de hash:** `apiKeyService.list()` usa `select` explícito que exclui `hashedKey`. O endpoint GET retorna apenas `{ id, name, prefix, scopes, lastUsedAt, revokedAt, createdAt }`. Confirmado por teste unitário.
+- **Middleware apiKey:** aceita `Authorization: Bearer <key>` e `x-api-key: <key>`. Lógica correta. Chave revogada → findFirst retorna null (`revokedAt: null` no where) → 401. Chave inexistente → 401. Testado via unitários.
+- **SHA-256 correto:** chave armazenada é `sha256(plaintextKey)`, não o texto plano. Confirmado por teste unitário.
+- **Prefixo:** primeiros 12 chars da plaintextKey (começa em `glk_`). Confirmado.
+- **Schema e migration:** `ApiKey` tem `@index([hashedKey])` e `@index([keyPrefix])` — queries de validação serão eficientes. FK com Cascade Delete. Correto.
+- **HMAC webhook Evolution:** endpoint `POST /api/evolution/webhook/:accountId` é público. Não tem validação HMAC. Está documentado como `TODO(sprint-futura)` no código e no ROADMAP. Risco aceitável para Sprint 1, **deve ser resolvido antes de produção real**.
+- **QrCode prefixo:** o `handleGenerateQrCode` na UI já faz `String(base64).replace(/^data:image\/png;base64,/, '')` antes de montar o `<img src>`. Correto — remove o prefixo de data URL se vier do backend.
+- **Rota App.tsx:** `/super-admin/accounts/:accountId/api-keys` com `requireSuperAdmin` — correto.
+- **Permissões Evolution routes:** `requireRole('super_admin', 'admin')` + `assertCanAccessAccount` no controller. Admin só acessa a própria conta. Correto.
+- **Fire-and-forget lastUsedAt:** race condition inofensiva. Se o update falhar, a key ainda é válida na próxima chamada. Comportamento correto para performance.
+- **`evolutionBaseUrl.replace(/\/$/, '')` no service:** trailing slash removido antes das chamadas. Correto.
+- **normalizeNumber:** remove não-dígitos. Funciona para `+55 (11) 99999-9999` → `5511999999999`. Correto.
+- **Dual data layer (VITE_USE_BACKEND):** `accounts.backend.service.ts` e `accounts.cloud.service.ts` ambos declaram os campos `evolution_*` no tipo `Account`. Backend service mapeia camelCase → snake_case corretamente. Cloud service tem os campos na interface. Coerentes.
+
+---
+
+### Pendências para @dev-principal
+
+1. **(BAIXA) BUG-2** — adicionar campos Evolution no `accountsBackendService.create()` em `src/services/accounts.backend.service.ts`
+2. **(MÉDIA — pré-produção)** Webhook `POST /api/evolution/webhook/:accountId` sem autenticação/HMAC. Qualquer um pode enviar eventos falsos. Implementar antes de expor o endpoint publicamente.
+3. **(BAIXA)** Teste de integração curl dos endpoints evolution e api-keys não realizado nesta rodada (sem DB + Evolution disponíveis). Sugestão: configurar ambiente de CI com Postgres para Sprint 2.
+
+---
+
+### Veredito geral: APROVADO COM RESSALVAS
+
+Sprint 1 está funcional e seguro para o escopo declarado. O único bug crítico (BUG-1, QR Code) foi corrigido por mim neste QA. O BUG-2 é baixa severidade e não bloqueia o uso atual. O webhook sem HMAC é risco conhecido e documentado — aceitável para Sprint 1, deve ser resolvido antes de expor em produção.
+
+**Commit QA:** `caa34a0` (branch `Variação-FitPark`)
+
+---
+
 ## 2026-06-14 — Dark Mode validado na UI + bateria verde → merge na main (@dev-principal → @usuário) {#2026-06-14-darkmode-merge-main}
 
 **Por instrução direta do usuário** (autorização de push na main), rodei a bateria de testes e, com tudo verde, fiz o merge do dark mode na `main` para deploy. O bloqueio T-009 deixou de valer na prática: o `.env` da raiz já tem `VITE_USE_BACKEND=true` e a stack local (Express :3000 + Postgres + Vite :8080) sobe — **login local funciona**, o que destravou a validação visual.
