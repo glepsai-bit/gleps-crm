@@ -47,6 +47,8 @@ import AdminInsightsPage from "./pages/admin/AdminInsightsPage";
 import AdminExtracaoPage from "./pages/admin/AdminExtracaoPage";
 import AdminEmailsPage from "./pages/admin/AdminEmailsPage";
 import AdminWhatsappTemplatesPage from "./pages/admin/AdminWhatsappTemplatesPage";
+import AdminIntegracoesPage from "./pages/admin/AdminIntegracoesPage";
+import AdminOptOutsPage from "./pages/admin/AdminOptOutsPage";
 
 const queryClient = new QueryClient();
 
@@ -102,6 +104,8 @@ const App = () => (
             <Route path="/admin/prospeccao" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminExtracaoPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/emails" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminEmailsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/whatsapp-templates" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminWhatsappTemplatesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            <Route path="/admin/integracoes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIntegracoesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            <Route path="/admin/opt-outs" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminOptOutsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             
             {/* Agent Routes */}
             <Route path="/agent" element={<ProtectedRoute allowedRoles={['agent', 'admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminKanbanPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />

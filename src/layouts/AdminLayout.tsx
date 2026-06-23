@@ -25,7 +25,6 @@ import {
   ArrowLeftRight,
   Kanban,
   DollarSign,
-  
   Wallet,
   Package,
   Calendar,
@@ -33,6 +32,8 @@ import {
   Crosshair,
   Mail,
   MessageSquare,
+  Webhook,
+  Ban,
 } from 'lucide-react';
 import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -53,6 +54,8 @@ const adminNavItems = [
   { title: 'Prospecção', href: '/admin/prospeccao', icon: Crosshair },
   { title: 'E-mails', href: '/admin/emails', icon: Mail },
   { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },
+  { title: 'Integrações', href: '/admin/integracoes', icon: Webhook },
+  { title: 'Opt-outs WA', href: '/admin/opt-outs', icon: Ban },
 ];
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
