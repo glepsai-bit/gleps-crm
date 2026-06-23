@@ -10,7 +10,7 @@
  *   POST   /api/integrations/inbound   body: CreateInboundInput
  *   DELETE /api/integrations/inbound/:slug
  *
- * Handlers disponíveis: contact_upsert | tag_apply | campaign_trigger
+ * Handlers disponíveis: contact_upsert | tag_apply | campaign_trigger | pacto_sync
  */
 
 import { apiClient } from '@/api/client';
@@ -19,7 +19,11 @@ import { apiClient } from '@/api/client';
 // Tipos públicos
 // ---------------------------------------------------------------------------
 
-export type InboundHandler = 'contact_upsert' | 'tag_apply' | 'campaign_trigger';
+export type InboundHandler =
+  | 'contact_upsert'
+  | 'tag_apply'
+  | 'campaign_trigger'
+  | 'pacto_sync';
 
 export const INBOUND_HANDLERS: { value: InboundHandler; label: string; descricao: string }[] = [
   {
@@ -36,6 +40,12 @@ export const INBOUND_HANDLERS: { value: InboundHandler; label: string; descricao
     value: 'campaign_trigger',
     label: 'Disparar campanha',
     descricao: 'Enfileira o contato em uma campanha de WhatsApp ou e-mail.',
+  },
+  {
+    value: 'pacto_sync',
+    label: 'Sincronizar com Pacto (FitPark)',
+    descricao:
+      'Recebe eventos do sistema Pacto (alunos, check-ins, contratos) via n8n e atualiza contatos e tags do CRM automaticamente.',
   },
 ];
 

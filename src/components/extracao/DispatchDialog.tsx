@@ -13,6 +13,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Plus, Trash2, Loader2, Send, Calendar } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { listTemplates } from '@/services/whatsapp-templates.backend.service';
+import { whatsappConsentsBackendService } from '@/services/whatsapp-consents.backend.service';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
@@ -85,10 +86,9 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
   }, [open, accountId]);
 
   // BUG-022 — Compliance/opt-out check.
-  // Faz uma chamada otimista a /api/whatsapp-consents/check-batch ao abrir o dialog.
-  // TODO(backend): endpoint /api/whatsapp-consents/check-batch ainda não existe.
-  // Quando faltando (404 / erro de rede), tratamos gracefully com optOutCount = 0
-  // para não bloquear o disparo.
+  // Faz uma chamada a POST /api/whatsapp-consents/check-batch ao abrir o dialog.
+  // O service trata erros internamente (graceful degradation com optOutCount=0)
+  // para não bloquear o disparo se o backend estiver indisponível.
   useEffect(() => {
     if (!open) return;
     if (!useBackend) {
@@ -104,24 +104,9 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
     const phones = leads.map((l) => l.telefone).filter(Boolean);
 
     (async () => {
-      try {
-        const resp = await apiClient.post<unknown>(
-          '/api/whatsapp-consents/check-batch',
-          { phones }
-        );
-        if (cancelled) return;
-        const data = (resp as { data?: unknown }).data ?? resp;
-        const count =
-          (data as { optOutCount?: number })?.optOutCount ??
-          (data as { count?: number })?.count ??
-          (Array.isArray((data as { optedOut?: unknown[] })?.optedOut)
-            ? (data as { optedOut: unknown[] }).optedOut.length
-            : 0);
-        setOptOutCount(Number(count) || 0);
-      } catch {
-        // 404 ou qualquer erro: ignora e segue com count=0.
-        if (!cancelled) setOptOutCount(0);
-      }
+      const result = await whatsappConsentsBackendService.checkBatch(phones);
+      if (cancelled) return;
+      setOptOutCount(result.optOutCount);
     })();
 
     return () => {

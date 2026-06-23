@@ -30,6 +30,12 @@ const exportQuerySchema = z.object({
   toDate: z.string().optional(),
 });
 
+const checkBatchBodySchema = z
+  .object({
+    phones: z.array(z.string()).min(1).max(5000),
+  })
+  .strict();
+
 // ============================================
 // Helpers
 // ============================================
@@ -206,6 +212,30 @@ export class WhatsappConsentController {
       });
 
       res.status(201).json({ data: record });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/whatsapp-consents/check-batch
+   * Body: { phones: string[] }  (min 1, max 5000)
+   *
+   * Verifica, em massa, quais dos telefones recebidos estão com opt-out ativo
+   * para a conta autenticada. Usado pelo frontend (ComplianceWarning no
+   * DispatchDialog) antes de iniciar um disparo — não tem efeito colateral.
+   */
+  async checkBatch(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const accountId = getAccountId(req);
+      const body = checkBatchBodySchema.parse(req.body ?? {});
+
+      const result = await whatsappConsentService.checkBatch(
+        accountId,
+        body.phones
+      );
+
+      res.json({ data: result });
     } catch (error) {
       next(error);
     }

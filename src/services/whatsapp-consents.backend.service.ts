@@ -14,6 +14,7 @@
  */
 
 import { apiClient } from '@/api/client';
+import { API_ENDPOINTS } from '@/api/endpoints';
 
 // ---------------------------------------------------------------------------
 // Tipos públicos
@@ -32,6 +33,12 @@ export interface WhatsappConsent {
 }
 
 export type FiltroConsent = 'last7d' | 'last30d' | 'all';
+
+export interface CheckBatchResult {
+  total: number;
+  optOutCount: number;
+  optedOutPhones: string[];
+}
 
 // ---------------------------------------------------------------------------
 // Helpers internos
@@ -130,6 +137,47 @@ class WhatsappConsentsBackendService {
       `/api/whatsapp-consents/${id}/opt-out`,
       motivo ? { motivo } : undefined
     );
+  }
+
+  /**
+   * Verifica em lote quais telefones de uma lista estão com opt-out ativo.
+   *
+   * Usado pelo `DispatchDialog` (ComplianceWarning) para mostrar quantos
+   * contatos do lote serão filtrados antes do disparo.
+   *
+   * Em caso de erro de rede / backend indisponível, retorna o shape padrão
+   * com `optOutCount = 0` (graceful degradation — não bloqueia o disparo).
+   */
+  async checkBatch(phones: string[]): Promise<CheckBatchResult> {
+    const total = Array.isArray(phones) ? phones.length : 0;
+    const fallback: CheckBatchResult = {
+      total,
+      optOutCount: 0,
+      optedOutPhones: [],
+    };
+
+    if (total === 0) return fallback;
+
+    try {
+      const resp = await apiClient.post<unknown>(
+        API_ENDPOINTS.WHATSAPP_CONSENTS.CHECK_BATCH,
+        { phones }
+      );
+      const data = unwrap<Partial<CheckBatchResult>>(resp);
+
+      // Defensivo: backend pode retornar campos ausentes/diferentes; normaliza
+      // mantendo o `total` enviado pelo cliente (não-zero) caso o backend
+      // omita.
+      return {
+        total: Number(data?.total ?? total) || total,
+        optOutCount: Number(data?.optOutCount ?? 0) || 0,
+        optedOutPhones: Array.isArray(data?.optedOutPhones)
+          ? (data!.optedOutPhones as string[])
+          : [],
+      };
+    } catch {
+      return fallback;
+    }
   }
 
   /**

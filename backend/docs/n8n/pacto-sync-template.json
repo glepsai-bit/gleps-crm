@@ -1,0 +1,440 @@
+{
+  "name": "GLEPS CRM — FitPark / Pacto Sync (T-022)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## FitPark — Sincronização Pacto → GLEPS CRM\n\nEste fluxo lê dados do sistema Pacto da academia e envia eventos normalizados para o webhook `pacto_sync` do GLEPS CRM.\n\n### Variáveis obrigatórias (Credentials/Variables n8n)\n- `GLEPS_ACCOUNT_ID` — UUID da conta no CRM\n- `GLEPS_WEBHOOK_SLUG` — slug configurado em /admin/integracoes (ex: `pacto-fitpark`)\n- `GLEPS_WEBHOOK_SECRET` — secret HMAC configurado junto à integração\n- `GLEPS_BASE_URL` — base do backend (ex: `https://crm.fitpark.com.br/api`)\n- `PACTO_BASE_URL` — base da API do Pacto\n- `PACTO_TOKEN` — token Bearer do Pacto\n\n### Eventos emitidos\n1. `student.created` / `student.updated` — upsert do contato\n2. `student.churned` — aplica tag `churn`\n3. `checkin.created` — aplica `frequente`, remove `frio`/`churn`\n4. `contract.expiring` — aplica `renovacao-{dias}d`\n\n### Segurança\n- Header `X-Webhook-Timestamp` em epoch ms\n- Header `X-Webhook-Signature` = HMAC-SHA256(secret, `${ts}.${rawBody}`) hex\n- Janela aceita: ±5 minutos\n",
+        "height": 480,
+        "width": 520
+      },
+      "id": "note-overview",
+      "name": "README",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-160, -240]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24,
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "schedule-daily-9",
+      "name": "Schedule 9h diário",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [400, 0]
+    },
+    {
+      "parameters": {
+        "content": "### 1) Alunos ativos\n`GET {{PACTO_BASE_URL}}/alunos?status=ativo`\n\nResposta esperada (array):\n```\n[{ nome, telefone, email, matricula, plano, dataNascimento, status }]\n```",
+        "height": 220,
+        "width": 320
+      },
+      "id": "note-step-1",
+      "name": "Note step 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [600, -240]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.PACTO_BASE_URL}}/alunos?status=ativo",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{$env.PACTO_TOKEN}}" },
+            { "name": "Accept", "value": "application/json" }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "pacto-alunos-ativos",
+      "name": "Pacto: alunos ativos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 0]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "split-alunos",
+      "name": "Split alunos",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [940, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Monta o payload pacto_sync.\n// Decide entre student.created e student.updated com base em flag isNew\n// (se o Pacto não fornecer, use sempre 'student.updated' — o handler é\n// idempotente: cria se não existir, atualiza se existir).\nconst aluno = $input.item.json;\nconst event = aluno.isNew ? 'student.created' : 'student.updated';\nreturn [{ json: {\n  event,\n  data: {\n    nome: aluno.nome,\n    telefone: aluno.telefone,\n    email: aluno.email,\n    matricula: aluno.matricula,\n    plano: aluno.plano,\n    dataNascimento: aluno.dataNascimento,\n    status: aluno.status,\n  },\n} }];\n"
+      },
+      "id": "map-aluno-payload",
+      "name": "Map → payload student",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 0]
+    },
+    {
+      "parameters": {
+        "content": "### 2) Assinatura HMAC + envio\nGera `X-Webhook-Timestamp` e `X-Webhook-Signature` antes do POST.\nServidor exige janela ±5min e assinatura sobre `${ts}.${rawBody}`.",
+        "height": 200,
+        "width": 320
+      },
+      "id": "note-step-2",
+      "name": "Note step 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1420, -240]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.GLEPS_WEBHOOK_SECRET;\nif (!secret) throw new Error('GLEPS_WEBHOOK_SECRET ausente');\n\nconst body = JSON.stringify($json);\nconst ts = String(Date.now());\nconst sig = crypto.createHmac('sha256', secret).update(ts).update('.').update(body).digest('hex');\n\nreturn [{ json: { body, ts, sig, payload: $json } }];\n"
+      },
+      "id": "hmac-sign",
+      "name": "HMAC sign",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.GLEPS_BASE_URL}}/integrations/inbound-receive/{{$env.GLEPS_ACCOUNT_ID}}/{{$env.GLEPS_WEBHOOK_SLUG}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Webhook-Timestamp", "value": "={{$json.ts}}" },
+            { "name": "X-Webhook-Signature", "value": "={{$json.sig}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "jsonBody": "={{$json.body}}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "post-gleps-upsert",
+      "name": "POST GLEPS (student upsert)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 0]
+    },
+    {
+      "parameters": {
+        "content": "### 3) Check-ins do dia\n`GET {{PACTO_BASE_URL}}/checkins?date=today`\nResposta esperada: `[{ telefone, matricula, checkinAt }]`",
+        "height": 200,
+        "width": 320
+      },
+      "id": "note-step-3",
+      "name": "Note step 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [600, 320]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.PACTO_BASE_URL}}/checkins?date=today",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{$env.PACTO_TOKEN}}" }
+          ]
+        }
+      },
+      "id": "pacto-checkins",
+      "name": "Pacto: checkins do dia",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 560]
+    },
+    {
+      "parameters": { "fieldToSplitOut": "data", "options": {} },
+      "id": "split-checkins",
+      "name": "Split checkins",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [940, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.item.json;\nreturn [{ json: {\n  event: 'checkin.created',\n  data: { telefone: c.telefone, matricula: c.matricula, checkinAt: c.checkinAt },\n} }];\n"
+      },
+      "id": "map-checkin",
+      "name": "Map → payload checkin",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.GLEPS_WEBHOOK_SECRET;\nconst body = JSON.stringify($json);\nconst ts = String(Date.now());\nconst sig = crypto.createHmac('sha256', secret).update(ts).update('.').update(body).digest('hex');\nreturn [{ json: { body, ts, sig } }];\n"
+      },
+      "id": "hmac-sign-checkin",
+      "name": "HMAC sign (checkin)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.GLEPS_BASE_URL}}/integrations/inbound-receive/{{$env.GLEPS_ACCOUNT_ID}}/{{$env.GLEPS_WEBHOOK_SLUG}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Webhook-Timestamp", "value": "={{$json.ts}}" },
+            { "name": "X-Webhook-Signature", "value": "={{$json.sig}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "jsonBody": "={{$json.body}}"
+      },
+      "id": "post-gleps-checkin",
+      "name": "POST GLEPS (checkin)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 560]
+    },
+    {
+      "parameters": {
+        "content": "### 4) Contratos expirando (7d, 30d)\nVarra diariamente alunos com `daysUntilExpiry` em {7, 30}.\nGera tag `renovacao-7d` / `renovacao-30d` que dispara cadência de retenção.",
+        "height": 200,
+        "width": 320
+      },
+      "id": "note-step-4",
+      "name": "Note step 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [600, 860]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.PACTO_BASE_URL}}/contratos?expiringInDays=7,30",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{$env.PACTO_TOKEN}}" }
+          ]
+        }
+      },
+      "id": "pacto-contratos",
+      "name": "Pacto: contratos expirando",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 1100]
+    },
+    {
+      "parameters": { "fieldToSplitOut": "data", "options": {} },
+      "id": "split-contratos",
+      "name": "Split contratos",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [940, 1100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.item.json;\nreturn [{ json: {\n  event: 'contract.expiring',\n  data: {\n    telefone: c.telefone,\n    matricula: c.matricula,\n    daysUntilExpiry: c.daysUntilExpiry,\n  },\n} }];\n"
+      },
+      "id": "map-contrato",
+      "name": "Map → payload contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 1100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.GLEPS_WEBHOOK_SECRET;\nconst body = JSON.stringify($json);\nconst ts = String(Date.now());\nconst sig = crypto.createHmac('sha256', secret).update(ts).update('.').update(body).digest('hex');\nreturn [{ json: { body, ts, sig } }];\n"
+      },
+      "id": "hmac-sign-contrato",
+      "name": "HMAC sign (contrato)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 1100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.GLEPS_BASE_URL}}/integrations/inbound-receive/{{$env.GLEPS_ACCOUNT_ID}}/{{$env.GLEPS_WEBHOOK_SLUG}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Webhook-Timestamp", "value": "={{$json.ts}}" },
+            { "name": "X-Webhook-Signature", "value": "={{$json.sig}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "jsonBody": "={{$json.body}}"
+      },
+      "id": "post-gleps-contrato",
+      "name": "POST GLEPS (contract.expiring)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 1100]
+    },
+    {
+      "parameters": {
+        "content": "### 5) Churn (cancelamentos)\nDispare via webhook do Pacto (preferível) OU varra diariamente alunos cuja `status === 'cancelado'` desde a última execução. Aqui usamos o batch diário.",
+        "height": 200,
+        "width": 320
+      },
+      "id": "note-step-5",
+      "name": "Note step 5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [600, 1400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.PACTO_BASE_URL}}/alunos?status=cancelado&since=yesterday",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{$env.PACTO_TOKEN}}" }
+          ]
+        }
+      },
+      "id": "pacto-churn",
+      "name": "Pacto: cancelamentos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 1640]
+    },
+    {
+      "parameters": { "fieldToSplitOut": "data", "options": {} },
+      "id": "split-churn",
+      "name": "Split cancelamentos",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [940, 1640]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.item.json;\nreturn [{ json: {\n  event: 'student.churned',\n  data: { telefone: c.telefone, matricula: c.matricula },\n} }];\n"
+      },
+      "id": "map-churn",
+      "name": "Map → payload churn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 1640]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.GLEPS_WEBHOOK_SECRET;\nconst body = JSON.stringify($json);\nconst ts = String(Date.now());\nconst sig = crypto.createHmac('sha256', secret).update(ts).update('.').update(body).digest('hex');\nreturn [{ json: { body, ts, sig } }];\n"
+      },
+      "id": "hmac-sign-churn",
+      "name": "HMAC sign (churn)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 1640]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.GLEPS_BASE_URL}}/integrations/inbound-receive/{{$env.GLEPS_ACCOUNT_ID}}/{{$env.GLEPS_WEBHOOK_SLUG}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Webhook-Timestamp", "value": "={{$json.ts}}" },
+            { "name": "X-Webhook-Signature", "value": "={{$json.sig}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "jsonBody": "={{$json.body}}"
+      },
+      "id": "post-gleps-churn",
+      "name": "POST GLEPS (student.churned)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 1640]
+    }
+  ],
+  "connections": {
+    "Schedule 9h diário": {
+      "main": [
+        [
+          { "node": "Pacto: alunos ativos", "type": "main", "index": 0 },
+          { "node": "Pacto: checkins do dia", "type": "main", "index": 0 },
+          { "node": "Pacto: contratos expirando", "type": "main", "index": 0 },
+          { "node": "Pacto: cancelamentos", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Pacto: alunos ativos": {
+      "main": [[{ "node": "Split alunos", "type": "main", "index": 0 }]]
+    },
+    "Split alunos": {
+      "main": [[{ "node": "Map → payload student", "type": "main", "index": 0 }]]
+    },
+    "Map → payload student": {
+      "main": [[{ "node": "HMAC sign", "type": "main", "index": 0 }]]
+    },
+    "HMAC sign": {
+      "main": [[{ "node": "POST GLEPS (student upsert)", "type": "main", "index": 0 }]]
+    },
+    "Pacto: checkins do dia": {
+      "main": [[{ "node": "Split checkins", "type": "main", "index": 0 }]]
+    },
+    "Split checkins": {
+      "main": [[{ "node": "Map → payload checkin", "type": "main", "index": 0 }]]
+    },
+    "Map → payload checkin": {
+      "main": [[{ "node": "HMAC sign (checkin)", "type": "main", "index": 0 }]]
+    },
+    "HMAC sign (checkin)": {
+      "main": [[{ "node": "POST GLEPS (checkin)", "type": "main", "index": 0 }]]
+    },
+    "Pacto: contratos expirando": {
+      "main": [[{ "node": "Split contratos", "type": "main", "index": 0 }]]
+    },
+    "Split contratos": {
+      "main": [[{ "node": "Map → payload contract", "type": "main", "index": 0 }]]
+    },
+    "Map → payload contract": {
+      "main": [[{ "node": "HMAC sign (contrato)", "type": "main", "index": 0 }]]
+    },
+    "HMAC sign (contrato)": {
+      "main": [[{ "node": "POST GLEPS (contract.expiring)", "type": "main", "index": 0 }]]
+    },
+    "Pacto: cancelamentos": {
+      "main": [[{ "node": "Split cancelamentos", "type": "main", "index": 0 }]]
+    },
+    "Split cancelamentos": {
+      "main": [[{ "node": "Map → payload churn", "type": "main", "index": 0 }]]
+    },
+    "Map → payload churn": {
+      "main": [[{ "node": "HMAC sign (churn)", "type": "main", "index": 0 }]]
+    },
+    "HMAC sign (churn)": {
+      "main": [[{ "node": "POST GLEPS (student.churned)", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo"
+  },
+  "tags": [
+    { "name": "fitpark" },
+    { "name": "gleps-crm" },
+    { "name": "pacto" }
+  ]
+}

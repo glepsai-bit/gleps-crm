@@ -16,6 +16,13 @@ router.get('/export', (req, res, next) =>
   whatsappConsentController.exportCsv(req, res, next)
 );
 
+// POST /api/whatsapp-consents/check-batch
+// Declarado ANTES das rotas dinâmicas (/:contactIdOrPhone/...) para evitar
+// que "check-batch" seja interpretado como um contactIdOrPhone.
+router.post('/check-batch', (req, res, next) =>
+  whatsappConsentController.checkBatch(req, res, next)
+);
+
 // GET /api/whatsapp-consents?status=opted_out&search=&fromDate=&toDate=
 router.get('/', (req, res, next) =>
   whatsappConsentController.listOptedOut(req, res, next)

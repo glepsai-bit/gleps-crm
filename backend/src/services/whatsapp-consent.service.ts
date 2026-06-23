@@ -378,6 +378,67 @@ class WhatsappConsentService {
   }
 
   // ============================================
+  // checkBatch
+  // ============================================
+
+  /**
+   * Verifica em lote quais telefones de uma lista estão com `status='opted_out'`.
+   *
+   * Usado pelo frontend (ComplianceWarning no DispatchDialog) para alertar o
+   * operador, ANTES do disparo, sobre quantos contatos do lote precisarão ser
+   * removidos por conta de opt-out. Não realiza nenhum efeito colateral —
+   * apenas faz lookup em massa por `(accountId, phone)`.
+   *
+   * Cada telefone é normalizado (somente dígitos) antes do `IN (...)`, o que
+   * garante match correto independente da formatação enviada pelo cliente
+   * (ex.: "+55 (11) 98765-4321" → "5511987654321"). Telefones que normalizam
+   * para string vazia são descartados.
+   *
+   * Retorna:
+   *   - `total`: tamanho do array original recebido (inclui inválidos);
+   *   - `optOutCount`: quantos telefones únicos foram encontrados como opted_out;
+   *   - `optedOutPhones`: lista de telefones (já normalizados) com opt-out ativo.
+   */
+  async checkBatch(
+    accountId: string,
+    phones: string[]
+  ): Promise<{ total: number; optOutCount: number; optedOutPhones: string[] }> {
+    const total = Array.isArray(phones) ? phones.length : 0;
+
+    if (!accountId || total === 0) {
+      return { total, optOutCount: 0, optedOutPhones: [] };
+    }
+
+    // Normaliza, remove vazios e deduplica para evitar IN (...) inflado.
+    const normalizedSet = new Set<string>();
+    for (const raw of phones) {
+      const normalized = this.normalizePhone(String(raw ?? ''));
+      if (normalized) normalizedSet.add(normalized);
+    }
+
+    if (normalizedSet.size === 0) {
+      return { total, optOutCount: 0, optedOutPhones: [] };
+    }
+
+    const records = await prisma.whatsappConsent.findMany({
+      where: {
+        accountId,
+        status: 'opted_out',
+        phone: { in: Array.from(normalizedSet) },
+      },
+      select: { phone: true },
+    });
+
+    const optedOutPhones = records.map((r) => r.phone);
+
+    return {
+      total,
+      optOutCount: optedOutPhones.length,
+      optedOutPhones,
+    };
+  }
+
+  // ============================================
   // listOptedOut
   // ============================================
 

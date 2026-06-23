@@ -294,6 +294,7 @@ export const API_ENDPOINTS = {
     OPT_IN: (contactId: string) => `/api/whatsapp-consents/${contactId}/opt-in`,
     OPT_OUT: (contactId: string) => `/api/whatsapp-consents/${contactId}/opt-out`,
     EXPORT: '/api/whatsapp-consents/export',
+    CHECK_BATCH: '/api/whatsapp-consents/check-batch',
   },
 } as const;
 

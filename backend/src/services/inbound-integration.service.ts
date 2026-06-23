@@ -16,12 +16,17 @@ import { logger } from '../utils/logger';
 // Types
 // ============================================
 
-export type InboundHandler = 'contact_upsert' | 'tag_apply' | 'campaign_trigger';
+export type InboundHandler =
+  | 'contact_upsert'
+  | 'tag_apply'
+  | 'campaign_trigger'
+  | 'pacto_sync';
 
 const ALLOWED_HANDLERS: InboundHandler[] = [
   'contact_upsert',
   'tag_apply',
   'campaign_trigger',
+  'pacto_sync',
 ];
 
 const SLUG_REGEX = /^[a-z0-9-]{2,80}$/;
@@ -66,6 +71,41 @@ interface CampaignTriggerPayload {
   delaySeconds?: number;
   scheduledAt?: string | Date;
   metadata?: Record<string, any>;
+}
+
+// FitPark / Pacto integration (T-022)
+export type PactoEvent =
+  | 'student.created'
+  | 'student.updated'
+  | 'student.churned'
+  | 'checkin.created'
+  | 'contract.expiring';
+
+interface PactoStudentData {
+  nome?: string;
+  telefone?: string;
+  email?: string;
+  matricula?: string;
+  plano?: string;
+  dataNascimento?: string;
+  status?: string;
+}
+
+interface PactoCheckinData {
+  telefone?: string;
+  matricula?: string;
+  checkinAt?: string;
+}
+
+interface PactoContractExpiringData {
+  telefone?: string;
+  matricula?: string;
+  daysUntilExpiry?: number;
+}
+
+interface PactoSyncPayload {
+  event: PactoEvent | string;
+  data: PactoStudentData & PactoCheckinData & PactoContractExpiringData;
 }
 
 // ============================================
@@ -333,6 +373,9 @@ class InboundIntegrationService {
             accountId,
             body as CampaignTriggerPayload
           );
+          break;
+        case 'pacto_sync':
+          result = await this.handlePactoSync(accountId, body as PactoSyncPayload);
           break;
         default:
           throw new ValidationError(
@@ -604,6 +647,242 @@ class InboundIntegrationService {
     });
 
     return result;
+  }
+
+  // ----------------------------------------
+  // FitPark / Pacto (T-022)
+  // ----------------------------------------
+
+  /**
+   * Handler dedicado pra integração com sistema Pacto (academias FitPark).
+   *
+   * O n8n consome dados do Pacto (alunos, check-ins, contratos expirando) e
+   * normaliza pra um payload único enviado a este webhook:
+   *
+   *   { event: 'student.created' | 'student.updated' | 'student.churned'
+   *          | 'checkin.created' | 'contract.expiring',
+   *     data: { ... } }
+   *
+   * Cada event gera tags automáticas no CRM para ser usadas em cadências:
+   *   - student.churned         → tag 'churn'
+   *   - checkin.created         → tag 'frequente' (+ remove 'frio' e 'churn')
+   *   - contract.expiring       → tag 'renovacao-{dias}d'
+   *   - student.created/updated → contact upsert (origem=integration)
+   *
+   * NOTE: o schema atual não tem coluna 'matricula' nem 'customAttributes' em
+   * Contact, então o lookup pra churned/checkin/expiring usa telefone como
+   * identificador primário. Matrícula é aceita no payload (logada), pra ficar
+   * pronta quando o schema evoluir.
+   */
+  private async handlePactoSync(
+    accountId: string,
+    payload: PactoSyncPayload
+  ): Promise<{ event: string; action: string; contactId?: string; details?: any }> {
+    if (!payload || typeof payload !== 'object') {
+      throw new ValidationError('pacto_sync requer { event, data }');
+    }
+    const event = payload.event;
+    const data = payload.data ?? ({} as PactoSyncPayload['data']);
+
+    if (!event || typeof event !== 'string') {
+      throw new ValidationError('pacto_sync requer campo "event" string');
+    }
+    if (!data || typeof data !== 'object') {
+      throw new ValidationError('pacto_sync requer campo "data" objeto');
+    }
+
+    switch (event) {
+      case 'student.created':
+      case 'student.updated': {
+        const telefone = normalizePhone(data.telefone);
+        const email = normalizeEmail(data.email);
+        if (!telefone && !email) {
+          throw new ValidationError(
+            `pacto_sync ${event} requer telefone ou email em data`
+          );
+        }
+
+        // Reusa o handler base — herda lookup priorizado por telefone,
+        // detecção de conflito de identidade e disparo de lead.created/updated.
+        const upsertResult = await this.handleContactUpsert(accountId, {
+          nome: data.nome,
+          telefone,
+          email,
+          customAttributes: {
+            matricula: data.matricula,
+            plano: data.plano,
+            dataNascimento: data.dataNascimento,
+            status: data.status,
+            origem_pacto: true,
+          },
+        });
+
+        logger.info('[inbound-integration] pacto_sync handled', {
+          accountId,
+          event,
+          action: upsertResult.created ? 'created' : 'updated',
+          contactId: upsertResult.contactId,
+          matricula: data.matricula,
+        });
+
+        return {
+          event,
+          action: upsertResult.created ? 'contact_created' : 'contact_updated',
+          contactId: upsertResult.contactId,
+          details: {
+            created: upsertResult.created,
+            matricula: data.matricula,
+            plano: data.plano,
+          },
+        };
+      }
+
+      case 'student.churned': {
+        const contactId = await this.resolvePactoContactId(accountId, data);
+        if (!contactId) {
+          throw new NotFoundError('Contato Pacto (por telefone ou matrícula)');
+        }
+        const tagApply = await this.handleTagApply(accountId, {
+          contactId,
+          tagName: 'churn',
+          action: 'add',
+        });
+
+        logger.info('[inbound-integration] pacto_sync handled', {
+          accountId,
+          event,
+          action: 'tag_churn_added',
+          contactId,
+        });
+
+        return {
+          event,
+          action: 'tag_churn_added',
+          contactId,
+          details: tagApply,
+        };
+      }
+
+      case 'checkin.created': {
+        const contactId = await this.resolvePactoContactId(accountId, data);
+        if (!contactId) {
+          throw new NotFoundError('Contato Pacto (por telefone ou matrícula)');
+        }
+
+        // Aplica 'frequente' e tenta limpar 'frio' / 'churn' (best-effort:
+        // se a tag não existir/já não estiver aplicada, segue o jogo — não
+        // queremos um checkin falhar porque o aluno nunca esteve marcado
+        // como 'frio').
+        await this.handleTagApply(accountId, {
+          contactId,
+          tagName: 'frequente',
+          action: 'add',
+        });
+
+        const removed: string[] = [];
+        for (const tagName of ['frio', 'churn']) {
+          try {
+            await this.handleTagApply(accountId, {
+              contactId,
+              tagName,
+              action: 'remove',
+            });
+            removed.push(tagName);
+          } catch (err: any) {
+            // Tag inexistente ou não aplicada — ignorar.
+            logger.debug?.('[inbound-integration] pacto checkin remove tag skipped', {
+              accountId,
+              contactId,
+              tagName,
+              error: err?.message ?? String(err),
+            });
+          }
+        }
+
+        logger.info('[inbound-integration] pacto_sync handled', {
+          accountId,
+          event,
+          action: 'tag_frequente_added',
+          contactId,
+          removedTags: removed,
+        });
+
+        return {
+          event,
+          action: 'tag_frequente_added',
+          contactId,
+          details: { removedTags: removed },
+        };
+      }
+
+      case 'contract.expiring': {
+        const contactId = await this.resolvePactoContactId(accountId, data);
+        if (!contactId) {
+          throw new NotFoundError('Contato Pacto (por telefone ou matrícula)');
+        }
+        const dias = Number(data.daysUntilExpiry);
+        if (!Number.isFinite(dias) || dias < 0) {
+          throw new ValidationError(
+            'pacto_sync contract.expiring requer data.daysUntilExpiry (número >= 0)'
+          );
+        }
+        const tagName = `renovacao-${Math.trunc(dias)}d`;
+        const tagApply = await this.handleTagApply(accountId, {
+          contactId,
+          tagName,
+          action: 'add',
+        });
+
+        logger.info('[inbound-integration] pacto_sync handled', {
+          accountId,
+          event,
+          action: `tag_${tagName}_added`,
+          contactId,
+        });
+
+        return {
+          event,
+          action: `tag_${tagName}_added`,
+          contactId,
+          details: tagApply,
+        };
+      }
+
+      default:
+        throw new ValidationError(
+          `pacto_sync: event desconhecido "${event}". ` +
+          `Permitidos: student.created, student.updated, student.churned, checkin.created, contract.expiring`
+        );
+    }
+  }
+
+  /**
+   * Resolve contactId pra eventos Pacto que precisam achar um contato existente.
+   * Usa telefone como identificador primário; matrícula é aceita no payload mas
+   * o schema atual ainda não a persiste (TODO: customAttributes / coluna dedicada).
+   */
+  private async resolvePactoContactId(
+    accountId: string,
+    data: { telefone?: string; matricula?: string }
+  ): Promise<string | undefined> {
+    const telefone = normalizePhone(data.telefone);
+    if (telefone) {
+      const byPhone = await prisma.contact.findFirst({
+        where: { accountId, telefone },
+        select: { id: true },
+      });
+      if (byPhone) return byPhone.id;
+    }
+
+    // Matrícula não tem coluna ainda — log e segue retornando undefined.
+    if (data.matricula) {
+      logger.warn(
+        '[inbound-integration] pacto_sync: lookup por matrícula não suportado no schema atual',
+        { accountId, matricula: data.matricula }
+      );
+    }
+
+    return undefined;
   }
 
   // ----------------------------------------
