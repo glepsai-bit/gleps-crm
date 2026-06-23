@@ -33,10 +33,21 @@ export interface SLABreach {
   id: string;
   slaPolicyId: string;
   conversationId: string;
+  /** Alias amigavel — espelha `breachType` do schema. */
   type: 'first_response' | 'resolution' | string;
+  /** Mesmo valor de `type`, exposto para quem prefere o nome do schema. */
+  breachType: 'first_response' | 'resolution' | string;
+  /** Quando o SLA era esperado ser cumprido (deadline). */
+  expectedAt: string;
+  /** Quando o breach foi detectado. */
   breachedAt: string;
+  /** Quando a notificacao foi enviada (se ja foi). */
+  notifiedAt: string | null;
+  /** Minutos previstos pela policy para esse tipo de breach. */
   expectedMin: number;
+  /** Minutos reais decorridos ate o breach (expectedMin + atraso). */
   actualMin: number | null;
+  /** Compat: igual a `breachedAt` (schema nao guarda createdAt separado). */
   createdAt: string;
 }
 
@@ -88,25 +99,63 @@ function mapPolicy(raw: any): SLAPolicy {
   };
 }
 
+/**
+ * Mapeia um SLABreach do backend.
+ *
+ * O schema Prisma guarda `breachType` / `expectedAt` / `breachedAt` /
+ * `notifiedAt` (sem `expectedMin` / `actualMin` / `createdAt`). O controller
+ * do BE enriquece a resposta com `type` / `expectedMin` / `actualMin` /
+ * `createdAt` para preservar o contrato do FE; este mapper ainda assim
+ * deriva esses campos caso receba a forma "crua" (snake_case ou Prisma puro)
+ * para nunca exibir `undefined` na UI.
+ */
 function mapBreach(raw: any): SLABreach {
+  const breachType: string =
+    raw.breachType ?? raw.breach_type ?? raw.type ?? '';
+
+  const expectedAt: string =
+    raw.expectedAt ?? raw.expected_at ?? '';
+  const breachedAt: string =
+    raw.breachedAt ?? raw.breached_at ?? '';
+  const notifiedAtRaw = raw.notifiedAt ?? raw.notified_at ?? null;
+  const notifiedAt: string | null = notifiedAtRaw ?? null;
+
+  const expectedMin = Number(
+    raw.expectedMin ?? raw.expected_min ?? 0
+  );
+
+  // actualMin pode vir pronto do BE; se nao vier, deriva a partir
+  // dos timestamps (overdueMinutes + expectedMin).
+  let actualMin: number | null;
+  if (raw.actualMin !== undefined) {
+    actualMin = raw.actualMin === null ? null : Number(raw.actualMin);
+  } else if (raw.actual_min !== undefined) {
+    actualMin = raw.actual_min === null ? null : Number(raw.actual_min);
+  } else if (expectedAt && breachedAt) {
+    const expectedAtMs = new Date(expectedAt).getTime();
+    const breachedAtMs = new Date(breachedAt).getTime();
+    if (Number.isFinite(expectedAtMs) && Number.isFinite(breachedAtMs)) {
+      const overdueMin = Math.max(0, Math.round((breachedAtMs - expectedAtMs) / 60000));
+      actualMin = expectedMin + overdueMin;
+    } else {
+      actualMin = null;
+    }
+  } else {
+    actualMin = null;
+  }
+
   return {
     id: raw.id,
     slaPolicyId: raw.slaPolicyId ?? raw.sla_policy_id,
     conversationId: raw.conversationId ?? raw.conversation_id,
-    type: raw.type ?? raw.breach_type,
-    breachedAt: raw.breachedAt ?? raw.breached_at,
-    expectedMin: Number(raw.expectedMin ?? raw.expected_min ?? 0),
-    actualMin:
-      raw.actualMin !== undefined
-        ? raw.actualMin === null
-          ? null
-          : Number(raw.actualMin)
-        : raw.actual_min === null
-          ? null
-          : raw.actual_min !== undefined
-            ? Number(raw.actual_min)
-            : null,
-    createdAt: raw.createdAt ?? raw.created_at ?? raw.breachedAt ?? raw.breached_at,
+    type: breachType,
+    breachType,
+    expectedAt,
+    breachedAt,
+    notifiedAt,
+    expectedMin,
+    actualMin,
+    createdAt: raw.createdAt ?? raw.created_at ?? breachedAt,
   };
 }
 

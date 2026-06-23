@@ -282,8 +282,65 @@ export function initSocket(httpServer: HttpServer): Namespace {
       });
     });
 
-    // heartbeat — mantém presença viva
-    socket.on('heartbeat', () => {
+    // heartbeat — mantém presença viva + revalida JWT/status periodicamente
+    // (SE-H4) evita que sessões antigas sigam recebendo eventos após logout /
+    // desativação caso o disconnect explícito tenha perdido essa conexão por
+    // race condition ou TCP que ainda não caiu.
+    socket.on('heartbeat', async () => {
+      try {
+        const token = extractToken(socket);
+        if (!token) {
+          socket.emit('auth:revoked', { reason: 'TOKEN_MISSING' });
+          socket.disconnect(true);
+          return;
+        }
+
+        try {
+          jwt.verify(token, env.JWT_SECRET);
+        } catch (err) {
+          const reason =
+            err instanceof jwt.TokenExpiredError ? 'TOKEN_EXPIRED' : 'TOKEN_INVALID';
+          socket.emit('auth:revoked', { reason });
+          socket.disconnect(true);
+          return;
+        }
+
+        // Revalida estado do usuário / conta no banco a cada heartbeat
+        // (cliente bate ~a cada 30s, então a janela de exposição é curta).
+        const fresh = await prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            status: true,
+            role: true,
+            accountId: true,
+            account: { select: { status: true } },
+          },
+        });
+
+        if (!fresh) {
+          socket.emit('auth:revoked', { reason: 'USER_NOT_FOUND' });
+          socket.disconnect(true);
+          return;
+        }
+        if (fresh.status !== 'active') {
+          socket.emit('auth:revoked', { reason: 'USER_INACTIVE' });
+          socket.disconnect(true);
+          return;
+        }
+        if (fresh.role !== 'super_admin' && fresh.account?.status === 'paused') {
+          socket.emit('auth:revoked', { reason: 'ACCOUNT_PAUSED' });
+          socket.disconnect(true);
+          return;
+        }
+      } catch (err) {
+        // Em caso de falha inesperada na revalidação, só loga — não derruba
+        // a sessão (evita falso positivo por hiccup de DB).
+        logger.warn('[socket] heartbeat revalidação falhou', {
+          userId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
       agentAvailabilityService.heartbeat(userId).catch((err) =>
         logger.debug('[socket] heartbeat falhou', {
           userId,
@@ -388,4 +445,105 @@ export function emitAgentStatusChanged(
     userId,
     status,
   });
+}
+
+/**
+ * SE-H3: emite mudança de conexão de um Inbox (WhatsApp/Evolution) pra UI da conta.
+ * Disparado quando connection.update vinda do Evolution muda o estado da instância
+ * (open|connecting|close|logout) — permite que o admin veja em tempo real que o
+ * número desconectou (logout/ban) sem precisar dar refresh.
+ */
+export function emitInboxConnection(
+  accountId: string,
+  payload: {
+    inboxId: string;
+    evolutionInstance: string | null;
+    state: string;
+    active: boolean;
+  }
+): void {
+  if (!chatNs || !accountId || !payload?.inboxId) return;
+  chatNs.to(roomAccount(accountId)).emit('inbox:connection', payload);
+}
+
+// ============================================
+// Forced disconnect (SE-H4)
+// ============================================
+
+/**
+ * SE-H4: derruba TODAS as conexões abertas de um determinado userId
+ * (todas as sessões/abas), opcionalmente com um motivo enviado ao cliente.
+ *
+ * Chamado em:
+ *  - logout (revoga refresh token + mata sockets vivos)
+ *  - desativação/suspensão de usuário
+ *  - mudança de status de conta (paused)
+ *
+ * Sem isso, o middleware /chat só valida o JWT no handshake — uma sessão
+ * já aberta continua recebendo message:created e mention:new mesmo após
+ * logout / suspensão, até o TCP cair.
+ */
+export function disconnectUserSockets(userId: string, reason?: string): number {
+  if (!chatNs || !userId) return 0;
+  let count = 0;
+  for (const [, socket] of chatNs.sockets) {
+    if ((socket.data as SocketAuthData).userId === userId) {
+      try {
+        if (reason) {
+          socket.emit('auth:revoked', { reason });
+        }
+        socket.disconnect(true);
+        count += 1;
+      } catch (err) {
+        logger.warn('[socket] falha ao desconectar sessão', {
+          userId,
+          socketId: socket.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+  if (count > 0) {
+    logger.info('[socket] sessões forçadamente encerradas', {
+      userId,
+      reason: reason ?? 'unspecified',
+      count,
+    });
+  }
+  return count;
+}
+
+/**
+ * SE-H4: derruba TODAS as conexões abertas de uma conta — usado quando a
+ * conta é pausada/encerrada e todos os usuários daquele tenant precisam
+ * perder acesso ao realtime imediatamente.
+ */
+export function disconnectAccountSockets(accountId: string, reason?: string): number {
+  if (!chatNs || !accountId) return 0;
+  let count = 0;
+  for (const [, socket] of chatNs.sockets) {
+    if ((socket.data as SocketAuthData).accountId === accountId) {
+      try {
+        if (reason) {
+          socket.emit('auth:revoked', { reason });
+        }
+        socket.disconnect(true);
+        count += 1;
+      } catch (err) {
+        logger.warn('[socket] falha ao desconectar sessão (account)', {
+          accountId,
+          socketId: socket.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+  if (count > 0) {
+    logger.info('[socket] sessões da conta forçadamente encerradas', {
+      accountId,
+      reason: reason ?? 'unspecified',
+      count,
+    });
+  }
+  return count;
 }

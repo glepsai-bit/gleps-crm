@@ -51,6 +51,13 @@ export interface CreateMessageInput {
 
 export interface SearchOptions {
   limit?: number;
+  /**
+   * Role do solicitante. Quando 'agent', a busca passa a ser escopada
+   * apenas a conversas onde o usuário é assignee, membro do team ou
+   * participant — evita exfiltração de PII via ILIKE em toda a conta.
+   */
+  requesterRole?: string;
+  requesterUserId?: string;
 }
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -339,10 +346,21 @@ class MessageService {
   /**
    * Mark a message as delivered (callback do provider, ex. Evolution).
    * `externalId` é gravado pra reconciliação futura.
+   *
+   * Escopo obrigatório por accountId via parent conversation — evita
+   * que um callback malicioso/cross-tenant marque mensagem de outro
+   * tenant como delivered.
    */
-  async markDelivered(id: string, externalId: string): Promise<Message> {
-    const existing = await prisma.message.findUnique({
-      where: { id },
+  async markDelivered(id: string, accountId: string, externalId: string): Promise<Message> {
+    if (!accountId) {
+      throw new ValidationError('accountId obrigatório');
+    }
+
+    const existing = await prisma.message.findFirst({
+      where: {
+        id,
+        conversation: { accountId },
+      },
       select: { id: true, status: true },
     });
     if (!existing) {
@@ -350,7 +368,7 @@ class MessageService {
     }
 
     return prisma.message.update({
-      where: { id },
+      where: { id: existing.id },
       data: {
         status: existing.status === 'read' ? 'read' : 'delivered',
         externalId: externalId || undefined,
@@ -404,10 +422,20 @@ class MessageService {
   /**
    * Mark a message as failed (provider error, rate-limit etc).
    * `error` is stored in metadata.lastError for debugging.
+   *
+   * Escopo obrigatório por accountId via parent conversation — evita
+   * gravar erro arbitrário em metadata de mensagem de outro tenant.
    */
-  async markFailed(id: string, error: string): Promise<Message> {
-    const existing = await prisma.message.findUnique({
-      where: { id },
+  async markFailed(id: string, accountId: string, error: string): Promise<Message> {
+    if (!accountId) {
+      throw new ValidationError('accountId obrigatório');
+    }
+
+    const existing = await prisma.message.findFirst({
+      where: {
+        id,
+        conversation: { accountId },
+      },
       select: { id: true, metadata: true },
     });
     if (!existing) {
@@ -426,7 +454,7 @@ class MessageService {
     };
 
     return prisma.message.update({
-      where: { id },
+      where: { id: existing.id },
       data: {
         status: 'failed',
         metadata,
@@ -448,6 +476,12 @@ class MessageService {
   /**
    * Full-text-ish search by ILIKE on content, scoped by account.
    * Excludes private notes from results.
+   *
+   * Defesa contra exfiltração de PII em massa (CHAT-AUTH-H2):
+   * quando o solicitante é `agent`, aplica o mesmo filtro de
+   * pertencimento usado em listagem de conversas — assignee,
+   * membro do team responsável OU participant. Admin/super_admin
+   * mantêm visão completa da conta.
    */
   async search(
     accountId: string,
@@ -461,9 +495,25 @@ class MessageService {
 
     const limit = this.clampLimit(options.limit, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT);
 
+    const conversationFilter: Prisma.ConversationWhereInput = { accountId };
+
+    if (options.requesterRole === 'agent') {
+      if (!options.requesterUserId) {
+        // Agent sem id resolvido — falha fechada (não exibe nada) ao invés de
+        // cair no else (visão total da conta).
+        throw new ValidationError('requesterUserId obrigatório para busca de agent');
+      }
+      const userId = options.requesterUserId;
+      conversationFilter.OR = [
+        { assigneeId: userId },
+        { participants: { some: { userId } } },
+        { team: { members: { some: { userId } } } },
+      ];
+    }
+
     return prisma.message.findMany({
       where: {
-        conversation: { accountId },
+        conversation: conversationFilter,
         isPrivate: false,
         content: { contains: term, mode: 'insensitive' },
       },

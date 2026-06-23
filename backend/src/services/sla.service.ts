@@ -409,10 +409,16 @@ class SLAService {
 
   /**
    * Marca um breach como notificado (registra notifiedAt = now).
+   * Escopado por accountId via join em conversation para evitar
+   * que um tenant marque breach de outro tenant.
    */
-  async markBreachNotified(breachId: string): Promise<SLABreach> {
-    const breach = await prisma.sLABreach.findUnique({
-      where: { id: breachId },
+  async markBreachNotified(breachId: string, accountId: string): Promise<SLABreach> {
+    const breach = await prisma.sLABreach.findFirst({
+      where: {
+        id: breachId,
+        conversation: { accountId },
+      },
+      select: { id: true },
     });
 
     if (!breach) {
@@ -420,7 +426,7 @@ class SLAService {
     }
 
     return prisma.sLABreach.update({
-      where: { id: breachId },
+      where: { id: breach.id },
       data: { notifiedAt: new Date() },
     });
   }

@@ -1,10 +1,11 @@
-import { PrismaClient } from '@prisma/client';
 import type { Inbox } from '@prisma/client';
 import { prisma as sharedPrisma } from '../config/database';
 import { NotFoundError, ConflictError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
-const prisma = new PrismaClient();
+// Reuse a single Prisma pool (singleton from config/database).
+// Não criar new PrismaClient() aqui — vaza connection pool (H1).
+const prisma = sharedPrisma;
 
 // ============================================
 // Email Inbox (mensagens recebidas via SendGrid Inbound Parse)
@@ -58,9 +59,34 @@ export const inboxService = {
     inReplyTo?: string;
   }) {
     try {
-      // Find contact by email
+      // H2 fix: rotear primeiro pelo toEmail (alias do tenant em
+      // sendgridFromEmail) pra evitar vazamento multi-tenant.
+      // Sem accountId derivado do toEmail, um findFirst só por email
+      // pode atribuir a mensagem (e auto-pausar enrollment) ao tenant errado.
+      const toEmail = (data.toEmail || '').trim().toLowerCase();
+      if (!toEmail) {
+        logger.warn('[Inbox] Inbound email sem toEmail — não dá pra rotear por tenant. Skipping.');
+        return null;
+      }
+
+      const account = await prisma.account.findFirst({
+        where: { sendgridFromEmail: toEmail },
+        select: { id: true },
+      });
+
+      if (!account) {
+        logger.info(`[Inbox] Nenhuma conta encontrada para toEmail=${toEmail}. Skipping.`);
+        return null;
+      }
+
+      const accountId = account.id;
+
+      // Agora sim — busca contato escopado pelo accountId do tenant.
       const contact = await prisma.contact.findFirst({
-        where: { email: data.fromEmail.toLowerCase() },
+        where: {
+          accountId,
+          email: data.fromEmail.toLowerCase(),
+        },
         include: {
           emailEnrollments: {
             where: { status: 'active' },
@@ -70,12 +96,11 @@ export const inboxService = {
       });
 
       if (!contact) {
-        logger.info(`[Inbox] No contact found for ${data.fromEmail}, skipping.`);
+        logger.info(`[Inbox] No contact found for ${data.fromEmail} dentro da conta ${accountId}, skipping.`);
         return null;
       }
 
       const activeEnrollment = contact.emailEnrollments[0];
-      const accountId = contact.accountId;
 
       // Create inbox message
       const message = await prisma.emailInboxMessage.create({

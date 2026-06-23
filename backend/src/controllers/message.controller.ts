@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '../config/database';
 import { AuthenticatedRequest } from '../types';
@@ -10,8 +11,10 @@ import {
   type MessageSenderType,
 } from '../services/message.service';
 import { evolutionService } from '../services/evolution.service';
+import { apiKeyHasScope } from '../middlewares/apiKey.middleware';
 import {
   ConflictError,
+  ForbiddenError,
   NotFoundError,
   UnauthorizedError,
   ValidationError,
@@ -32,13 +35,14 @@ const attachmentSchema = z.object({
   duration: z.number().int().nonnegative().optional(),
 });
 
-const contentTypeEnum = z.enum([
+// BE-CTRL-H2: contentTypes permitidos para agentes humanos (JWT).
+// system_note e template são exclusivos do backend (jobs, campanhas,
+// eventos do sistema) — agentes não podem forjar via POST.
+const agentContentTypeEnum = z.enum([
   'text',
   'media',
   'audio',
   'document',
-  'system_note',
-  'template',
 ]);
 
 const listMessagesQuerySchema = z.object({
@@ -50,7 +54,7 @@ const listMessagesQuerySchema = z.object({
 const createMessageBodySchema = z
   .object({
     content: z.string().optional(),
-    contentType: contentTypeEnum.optional(),
+    contentType: agentContentTypeEnum.optional(),
     isPrivate: z.boolean().optional(),
     replyToId: z.string().uuid().optional(),
     attachments: z.array(attachmentSchema).optional(),
@@ -70,10 +74,20 @@ const searchQuerySchema = z.object({
 
 const integrationSenderTypeEnum = z.enum(['ai_bot', 'integration']);
 
+// BE-CTRL-H2: integrações (ai_bot/n8n) também não podem forjar system_note
+// nem template — esses tipos disparam regras de skip-dispatch e são
+// reservados a fluxos internos (backend jobs, whatsapp-campaign).
+const integrationContentTypeEnum = z.enum([
+  'text',
+  'media',
+  'audio',
+  'document',
+]);
+
 const integrationCreateBodySchema = z
   .object({
     content: z.string().optional(),
-    contentType: contentTypeEnum.optional(),
+    contentType: integrationContentTypeEnum.optional(),
     sender_type: integrationSenderTypeEnum,
     metadata: z.record(z.unknown()).optional(),
     attachments: z.array(attachmentSchema).optional(),
@@ -175,6 +189,23 @@ export class MessageController {
       const contentType: MessageContentType = parsed.contentType ?? 'text';
       const isPrivate = parsed.isPrivate ?? false;
 
+      // SE-H5: prepara externalId interno (pending:<uuid>) ANTES de criar
+      // a mensagem. Assim, se o webhook fromMe=true da Evolution chegar
+      // antes do update com o messageId real, o dedup por externalId
+      // (combinado com a unique constraint) já encontra a linha — em vez
+      // de criar uma duplicata por (externalId IS NULL).
+      // shouldDispatch=true ⇒ reserva slot; false ⇒ mantém null.
+      // BE-CTRL-H2: contentType já está restrito a text|media|audio|document
+      // pelo agentContentTypeEnum, então system_note/template não chegam aqui.
+      const shouldDispatch =
+        !isPrivate &&
+        typeof parsed.content === 'string' &&
+        parsed.content.trim() !== '';
+
+      const pendingExternalId = shouldDispatch
+        ? `pending:${randomUUID()}`
+        : null;
+
       const input: CreateMessageInput = {
         conversationId,
         senderType,
@@ -184,19 +215,13 @@ export class MessageController {
         isPrivate,
         replyToId: parsed.replyToId ?? null,
         attachments: parsed.attachments as CreateAttachmentInput[] | undefined,
-        metadata: parsed.metadata,
+        metadata: pendingExternalId
+          ? { ...(parsed.metadata ?? {}), pendingExternalId }
+          : parsed.metadata,
+        externalId: pendingExternalId,
       };
 
       const message = await messageService.create(accountId, input);
-
-      // Skip provider dispatch para notas internas, system_note ou template
-      // (templates seguem fluxo próprio em whatsapp-campaign).
-      const shouldDispatch =
-        !isPrivate &&
-        contentType !== 'system_note' &&
-        contentType !== 'template' &&
-        typeof parsed.content === 'string' &&
-        parsed.content.trim() !== '';
 
       let finalMessage = message;
 
@@ -219,6 +244,11 @@ export class MessageController {
             });
 
             if (result.messageId) {
+              // Troca o pending:<uuid> pelo messageId real da Evolution.
+              // Se o webhook fromMe já tiver chegado e criado/atualizado a
+              // linha pelo externalId real, este update vai falhar
+              // silenciosamente — mas a mensagem original com pending
+              // continua íntegra e pode ser reconciliada via metadata.
               finalMessage = await prisma.message.update({
                 where: { id: message.id },
                 data: { externalId: result.messageId, status: 'sent' },
@@ -235,6 +265,7 @@ export class MessageController {
             try {
               finalMessage = await messageService.markFailed(
                 message.id,
+                accountId,
                 errMsg
               );
             } catch (markErr) {
@@ -306,6 +337,8 @@ export class MessageController {
       const parsed = searchQuerySchema.parse(req.query);
       const data = await messageService.search(accountId, parsed.q, {
         limit: parsed.limit,
+        requesterRole: req.user.role,
+        requesterUserId: req.user.id,
       });
 
       res.json({ data });
@@ -369,6 +402,27 @@ export class MessageController {
       const contentType: MessageContentType = parsed.contentType ?? 'text';
       const isPrivate = parsed.isPrivate ?? false;
 
+      // CHAT-AUTH-H3: notas internas (isPrivate=true) só com scope dedicado.
+      // Bots públicos com 'messages:write' não devem conseguir falsificar
+      // histórico interno aparecendo como nota de operador.
+      if (isPrivate && !apiKeyHasScope(req.apiKey?.scopes, ['messages:notes'])) {
+        throw new ForbiddenError(
+          'API key sem permissão para criar notas internas (isPrivate=true). Scope necessário: messages:notes'
+        );
+      }
+
+      // SE-H5: mesma estratégia da rota JWT — reserva externalId pending
+      // antes do create para fechar a janela de race com webhook fromMe.
+      // BE-CTRL-H2: contentType restrito pelo integrationContentTypeEnum.
+      const shouldDispatch =
+        !isPrivate &&
+        typeof parsed.content === 'string' &&
+        parsed.content.trim() !== '';
+
+      const pendingExternalId = shouldDispatch
+        ? `pending:${randomUUID()}`
+        : null;
+
       const input: CreateMessageInput = {
         conversationId,
         senderType,
@@ -382,18 +436,12 @@ export class MessageController {
           ...(parsed.metadata ?? {}),
           source: 'api_integration',
           apiKeyId: req.apiKey?.id ?? null,
+          ...(pendingExternalId ? { pendingExternalId } : {}),
         },
+        externalId: pendingExternalId,
       };
 
       const message = await messageService.create(accountId, input);
-
-      // Dispatch ao provider se não for privado e tivermos canal/telefone
-      const shouldDispatch =
-        !isPrivate &&
-        contentType !== 'system_note' &&
-        contentType !== 'template' &&
-        typeof parsed.content === 'string' &&
-        parsed.content.trim() !== '';
 
       let finalMessage = message;
 
@@ -425,6 +473,7 @@ export class MessageController {
             try {
               finalMessage = await messageService.markFailed(
                 message.id,
+                accountId,
                 errMsg
               );
             } catch (markErr) {

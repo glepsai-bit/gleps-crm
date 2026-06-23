@@ -7,6 +7,7 @@ import { UnauthorizedError, ErrorCodes, NotFoundError } from '../utils/errors';
 import { getExpirationDate } from '../utils/helpers';
 import { eventService } from './event.service';
 import { v4 as uuidv4 } from 'uuid';
+import { disconnectUserSockets } from '../socket';
 
 export interface LoginInput {
   email: string;
@@ -198,6 +199,11 @@ class AuthService {
 
   /**
    * Logout user - revoke refresh token
+   *
+   * SE-H4: além de revogar o(s) refresh token(s), força a desconexão de
+   * TODAS as sessões Socket.IO ativas desse usuário. Sem isso uma sessão
+   * /chat aberta continua recebendo message:created e mention:new mesmo
+   * após o logout, porque o middleware só valida o JWT no handshake.
    */
   async logout(userId: string, refreshTokenValue?: string): Promise<void> {
     if (refreshTokenValue) {
@@ -218,6 +224,14 @@ class AuthService {
       where: { id: userId },
       select: { accountId: true },
     });
+
+    // Derruba sockets vivos (best-effort — não bloqueia logout se Socket.IO
+    // ainda não tiver sido inicializado, ex.: em ambiente de teste).
+    try {
+      disconnectUserSockets(userId, 'LOGOUT');
+    } catch {
+      /* Socket.IO pode não estar inicializado em alguns contextos */
+    }
 
     await eventService.create({
       eventType: 'auth.logout',

@@ -1,6 +1,6 @@
 import type { Conversation, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
-import { NotFoundError, ValidationError } from '../utils/errors';
+import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { eventService } from './event.service';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
@@ -84,8 +84,33 @@ export interface FindOrCreateForCustomerInput {
   contactName?: string | null;
 }
 
+/**
+ * Actor RBAC context — usado por list() e mutations para escopar
+ * acesso de agentes apenas a conversas que lhes pertencem.
+ * Quando omitido (chamadas internas/system/webhooks), nenhum filtro extra é aplicado.
+ */
+export type ConversationActorRole = 'super_admin' | 'admin' | 'agent';
+
+export interface ConversationActor {
+  userId: string;
+  role: ConversationActorRole;
+}
+
 const ALLOWED_STATUSES: ConversationStatus[] = ['open', 'pending', 'resolved', 'snoozed'];
 const ALLOWED_PRIORITIES: ConversationPriority[] = ['urgent', 'high', 'medium', 'low'];
+
+/**
+ * Include padrão usado em TODAS as mutations para garantir que o cliente
+ * receba sempre o mesmo shape (assignee/team/contact/inbox/labels), evitando
+ * `undefined` no front após assign/transfer/resolve/etc.
+ */
+const FULL_CONVERSATION_INCLUDE = {
+  contact: { select: { id: true, nome: true, telefone: true, email: true } },
+  inbox: { select: { id: true, name: true, channelType: true } },
+  assignee: { select: { id: true, nome: true, email: true } },
+  team: { select: { id: true, name: true } },
+  labels: { include: { tag: true } },
+} satisfies Prisma.ConversationInclude;
 
 // ============================================
 // Service
@@ -98,12 +123,23 @@ class ConversationService {
 
   async list(
     accountId: string,
-    filters: ListConversationFilters = {}
+    filters: ListConversationFilters = {},
+    actor?: ConversationActor
   ): Promise<{ data: Conversation[]; total: number }> {
     const where: Prisma.ConversationWhereInput = { accountId };
 
-    if (filters.status) where.status = filters.status;
-    if (filters.priority) where.priority = filters.priority;
+    if (filters.status) {
+      if (!ALLOWED_STATUSES.includes(filters.status as ConversationStatus)) {
+        throw new ValidationError(`Status inválido: ${filters.status}`);
+      }
+      where.status = filters.status;
+    }
+    if (filters.priority) {
+      if (!ALLOWED_PRIORITIES.includes(filters.priority as ConversationPriority)) {
+        throw new ValidationError(`Prioridade inválida: ${filters.priority}`);
+      }
+      where.priority = filters.priority;
+    }
     if (filters.inboxId) where.inboxId = filters.inboxId;
 
     if (filters.assigneeId !== undefined) {
@@ -127,6 +163,39 @@ class ConversationService {
       ];
     }
 
+    // RBAC: agente só enxerga conversas onde é assignee, está em um time
+    // dono da conversa, ou foi adicionado como participante (CHAT-AUTH-H1).
+    // super_admin/admin (ou chamadas internas sem actor) veem tudo da conta.
+    if (actor && actor.role === 'agent') {
+      const teamIds = await prisma.teamMember
+        .findMany({
+          where: { userId: actor.userId },
+          select: { teamId: true },
+        })
+        .then((rows) => rows.map((r) => r.teamId));
+
+      const accessOr: Prisma.ConversationWhereInput[] = [
+        { assigneeId: actor.userId },
+        { participants: { some: { userId: actor.userId } } },
+      ];
+      if (teamIds.length > 0) {
+        accessOr.push({ teamId: { in: teamIds } });
+      }
+
+      // Combina com qualquer OR existente (ex.: busca) via AND.
+      if (where.OR) {
+        const existingOr = where.OR;
+        delete where.OR;
+        where.AND = [
+          ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+          { OR: existingOr },
+          { OR: accessOr },
+        ];
+      } else {
+        where.OR = accessOr;
+      }
+    }
+
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
     const offset = Math.max(filters.offset ?? 0, 0);
 
@@ -136,13 +205,7 @@ class ConversationService {
         orderBy: { updatedAt: 'desc' },
         take: limit,
         skip: offset,
-        include: {
-          contact: { select: { id: true, nome: true, telefone: true, email: true } },
-          inbox: { select: { id: true, name: true, channelType: true } },
-          assignee: { select: { id: true, nome: true, email: true } },
-          team: { select: { id: true, name: true } },
-          labels: { include: { tag: true } },
-        },
+        include: FULL_CONVERSATION_INCLUDE,
       }),
       prisma.conversation.count({ where }),
     ]);
@@ -157,7 +220,8 @@ class ConversationService {
   async get(
     id: string,
     accountId: string,
-    include: GetConversationInclude = {}
+    include: GetConversationInclude = {},
+    actor?: ConversationActor
   ): Promise<Conversation> {
     const conversation = await prisma.conversation.findFirst({
       where: { id, accountId },
@@ -181,7 +245,81 @@ class ConversationService {
 
     if (!conversation) throw new NotFoundError('Conversa');
 
+    // RBAC: agente só pode ler conversa que lhe pertence (CHAT-AUTH-H1).
+    // Faz fetch on-demand de participants/team quando precisa validar.
+    if (actor && actor.role === 'agent') {
+      await this.assertAgentCanAccess(conversation as Conversation, actor.userId);
+    }
+
     return conversation as Conversation;
+  }
+
+  // ============================================
+  // ensureConversationAccess — guard reutilizável
+  // ============================================
+
+  /**
+   * CHAT-AUTH-H1: middleware-helper. Garante que o actor pode acessar a conversa.
+   * - super_admin/admin: passam direto
+   * - agent: precisa ser assignee, estar no time da conversa, ou ser participante
+   *
+   * Deve ser chamado pelos controllers ANTES de qualquer mutation
+   * (assign/transfer/resolve/reopen/labels/participants/custom-attributes/...).
+   */
+  async ensureConversationAccess(
+    id: string,
+    accountId: string,
+    actor: ConversationActor
+  ): Promise<Conversation> {
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, accountId },
+      include: {
+        participants: { select: { userId: true } },
+        team: { select: { id: true, members: { select: { userId: true } } } },
+      },
+    });
+    if (!conversation) throw new NotFoundError('Conversa');
+
+    if (actor.role !== 'agent') return conversation as Conversation;
+
+    await this.assertAgentCanAccess(conversation, actor.userId);
+    return conversation as Conversation;
+  }
+
+  /**
+   * Lança ForbiddenError se o agente não tem acesso à conversa.
+   * Aceita conversa com ou sem includes; faz fetch sob demanda quando faltar.
+   */
+  private async assertAgentCanAccess(
+    conversation: Conversation & {
+      assigneeId?: string | null;
+      teamId?: string | null;
+      participants?: Array<{ userId: string }>;
+      team?: { members?: Array<{ userId: string }> } | null;
+    },
+    userId: string
+  ): Promise<void> {
+    if (conversation.assigneeId === userId) return;
+
+    const participants =
+      conversation.participants ??
+      (await prisma.conversationParticipant.findMany({
+        where: { conversationId: conversation.id },
+        select: { userId: true },
+      }));
+    if (participants.some((p) => p.userId === userId)) return;
+
+    if (conversation.teamId) {
+      const teamMembers =
+        conversation.team?.members ??
+        (await prisma.teamMember.findMany({
+          where: { teamId: conversation.teamId },
+          select: { userId: true },
+        }));
+      if (teamMembers.some((m) => m.userId === userId)) return;
+    }
+
+    throw new ForbiddenError('Você não tem acesso a esta conversa');
   }
 
   // ============================================
@@ -210,6 +348,26 @@ class ConversationService {
 
     if (input.priority && !ALLOWED_PRIORITIES.includes(input.priority)) {
       throw new ValidationError(`Prioridade inválida: ${input.priority}`);
+    }
+
+    // Garante unicidade de (accountId, inboxId, externalId) — quando informado.
+    // Como o schema ainda não tem @@unique (SE-H1), validamos explicitamente
+    // para não criar conversas duplicadas via create() direto. O fluxo de
+    // webhook usa findOrCreateForCustomer() que já trata corrida.
+    if (input.externalId) {
+      const duplicate = await prisma.conversation.findFirst({
+        where: {
+          accountId,
+          inboxId: input.inboxId,
+          externalId: input.externalId,
+        },
+        select: { id: true },
+      });
+      if (duplicate) {
+        throw new ValidationError(
+          `Já existe uma conversa neste inbox com externalId "${input.externalId}"`
+        );
+      }
     }
 
     const conversation = await prisma.conversation.create({
@@ -273,6 +431,7 @@ class ConversationService {
     const updated = await prisma.conversation.update({
       where: { id },
       data,
+      include: FULL_CONVERSATION_INCLUDE,
     });
 
     await eventService.create({
@@ -309,6 +468,7 @@ class ConversationService {
     const updated = await prisma.conversation.update({
       where: { id },
       data: { priority },
+      include: FULL_CONVERSATION_INCLUDE,
     });
 
     await eventService.create({
@@ -349,6 +509,7 @@ class ConversationService {
     const updated = await prisma.conversation.update({
       where: { id },
       data: { assigneeId },
+      include: FULL_CONVERSATION_INCLUDE,
     });
 
     await eventService.create({
@@ -393,6 +554,7 @@ class ConversationService {
     const updated = await prisma.conversation.update({
       where: { id },
       data: { teamId },
+      include: FULL_CONVERSATION_INCLUDE,
     });
 
     await eventService.create({
@@ -429,44 +591,50 @@ class ConversationService {
 
     const existing = await this.requireConversation(id, accountId);
 
-    let updated: Conversation;
-
-    if (input.to === 'agent') {
-      if (input.targetId) {
-        const user = await prisma.user.findFirst({
-          where: { id: input.targetId, accountId },
-          select: { id: true },
-        });
-        if (!user) throw new NotFoundError('Agente');
-      }
-      updated = await prisma.conversation.update({
-        where: { id },
-        data: { assigneeId: input.targetId },
+    // Valida target ANTES da transação para evitar abrir tx só pra rollback.
+    if (input.to === 'agent' && input.targetId) {
+      const user = await prisma.user.findFirst({
+        where: { id: input.targetId, accountId },
+        select: { id: true },
       });
-    } else {
-      if (input.targetId) {
-        const team = await prisma.team.findFirst({
-          where: { id: input.targetId, accountId },
-          select: { id: true },
-        });
-        if (!team) throw new NotFoundError('Time');
-      }
-      updated = await prisma.conversation.update({
-        where: { id },
-        data: { teamId: input.targetId },
+      if (!user) throw new NotFoundError('Agente');
+    } else if (input.to === 'team' && input.targetId) {
+      const team = await prisma.team.findFirst({
+        where: { id: input.targetId, accountId },
+        select: { id: true },
       });
+      if (!team) throw new NotFoundError('Time');
     }
 
-    // Cria nota privada do sistema sobre a transferência (se houver nota)
-    if (input.note && input.note.trim().length > 0) {
-      await prisma.conversationNote.create({
-        data: {
-          conversationId: id,
-          userId: input.fromUserId,
-          content: input.note.trim(),
-        },
-      });
-    }
+    // Atomicidade: update da conversa + criação da nota acontecem na mesma
+    // transação. Se a nota falhar, a transferência é desfeita — garantindo
+    // que a trilha de auditoria seja consistente com o estado da conversa.
+    const updated = await prisma.$transaction(async (tx) => {
+      const conv =
+        input.to === 'agent'
+          ? await tx.conversation.update({
+              where: { id },
+              data: { assigneeId: input.targetId },
+              include: FULL_CONVERSATION_INCLUDE,
+            })
+          : await tx.conversation.update({
+              where: { id },
+              data: { teamId: input.targetId },
+              include: FULL_CONVERSATION_INCLUDE,
+            });
+
+      if (input.note && input.note.trim().length > 0) {
+        await tx.conversationNote.create({
+          data: {
+            conversationId: id,
+            userId: input.fromUserId,
+            content: input.note.trim(),
+          },
+        });
+      }
+
+      return conv;
+    });
 
     await eventService.create({
       accountId,
@@ -515,6 +683,7 @@ class ConversationService {
         status: 'snoozed',
         snoozedUntil: until,
       },
+      include: FULL_CONVERSATION_INCLUDE,
     });
 
     await eventService.create({
@@ -560,6 +729,7 @@ class ConversationService {
         resolvedBy: input.resolvedBy,
         snoozedUntil: null,
       },
+      include: FULL_CONVERSATION_INCLUDE,
     });
 
     await eventService.create({
@@ -610,6 +780,7 @@ class ConversationService {
         resolvedBy: null,
         snoozedUntil: null,
       },
+      include: FULL_CONVERSATION_INCLUDE,
     });
 
     await eventService.create({
@@ -809,6 +980,7 @@ class ConversationService {
     const updated = await prisma.conversation.update({
       where: { id },
       data: { customAttributes: merged as any },
+      include: FULL_CONVERSATION_INCLUDE,
     });
 
     await eventService.create({
@@ -909,58 +1081,11 @@ class ConversationService {
     });
 
     if (existing) {
-      // Se a conversa estava resolvida, reabre (paridade com Chatwoot create-or-update-v2)
-      if (existing.status === 'resolved') {
-        const reopened = await prisma.conversation.update({
-          where: { id: existing.id },
-          data: {
-            status: 'open',
-            resolvedAt: null,
-            resolvedBy: null,
-          },
-        });
-
-        await eventService.create({
-          accountId,
-          eventType: 'conversation.reopened',
-          actorType: 'system',
-          entityType: 'conversation',
-          entityId: existing.id,
-          payload: { reason: 'new_inbound_message', externalId: input.externalId },
-        });
-
-        return reopened;
-      }
-      return existing;
+      return this.maybeReopen(existing, accountId, input.externalId);
     }
 
     // 2) Resolve contato — usa contactId explícito, senão tenta achar por telefone, senão cria
-    let resolvedContactId: string | null = input.contactId ?? null;
-
-    if (!resolvedContactId && input.contactPhone) {
-      const phoneContact = await prisma.contact.findFirst({
-        where: { accountId, telefone: input.contactPhone },
-        select: { id: true },
-      });
-      if (phoneContact) {
-        resolvedContactId = phoneContact.id;
-      } else {
-        const created = await prisma.contact.create({
-          data: {
-            accountId,
-            telefone: input.contactPhone,
-            nome: input.contactName ?? null,
-          },
-          select: { id: true },
-        });
-        resolvedContactId = created.id;
-        logger.info('[conversation] contato criado automaticamente', {
-          accountId,
-          contactId: resolvedContactId,
-          phone: input.contactPhone,
-        });
-      }
-    }
+    const resolvedContactId = await this.resolveOrCreateContact(accountId, input);
 
     if (resolvedContactId) {
       // Valida escopo
@@ -971,32 +1096,159 @@ class ConversationService {
       if (!contact) throw new NotFoundError('Contato');
     }
 
-    const conversation = await prisma.conversation.create({
-      data: {
+    // H3 (CHAT findOrCreate race): tenta criar e, se houver corrida de webhooks
+    // (3 mensagens em 1s podem chegar ao 'create' simultaneamente),
+    // o catch P2002 ou um re-find dentro de transação retornam a conversa vencedora.
+    // Como o schema ainda não tem @@unique([accountId, inboxId, externalId]) (SE-H1),
+    // fazemos defense-in-depth: re-check sob lock pessimista via $transaction.
+    try {
+      // Retorna a conversa + flag explícita indicando se ela acabou de ser criada
+      // nesta transação. Antes usávamos uma heurística baseada em createdAt vs
+      // Date.now(), o que era frágil em VMs com clock skew ou GC pause longo.
+      const { conversation, wasCreated } = await prisma.$transaction(async (tx) => {
+        const racingExisting = await tx.conversation.findFirst({
+          where: { accountId, inboxId, externalId: input.externalId },
+        });
+        if (racingExisting) {
+          return { conversation: racingExisting, wasCreated: false };
+        }
+
+        const created = await tx.conversation.create({
+          data: {
+            accountId,
+            inboxId,
+            contactId: resolvedContactId,
+            externalId: input.externalId,
+            status: 'open',
+            priority: 'medium',
+          },
+        });
+        return { conversation: created, wasCreated: true };
+      });
+
+      // Se já existia (não criou agora), trata reabertura igual ao path normal
+      if (!wasCreated) {
+        return this.maybeReopen(conversation, accountId, input.externalId);
+      }
+
+      await eventService.create({
         accountId,
-        inboxId,
-        contactId: resolvedContactId,
-        externalId: input.externalId,
+        eventType: 'conversation.created',
+        actorType: 'system',
+        entityType: 'conversation',
+        entityId: conversation.id,
+        payload: {
+          inboxId,
+          contactId: resolvedContactId,
+          externalId: input.externalId,
+          source: 'inbound',
+        },
+      });
+
+      return conversation;
+    } catch (err: any) {
+      // Caso o schema venha a ter @@unique no futuro, P2002 cai aqui.
+      if (err?.code === 'P2002') {
+        const winner = await prisma.conversation.findFirst({
+          where: { accountId, inboxId, externalId: input.externalId },
+        });
+        if (winner) return this.maybeReopen(winner, accountId, input.externalId);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * H3 helper: reabre conversa resolvida quando chega nova mensagem inbound,
+   * mantendo paridade com create-or-update-v2 do Chatwoot.
+   */
+  private async maybeReopen(
+    conv: Conversation,
+    accountId: string,
+    externalId: string
+  ): Promise<Conversation> {
+    if (conv.status !== 'resolved') return conv;
+
+    const reopened = await prisma.conversation.update({
+      where: { id: conv.id },
+      data: {
         status: 'open',
-        priority: 'medium',
+        resolvedAt: null,
+        resolvedBy: null,
       },
     });
 
     await eventService.create({
       accountId,
-      eventType: 'conversation.created',
+      eventType: 'conversation.reopened',
       actorType: 'system',
       entityType: 'conversation',
-      entityId: conversation.id,
-      payload: {
-        inboxId,
-        contactId: resolvedContactId,
-        externalId: input.externalId,
-        source: 'inbound',
-      },
+      entityId: conv.id,
+      payload: { reason: 'new_inbound_message', externalId },
     });
 
-    return conversation;
+    return reopened;
+  }
+
+  /**
+   * H4 helper: resolve contactId com proteção contra race-condition de webhooks.
+   * Sem @@unique([accountId, telefone]) no schema (SE-H1), múltiplos webhooks
+   * paralelos podem criar contatos duplicados. Fazemos:
+   * 1) Lookup por telefone fora da transação (caminho rápido)
+   * 2) Se não achar, dentro de transação: re-check + create
+   * 3) Try/catch em P2002 caso o unique seja adicionado no futuro
+   */
+  private async resolveOrCreateContact(
+    accountId: string,
+    input: FindOrCreateForCustomerInput
+  ): Promise<string | null> {
+    if (input.contactId) return input.contactId;
+    if (!input.contactPhone) return null;
+
+    const phone = input.contactPhone;
+
+    // 1) Caminho rápido — provavelmente já existe
+    const existing = await prisma.contact.findFirst({
+      where: { accountId, telefone: phone },
+      select: { id: true },
+    });
+    if (existing) return existing.id;
+
+    // 2) Re-check sob transação curta + create
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const racingExisting = await tx.contact.findFirst({
+          where: { accountId, telefone: phone },
+          select: { id: true },
+        });
+        if (racingExisting) return racingExisting.id;
+
+        const created = await tx.contact.create({
+          data: {
+            accountId,
+            telefone: phone,
+            nome: input.contactName ?? null,
+          },
+          select: { id: true },
+        });
+        logger.info('[conversation] contato criado automaticamente', {
+          accountId,
+          contactId: created.id,
+          phone,
+        });
+        return created.id;
+      });
+    } catch (err: any) {
+      // 3) Se vier @@unique no schema (SE-H1), P2002 cai aqui — re-fetch vencedor
+      if (err?.code === 'P2002') {
+        const winner = await prisma.contact.findFirst({
+          where: { accountId, telefone: phone },
+          select: { id: true },
+        });
+        if (winner) return winner.id;
+      }
+      throw err;
+    }
   }
 
   // ============================================

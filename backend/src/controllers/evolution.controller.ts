@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import * as crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { evolutionService } from '../services/evolution.service';
 import { whatsappConsentService } from '../services/whatsapp-consent.service';
@@ -13,6 +14,7 @@ import {
 import { logger } from '../utils/logger';
 import { AuthenticatedRequest } from '../types';
 import { ForbiddenError, ErrorCodes } from '../utils/errors';
+import { emitInboxConnection } from '../socket';
 
 export class EvolutionController {
   /**
@@ -414,6 +416,20 @@ export class EvolutionController {
       return;
     }
 
+    // SE-H3: se o Inbox está inativo (desconectado/pausado pelo admin), não processa
+    // a mensagem. Sem este filtro, o dispatcher aceitava webhooks fantasma mesmo
+    // após o WhatsApp ser deslogado/banido — agora processConnectionState marca
+    // active=false e o dispatcher respeita essa flag.
+    if (!inbox.active) {
+      logger.warn('[evolution-webhook] mensagem ignorada — Inbox inativo', {
+        accountId,
+        inboxId: inbox.id,
+        instance,
+        remoteJid,
+      });
+      return;
+    }
+
     // Ignora mensagens em grupos/broadcasts por enquanto — só DMs (@s.whatsapp.net).
     if (!remoteJid.endsWith('@s.whatsapp.net')) {
       logger.debug('[evolution-webhook] remoteJid não-DM — ignorando', {
@@ -462,20 +478,43 @@ export class EvolutionController {
       return;
     }
 
-    await messageService.create(accountId, {
-      conversationId: conversation.id,
-      senderType: fromMe ? 'agent' : 'customer',
-      content: content ?? null,
-      contentType,
-      externalId: messageId,
-      attachments: attachments.length > 0 ? attachments : undefined,
-      metadata: {
-        source: 'evolution',
-        pushName: pushName ?? null,
-        remoteJid,
-        instance,
-      },
-    });
+    // SE-H2: o findFirst acima é fast-path serial; ele NÃO protege contra retries
+    // concorrentes da Evolution (5xx → reentrega antes do INSERT commitar). A defesa
+    // dura é o @@unique([conversationId, externalId]) no schema, que faz o INSERT
+    // levantar P2002 — tratamos como skip silencioso pra não inflar unreadCount nem
+    // re-disparar webhookOutbound 'message.created' a partir de messageService.create.
+    try {
+      await messageService.create(accountId, {
+        conversationId: conversation.id,
+        senderType: fromMe ? 'agent' : 'customer',
+        content: content ?? null,
+        contentType,
+        externalId: messageId,
+        attachments: attachments.length > 0 ? attachments : undefined,
+        metadata: {
+          source: 'evolution',
+          pushName: pushName ?? null,
+          remoteJid,
+          instance,
+        },
+      });
+    } catch (err: unknown) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        logger.debug(
+          '[evolution-webhook] race em messages.upsert — duplicata (P2002) ignorada',
+          {
+            accountId,
+            conversationId: conversation.id,
+            messageId,
+          }
+        );
+        return;
+      }
+      throw err;
+    }
 
     // TODO[T-022/sprint5]: emitir Socket.IO ('conversation:new_message') quando
     // o gateway WS estiver disponível. Por ora, frontends polling ou consumers
@@ -491,13 +530,25 @@ export class EvolutionController {
   }
 
   /**
-   * Processa `connection.update` — apenas log estruturado por ora.
-   * Futuro: atualizar `Inbox.active` ou expor status numa view de admin.
+   * SE-H3: Processa `connection.update` da Evolution e sincroniza `Inbox.active`.
+   *
+   * Mapeamento de estado:
+   *   - 'open'                 → active=true   (WhatsApp pareado e funcionando)
+   *   - 'connecting'           → mantém atual  (transiente — não derruba o canal)
+   *   - 'close' | 'logout'     → active=false  (sessão derrubada / banida / deslogada)
+   *
+   * Quando o estado muda, persiste via inboxChannelService.update e emite
+   * `inbox:connection` no Socket.IO pra UI do admin reagir em tempo real
+   * (ex.: mostrar banner "número desconectado, reescaneie o QR").
+   *
+   * Sem este sync, a Inbox ficava active=true mesmo após o WhatsApp cair, e o
+   * dispatcher seguia aceitando webhooks fantasma — violação do contrato do PRD.
    */
   private async processConnectionState(accountId: string, body: any): Promise<void> {
     const instance: string | undefined = body?.instance || body?.instanceName;
-    const state: string | undefined =
+    const rawState: string | undefined =
       body?.data?.state || body?.data?.connection || body?.state;
+    const state = typeof rawState === 'string' ? rawState.toLowerCase() : undefined;
 
     logger.info('[evolution-webhook] connection.update', {
       accountId,
@@ -505,8 +556,78 @@ export class EvolutionController {
       state,
     });
 
-    // TODO[T-022/sprint5]: marcar Inbox.active=false quando state==='close'/'logout'.
-    // Por enquanto só logamos — flag manual no admin continua sendo a fonte de verdade.
+    if (!instance || !state) {
+      logger.debug('[evolution-webhook] connection.update sem instance/state — skip', {
+        accountId,
+        instance,
+        state,
+      });
+      return;
+    }
+
+    // 'connecting' é transiente (reconexão em andamento) — não mexe na flag
+    // pra evitar flapping do canal em redes instáveis.
+    let nextActive: boolean | null;
+    switch (state) {
+      case 'open':
+        nextActive = true;
+        break;
+      case 'close':
+      case 'logout':
+        nextActive = false;
+        break;
+      case 'connecting':
+      default:
+        nextActive = null;
+        break;
+    }
+
+    const inbox = await inboxChannelService.listByEvolutionInstance(accountId, instance);
+    if (!inbox) {
+      logger.warn('[evolution-webhook] connection.update em instance não configurada', {
+        accountId,
+        instance,
+        state,
+      });
+      return;
+    }
+
+    // Só persiste se houve mudança real (evita writes em vão e ruído de socket).
+    if (nextActive !== null && inbox.active !== nextActive) {
+      try {
+        await inboxChannelService.update(inbox.id, accountId, { active: nextActive });
+        logger.info('[evolution-webhook] Inbox.active sincronizado via connection.update', {
+          accountId,
+          inboxId: inbox.id,
+          instance,
+          state,
+          active: nextActive,
+        });
+      } catch (err: any) {
+        logger.error(
+          '[evolution-webhook] falha ao atualizar Inbox.active',
+          err instanceof Error ? err : undefined,
+          { accountId, inboxId: inbox.id, instance, state }
+        );
+      }
+    }
+
+    // Emite pra UI mesmo quando state==='connecting' (admin vê o spinner),
+    // usando o valor efetivo da flag (atual se transiente, novo se mudou).
+    try {
+      emitInboxConnection(accountId, {
+        inboxId: inbox.id,
+        evolutionInstance: inbox.evolutionInstance ?? null,
+        state,
+        active: nextActive ?? inbox.active,
+      });
+    } catch (err: any) {
+      logger.warn('[evolution-webhook] falha ao emitir inbox:connection', {
+        accountId,
+        inboxId: inbox.id,
+        error: err?.message ?? String(err),
+      });
+    }
   }
 
   /**

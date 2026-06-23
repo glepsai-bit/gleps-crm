@@ -2,25 +2,35 @@ import { Request, Response, NextFunction } from 'express';
 import { apiKeyService } from '../services/api-key.service';
 
 /* ============================================================================
- * TODO(t022-future): scopes são placeholder. Toda API key tem god-mode no
- * escopo da sua conta. Implementar requireScope() antes de produção sensível.
+ * Scopes de API key (T-022 / CHAT-AUTH-H3)
  *
- * Hoje:
- *   - O middleware abaixo apenas valida que a chave é válida e não-revogada,
- *     e popula req.apiKey + req.accountId.
- *   - O campo `scopes` é carregado do banco mas NUNCA é checado em nenhum
- *     endpoint. Qualquer chave válida pode chamar qualquer rota protegida
- *     por requireApiKey dentro do escopo da accountId dona da chave.
+ * Modelo de autorização para chaves de integração (n8n, agentes IA externos):
  *
- * Plano:
- *   1. Definir taxonomia de scopes (ex: "leads:read", "leads:write",
- *      "messages:send", "metrics:read", "*").
- *   2. Adicionar requireScope(...allowed: string[]) que rejeita 403 se
- *      req.apiKey.scopes não tiver intersecção com `allowed` (ou "*").
- *   3. Anotar cada rota sensível com requireScope(...).
- *   4. Reabilitar input de scopes na UI e validar no controller.
+ *   - "*"                    → super-scope (god-mode dentro da accountId).
+ *                              Só deve ser concedido a chaves administrativas.
+ *   - "messages:write"       → envia mensagens públicas (chat / WhatsApp via
+ *                              Evolution) em nome da conta.
+ *   - "messages:notes"       → cria notas internas (isPrivate=true). É um
+ *                              scope SEPARADO porque permite falsificar
+ *                              histórico interno e por isso não deve vazar
+ *                              em chaves de bot público.
+ *   - "contacts:read"        → leitura do catálogo de contatos via API.
+ *   - "campaigns:write"      → dispara campanhas WhatsApp (send-single /
+ *                              send-batch).
+ *   - "campaigns:read"       → leitura de lotes de campanha.
  *
- * Até lá: input de scopes foi removido da UI e o service força [] no insert.
+ * Comportamento:
+ *   - requireApiKey valida que a chave é válida/não-revogada e popula
+ *     req.apiKey + req.accountId.
+ *   - requireScope(...allowed) deve ser montado DEPOIS de requireApiKey em
+ *     toda rota sensível. Aceita a chamada se req.apiKey.scopes contém "*"
+ *     ou intersecta com `allowed`. Caso contrário 403.
+ *
+ * Compatibilidade:
+ *   - Chaves antigas foram criadas com scopes=[] (god-mode implícito no
+ *     middleware antigo). Para não quebrar integrações em produção sem
+ *     migração, scopes=[] é tratado como scopes=["*"] APENAS quando a flag
+ *     LEGACY_API_KEY_GOD_MODE=true. O default é negar (seguro).
  * ========================================================================= */
 
 // Declaration merging: extend Express Request with apiKey + accountId fields
@@ -76,7 +86,7 @@ export async function requireApiKey(
     req.apiKey = {
       id: validated.id,
       accountId: validated.accountId,
-      scopes: validated.scopes,
+      scopes: Array.isArray(validated.scopes) ? validated.scopes : [],
     };
     req.accountId = validated.accountId;
 
@@ -84,4 +94,59 @@ export async function requireApiKey(
   } catch (error) {
     next(error);
   }
+}
+
+/**
+ * Verifica se a chave possui pelo menos um dos scopes pedidos.
+ * "*" é coringa e satisfaz qualquer requisito.
+ *
+ * Chaves com scopes=[] são tratadas como NEGADAS, exceto quando a env
+ * LEGACY_API_KEY_GOD_MODE=true (modo de transição para compatibilidade com
+ * chaves emitidas antes do T-022 endurecer o middleware).
+ */
+export function apiKeyHasScope(
+  scopes: string[] | undefined,
+  allowed: readonly string[]
+): boolean {
+  if (!allowed || allowed.length === 0) return true;
+  const owned = Array.isArray(scopes) ? scopes : [];
+
+  if (owned.length === 0) {
+    return process.env.LEGACY_API_KEY_GOD_MODE === 'true';
+  }
+
+  if (owned.includes('*')) return true;
+  return allowed.some(scope => owned.includes(scope));
+}
+
+/**
+ * Middleware factory: exige que a chave já validada possua ao menos um dos
+ * `allowed` scopes. Deve ser montado DEPOIS de requireApiKey.
+ *
+ * Ex:
+ *   router.use(requireApiKey);
+ *   router.post('/messages', requireScope('messages:write'), handler);
+ */
+export function requireScope(...allowed: string[]) {
+  return function requireScopeMiddleware(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): void {
+    if (!req.apiKey) {
+      res.status(401).json({ error: 'API key inválida ou revogada' });
+      return;
+    }
+
+    if (!apiKeyHasScope(req.apiKey.scopes, allowed)) {
+      res.status(403).json({
+        error: 'API key sem permissão para esta operação',
+        code: 'API_KEY_SCOPE_DENIED',
+        requiredScopes: allowed,
+      });
+      return;
+    }
+
+    next();
+  };
 }

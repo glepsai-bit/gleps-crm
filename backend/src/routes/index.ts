@@ -36,6 +36,7 @@ import {
   apiKeyRouter as messageApiKeyRoutes,
 } from './message.routes';
 import customAttributeRoutes from './custom-attribute.routes';
+import cannedResponseRoutes from './canned-response.routes';
 import slaRoutes, { conversationsRouter as slaConversationsRouter } from './sla.routes';
 import chatMetricsRoutes from './chat-metrics.routes';
 import agentAvailabilityRoutes from './agent-availability.routes';
@@ -113,6 +114,7 @@ router.use('/', messageJwtRoutes);
 // API Key router p/ integrações externas (n8n, agente IA)
 router.use('/integrations/chat', messageApiKeyRoutes);
 router.use('/custom-attributes', customAttributeRoutes);
+router.use('/canned-responses', cannedResponseRoutes);
 router.use('/sla-policies', slaRoutes);
 router.use('/chat', chatMetricsRoutes);
 router.use('/availability', agentAvailabilityRoutes);

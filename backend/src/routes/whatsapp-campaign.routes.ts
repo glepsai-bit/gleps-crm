@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authenticate, requireAccountId, requirePermission, requireRole } from '../middlewares/auth.middleware';
-import { requireApiKey } from '../middlewares/apiKey.middleware';
+import { requireApiKey, requireScope } from '../middlewares/apiKey.middleware';
 import { whatsappCampaignController } from '../controllers/whatsapp-campaign.controller';
 
 // ============================================
@@ -33,16 +33,16 @@ jwtRouter.delete('/batches/:id', (req, res, next) =>
 const apiKeyRouter = Router();
 apiKeyRouter.use(requireApiKey);
 
-apiKeyRouter.post('/send-single', (req, res, next) =>
+apiKeyRouter.post('/send-single', requireScope('campaigns:write'), (req, res, next) =>
   whatsappCampaignController.sendSingle(req, res, next)
 );
-apiKeyRouter.post('/send-batch', (req, res, next) =>
+apiKeyRouter.post('/send-batch', requireScope('campaigns:write'), (req, res, next) =>
   whatsappCampaignController.sendBatch(req, res, next)
 );
-apiKeyRouter.get('/batches', (req, res, next) =>
+apiKeyRouter.get('/batches', requireScope('campaigns:read', 'campaigns:write'), (req, res, next) =>
   whatsappCampaignController.listBatches(req, res, next)
 );
-apiKeyRouter.get('/batches/:id', (req, res, next) =>
+apiKeyRouter.get('/batches/:id', requireScope('campaigns:read', 'campaigns:write'), (req, res, next) =>
   whatsappCampaignController.getBatch(req, res, next)
 );
 

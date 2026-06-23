@@ -286,13 +286,57 @@ export class SLAController {
         throw new NotFoundError('Politica de SLA');
       }
 
+      // Carrega a policy junto para conseguir derivar expectedMin
+      // (first_response_min vs resolution_min) por tipo de breach.
+      const policyFull = await prisma.sLAPolicy.findFirst({
+        where: { id, accountId },
+        select: {
+          id: true,
+          firstResponseMin: true,
+          resolutionMin: true,
+        },
+      });
+
       const breaches = await prisma.sLABreach.findMany({
         where: { slaPolicyId: id },
         orderBy: { breachedAt: 'desc' },
         take: 50,
       });
 
-      res.json({ data: breaches });
+      // Transformer: preserva o contrato esperado pelo FE
+      // (type / expectedMin / actualMin / createdAt) a partir do
+      // schema real (breachType / expectedAt / breachedAt / notifiedAt).
+      const data = breaches.map(b => {
+        const expectedMin =
+          b.breachType === 'first_response'
+            ? (policyFull?.firstResponseMin ?? 0)
+            : b.breachType === 'resolution'
+              ? (policyFull?.resolutionMin ?? 0)
+              : 0;
+
+        // actualMin = expectedMin + minutos de atraso ate o breach ser detectado.
+        // Se notifiedAt existe, usa o tempo total ate a notificacao.
+        const expectedAtMs = b.expectedAt.getTime();
+        const breachedAtMs = b.breachedAt.getTime();
+        const overdueMs = Math.max(0, breachedAtMs - expectedAtMs);
+        const actualMin = expectedMin + Math.round(overdueMs / 60000);
+
+        return {
+          id: b.id,
+          slaPolicyId: b.slaPolicyId,
+          conversationId: b.conversationId,
+          type: b.breachType,
+          breachType: b.breachType,
+          expectedAt: b.expectedAt.toISOString(),
+          breachedAt: b.breachedAt.toISOString(),
+          notifiedAt: b.notifiedAt ? b.notifiedAt.toISOString() : null,
+          expectedMin,
+          actualMin,
+          createdAt: b.breachedAt.toISOString(),
+        };
+      });
+
+      res.json({ data });
     } catch (error) {
       next(error);
     }

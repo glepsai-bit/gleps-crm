@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { slaController } from '../controllers/sla.controller';
-import { authenticate, requireRole } from '../middlewares/auth.middleware';
+import { authenticate, requireAccountId, requireRole } from '../middlewares/auth.middleware';
 
 // ============================================
 // Router para /api/sla-policies (CRUD + breaches recentes)
@@ -39,7 +39,7 @@ export default router;
 // e funnelRouter em tag.routes).
 const conversationsRouter = Router();
 
-conversationsRouter.use(authenticate, requireRole('super_admin', 'admin'));
+conversationsRouter.use(authenticate, requireAccountId, requireRole('super_admin', 'admin'));
 
 conversationsRouter.post('/:id/sla', (req, res, next) =>
   slaController.applyToConversation(req, res, next)

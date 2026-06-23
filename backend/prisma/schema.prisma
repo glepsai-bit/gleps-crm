@@ -330,6 +330,9 @@ model Contact {
   @@index([email])
   @@index([nicho])
   @@index([cidade])
+  // Garante dedupe de contato dentro do tenant — usado pelo
+  // findOrCreateForCustomer (webhook Evolution faz retry agressivo).
+  @@unique([accountId, telefone], name: "contacts_account_telefone_key")
   @@map("contacts")
 }
 
@@ -1269,6 +1272,9 @@ model Conversation {
   @@index([teamId])
   @@index([status])
   @@index([externalId])
+  // Garante dedupe de conversa por remoteJid dentro do inbox — usado
+  // pelo findOrCreateForCustomer (webhook Evolution faz retry agressivo).
+  @@unique([accountId, inboxId, externalId], name: "conversations_account_inbox_external_key")
   @@map("conversations")
 }
 
@@ -1299,6 +1305,12 @@ model Message {
   @@index([senderType])
   @@index([externalId])
   @@index([createdAt])
+  // SE-H2: idempotência de Evolution messages.upsert. Postgres permite múltiplos NULLs
+  // num UNIQUE comum, então mensagens sem externalId (ex: notas internas) seguem livres,
+  // mas duas mensagens com mesmo (conversationId, externalId) levantam P2002 — que o
+  // controller trata como skip silencioso. Sem esse unique a janela de retry da Evolution
+  // duplicava Messages, inflava unreadCount e disparava webhookOutbound 2x.
+  @@unique([conversationId, externalId])
   @@map("messages")
 }
 

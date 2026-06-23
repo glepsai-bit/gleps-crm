@@ -4,7 +4,7 @@ import {
   requireAccountId,
   requireRole,
 } from '../middlewares/auth.middleware';
-import { requireApiKey } from '../middlewares/apiKey.middleware';
+import { requireApiKey, requireScope } from '../middlewares/apiKey.middleware';
 import { messageController } from '../controllers/message.controller';
 
 // ============================================
@@ -51,8 +51,10 @@ const apiKeyRouter = Router();
 
 apiKeyRouter.use(requireApiKey);
 
-apiKeyRouter.post('/conversations/:id/messages', (req, res, next) =>
-  messageController.createFromIntegration(req, res, next)
+apiKeyRouter.post(
+  '/conversations/:id/messages',
+  requireScope('messages:write', 'messages:notes'),
+  (req, res, next) => messageController.createFromIntegration(req, res, next)
 );
 
 export { jwtRouter, apiKeyRouter };
