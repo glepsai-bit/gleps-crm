@@ -65,8 +65,8 @@ function AgendadasTab({ accountId }: { accountId: string }) {
 
   const mutateCancelar = useMutation({
     mutationFn: async (batchId: string) => {
-      // TODO: backend pendente — PATCH /api/dispatch/batches/:id/cancel
-      await apiClient.patch(API_ENDPOINTS.PROSPECTING.BATCH_CANCEL(batchId), { status: 'cancelled' });
+      // Backend: DELETE /api/dispatch/batches/:id — cancela batch agendado (status='scheduled')
+      await apiClient.delete(API_ENDPOINTS.PROSPECTING.BATCH_CANCEL(batchId));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['batches-agendadas'] });

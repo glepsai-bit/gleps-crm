@@ -166,8 +166,8 @@ export const API_ENDPOINTS = {
     AUDIENCES: '/api/prospecting/audiences',
     AUDIENCE: (id: string) => `/api/prospecting/audiences/${id}`,
     BATCHES_SCHEDULED: '/api/dispatch/batches',
-    DISPATCH_START: '/api/dispatch/start',
-    BATCH_CANCEL: (id: string) => `/api/dispatch/batches/${id}/cancel`,
+    DISPATCH_START: '/api/dispatch/send-batch',
+    BATCH_CANCEL: (id: string) => `/api/dispatch/batches/${id}`,
   },
 
   // ============= WHATSAPP TEMPLATES =============
@@ -234,6 +234,31 @@ export const API_ENDPOINTS = {
     INBOX_UNENROLL: (id: string) => `/api/email/inbox/${id}/unenroll`,
     INBOX_REPLY: '/api/email/inbox/reply',
     INBOX_SUGGEST_REPLY: '/api/email/inbox/suggest-reply',
+  },
+
+  // ============= WEBHOOKS (Sprint 3) =============
+  WEBHOOKS: {
+    LIST: '/api/webhooks',
+    CREATE: '/api/webhooks',
+    UPDATE: (id: string) => `/api/webhooks/${id}`,
+    DELETE: (id: string) => `/api/webhooks/${id}`,
+    DELIVERIES: (id: string) => `/api/webhooks/${id}/deliveries`,
+    TEST: (id: string) => `/api/webhooks/${id}/test`,
+  },
+
+  // ============= INBOUND INTEGRATIONS (Sprint 3) =============
+  INBOUND_INTEGRATIONS: {
+    LIST: '/api/integrations/inbound',
+    CREATE: '/api/integrations/inbound',
+    DELETE: (slug: string) => `/api/integrations/inbound/${slug}`,
+  },
+
+  // ============= WHATSAPP CONSENTS / OPT-OUT (Sprint 3) =============
+  WHATSAPP_CONSENTS: {
+    LIST: '/api/whatsapp-consents',
+    OPT_IN: (contactId: string) => `/api/whatsapp-consents/${contactId}/opt-in`,
+    OPT_OUT: (contactId: string) => `/api/whatsapp-consents/${contactId}/opt-out`,
+    EXPORT: '/api/whatsapp-consents/export',
   },
 } as const;
 
