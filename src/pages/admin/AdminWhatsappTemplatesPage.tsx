@@ -49,11 +49,12 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Pencil, Trash2, MessageSquare, Eye } from 'lucide-react';
+import { Plus, Pencil, Trash2, MessageSquare, Eye, AlertTriangle } from 'lucide-react';
 
 const schema = z.object({
-  name: z.string().min(1, 'Nome obrigatório'),
+  name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
   category: z.string().min(1, 'Categoria obrigatória'),
   content: z.string().min(1, 'Conteúdo obrigatório'),
 });
@@ -67,6 +68,7 @@ const CATEGORIAS = [
 ];
 
 const FAKE_PREVIEW = { '{nome}': 'João Silva', '{telefone}': '(11) 99999-9999', '{valor}': 'R$ 150,00' };
+const KNOWN_PLACEHOLDERS = new Set(Object.keys(FAKE_PREVIEW));
 
 function previewContent(content: string) {
   let preview = content;
@@ -74,6 +76,12 @@ function previewContent(content: string) {
     preview = preview.split(placeholder).join(value);
   });
   return preview;
+}
+
+function findUnknownPlaceholders(content: string): string[] {
+  const matches = content.match(/\{[^{}\s]+\}/g) ?? [];
+  const unknown = matches.filter(m => !KNOWN_PLACEHOLDERS.has(m));
+  return Array.from(new Set(unknown));
 }
 
 function categoryLabel(cat: string) {
@@ -87,13 +95,14 @@ export default function AdminWhatsappTemplatesPage() {
   const [editingTemplate, setEditingTemplate] = useState<WhatsappTemplate | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [previewTemplate, setPreviewTemplate] = useState<WhatsappTemplate | null>(null);
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
 
   const { data: templates = [], isLoading } = useQuery({
     queryKey: ['whatsapp-templates'],
     queryFn: listTemplates,
   });
 
-  const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<FormData>({
+  const { register, handleSubmit, reset, setValue, watch, formState: { errors, isDirty } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { name: '', category: 'relacionamento', content: '' },
   });
@@ -107,7 +116,7 @@ export default function AdminWhatsappTemplatesPage() {
       toast({ title: 'Template criado com sucesso!' });
       fecharDialog();
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       toast({ title: 'Erro ao criar template', description: err.message, variant: 'destructive' });
     },
   });
@@ -120,7 +129,7 @@ export default function AdminWhatsappTemplatesPage() {
       toast({ title: 'Template atualizado!' });
       fecharDialog();
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       toast({ title: 'Erro ao atualizar', description: err.message, variant: 'destructive' });
     },
   });
@@ -132,7 +141,7 @@ export default function AdminWhatsappTemplatesPage() {
       toast({ title: 'Template excluído.' });
       setDeletingId(null);
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       toast({ title: 'Erro ao excluir', description: err.message, variant: 'destructive' });
     },
   });
@@ -152,7 +161,20 @@ export default function AdminWhatsappTemplatesPage() {
   const fecharDialog = () => {
     setDialogOpen(false);
     setEditingTemplate(null);
+    setConfirmDiscardOpen(false);
     reset({ name: '', category: 'relacionamento', content: '' });
+  };
+
+  const solicitarFechamento = (open: boolean) => {
+    if (open) {
+      setDialogOpen(true);
+      return;
+    }
+    if (isDirty) {
+      setConfirmDiscardOpen(true);
+      return;
+    }
+    fecharDialog();
   };
 
   const onSubmit = (data: FormData) => {
@@ -222,6 +244,7 @@ export default function AdminWhatsappTemplatesPage() {
                           size="icon"
                           onClick={() => setPreviewTemplate(t)}
                           title="Pré-visualizar"
+                          aria-label={`Pré-visualizar template ${t.name}`}
                         >
                           <Eye className="w-4 h-4" />
                         </Button>
@@ -230,6 +253,7 @@ export default function AdminWhatsappTemplatesPage() {
                           size="icon"
                           onClick={() => abrirEditar(t)}
                           title="Editar"
+                          aria-label={`Editar template ${t.name}`}
                         >
                           <Pencil className="w-4 h-4" />
                         </Button>
@@ -239,6 +263,7 @@ export default function AdminWhatsappTemplatesPage() {
                           onClick={() => setDeletingId(t.id)}
                           className="text-destructive hover:text-destructive"
                           title="Excluir"
+                          aria-label={`Excluir template ${t.name}`}
                         >
                           <Trash2 className="w-4 h-4" />
                         </Button>
@@ -253,7 +278,7 @@ export default function AdminWhatsappTemplatesPage() {
       </Card>
 
       {/* Dialog criar/editar */}
-      <Dialog open={dialogOpen} onOpenChange={fecharDialog}>
+      <Dialog open={dialogOpen} onOpenChange={solicitarFechamento}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editingTemplate ? 'Editar Template' : 'Novo Template'}</DialogTitle>
@@ -299,7 +324,7 @@ export default function AdminWhatsappTemplatesPage() {
             </div>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={fecharDialog} disabled={isSaving}>
+              <Button type="button" variant="outline" onClick={() => solicitarFechamento(false)} disabled={isSaving}>
                 Cancelar
               </Button>
               <Button type="submit" disabled={isSaving}>
@@ -318,6 +343,27 @@ export default function AdminWhatsappTemplatesPage() {
           </DialogHeader>
           <div className="py-2 space-y-3">
             <p className="text-xs text-muted-foreground">Visualização com dados de exemplo</p>
+            {previewTemplate && (() => {
+              const desconhecidas = findUnknownPlaceholders(previewTemplate.content);
+              if (desconhecidas.length === 0) return null;
+              return (
+                <Alert
+                  variant="default"
+                  className="border-yellow-300 bg-yellow-50 text-yellow-900 dark:border-yellow-800 dark:bg-yellow-950/30 dark:text-yellow-200 [&>svg]:text-yellow-600 dark:[&>svg]:text-yellow-400"
+                >
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>
+                    Variáveis sem dado de exemplo (serão exibidas literalmente):{' '}
+                    {desconhecidas.map((v, i) => (
+                      <span key={v}>
+                        <code className="bg-yellow-100 dark:bg-yellow-900/40 px-1 rounded">{v}</code>
+                        {i < desconhecidas.length - 1 ? ', ' : ''}
+                      </span>
+                    ))}
+                  </AlertDescription>
+                </Alert>
+              );
+            })()}
             <div className="bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-lg p-4">
               <p className="text-sm whitespace-pre-wrap text-foreground">
                 {previewTemplate ? previewContent(previewTemplate.content) : ''}
@@ -332,6 +378,27 @@ export default function AdminWhatsappTemplatesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* AlertDialog descartar alterações */}
+      <AlertDialog open={confirmDiscardOpen} onOpenChange={setConfirmDiscardOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Descartar alterações?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Você possui alterações não salvas no template. Se fechar agora, elas serão perdidas.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Continuar editando</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={fecharDialog}
+            >
+              Descartar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* AlertDialog excluir */}
       <AlertDialog open={!!deletingId} onOpenChange={open => { if (!open) setDeletingId(null); }}>

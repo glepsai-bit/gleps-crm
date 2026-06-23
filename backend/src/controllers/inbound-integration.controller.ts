@@ -17,13 +17,13 @@ const createInboundSchema = z.object({
   handler: z.string().min(1, 'handler é obrigatório'),
   config: z.record(z.any()).optional(),
   // BUG-002 (CRITICAL): secret é OBRIGATÓRIO no create — sem ele, qualquer
-  // pessoa que descubra a URL pública pode disparar o webhook. Mínimo 16
-  // caracteres para evitar segredos triviais. O schema Prisma permanece
-  // nullable (compat com dados antigos) mas processWebhook bloqueia integrações
-  // sem secret em runtime.
+  // pessoa que descubra a URL pública pode disparar o webhook. Mínimo 32
+  // caracteres (BUG-068) para garantir entropia suficiente contra brute force.
+  // O schema Prisma permanece nullable (compat com dados antigos) mas
+  // processWebhook bloqueia integrações sem secret em runtime.
   secret: z
     .string({ required_error: 'secret é obrigatório' })
-    .min(16, 'secret deve ter no mínimo 16 caracteres'),
+    .min(32, 'Secret precisa de pelo menos 32 caracteres'),
 });
 
 /**

@@ -107,23 +107,29 @@ class WhatsappConsentsBackendService {
    * registrado só pelo número), passe o telefone para que seja normalizado e
    * usado no path `/api/whatsapp-consents/:contactIdOrPhone/opt-in`.
    */
-  async optIn(contactIdOrPhone: string): Promise<void> {
+  async optIn(contactIdOrPhone: string, motivo?: string): Promise<void> {
     const id = encodeURIComponent(
       /\D/.test(contactIdOrPhone) || contactIdOrPhone.length > 30
         ? normalizePhone(contactIdOrPhone)
         : contactIdOrPhone
     );
-    await apiClient.post(`/api/whatsapp-consents/${id}/opt-in`);
+    await apiClient.post(
+      `/api/whatsapp-consents/${id}/opt-in`,
+      motivo ? { motivo } : undefined
+    );
   }
 
   /** Opt-out manual: registra opt-out para o contato (ou telefone normalizado). */
-  async optOut(contactIdOrPhone: string): Promise<void> {
+  async optOut(contactIdOrPhone: string, motivo?: string): Promise<void> {
     const id = encodeURIComponent(
       /\D/.test(contactIdOrPhone) || contactIdOrPhone.length > 30
         ? normalizePhone(contactIdOrPhone)
         : contactIdOrPhone
     );
-    await apiClient.post(`/api/whatsapp-consents/${id}/opt-out`);
+    await apiClient.post(
+      `/api/whatsapp-consents/${id}/opt-out`,
+      motivo ? { motivo } : undefined
+    );
   }
 
   /**

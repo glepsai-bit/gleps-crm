@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -79,6 +80,7 @@ export default function SuperAdminApiKeysPage() {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
   const [createdKey, setCreatedKey] = useState<CreatedApiKey | null>(null);
+  const [hasCopiedKey, setHasCopiedKey] = useState(false);
   const [revokingKey, setRevokingKey] = useState<ApiKey | null>(null);
   const [hideRevoked, setHideRevoked] = useState(true);
 
@@ -147,6 +149,7 @@ export default function SuperAdminApiKeysPage() {
       setIsCreateOpen(false);
       setNewKeyName('');
       setCreatedKey(null);
+      setHasCopiedKey(false);
     } else {
       setIsCreateOpen(true);
     }
@@ -313,7 +316,15 @@ export default function SuperAdminApiKeysPage() {
 
       {/* Dialog: criar + exibir plaintext */}
       <Dialog open={isCreateOpen} onOpenChange={handleCloseCreateDialog}>
-        <DialogContent className="max-w-md">
+        <DialogContent
+          className="max-w-md"
+          onInteractOutside={(e) => {
+            if (createdKey) e.preventDefault();
+          }}
+          onEscapeKeyDown={(e) => {
+            if (createdKey) e.preventDefault();
+          }}
+        >
           {!createdKey ? (
             <>
               <DialogHeader>
@@ -397,9 +408,28 @@ export default function SuperAdminApiKeysPage() {
                     revogue esta.
                   </p>
                 </div>
+                <div className="flex items-start gap-2 pt-1">
+                  <Checkbox
+                    id="copied-key-confirm"
+                    checked={hasCopiedKey}
+                    onCheckedChange={(checked) =>
+                      setHasCopiedKey(checked === true)
+                    }
+                    className="mt-0.5"
+                  />
+                  <Label
+                    htmlFor="copied-key-confirm"
+                    className="text-sm cursor-pointer leading-snug"
+                  >
+                    Copiei a chave (não será mostrada de novo)
+                  </Label>
+                </div>
               </div>
               <DialogFooter>
-                <Button onClick={() => handleCloseCreateDialog(false)}>
+                <Button
+                  onClick={() => handleCloseCreateDialog(false)}
+                  disabled={!hasCopiedKey}
+                >
                   Fechar
                 </Button>
               </DialogFooter>

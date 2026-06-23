@@ -25,6 +25,23 @@ interface CampaignBatch {
   created_at: string;
 }
 
+/**
+ * Métricas agregadas de campanhas — quando o endpoint
+ * `/api/dispatch/metrics` for implementado, este tipo será o contrato
+ * consumido pelo dashboard (hoje computamos localmente a partir dos batches).
+ */
+interface CampaignMetrics {
+  totalEnviadas: number;
+  totalFalhas: number;
+  taxaEntrega: number;
+  campanhasAtivas: number;
+}
+
+/** Resposta esperada do GET /api/dispatch/batches. */
+interface BatchesResponse {
+  data?: CampaignBatch[];
+}
+
 type Periodo = '7d' | '30d';
 type SourceFiltro = 'todas' | 'manual' | 'manual_scheduled' | 'n8n' | 'api';
 
@@ -75,8 +92,11 @@ export function CampaignDashboard({ accountId }: Props) {
         const params: Record<string, string> = { periodo };
         if (sourceFiltro !== 'todas') params.source = sourceFiltro;
         if (triggerFiltro.trim()) params.trigger_name = triggerFiltro.trim();
-        const res = await apiClient.get<any>(API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED, { params });
-        const data = (res as any).data ?? res;
+        const res = await apiClient.get<BatchesResponse | CampaignBatch[]>(
+          API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED,
+          { params },
+        );
+        const data = Array.isArray(res) ? res : res?.data;
         return Array.isArray(data) ? data : [];
       } catch {
         return [];
@@ -87,7 +107,7 @@ export function CampaignDashboard({ accountId }: Props) {
 
   // Métricas computadas localmente a partir dos batches carregados
   // (endpoint /api/dispatch/metrics ainda não existe no backend)
-  const metrics = useMemo(() => {
+  const metrics = useMemo<CampaignMetrics>(() => {
     const totalEnviadas = batches.reduce((acc, b) => acc + (b.sentCount ?? 0), 0);
     const totalFalhas = batches.reduce((acc, b) => acc + (b.failedCount ?? 0), 0);
     const totalTentativas = totalEnviadas + totalFalhas;

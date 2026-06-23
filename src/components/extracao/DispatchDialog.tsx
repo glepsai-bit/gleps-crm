@@ -141,6 +141,14 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
   const selectedInboxes = inboxes.filter(i => selectedInboxIds.has(i.id));
   const leadsPerInbox = selectedInboxes.length > 0 ? Math.ceil(leads.length / selectedInboxes.length) : 0;
 
+  // BUG-047: validação do delay (5-300s). String vazia ou não numérica também invalida.
+  const delayNumber = Number(delay);
+  const delayInvalid =
+    delay.trim() === '' ||
+    !Number.isFinite(delayNumber) ||
+    delayNumber < 5 ||
+    delayNumber > 300;
+
   const addMessage = () => {
     if (messages.length >= 10) return;
     setMessages([...messages, '']);
@@ -181,8 +189,12 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
 
   const handleMessageUpdate = (idx: number, value: string) => {
     updateMessage(idx, value);
+    // BUG-060: ao primeiro edit manual da mensagem, limpar selectedTemplateId
+    // imediatamente — não esperar o flag customMessage virar true no próximo render.
+    if (selectedTemplateId !== NO_TEMPLATE_VALUE) {
+      setSelectedTemplateId(NO_TEMPLATE_VALUE);
+    }
     setCustomMessage(true);
-    if (customMessage) setSelectedTemplateId(NO_TEMPLATE_VALUE);
   };
 
   const handleDispatch = async () => {
@@ -345,10 +357,18 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
               max={300}
               value={delay}
               onChange={e => setDelay(e.target.value)}
+              aria-invalid={delayInvalid}
+              aria-describedby={delayInvalid ? 'delay-error' : undefined}
             />
-            <p className="text-xs text-muted-foreground">
-              Intervalo mínimo de 5 segundos entre cada envio
-            </p>
+            {delayInvalid ? (
+              <p id="delay-error" className="text-xs text-destructive">
+                O delay deve estar entre 5 e 300 segundos.
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Intervalo mínimo de 5 segundos entre cada envio
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -450,7 +470,7 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSending}>
             Cancelar
           </Button>
-          <Button onClick={handleDispatch} disabled={isSending || selectedInboxes.length === 0}>
+          <Button onClick={handleDispatch} disabled={isSending || selectedInboxes.length === 0 || delayInvalid}>
             {isSending ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />

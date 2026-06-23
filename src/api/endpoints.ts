@@ -173,9 +173,44 @@ export const API_ENDPOINTS = {
   // ============= WHATSAPP TEMPLATES =============
   WHATSAPP_TEMPLATES: {
     LIST: '/api/whatsapp-templates',
+    GET_BY_ID: (id: string) => `/api/whatsapp-templates/${id}`,
     CREATE: '/api/whatsapp-templates',
     UPDATE: (id: string) => `/api/whatsapp-templates/${id}`,
     DELETE: (id: string) => `/api/whatsapp-templates/${id}`,
+  },
+
+  // ============= WHATSAPP CAMPAIGNS (canônico) =============
+  // BUG-082: paths canônicos para campanhas de WhatsApp — alguns serviços
+  // ainda referenciam variantes em PROSPECTING; novos consumidores devem
+  // usar esses constantes.
+  WHATSAPP_CAMPAIGNS: {
+    LIST: '/api/whatsapp/campaigns',
+    GET: (id: string) => `/api/whatsapp/campaigns/${id}`,
+    CREATE: '/api/whatsapp/campaigns',
+    UPDATE: (id: string) => `/api/whatsapp/campaigns/${id}`,
+    DELETE: (id: string) => `/api/whatsapp/campaigns/${id}`,
+    DISPATCH: (id: string) => `/api/whatsapp/campaigns/${id}/dispatch`,
+    CANCEL: (id: string) => `/api/whatsapp/campaigns/${id}/cancel`,
+    METRICS: (id: string) => `/api/whatsapp/campaigns/${id}/metrics`,
+    LOGS: (id: string) => `/api/whatsapp/campaigns/${id}/logs`,
+  },
+
+  // ============= EVOLUTION API (WhatsApp instance) =============
+  // BUG-082: grupo dedicado para controle da instância Evolution
+  // (status da conexão, QR Code de pareamento, desconexão, webhook).
+  EVOLUTION: {
+    STATUS: '/api/evolution/status',
+    QRCODE: '/api/evolution/qrcode',
+    DISCONNECT: '/api/evolution/disconnect',
+    WEBHOOK: '/api/evolution/webhook',
+  },
+
+  // ============= API KEYS =============
+  // BUG-082: gestão de chaves de API da conta (criar/listar/revogar).
+  API_KEYS: {
+    LIST: '/api/api-keys',
+    CREATE: '/api/api-keys',
+    REVOKE: (id: string) => `/api/api-keys/${id}`,
   },
 
   // ============= INSIGHTS/REPORTS =============

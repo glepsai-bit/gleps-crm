@@ -105,7 +105,21 @@ const inboundSchema = z.object({
     .min(1, 'Slug é obrigatório')
     .regex(/^[a-z0-9-]+$/, 'Slug: apenas letras minúsculas, números e hífens'),
   handler: z.string().min(1, 'Handler é obrigatório') as z.ZodType<InboundHandler>,
-  configRaw: z.string().optional(),
+  configRaw: z
+    .string()
+    .optional()
+    .refine(
+      (s) => {
+        if (!s || s.trim() === '') return true;
+        try {
+          JSON.parse(s);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      'JSON inválido'
+    ),
 });
 type InboundFormData = z.infer<typeof inboundSchema>;
 
@@ -352,6 +366,7 @@ function AbaWebhooksSaida() {
                           variant="ghost"
                           size="sm"
                           title="Editar"
+                          aria-label={`Editar webhook ${wh.name}`}
                           onClick={() => abrirEditarDialog(wh)}
                         >
                           <Pencil className="w-4 h-4" />
@@ -360,6 +375,7 @@ function AbaWebhooksSaida() {
                           variant="ghost"
                           size="sm"
                           title="Testar"
+                          aria-label={`Testar webhook ${wh.name}`}
                           disabled={testMutation.isPending}
                           onClick={() => testMutation.mutate(wh.id)}
                         >
@@ -374,6 +390,7 @@ function AbaWebhooksSaida() {
                           size="sm"
                           className="text-destructive hover:text-destructive"
                           title="Excluir"
+                          aria-label={`Excluir webhook ${wh.name}`}
                           onClick={() => setExcluindo(wh)}
                         >
                           <Trash2 className="w-4 h-4" />
@@ -412,13 +429,19 @@ function AbaWebhooksSaida() {
                     <code className="flex-1 text-xs font-mono bg-background/60 px-3 py-2 rounded border break-all select-all">
                       {criado.secret}
                     </code>
-                    <Button size="icon" variant="outline" onClick={copiarSecret} title="Copiar secret">
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      onClick={copiarSecret}
+                      title="Copiar secret"
+                      aria-label="Copiar secret HMAC"
+                    >
                       <Copy className="w-4 h-4" />
                     </Button>
                   </div>
                   <p className="text-xs text-amber-800 dark:text-amber-300/80">
                     Use este secret para validar a assinatura HMAC-SHA256 no cabeçalho
-                    <code className="mx-1">X-Gleps-Signature</code> de cada requisição recebida.
+                    <code className="mx-1">x-webhook-signature</code> de cada requisição recebida.
                   </p>
                 </div>
               </div>
@@ -613,9 +636,10 @@ function AbaWebhooksEntrada() {
 
   const handlerSelecionado = form.watch('handler');
   const slugAtual = form.watch('slug');
-  const urlExemplo = accountId && slugAtual
+  const urlPronta = !!(accountId && slugAtual);
+  const urlExemplo = urlPronta
     ? `${window.location.origin}/api/integrations/inbound-receive/${accountId}/${slugAtual}`
-    : '/api/integrations/inbound-receive/:accountId/:slug';
+    : '';
 
   return (
     <div className="space-y-4">
@@ -670,6 +694,7 @@ function AbaWebhooksEntrada() {
                           className="h-6 w-6 flex-shrink-0"
                           onClick={() => copiarUrl(int.webhookUrl)}
                           title="Copiar URL"
+                          aria-label={`Copiar URL do handler ${int.slug}`}
                         >
                           <Copy className="w-3 h-3" />
                         </Button>
@@ -680,6 +705,8 @@ function AbaWebhooksEntrada() {
                       size="sm"
                       className="text-destructive hover:text-destructive flex-shrink-0"
                       onClick={() => setExcluindo(int)}
+                      title="Remover handler"
+                      aria-label={`Remover handler ${int.slug}`}
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
@@ -749,12 +776,18 @@ function AbaWebhooksEntrada() {
                   className="font-mono text-xs"
                   rows={4}
                   placeholder='{"tagId": "abc123"}'
+                  aria-invalid={!!form.formState.errors.configRaw}
                   {...form.register('configRaw')}
                 />
+                {form.formState.errors.configRaw && (
+                  <p className="text-xs text-destructive">
+                    {form.formState.errors.configRaw.message}
+                  </p>
+                )}
               </div>
 
               {/* URL gerada */}
-              {slugAtual && (
+              {urlPronta && (
                 <div className="space-y-2">
                   <Label>URL gerada</Label>
                   <div className="flex items-center gap-2">
@@ -766,6 +799,8 @@ function AbaWebhooksEntrada() {
                       size="icon"
                       variant="outline"
                       onClick={() => copiarUrl(urlExemplo)}
+                      aria-label="Copiar URL gerada"
+                      title="Copiar URL gerada"
                     >
                       <Copy className="w-4 h-4" />
                     </Button>
@@ -776,11 +811,17 @@ function AbaWebhooksEntrada() {
               {/* Exemplo cURL */}
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Exemplo cURL</Label>
-                <pre className="text-xs bg-muted p-3 rounded-md overflow-x-auto whitespace-pre-wrap">
+                {urlPronta ? (
+                  <pre className="text-xs bg-muted p-3 rounded-md overflow-x-auto whitespace-pre-wrap">
 {`curl -X POST "${urlExemplo}" \\
   -H "Content-Type: application/json" \\
   -d '{"contactId": "xxx", "telefone": "5511999999999"}'`}
-                </pre>
+                  </pre>
+                ) : (
+                  <p className="text-xs text-muted-foreground italic px-3 py-2 bg-muted rounded-md">
+                    &lt;preencha slug acima&gt;
+                  </p>
+                )}
               </div>
             </div>
 

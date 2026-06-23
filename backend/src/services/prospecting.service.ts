@@ -340,6 +340,7 @@ class ProspectingService {
     // Create log entries
     const logEntries = inboxAssignments.flatMap(assignment =>
       assignment.contacts.map(c => ({
+        accountId,
         batchId: batch.id,
         contactName: c.nome,
         phone: c.telefone,

@@ -25,6 +25,17 @@ import {
 } from '@/components/ui/select';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import {
   ArrowLeft,
   Building2,
   Settings,
@@ -49,6 +60,7 @@ import {
   ChevronRight,
   AlertTriangle,
   Save,
+  PowerOff,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
 import { toast } from 'sonner';
@@ -91,6 +103,9 @@ export default function SuperAdminAccountDetailPage() {
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isPasswordConfirmOpen, setIsPasswordConfirmOpen] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isDisconnectingWhatsapp, setIsDisconnectingWhatsapp] = useState(false);
+  const [isPollingQrConnection, setIsPollingQrConnection] = useState(false);
   const [updatePassword, setUpdatePassword] = useState('');
   const [isValidatingUpdate, setIsValidatingUpdate] = useState(false);
   const [editFormData, setEditFormData] = useState<EditFormData>({
@@ -353,6 +368,35 @@ export default function SuperAdminAccountDetailPage() {
     }
   };
 
+  // BUG-078: faz polling do status até state==='open' OU timeout 60s.
+  const pollEvolutionConnection = async () => {
+    if (!account) return;
+    setIsPollingQrConnection(true);
+    const POLL_INTERVAL_MS = 3000;
+    const TIMEOUT_MS = 60000;
+    const startedAt = Date.now();
+    try {
+      while (Date.now() - startedAt < TIMEOUT_MS) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        try {
+          const response = await apiClient.get<any>(`/api/evolution/accounts/${account.id}/status`);
+          const state = response?.state ?? response?.status ?? response?.data?.state ?? response?.data?.status ?? 'unknown';
+          setEvolutionStatus(String(state));
+          if (String(state) === 'open') {
+            toast.success('Conectado!');
+            setQrCodeBase64(null);
+            return;
+          }
+        } catch {
+          // Continua tentando enquanto não estourar o timeout
+        }
+      }
+      toast.error('Tempo esgotado aguardando conexão. Tente gerar o QR novamente.');
+    } finally {
+      setIsPollingQrConnection(false);
+    }
+  };
+
   const handleGenerateQrCode = async () => {
     if (!account) return;
     setIsGeneratingQrCode(true);
@@ -368,9 +412,11 @@ export default function SuperAdminAccountDetailPage() {
         response?.qrCode ??
         null;
       if (base64) {
-        const clean = String(base64).replace(/^data:image\/png;base64,/, '');
+        const clean = String(base64).replace(/^data:image\/[a-z]+;base64,/i, '');
         setQrCodeBase64(clean);
         toast.success('QR Code gerado. Escaneie no WhatsApp.');
+        // BUG-078: dispara polling do status logo após gerar QR.
+        void pollEvolutionConnection();
       } else {
         toast.error('Resposta sem QR Code.');
       }
@@ -378,6 +424,22 @@ export default function SuperAdminAccountDetailPage() {
       toast.error('Erro ao gerar QR Code: ' + (error?.message || 'Erro desconhecido'));
     } finally {
       setIsGeneratingQrCode(false);
+    }
+  };
+
+  // BUG-058: desconecta o WhatsApp da Evolution para esta conta.
+  const handleDisconnectWhatsapp = async () => {
+    if (!account) return;
+    setIsDisconnectingWhatsapp(true);
+    try {
+      await apiClient.post(`/api/evolution/accounts/${account.id}/disconnect`, {});
+      setEvolutionStatus('close');
+      setQrCodeBase64(null);
+      toast.success('WhatsApp desconectado.');
+    } catch (error: any) {
+      toast.error('Erro ao desconectar WhatsApp: ' + (error?.message || 'Erro desconhecido'));
+    } finally {
+      setIsDisconnectingWhatsapp(false);
     }
   };
 
@@ -440,12 +502,15 @@ export default function SuperAdminAccountDetailPage() {
       toast.error('Digite sua senha para confirmar!');
       return;
     }
+    setIsDeleting(true);
     try {
       await accountsCloudOrBackend.delete(account.id, deletePassword);
       toast.success('Conta excluída com sucesso!');
       navigate('/super-admin/accounts');
     } catch (error: any) {
       toast.error('Erro ao excluir: ' + (error.message || 'Erro desconhecido'));
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -473,7 +538,7 @@ export default function SuperAdminAccountDetailPage() {
               <Building2 className="w-5 h-5 sm:w-6 sm:h-6 text-primary" />
             </div>
             <div className="min-w-0">
-              <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-foreground truncate">Conta + {account.nome}</h1>
+              <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-foreground truncate">{account.nome}</h1>
               <div className="flex flex-wrap items-center gap-2 mt-1">
                 <code className="text-xs bg-muted px-2 py-1 rounded font-mono">
                   ID: {accountId8}...
@@ -801,7 +866,7 @@ export default function SuperAdminAccountDetailPage() {
               variant="outline"
               size="sm"
               onClick={handleGenerateQrCode}
-              disabled={isGeneratingQrCode}
+              disabled={isGeneratingQrCode || isPollingQrConnection}
               className="gap-2"
             >
               {isGeneratingQrCode ? (
@@ -811,10 +876,53 @@ export default function SuperAdminAccountDetailPage() {
               )}
               Gerar QR Code
             </Button>
+            {/* BUG-058: desconectar WhatsApp com confirmação */}
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={isDisconnectingWhatsapp}
+                  className="gap-2"
+                >
+                  {isDisconnectingWhatsapp ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <PowerOff className="w-4 h-4" />
+                  )}
+                  Desconectar WhatsApp
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Desconectar WhatsApp?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Esta ação encerra a sessão atual da instância no Evolution.
+                    Será necessário escanear um novo QR Code para reconectar.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={isDisconnectingWhatsapp}>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleDisconnectWhatsapp}
+                    disabled={isDisconnectingWhatsapp}
+                  >
+                    Desconectar
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
             {evolutionStatus && (
               <Badge variant={getEvolutionStatusVariant(evolutionStatus)}>
                 {evolutionStatus}
               </Badge>
+            )}
+            {/* BUG-078: indicador de polling pós-QR */}
+            {isPollingQrConnection && (
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Aguardando conexão...
+              </span>
             )}
           </div>
 
@@ -893,10 +1001,11 @@ export default function SuperAdminAccountDetailPage() {
                 <SelectContent>
                   <SelectItem value="active">Ativa</SelectItem>
                   <SelectItem value="paused">Pausada</SelectItem>
+                  <SelectItem value="cancelled">Cancelada</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            
+
             {/* OpenAI Integration */}
             <div className="space-y-4 pt-4 border-t border-border/50">
               <div className="flex items-center justify-between">
@@ -1154,11 +1263,22 @@ export default function SuperAdminAccountDetailPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsDeleteOpen(false)}>
+            <Button variant="outline" onClick={() => setIsDeleteOpen(false)} disabled={isDeleting}>
               Cancelar
             </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              Excluir Permanentemente
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isDeleting || !deletePassword.trim()}
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Excluindo...
+                </>
+              ) : (
+                'Excluir Permanentemente'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

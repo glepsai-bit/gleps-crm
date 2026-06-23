@@ -223,6 +223,7 @@ model User {
   calendarEvents  CalendarEvent[]
   actorEvents     Event[]         @relation("EventActor")
   refreshTokens   RefreshToken[]
+  whatsappTemplatesCreated WhatsappTemplate[] @relation("WhatsappTemplateCreatedBy")
 
   @@index([accountId])
   @@index([email])
@@ -776,19 +777,22 @@ model DispatchBatch {
 // ============================================
 model DispatchLog {
   id           String    @id @default(uuid()) @db.Uuid
+  accountId    String    @map("account_id") @db.Uuid
   batchId      String    @map("batch_id") @db.Uuid
   contactName  String    @map("contact_name")
   phone        String
-  inboxId      Int       @map("inbox_id")
+  inboxId      Int?      @map("inbox_id")
   inboxName    String?   @map("inbox_name")
   status       String    @default("pending")
   errorMessage String?   @map("error_message")
   sentAt       DateTime? @map("sent_at") @db.Timestamptz
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
-  batch DispatchBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  account Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  batch   DispatchBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
 
   @@index([batchId])
+  @@index([accountId])
   @@map("dispatch_logs")
 }
 
@@ -804,9 +808,13 @@ model WhatsappTemplate {
   category    String   @default("custom") @db.VarChar(40)  // relacionamento | promocional | transacional | custom
   variables   String[] @default([])  // lista de variáveis detectadas em content (ex: ["nome", "valor"])
   createdById String?  @map("created_by_id") @db.Uuid
+  createdBy   User?    @relation("WhatsappTemplateCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
+  dispatchBatches DispatchBatch[]
+
+  @@unique([accountId, name])
   @@index([accountId])
   @@index([category])
   @@map("whatsapp_templates")

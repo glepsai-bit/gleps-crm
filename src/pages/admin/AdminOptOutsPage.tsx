@@ -5,7 +5,7 @@
  * e exportação CSV.
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   whatsappConsentsBackendService,
@@ -15,6 +15,8 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -56,6 +58,19 @@ import { safeFormatDateBR } from '@/utils/dateUtils';
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Hook simples de debounce — atrasa a propagação do valor em `delay` ms.
+ * Usado para evitar refetch a cada keystroke da busca (BUG-049).
+ */
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
 const FILTROS_PERIODO: { value: FiltroConsent; label: string }[] = [
   { value: 'last7d', label: 'Últimos 7 dias' },
   { value: 'last30d', label: 'Últimos 30 dias' },
@@ -85,35 +100,31 @@ export default function AdminOptOutsPage() {
   const queryClient = useQueryClient();
   const [filtro, setFiltro] = useState<FiltroConsent>('all');
   const [busca, setBusca] = useState('');
+  // BUG-049: debounce 300ms na busca antes de refetch + remoção do filtro
+  // client-side redundante (server já filtra via `q`).
+  const buscaDebounced = useDebouncedValue(busca, 300);
   const [reoptInContato, setReoptInContato] = useState<WhatsappConsent | null>(null);
+  const [motivo, setMotivo] = useState('');
   const [exportando, setExportando] = useState(false);
 
-  // Busca server-side (filtro período e q)
+  // Busca server-side (filtro período e q debounced)
   const { data: optOuts = [], isLoading } = useQuery<WhatsappConsent[]>({
-    queryKey: ['whatsapp-optouts', filtro, busca],
-    queryFn: () => whatsappConsentsBackendService.listOptedOut(filtro, busca),
-    // Debounce leve: quando busca muda, aguarda 400ms antes de refetch
-    // (TanStack Query não tem debounce nativo — usamos o estado local)
+    queryKey: ['whatsapp-optouts', filtro, buscaDebounced],
+    queryFn: () =>
+      whatsappConsentsBackendService.listOptedOut(filtro, buscaDebounced),
   });
 
-  // Filtro client-side adicional sobre a busca (para quando backend não filtra)
-  const resultados = useMemo(() => {
-    if (!busca.trim()) return optOuts;
-    const q = busca.toLowerCase();
-    return optOuts.filter(
-      (c) =>
-        c.nome.toLowerCase().includes(q) ||
-        c.telefone.includes(q)
-    );
-  }, [optOuts, busca]);
+  // Resultados = retorno do server (sem refiltro client-side).
+  const resultados = optOuts;
 
   const reoptInMutation = useMutation({
-    mutationFn: (contactIdOrPhone: string) =>
-      whatsappConsentsBackendService.optIn(contactIdOrPhone),
+    mutationFn: (vars: { id: string; motivo?: string }) =>
+      whatsappConsentsBackendService.optIn(vars.id, vars.motivo),
     onSuccess: () => {
       toast.success(`Re-opt-in realizado para ${reoptInContato?.nome}`);
       queryClient.invalidateQueries({ queryKey: ['whatsapp-optouts'] });
       setReoptInContato(null);
+      setMotivo('');
     },
     onError: (err: unknown) => {
       toast.error(
@@ -257,7 +268,7 @@ export default function AdminOptOutsPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="gap-2 text-emerald-600 border-emerald-500/40 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950"
+                        className="gap-2 text-success border-success/40 hover:bg-success/10 hover:text-success"
                         onClick={() => setReoptInContato(contato)}
                       >
                         <UserCheck className="w-4 h-4" />
@@ -275,7 +286,12 @@ export default function AdminOptOutsPage() {
       {/* Confirmação re-opt-in */}
       <AlertDialog
         open={!!reoptInContato}
-        onOpenChange={(open) => !open && setReoptInContato(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReoptInContato(null);
+            setMotivo('');
+          }
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -285,6 +301,22 @@ export default function AdminOptOutsPage() {
               Certifique-se de que o contato autorizou explicitamente antes de prosseguir.
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {/* BUG-083: motivo opcional (auditoria) enviado no body do POST */}
+          <div className="space-y-2 py-2">
+            <Label htmlFor="motivo-reoptin" className="text-sm">
+              Motivo (opcional)
+            </Label>
+            <Textarea
+              id="motivo-reoptin"
+              placeholder="Ex.: contato autorizou via e-mail em 23/06"
+              value={motivo}
+              onChange={(e) => setMotivo(e.target.value)}
+              disabled={reoptInMutation.isPending}
+              rows={3}
+            />
+          </div>
+
           <AlertDialogFooter>
             <AlertDialogCancel disabled={reoptInMutation.isPending}>
               Cancelar
@@ -292,12 +324,13 @@ export default function AdminOptOutsPage() {
             <AlertDialogAction
               onClick={() =>
                 reoptInContato &&
-                reoptInMutation.mutate(
-                  reoptInContato.contactId ?? reoptInContato.telefone
-                )
+                reoptInMutation.mutate({
+                  id: reoptInContato.contactId ?? reoptInContato.telefone,
+                  motivo: motivo.trim() || undefined,
+                })
               }
               disabled={reoptInMutation.isPending}
-              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              className="bg-success text-success-foreground hover:bg-success/90"
             >
               {reoptInMutation.isPending && (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />

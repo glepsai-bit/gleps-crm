@@ -166,10 +166,10 @@ class WhatsappCampaignService {
       errorMessage = 'Contato com opt-out';
       await prisma.dispatchLog.create({
         data: {
+          accountId,
           batchId: batch.id,
           contactName: contactName || phone,
           phone,
-          inboxId: 0,
           inboxName: 'evolution',
           status: 'blocked_optout',
           errorMessage,
@@ -210,10 +210,10 @@ class WhatsappCampaignService {
       errorMessage = rl.reason ?? 'rate_limited';
       await prisma.dispatchLog.create({
         data: {
+          accountId,
           batchId: batch.id,
           contactName: contactName || phone,
           phone,
-          inboxId: 0,
           inboxName: 'evolution',
           status: 'rate_limited',
           errorMessage,
@@ -258,10 +258,10 @@ class WhatsappCampaignService {
 
       await prisma.dispatchLog.create({
         data: {
+          accountId,
           batchId: batch.id,
           contactName: contactName || phone,
           phone,
-          inboxId: 0,
           inboxName: 'evolution',
           status: 'sent',
           sentAt: new Date(),
@@ -304,10 +304,10 @@ class WhatsappCampaignService {
 
       await prisma.dispatchLog.create({
         data: {
+          accountId,
           batchId: batch.id,
           contactName: contactName || phone,
           phone,
-          inboxId: 0,
           inboxName: 'evolution',
           status: 'failed',
           errorMessage,
@@ -479,10 +479,10 @@ class WhatsappCampaignService {
           prisma.dispatchLog
             .create({
               data: {
+                accountId,
                 batchId: batch.id,
                 contactName: sp.name || 'desconhecido',
                 phone: '',
-                inboxId: 0,
                 inboxName: inboxNameForLogs,
                 status: 'skipped_invalid_phone',
                 errorMessage: 'Telefone vazio',
@@ -625,10 +625,10 @@ class WhatsappCampaignService {
           failedCount++;
           await prisma.dispatchLog.create({
             data: {
+              accountId: batch.accountId,
               batchId,
               contactName: recipient.name || recipient.phone,
               phone: recipient.phone,
-              inboxId: 0,
               inboxName: 'evolution',
               status: 'blocked_optout',
               errorMessage: 'Contato com opt-out',
@@ -648,10 +648,10 @@ class WhatsappCampaignService {
           failedCount++;
           await prisma.dispatchLog.create({
             data: {
+              accountId: batch.accountId,
               batchId,
               contactName: recipient.name || recipient.phone,
               phone: recipient.phone,
-              inboxId: 0,
               inboxName: 'evolution',
               status: 'rate_limited',
               errorMessage: rl.reason ?? 'rate_limited',
@@ -675,10 +675,10 @@ class WhatsappCampaignService {
         sentCount++;
         await prisma.dispatchLog.create({
           data: {
+            accountId: batch.accountId,
             batchId,
             contactName: recipient.name || recipient.phone,
             phone: recipient.phone,
-            inboxId: 0,
             inboxName: 'evolution',
             status: 'sent',
             sentAt: new Date(),
@@ -694,10 +694,10 @@ class WhatsappCampaignService {
         });
         await prisma.dispatchLog.create({
           data: {
+            accountId: batch.accountId,
             batchId,
             contactName: recipient.name || recipient.phone || 'desconhecido',
             phone: recipient.phone || '',
-            inboxId: 0,
             inboxName: 'evolution',
             status: 'failed',
             errorMessage,
