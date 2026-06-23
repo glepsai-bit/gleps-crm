@@ -187,6 +187,7 @@ class AccountService {
         chatwootBaseUrl: input.chatwootBaseUrl,
         chatwootAccountId: input.chatwootAccountId,
         chatwootApiKey: input.chatwootApiKey,
+        chatwootWebhookSecret: input.chatwootWebhookSecret,
         googleClientId: input.googleClientId,
         googleClientSecret: input.googleClientSecret,
         googleRedirectUri: input.googleRedirectUri,
