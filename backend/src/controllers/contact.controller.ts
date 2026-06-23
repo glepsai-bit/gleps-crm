@@ -1,4 +1,4 @@
-import { Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { contactService } from '../services/contact.service';
 import { AuthenticatedRequest } from '../types';
@@ -27,6 +27,26 @@ const applyTagSchema = z.object({
 
 const addNoteSchema = z.object({
   content: z.string().min(1, 'Conteúdo é obrigatório'),
+});
+
+// Schema for external API consumers (n8n etc.) via API key
+const queryForApiSchema = z.object({
+  aniversario: z.string().optional(),
+  tag: z.union([z.string(), z.array(z.string())]).optional(),
+  stage: z.string().optional(),
+  lastActivityBefore: z
+    .string()
+    .datetime({ offset: true })
+    .or(z.string().datetime())
+    .optional(),
+  lastActivityAfter: z
+    .string()
+    .datetime({ offset: true })
+    .or(z.string().datetime())
+    .optional(),
+  customAttribute: z.record(z.string()).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
 });
 
 export class ContactController {
@@ -241,6 +261,45 @@ export class ContactController {
       const result = await contactService.listLeadTags(accountId);
 
       res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/contacts  (external API — auth via API key, for n8n etc.)
+   *
+   * Mounted behind `requireApiKey`, so `req.accountId` and `req.apiKey`
+   * are populated by the middleware (no JWT user context).
+   */
+  async queryForApi(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const accountId = req.accountId;
+      if (!accountId) {
+        res.status(401).json({ error: 'API key inválida ou revogada' });
+        return;
+      }
+
+      const parsed = queryForApiSchema.parse(req.query);
+
+      const filters = {
+        aniversario: parsed.aniversario,
+        tag: parsed.tag,
+        stage: parsed.stage,
+        lastActivityBefore: parsed.lastActivityBefore
+          ? new Date(parsed.lastActivityBefore)
+          : undefined,
+        lastActivityAfter: parsed.lastActivityAfter
+          ? new Date(parsed.lastActivityAfter)
+          : undefined,
+        customAttribute: parsed.customAttribute,
+        limit: parsed.limit,
+        offset: parsed.offset,
+      };
+
+      const result = await contactService.queryForApi(accountId, filters);
+
+      res.json(result);
     } catch (error) {
       next(error);
     }

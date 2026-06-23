@@ -1,5 +1,21 @@
 import { prisma } from '../config/database';
 import { env } from '../config/env';
+import { evolutionService } from './evolution.service';
+
+interface ChatwootDispatchConfig {
+  transport: 'chatwoot';
+  accountId: string;
+  baseUrl: string;
+  chatwootAccountId: string;
+  apiKey: string;
+}
+
+interface EvolutionDispatchConfig {
+  transport: 'evolution';
+  accountId: string;
+}
+
+type DispatchConfig = ChatwootDispatchConfig | EvolutionDispatchConfig;
 
 const RAPIDAPI_HOST = 'maps-data.p.rapidapi.com';
 
@@ -257,7 +273,42 @@ class ProspectingService {
   }
 
   /**
-   * Dispatch messages via Chatwoot
+   * Detecta o transport (Chatwoot vs Evolution) baseado na configuração da conta.
+   * Prioridade: Evolution (se totalmente configurado) > Chatwoot (se configurado).
+   * Mantém Chatwoot como default para iGreen/Gleps360; FitPark usa Evolution.
+   */
+  private async resolveDispatchConfig(accountId: string): Promise<DispatchConfig> {
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: {
+        chatwootBaseUrl: true,
+        chatwootAccountId: true,
+        chatwootApiKey: true,
+        evolutionBaseUrl: true,
+        evolutionApiKey: true,
+        evolutionInstance: true,
+      },
+    });
+
+    if (account?.evolutionBaseUrl && account?.evolutionApiKey && account?.evolutionInstance) {
+      return { transport: 'evolution', accountId };
+    }
+
+    if (account?.chatwootBaseUrl && account?.chatwootAccountId && account?.chatwootApiKey) {
+      return {
+        transport: 'chatwoot',
+        accountId,
+        baseUrl: account.chatwootBaseUrl.replace(/\/$/, ''),
+        chatwootAccountId: account.chatwootAccountId,
+        apiKey: account.chatwootApiKey,
+      };
+    }
+
+    throw new Error('Configure Chatwoot ou Evolution na conta');
+  }
+
+  /**
+   * Dispatch messages via Chatwoot ou Evolution (detectado por conta).
    */
   async dispatch(
     accountId: string,
@@ -267,19 +318,7 @@ class ProspectingService {
     keyword?: string,
     location?: string
   ) {
-    const account = await prisma.account.findUnique({
-      where: { id: accountId },
-      select: { chatwootBaseUrl: true, chatwootAccountId: true, chatwootApiKey: true },
-    });
-    if (!account?.chatwootBaseUrl || !account?.chatwootAccountId || !account?.chatwootApiKey) {
-      throw new Error('Chatwoot not configured');
-    }
-
-    const config = {
-      baseUrl: account.chatwootBaseUrl.replace(/\/$/, ''),
-      accountId: account.chatwootAccountId,
-      apiKey: account.chatwootApiKey,
-    };
+    const config = await this.resolveDispatchConfig(accountId);
 
     const totalContacts = inboxAssignments.reduce((sum, a) => sum + a.contacts.length, 0);
     const delayMs = Math.max((delaySeconds || 30) * 1000, 5000);
@@ -323,7 +362,7 @@ class ProspectingService {
 
   private async processDispatch(
     batchId: string,
-    config: { baseUrl: string; accountId: string; apiKey: string },
+    config: DispatchConfig,
     inboxAssignments: InboxAssignment[],
     messages: string[],
     delayMs: number
@@ -351,8 +390,7 @@ class ProspectingService {
       try {
         const msgTemplate = messages[Math.floor(Math.random() * messages.length)];
         const message = msgTemplate.replace(/\{nome\}/gi, task.contact.nome);
-        const { conversationId } = await this.createContactAndConversation(config, task.contact, task.inboxId);
-        await this.sendMessage(config, conversationId, message);
+        await this.sendViaTransport(config, task.contact, task.inboxId, message);
 
         sentCount++;
         await prisma.dispatchLog.updateMany({
@@ -427,19 +465,7 @@ class ProspectingService {
       data: { status: 'pending', errorMessage: null },
     });
 
-    const account = await prisma.account.findUnique({
-      where: { id: accountId },
-      select: { chatwootBaseUrl: true, chatwootAccountId: true, chatwootApiKey: true },
-    });
-    if (!account?.chatwootBaseUrl || !account?.chatwootAccountId || !account?.chatwootApiKey) {
-      throw new Error('Chatwoot not configured');
-    }
-
-    const config = {
-      baseUrl: account.chatwootBaseUrl.replace(/\/$/, ''),
-      accountId: account.chatwootAccountId,
-      apiKey: account.chatwootApiKey,
-    };
+    const config = await this.resolveDispatchConfig(accountId);
 
     const delayMs = Math.max((delaySeconds || batch.delaySeconds || 30) * 1000, 5000);
 
@@ -457,7 +483,7 @@ class ProspectingService {
 
   private async processResume(
     batchId: string,
-    config: { baseUrl: string; accountId: string; apiKey: string },
+    config: DispatchConfig,
     pendingLogs: any[],
     messages: string[],
     delayMs: number,
@@ -477,8 +503,7 @@ class ProspectingService {
         const msgTemplate = messages[Math.floor(Math.random() * messages.length)];
         const message = msgTemplate.replace(/\{nome\}/gi, log.contactName);
         const contact: Contact = { nome: log.contactName, telefone: log.phone };
-        const { conversationId } = await this.createContactAndConversation(config, contact, log.inboxId);
-        await this.sendMessage(config, conversationId, message);
+        await this.sendViaTransport(config, contact, log.inboxId, message);
 
         sentCount++;
         await prisma.dispatchLog.update({
@@ -551,14 +576,40 @@ class ProspectingService {
     };
   }
 
+  // --- Unified transport dispatch ---
+
+  /**
+   * Envia uma mensagem para um contato via o transport configurado.
+   * Chatwoot: cria contato + conversa, depois envia mensagem.
+   * Evolution: envia texto direto via WhatsApp pelo número (inboxId é ignorado).
+   */
+  private async sendViaTransport(
+    config: DispatchConfig,
+    contact: Contact,
+    inboxId: number,
+    message: string
+  ) {
+    if (config.transport === 'evolution') {
+      await evolutionService.sendText(config.accountId, {
+        number: contact.telefone,
+        text: message,
+      });
+      return;
+    }
+
+    // Chatwoot (default — preserva o comportamento original).
+    const { conversationId } = await this.createContactAndConversation(config, contact, inboxId);
+    await this.sendMessage(config, conversationId, message);
+  }
+
   // --- Chatwoot helpers ---
 
   private async createContactAndConversation(
-    config: { baseUrl: string; accountId: string; apiKey: string },
+    config: ChatwootDispatchConfig,
     contact: Contact,
     inboxId: number
   ) {
-    const base = `${config.baseUrl}/api/v1/accounts/${config.accountId}`;
+    const base = `${config.baseUrl}/api/v1/accounts/${config.chatwootAccountId}`;
     const headers = { 'Content-Type': 'application/json', 'api_access_token': config.apiKey };
 
     let phone = contact.telefone.replace(/[\s\-\(\)]/g, '');
@@ -611,12 +662,12 @@ class ProspectingService {
   }
 
   private async sendMessage(
-    config: { baseUrl: string; accountId: string; apiKey: string },
+    config: ChatwootDispatchConfig,
     conversationId: number,
     message: string
   ) {
     const res = await fetch(
-      `${config.baseUrl}/api/v1/accounts/${config.accountId}/conversations/${conversationId}/messages`,
+      `${config.baseUrl}/api/v1/accounts/${config.chatwootAccountId}/conversations/${conversationId}/messages`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'api_access_token': config.apiKey },

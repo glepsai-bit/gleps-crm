@@ -18,6 +18,9 @@ import emailExtendedRoutes from './email-extended.routes';
 import audienceRoutes from './audience.routes';
 import evolutionRoutes from './evolution.routes';
 import apiKeyRoutes from './api-key.routes';
+import whatsappTemplateRoutes from './whatsapp-template.routes';
+import whatsappCampaignJwtRoutes, { apiKeyRouter as whatsappCampaignApiKeyRoutes } from './whatsapp-campaign.routes';
+import contactsApiRoutes from './contacts-api.routes';
 import { Router as LeadTagRouter } from 'express';
 import { contactController } from '../controllers/contact.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
@@ -61,6 +64,11 @@ router.use('/email', emailExtendedRoutes);
 router.use('/email/audiences', audienceRoutes);
 router.use('/evolution', evolutionRoutes);
 router.use('/api-keys', apiKeyRoutes);
+router.use('/whatsapp-templates', whatsappTemplateRoutes);
+router.use('/whatsapp/campaigns', whatsappCampaignJwtRoutes);
+router.use('/dispatch', whatsappCampaignJwtRoutes); // alias canonical para o frontend (DispatchDialog, aba Agendadas, Dashboard)
+router.use('/integrations/whatsapp/campaigns', whatsappCampaignApiKeyRoutes);
+router.use('/integrations/contatos', contactsApiRoutes);
 router.use('/lead-tags', leadTagRouter);
 
 export default router;

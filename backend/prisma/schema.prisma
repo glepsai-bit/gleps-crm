@@ -71,6 +71,7 @@ model Account {
   emailAudiences      EmailAudience[]
   prospectingAudiences ProspectingAudience[]
   apiKeys             ApiKey[]
+  whatsappTemplates   WhatsappTemplate[]
 
   @@index([status])
   @@map("accounts")
@@ -660,10 +661,20 @@ model DispatchBatch {
   completedAt   DateTime? @map("completed_at") @db.Timestamptz
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
+  // T-022 Sprint 2 — agendamento + origem unificada (manual + n8n + API)
+  scheduledAt   DateTime? @map("scheduled_at") @db.Timestamptz
+  source        String    @default("manual") @map("source")  // manual | manual_scheduled | n8n | api
+  triggerName   String?   @map("trigger_name") @db.VarChar(120)
+  metadata      Json?     @db.JsonB
+  templateId    String?   @map("template_id") @db.Uuid
+  inboxId       Int?      @map("inbox_id")  // pra suporte Chatwoot legacy
+
   account Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   logs    DispatchLog[]
 
   @@index([accountId])
+  @@index([scheduledAt, status])
+  @@index([source])
   @@map("dispatch_batches")
 }
 
@@ -686,6 +697,26 @@ model DispatchLog {
 
   @@index([batchId])
   @@map("dispatch_logs")
+}
+
+// ============================================
+// WHATSAPP TEMPLATES (T-022 Sprint 2)
+// ============================================
+model WhatsappTemplate {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @map("account_id") @db.Uuid
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String   @db.VarChar(120)
+  content     String   @db.Text
+  category    String   @default("custom") @db.VarChar(40)  // relacionamento | promocional | transacional | custom
+  variables   String[] @default([])  // lista de variáveis detectadas em content (ex: ["nome", "valor"])
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([accountId])
+  @@index([category])
+  @@map("whatsapp_templates")
 }
 
 // ============================================

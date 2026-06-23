@@ -6,6 +6,7 @@ import { env, isDevelopment } from './config/env';
 import { connectDatabase } from './config/database';
 import { metricsCollector } from './services/metrics-collector';
 import { emailService } from './services/email.service';
+import { whatsappCampaignService } from './services/whatsapp-campaign.service';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import routes from './routes';
 import { logger } from './utils/logger';
@@ -30,6 +31,22 @@ async function bootstrap() {
     }
   }, EMAIL_CRON_INTERVAL_MS);
   logger.info(`📧 Email cadence cron started (interval: ${EMAIL_CRON_INTERVAL_MS / 1000}s)`);
+
+  // T-022 Sprint 2 — cron de campanhas WhatsApp agendadas
+  {
+    const WA_CRON_INTERVAL_MS = 5 * 60 * 1000;
+    setInterval(async () => {
+      try {
+        const result = await whatsappCampaignService.processScheduledQueue();
+        if (result.processed > 0 || result.failed > 0) {
+          logger.info(`📲 WhatsApp scheduled cron: ${result.processed} processed, ${result.failed} failed`);
+        }
+      } catch (err) {
+        logger.error('WhatsApp scheduled cron error:', err);
+      }
+    }, WA_CRON_INTERVAL_MS);
+    logger.info(`📲 WhatsApp campaign cron started (interval: ${WA_CRON_INTERVAL_MS / 1000}s)`);
+  }
 
   const app = express();
 

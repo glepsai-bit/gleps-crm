@@ -539,6 +539,128 @@ class ContactService {
   }
 
   /**
+   * Query contacts for external API consumers (e.g. n8n).
+   * Supports birthday, tag, stage, last-activity and custom-attribute filters.
+   *
+   * NOTE: Several filters depend on fields that don't exist in the current
+   * Contact model — they are skipped here and tracked as TODOs below.
+   */
+  async queryForApi(
+    accountId: string,
+    filters: {
+      aniversario?: 'today' | 'tomorrow' | string;
+      tag?: string | string[];
+      stage?: string;
+      lastActivityBefore?: Date;
+      lastActivityAfter?: Date;
+      customAttribute?: Record<string, string>;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): Promise<{ data: any[]; total: number }> {
+    const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
+    const offset = Math.max(filters.offset ?? 0, 0);
+
+    const where: any = { accountId };
+    const andConditions: any[] = [];
+
+    // --- Tag filter (slug or id, single or array) ---
+    if (filters.tag) {
+      const tagValues = Array.isArray(filters.tag) ? filters.tag : [filters.tag];
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const tagIds = tagValues.filter(v => uuidRegex.test(v));
+      const tagSlugs = tagValues.filter(v => !uuidRegex.test(v));
+
+      const tagOr: any[] = [];
+      if (tagIds.length > 0) tagOr.push({ tagId: { in: tagIds } });
+      if (tagSlugs.length > 0) tagOr.push({ tag: { slug: { in: tagSlugs }, accountId } });
+
+      if (tagOr.length > 0) {
+        andConditions.push({
+          leadTags: { some: { OR: tagOr } },
+        });
+      }
+    }
+
+    // --- Stage filter (slug or id of a tag with type='stage') ---
+    if (filters.stage) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const stageWhere: any = { type: 'stage', accountId };
+      if (uuidRegex.test(filters.stage)) {
+        stageWhere.id = filters.stage;
+      } else {
+        stageWhere.slug = filters.stage;
+      }
+      andConditions.push({
+        leadTags: { some: { tag: stageWhere } },
+      });
+    }
+
+    // --- Last activity filters ---
+    // TODO: campo lastActivityAt não existe ainda — adicionar em Sprint futuro.
+    // Workaround: usar lastFollowupAt como proxy (campo mais próximo no schema atual).
+    if (filters.lastActivityBefore || filters.lastActivityAfter) {
+      const activityRange: any = {};
+      if (filters.lastActivityBefore) activityRange.lt = filters.lastActivityBefore;
+      if (filters.lastActivityAfter) activityRange.gt = filters.lastActivityAfter;
+      andConditions.push({ lastFollowupAt: activityRange });
+    }
+
+    if (andConditions.length > 0) {
+      where.AND = andConditions;
+    }
+
+    // --- Aniversário filter ---
+    // TODO: campo dataNascimento não existe ainda — adicionar em Sprint futuro.
+    // Por enquanto, qualquer filtro de aniversário é ignorado (no-op) para
+    // não retornar resultados enganosos. Mantemos a chave aceita para
+    // compatibilidade com consumidores externos (n8n) quando o campo for criado.
+    if (filters.aniversario) {
+      logger.warn('queryForApi: aniversario filter ignored — Contact.dataNascimento not in schema', {
+        accountId,
+        aniversario: filters.aniversario,
+      });
+    }
+
+    // --- Custom attribute filter ---
+    // TODO: campo customAttributes (jsonb) não existe ainda — adicionar em Sprint futuro.
+    if (filters.customAttribute && Object.keys(filters.customAttribute).length > 0) {
+      logger.warn('queryForApi: customAttribute filter ignored — Contact.customAttributes not in schema', {
+        accountId,
+        customAttribute: filters.customAttribute,
+      });
+    }
+
+    const [contacts, total] = await Promise.all([
+      prisma.contact.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: offset,
+        take: limit,
+        include: {
+          leadTags: {
+            include: {
+              tag: {
+                select: { id: true, name: true, slug: true, color: true, type: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.contact.count({ where }),
+    ]);
+
+    return {
+      data: contacts.map(c => ({
+        ...c,
+        tags: c.leadTags.map(lt => lt.tag),
+        leadTags: undefined,
+      })),
+      total,
+    };
+  }
+
+  /**
    * List all lead_tags for an account (for Kanban mapping)
    */
   async listLeadTags(accountId: string) {
