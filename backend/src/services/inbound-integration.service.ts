@@ -8,6 +8,7 @@ import {
   NotFoundError,
   ValidationError,
   ConflictError,
+  UnauthorizedError,
 } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -200,7 +201,8 @@ class InboundIntegrationService {
     accountId: string,
     slug: string,
     body: any,
-    headers: Record<string, any>
+    headers: Record<string, any>,
+    rawBody?: Buffer
   ): Promise<WebhookResult> {
     const integration = await prisma.inboundIntegration.findFirst({
       where: { accountId, slug, active: true },
@@ -210,8 +212,22 @@ class InboundIntegrationService {
       throw new NotFoundError('Integração de webhook ativa');
     }
 
-    // HMAC validation when secret is configured
-    if (integration.secret) {
+    // BUG-002 (CRITICAL): integrações sem secret são bloqueadas em runtime.
+    // O schema Prisma ainda permite null pra não quebrar registros antigos,
+    // mas qualquer integração sem secret configurado vira 401 — o operador
+    // tem que rotacionar/configurar antes de voltar a aceitar webhooks.
+    if (!integration.secret) {
+      logger.warn('[inbound-integration] integração sem secret — bloqueada', {
+        accountId,
+        slug,
+      });
+      throw new UnauthorizedError(
+        'Integration sem secret configurado — bloqueada'
+      );
+    }
+
+    // HMAC validation (secret garantido acima)
+    {
       const signatureHeader =
         (headers['x-webhook-signature'] as string | undefined) ??
         (headers['X-Webhook-Signature'] as string | undefined);
@@ -220,9 +236,18 @@ class InboundIntegrationService {
         throw new ValidationError('Assinatura HMAC ausente (x-webhook-signature)');
       }
 
+      // BUG-007: assinatura HMAC deve usar o RAW body recebido na request,
+      // não JSON.stringify(body) — qualquer re-serialização (espaços, ordem
+      // de chaves, escapes Unicode) muda os bytes e quebra a verificação,
+      // mesmo quando o cliente assinou o payload "correto". O rawBody é
+      // capturado pelo express.json({ verify }) no server.ts.
+      const payloadForHmac: string | Buffer = rawBody && rawBody.length > 0
+        ? rawBody
+        : JSON.stringify(body); // fallback graceful (não deveria ocorrer em prod)
+
       const expected = crypto
         .createHmac('sha256', integration.secret)
-        .update(JSON.stringify(body))
+        .update(payloadForHmac)
         .digest('hex');
 
       const provided = signatureHeader.trim();

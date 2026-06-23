@@ -30,6 +30,13 @@ const routePermissionMap: Record<string, AgentPermission> = {
   '/admin/emails': 'emails',
 };
 
+// Rotas restritas a admin/super_admin (sem permissao equivalente para agents)
+const adminOnlyRoutes = new Set<string>([
+  '/admin/whatsapp-templates',
+  '/admin/integracoes',
+  '/admin/opt-outs',
+]);
+
 export function usePermissions() {
   const { user } = useAuth();
   
@@ -47,9 +54,23 @@ export function usePermissions() {
     if (user?.role === 'super_admin' || user?.role === 'admin') {
       return true;
     }
-    
+
+    // Rotas marcadas como admin-only nunca sao acessadas por agents
+    if (adminOnlyRoutes.has(route)) {
+      return false;
+    }
+
     const permission = routePermissionMap[route];
-    return permission ? hasPermission(permission) : true;
+    if (permission) {
+      return hasPermission(permission);
+    }
+
+    // Por seguranca, rotas /admin/* nao mapeadas sao negadas para agents
+    if (route.startsWith('/admin/')) {
+      return false;
+    }
+
+    return true;
   };
 
   const getFirstAllowedRoute = (): string => {

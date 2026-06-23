@@ -19,6 +19,7 @@ export interface CreateAccountInput {
   evolutionBaseUrl?: string;
   evolutionApiKey?: string;
   evolutionInstance?: string;
+  evolutionWebhookSecret?: string;
   googleClientId?: string;
   googleClientSecret?: string;
   googleRedirectUri?: string;
@@ -136,6 +137,7 @@ class AccountService {
         evolutionBaseUrl: input.evolutionBaseUrl,
         evolutionApiKey: input.evolutionApiKey,
         evolutionInstance: input.evolutionInstance,
+        evolutionWebhookSecret: input.evolutionWebhookSecret,
         googleClientId: input.googleClientId,
         googleClientSecret: input.googleClientSecret,
         googleRedirectUri: input.googleRedirectUri,
@@ -188,6 +190,7 @@ class AccountService {
         evolutionBaseUrl: input.evolutionBaseUrl,
         evolutionApiKey: input.evolutionApiKey,
         evolutionInstance: input.evolutionInstance,
+        evolutionWebhookSecret: input.evolutionWebhookSecret,
         googleClientId: input.googleClientId,
         googleClientSecret: input.googleClientSecret,
         googleRedirectUri: input.googleRedirectUri,

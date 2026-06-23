@@ -16,7 +16,14 @@ const createInboundSchema = z.object({
   slug: z.string().min(2, 'slug é obrigatório'),
   handler: z.string().min(1, 'handler é obrigatório'),
   config: z.record(z.any()).optional(),
-  secret: z.string().min(1).optional(),
+  // BUG-002 (CRITICAL): secret é OBRIGATÓRIO no create — sem ele, qualquer
+  // pessoa que descubra a URL pública pode disparar o webhook. Mínimo 16
+  // caracteres para evitar segredos triviais. O schema Prisma permanece
+  // nullable (compat com dados antigos) mas processWebhook bloqueia integrações
+  // sem secret em runtime.
+  secret: z
+    .string({ required_error: 'secret é obrigatório' })
+    .min(16, 'secret deve ter no mínimo 16 caracteres'),
 });
 
 /**
@@ -144,11 +151,16 @@ export class InboundIntegrationController {
         throw new ValidationError('slug é obrigatório');
       }
 
+      // BUG-007: passa rawBody (Buffer) capturado em express.json({ verify })
+      // — necessário pra HMAC bater byte-a-byte com o que o cliente assinou.
+      const rawBody = (req as any).rawBody as Buffer | undefined;
+
       const result = await inboundIntegrationService.processWebhook(
         accountId,
         slug,
         req.body,
-        req.headers as Record<string, any>
+        req.headers as Record<string, any>,
+        rawBody
       );
 
       res.json({ data: result });

@@ -1,6 +1,8 @@
 import { prisma } from '../config/database';
 import { env } from '../config/env';
 import { evolutionService } from './evolution.service';
+import { whatsappConsentService } from './whatsapp-consent.service';
+import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
 
 interface ChatwootDispatchConfig {
   transport: 'chatwoot';
@@ -390,7 +392,55 @@ class ProspectingService {
       try {
         const msgTemplate = messages[Math.floor(Math.random() * messages.length)];
         const message = msgTemplate.replace(/\{nome\}/gi, task.contact.nome);
-        await this.sendViaTransport(config, task.contact, task.inboxId, message);
+
+        // T-022 Compliance — opt-out + rate limit (apenas evolution).
+        // Chatwoot é tratado como canal de atendimento humano e não passa por estes guardrails.
+        if (config.transport === 'evolution') {
+          const normalized = whatsappConsentService.normalizePhone(task.contact.telefone);
+
+          const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
+          if (!hasConsent) {
+            failedCount++;
+            await prisma.dispatchLog.updateMany({
+              where: { batchId, phone: task.contact.telefone, inboxId: task.inboxId },
+              data: {
+                status: 'blocked_optout',
+                errorMessage: 'Contato com opt-out',
+                sentAt: new Date(),
+              },
+            });
+            await prisma.dispatchBatch.update({
+              where: { id: batchId },
+              data: { sentCount, failedCount },
+            });
+            if (i < allTasks.length - 1) await this.sleep(delayMs);
+            continue;
+          }
+
+          const rl = await whatsappRateLimitService.check(config.accountId, normalized);
+          if (!rl.allowed) {
+            failedCount++;
+            await prisma.dispatchLog.updateMany({
+              where: { batchId, phone: task.contact.telefone, inboxId: task.inboxId },
+              data: {
+                status: 'rate_limited',
+                errorMessage: rl.reason ?? 'rate_limited',
+                sentAt: new Date(),
+              },
+            });
+            await prisma.dispatchBatch.update({
+              where: { id: batchId },
+              data: { sentCount, failedCount },
+            });
+            if (i < allTasks.length - 1) await this.sleep(delayMs);
+            continue;
+          }
+
+          await this.sendViaTransport(config, task.contact, task.inboxId, message);
+          whatsappRateLimitService.record(config.accountId, normalized);
+        } else {
+          await this.sendViaTransport(config, task.contact, task.inboxId, message);
+        }
 
         sentCount++;
         await prisma.dispatchLog.updateMany({
@@ -503,7 +553,54 @@ class ProspectingService {
         const msgTemplate = messages[Math.floor(Math.random() * messages.length)];
         const message = msgTemplate.replace(/\{nome\}/gi, log.contactName);
         const contact: Contact = { nome: log.contactName, telefone: log.phone };
-        await this.sendViaTransport(config, contact, log.inboxId, message);
+
+        // T-022 Compliance — opt-out + rate limit (apenas evolution).
+        if (config.transport === 'evolution') {
+          const normalized = whatsappConsentService.normalizePhone(contact.telefone);
+
+          const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
+          if (!hasConsent) {
+            failedCount++;
+            await prisma.dispatchLog.update({
+              where: { id: log.id },
+              data: {
+                status: 'blocked_optout',
+                errorMessage: 'Contato com opt-out',
+                sentAt: new Date(),
+              },
+            });
+            await prisma.dispatchBatch.update({
+              where: { id: batchId },
+              data: { sentCount, failedCount },
+            });
+            if (i < pendingLogs.length - 1) await this.sleep(delayMs);
+            continue;
+          }
+
+          const rl = await whatsappRateLimitService.check(config.accountId, normalized);
+          if (!rl.allowed) {
+            failedCount++;
+            await prisma.dispatchLog.update({
+              where: { id: log.id },
+              data: {
+                status: 'rate_limited',
+                errorMessage: rl.reason ?? 'rate_limited',
+                sentAt: new Date(),
+              },
+            });
+            await prisma.dispatchBatch.update({
+              where: { id: batchId },
+              data: { sentCount, failedCount },
+            });
+            if (i < pendingLogs.length - 1) await this.sleep(delayMs);
+            continue;
+          }
+
+          await this.sendViaTransport(config, contact, log.inboxId, message);
+          whatsappRateLimitService.record(config.accountId, normalized);
+        } else {
+          await this.sendViaTransport(config, contact, log.inboxId, message);
+        }
 
         sentCount++;
         await prisma.dispatchLog.update({

@@ -30,9 +30,10 @@ model Account {
   chatwootApiKey    String? @map("chatwoot_api_key") @db.VarChar(500)
 
   // Evolution API Integration (WhatsApp non-official) — T-022 FitPark
-  evolutionBaseUrl   String? @map("evolution_base_url") @db.VarChar(500)
-  evolutionApiKey    String? @map("evolution_api_key") @db.VarChar(500)
-  evolutionInstance  String? @map("evolution_instance") @db.VarChar(255)
+  evolutionBaseUrl       String? @map("evolution_base_url") @db.VarChar(500)
+  evolutionApiKey        String? @map("evolution_api_key") @db.VarChar(500)
+  evolutionInstance      String? @map("evolution_instance") @db.VarChar(255)
+  evolutionWebhookSecret String? @map("evolution_webhook_secret") @db.VarChar(500)
 
   // Google Calendar OAuth (stored in DB, not env vars)
   googleClientId     String? @map("google_client_id") @db.VarChar(500)

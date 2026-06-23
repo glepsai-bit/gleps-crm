@@ -15,16 +15,25 @@ export interface UpdateWhatsappTemplateInput {
   category?: string;
 }
 
-const VARIABLE_REGEX = /\{(\w+)\}/g;
+/**
+ * Regex unificada para variáveis de template de WhatsApp.
+ * Aceita tanto `{nome}` quanto `{{ nome }}` (com espaços opcionais),
+ * e nomes com pontos para acesso aninhado (ex.: `{{ contato.nome }}`).
+ *
+ * Compartilhada entre whatsapp-template.service e whatsapp-campaign.service
+ * para garantir que extração e renderização usem exatamente o mesmo padrão.
+ */
+export const TEMPLATE_VAR_REGEX = /\{\{?\s*([\w.]+)\s*\}?\}/g;
 
 /**
- * Extrai a lista de variáveis presentes em um template ({nome}, {valor}, ...).
+ * Extrai a lista de variáveis presentes em um template ({nome}, {{ valor }}, ...).
  * Retorna nomes únicos na ordem de primeira aparição.
  */
-function extractVariables(content: string): string[] {
+export function extractTemplateVariables(content: string): string[] {
   const found = new Set<string>();
   const ordered: string[] = [];
-  const matches = content.matchAll(VARIABLE_REGEX);
+  if (!content) return ordered;
+  const matches = content.matchAll(TEMPLATE_VAR_REGEX);
   for (const match of matches) {
     const name = match[1];
     if (!found.has(name)) {
@@ -33,6 +42,21 @@ function extractVariables(content: string): string[] {
     }
   }
   return ordered;
+}
+
+/**
+ * Renderiza um template substituindo variáveis pelos valores fornecidos.
+ * Variáveis sem valor correspondente viram string vazia.
+ */
+export function renderTemplate(
+  content: string,
+  variables: Record<string, string> = {}
+): string {
+  if (!content) return '';
+  return content.replace(TEMPLATE_VAR_REGEX, (_match, name: string) => {
+    const value = variables[name];
+    return value !== undefined && value !== null ? String(value) : '';
+  });
 }
 
 class WhatsappTemplateService {
@@ -76,7 +100,7 @@ class WhatsappTemplateService {
       throw new ValidationError('Conteúdo do template é obrigatório');
     }
 
-    const variables = extractVariables(input.content);
+    const variables = extractTemplateVariables(input.content);
 
     return prisma.whatsappTemplate.create({
       data: {
@@ -121,7 +145,7 @@ class WhatsappTemplateService {
       }
       if (input.content !== existing.content) {
         data.content = input.content;
-        data.variables = extractVariables(input.content);
+        data.variables = extractTemplateVariables(input.content);
       } else {
         data.content = input.content;
       }
@@ -146,14 +170,14 @@ class WhatsappTemplateService {
   }
 
   /**
-   * Renderiza um template substituindo variáveis ({nome}, {valor}, ...) pelos
+   * Renderiza um template substituindo variáveis ({nome}, {{ valor }}, ...) pelos
    * valores fornecidos. Variáveis sem valor correspondente viram string vazia.
+   *
+   * Delega para o helper `renderTemplate` para garantir consistência com
+   * `whatsapp-campaign.service` e `extractTemplateVariables`.
    */
   render(content: string, variables: Record<string, string>): string {
-    return content.replace(VARIABLE_REGEX, (_match, name: string) => {
-      const value = variables[name];
-      return value !== undefined && value !== null ? String(value) : '';
-    });
+    return renderTemplate(content, variables);
   }
 }
 

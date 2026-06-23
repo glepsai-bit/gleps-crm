@@ -141,7 +141,18 @@ async function bootstrap() {
   app.use('/api', limiter);
 
   // Body parsing
-  app.use(express.json({ limit: '10mb' }));
+  // BUG-007: capturamos o raw body em req.rawBody pra que webhooks que assinam
+  // o payload (HMAC SHA-256) possam validar a assinatura byte-a-byte. Sem isso,
+  // o JSON.stringify(req.body) gera bytes diferentes do que o cliente assinou
+  // (espaços, ordem de chaves, escapes Unicode) e a assinatura nunca bate.
+  app.use(
+    express.json({
+      limit: '10mb',
+      verify: (req, _res, buf) => {
+        (req as any).rawBody = buf;
+      },
+    })
+  );
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
   // Request logging

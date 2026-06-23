@@ -5,6 +5,14 @@ import { AuthenticatedRequest } from '../types';
 import { getPaginationParams } from '../utils/helpers';
 
 // Validation schemas
+// Pré-trata strings vazias como undefined antes da validação de URL,
+// já que z.string().url() rejeita "" mesmo em campos opcionais.
+const optionalUrl = () =>
+  z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().url().optional()
+  );
+
 const createAccountSchema = z.object({
   nome: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
   plano: z.string().optional(),
@@ -13,15 +21,21 @@ const createAccountSchema = z.object({
   monthlyEmailLimit: z.number().int().min(0).max(10000000).optional(),
   dailyEmailLimit: z.number().int().min(0).max(10000000).optional(),
   timezone: z.string().optional(),
-  chatwootBaseUrl: z.string().url().optional(),
+  chatwootBaseUrl: optionalUrl(),
   chatwootAccountId: z.string().optional(),
   chatwootApiKey: z.string().optional(),
-  evolutionBaseUrl: z.string().url().optional(),
+  evolutionBaseUrl: optionalUrl(),
   evolutionApiKey: z.string().optional(),
   evolutionInstance: z.string().optional(),
+  // BUG-018: secret HMAC para validar webhooks da Evolution API.
+  // Pré-tratamos string vazia como undefined para evitar gravar "" no banco.
+  evolutionWebhookSecret: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().min(16, 'Secret deve ter ao menos 16 caracteres').max(500).optional()
+  ),
   googleClientId: z.string().optional(),
   googleClientSecret: z.string().optional(),
-  googleRedirectUri: z.string().url().optional(),
+  googleRedirectUri: optionalUrl(),
 });
 
 const updateAccountSchema = createAccountSchema.partial().extend({

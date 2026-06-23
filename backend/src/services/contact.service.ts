@@ -612,23 +612,20 @@ class ContactService {
 
     // --- Aniversário filter ---
     // TODO: campo dataNascimento não existe ainda — adicionar em Sprint futuro.
-    // Por enquanto, qualquer filtro de aniversário é ignorado (no-op) para
-    // não retornar resultados enganosos. Mantemos a chave aceita para
-    // compatibilidade com consumidores externos (n8n) quando o campo for criado.
+    // Até lá, rejeitamos explicitamente (HTTP 400) em vez de ignorar silenciosamente,
+    // para evitar resultados enganosos para consumidores externos (n8n).
     if (filters.aniversario) {
-      logger.warn('queryForApi: aniversario filter ignored — Contact.dataNascimento not in schema', {
-        accountId,
-        aniversario: filters.aniversario,
-      });
+      throw new ValidationError(
+        'Filtro aniversário não suportado: schema Contact não tem dataNascimento. Será implementado em sprint futuro.'
+      );
     }
 
     // --- Custom attribute filter ---
     // TODO: campo customAttributes (jsonb) não existe ainda — adicionar em Sprint futuro.
     if (filters.customAttribute && Object.keys(filters.customAttribute).length > 0) {
-      logger.warn('queryForApi: customAttribute filter ignored — Contact.customAttributes not in schema', {
-        accountId,
-        customAttribute: filters.customAttribute,
-      });
+      throw new ValidationError(
+        'Filtro customAttribute não suportado: schema Contact não tem customAttributes.'
+      );
     }
 
     const [contacts, total] = await Promise.all([

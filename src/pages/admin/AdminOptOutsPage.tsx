@@ -108,8 +108,8 @@ export default function AdminOptOutsPage() {
   }, [optOuts, busca]);
 
   const reoptInMutation = useMutation({
-    mutationFn: (contactId: string) =>
-      whatsappConsentsBackendService.optIn(contactId),
+    mutationFn: (contactIdOrPhone: string) =>
+      whatsappConsentsBackendService.optIn(contactIdOrPhone),
     onSuccess: () => {
       toast.success(`Re-opt-in realizado para ${reoptInContato?.nome}`);
       queryClient.invalidateQueries({ queryKey: ['whatsapp-optouts'] });
@@ -244,7 +244,7 @@ export default function AdminOptOutsPage() {
               </TableHeader>
               <TableBody>
                 {resultados.map((contato) => (
-                  <TableRow key={contato.contactId}>
+                  <TableRow key={contato.contactId ?? contato.telefone}>
                     <TableCell className="font-medium">{contato.nome}</TableCell>
                     <TableCell className="font-mono text-sm">
                       {contato.telefone}
@@ -291,7 +291,10 @@ export default function AdminOptOutsPage() {
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={() =>
-                reoptInContato && reoptInMutation.mutate(reoptInContato.contactId)
+                reoptInContato &&
+                reoptInMutation.mutate(
+                  reoptInContato.contactId ?? reoptInContato.telefone
+                )
               }
               disabled={reoptInMutation.isPending}
               className="bg-emerald-600 text-white hover:bg-emerald-700"

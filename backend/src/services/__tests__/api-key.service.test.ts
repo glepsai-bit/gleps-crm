@@ -107,17 +107,20 @@ describe('ApiKeyService', () => {
       expect(storedHash).not.toBe(result.plaintextKey);
     });
 
-    it('passes accountId, name, scopes, createdById to prisma.create', async () => {
+    it('passes accountId, name, createdById to prisma.create and forces scopes=[] (T-022 placeholder)', async () => {
       prismaMock.apiKey.create.mockResolvedValue({
         id: 'uuid-4',
         name: 'Named Key',
         keyPrefix: 'glk_xxxxxx0000',
         hashedKey: 'hash',
-        scopes: ['read'],
+        scopes: [],
         createdById: 'user-1',
         createdAt: new Date(),
       });
 
+      // Mesmo passando ['read'] no input, o service ignora e persiste [].
+      // TODO(t022-future): quando requireScope() existir, este teste muda
+      // pra checar que o array do input é persistido.
       await apiKeyService.generate('acc-42', 'Named Key', 'user-1', ['read']);
 
       expect(prismaMock.apiKey.create).toHaveBeenCalledWith(
@@ -125,7 +128,7 @@ describe('ApiKeyService', () => {
           data: expect.objectContaining({
             accountId: 'acc-42',
             name: 'Named Key',
-            scopes: ['read'],
+            scopes: [],
             createdById: 'user-1',
           }),
         })

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../middlewares/auth.middleware';
+import { authenticate, requirePermission, requireRole } from '../middlewares/auth.middleware';
 import { requireApiKey } from '../middlewares/apiKey.middleware';
 import { whatsappCampaignController } from '../controllers/whatsapp-campaign.controller';
 
@@ -8,6 +8,7 @@ import { whatsappCampaignController } from '../controllers/whatsapp-campaign.con
 // ============================================
 const jwtRouter = Router();
 jwtRouter.use(authenticate);
+jwtRouter.use(requireRole('super_admin', 'admin'));
 
 jwtRouter.post('/send-single', (req, res, next) =>
   whatsappCampaignController.sendSingle(req, res, next)

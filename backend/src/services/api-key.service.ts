@@ -29,12 +29,18 @@ class ApiKeyService {
   /**
    * Generate a new API key for an account.
    * Returns the plaintext key ONLY ONCE — it is hashed before persistence.
+   *
+   * TODO(t022-future): scopes não implementado. O parâmetro `_scopes` é
+   * intencionalmente ignorado e persistimos sempre [] no banco. Toda chave
+   * gerada hoje tem god-mode no escopo da accountId. Ver comentário no
+   * apiKey.middleware.ts para o plano de habilitar requireScope().
    */
   async generate(
     accountId: string,
     name: string,
     createdById?: string,
-    scopes: string[] = []
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _scopes: string[] = []
   ): Promise<GeneratedApiKey> {
     // Plaintext key format: glk_<40 hex chars>
     const plaintextKey = 'glk_' + crypto.randomBytes(20).toString('hex');
@@ -47,7 +53,8 @@ class ApiKeyService {
         name,
         keyPrefix: prefix,
         hashedKey,
-        scopes,
+        // TODO(t022-future): scopes não implementado — sempre [] por hora.
+        scopes: [],
         createdById,
       },
     });

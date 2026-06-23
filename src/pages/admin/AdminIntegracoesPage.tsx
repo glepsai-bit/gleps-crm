@@ -614,8 +614,8 @@ function AbaWebhooksEntrada() {
   const handlerSelecionado = form.watch('handler');
   const slugAtual = form.watch('slug');
   const urlExemplo = accountId && slugAtual
-    ? `${window.location.origin}/api/integrations/inbound/${accountId}/${slugAtual}`
-    : '/api/integrations/inbound/:accountId/:slug';
+    ? `${window.location.origin}/api/integrations/inbound-receive/${accountId}/${slugAtual}`
+    : '/api/integrations/inbound-receive/:accountId/:slug';
 
   return (
     <div className="space-y-4">

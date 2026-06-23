@@ -22,7 +22,8 @@ import { apiClient } from '@/api/client';
 export type ConsentOrigem = 'auto' | 'manual';
 
 export interface WhatsappConsent {
-  contactId: string;
+  /** ID do contato associado ao consent. `null` quando o opt-out foi registrado apenas pelo número. */
+  contactId: string | null;
   nome: string;
   telefone: string;
   /** ISO 8601 — data em que o opt-out foi registrado. */
@@ -42,13 +43,19 @@ function unwrap<T>(resp: unknown): T {
 }
 
 function mapConsent(raw: Record<string, unknown>): WhatsappConsent {
+  const rawContactId = raw.contactId ?? null;
   return {
-    contactId: String(raw.contactId ?? raw.id ?? ''),
+    contactId: rawContactId != null ? String(rawContactId) : null,
     nome: String(raw.nome ?? raw.name ?? ''),
     telefone: String(raw.telefone ?? raw.phone ?? raw.phoneNumber ?? ''),
     optedOutAt: String(raw.optedOutAt ?? raw.createdAt ?? ''),
     origem: (raw.origem ?? raw.source ?? 'auto') as ConsentOrigem,
   };
+}
+
+/** Remove tudo que não for dígito do telefone para usar no path do opt-in/opt-out. */
+function normalizePhone(telefone: string): string {
+  return (telefone ?? '').replace(/\D+/g, '');
 }
 
 function buildFiltroParams(
@@ -58,12 +65,12 @@ function buildFiltroParams(
   const params: Record<string, string> = { status: 'opted_out' };
   const now = Date.now();
   if (filtro === 'last7d') {
-    params.from = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+    params.fromDate = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
   } else if (filtro === 'last30d') {
-    params.from = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+    params.fromDate = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
   }
   if (busca && busca.trim()) {
-    params.q = busca.trim();
+    params.search = busca.trim();
   }
   return params;
 }
@@ -93,14 +100,30 @@ class WhatsappConsentsBackendService {
     }
   }
 
-  /** Re-opt-in manual: remove o opt-out do contato. */
-  async optIn(contactId: string): Promise<void> {
-    await apiClient.post(`/api/whatsapp-consents/${contactId}/opt-in`);
+  /**
+   * Re-opt-in manual: remove o opt-out do contato.
+   *
+   * Aceita o `contactId` quando há contato associado; caso contrário (consent
+   * registrado só pelo número), passe o telefone para que seja normalizado e
+   * usado no path `/api/whatsapp-consents/:contactIdOrPhone/opt-in`.
+   */
+  async optIn(contactIdOrPhone: string): Promise<void> {
+    const id = encodeURIComponent(
+      /\D/.test(contactIdOrPhone) || contactIdOrPhone.length > 30
+        ? normalizePhone(contactIdOrPhone)
+        : contactIdOrPhone
+    );
+    await apiClient.post(`/api/whatsapp-consents/${id}/opt-in`);
   }
 
-  /** Opt-out manual: registra opt-out para o contato. */
-  async optOut(contactId: string): Promise<void> {
-    await apiClient.post(`/api/whatsapp-consents/${contactId}/opt-out`);
+  /** Opt-out manual: registra opt-out para o contato (ou telefone normalizado). */
+  async optOut(contactIdOrPhone: string): Promise<void> {
+    const id = encodeURIComponent(
+      /\D/.test(contactIdOrPhone) || contactIdOrPhone.length > 30
+        ? normalizePhone(contactIdOrPhone)
+        : contactIdOrPhone
+    );
+    await apiClient.post(`/api/whatsapp-consents/${id}/opt-out`);
   }
 
   /**

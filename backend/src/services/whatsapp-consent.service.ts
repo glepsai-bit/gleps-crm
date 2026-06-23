@@ -1,6 +1,7 @@
 import type { WhatsappConsent } from '@prisma/client';
 import { prisma } from '../config/database';
 import { eventService } from './event.service';
+import { webhookOutboundService } from './webhook-outbound.service';
 import { ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -33,7 +34,9 @@ export interface ListOptedOutResult {
 // Constants
 // ============================================
 
-const OPT_OUT_KEYWORD_REGEX = /^(sair|parar|stop|cancelar|opt.?out)$/i;
+// BUG-006: regex relaxada — aceita palavra-chave em qualquer posição da mensagem
+// e cobre mais variantes (descadastrar, remover, opt-out / opt_out / optout).
+const OPT_OUT_KEYWORD_REGEX = /\b(sair|parar|stop|cancelar|opt[\s\-_]?out|descadastrar|remover)\b/i;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
 
@@ -232,15 +235,34 @@ class WhatsappConsentService {
       },
     });
 
-    // Webhook outbound (placeholder — quando webhookOutboundService existir, integrar aqui).
-    // Por enquanto apenas loga a intenção para evitar acoplamento prematuro.
-    logger.info('[whatsapp-consent] opt-out registrado (webhook outbound pendente de integração)', {
+    // BUG-006: emite webhook outbound 'optout.created' para integrações externas.
+    // Fire-and-forget — o webhookOutboundService já lida com erros internamente,
+    // mas envolvemos em try/catch para garantir que falha de webhook nunca derruba
+    // a operação de opt-out propriamente dita.
+    try {
+      await webhookOutboundService.emit(accountId, 'optout.created', {
+        consentId: record.id,
+        phone: normalized,
+        contactId: options.contactId ?? null,
+        source,
+        reason: options.reason ?? null,
+        occurredAt: record.updatedAt.toISOString(),
+      });
+    } catch (err: any) {
+      logger.warn('[whatsapp-consent] falha ao emitir webhook outbound optout.created', {
+        accountId,
+        consentId: record.id,
+        error: err?.message ?? String(err),
+      });
+    }
+
+    logger.info('[whatsapp-consent] opt-out registrado', {
       accountId,
       consentId: record.id,
       phone: normalized,
       source,
       reason: options.reason ?? null,
-      webhookEvent: 'opt.out.created',
+      webhookEvent: 'optout.created',
     });
 
     return record;

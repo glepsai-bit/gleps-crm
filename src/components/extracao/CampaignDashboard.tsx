@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
@@ -8,28 +8,21 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Send, CheckCircle2, UserMinus, Zap, Filter } from 'lucide-react';
+import { Send, CheckCircle2, XCircle, Zap, Filter } from 'lucide-react';
 
 interface CampaignBatch {
   id: string;
   keyword: string | null;
   location: string | null;
-  total_contacts: number;
-  sent_count: number;
-  failed_count: number;
+  totalContacts: number;
+  sentCount: number;
+  failedCount: number;
   status: string;
   source: string;
-  trigger_name: string | null;
-  scheduled_at: string | null;
+  triggerName: string | null;
+  scheduledAt: string | null;
   started_at: string;
   created_at: string;
-}
-
-interface CampaignMetrics {
-  total_enviadas: number;
-  taxa_entrega: number;
-  opt_outs: number;
-  campanhas_ativas: number;
 }
 
 type Periodo = '7d' | '30d';
@@ -74,21 +67,6 @@ export function CampaignDashboard({ accountId }: Props) {
   const [sourceFiltro, setSourceFiltro] = useState<SourceFiltro>('todas');
   const [triggerFiltro, setTriggerFiltro] = useState('');
 
-  // TODO: backend pendente — endpoint de métricas de campanhas ainda sendo implementado
-  const { data: metrics, isLoading: loadingMetrics } = useQuery<CampaignMetrics>({
-    queryKey: ['campaign-metrics', periodo, accountId],
-    queryFn: async () => {
-      try {
-        const res = await apiClient.get<any>(`/api/dispatch/metrics?periodo=${periodo}`);
-        return (res as any).data ?? res;
-      } catch {
-        // Backend ainda implementando — retornar zeros
-        return { total_enviadas: 0, taxa_entrega: 0, opt_outs: 0, campanhas_ativas: 0 };
-      }
-    },
-    retry: false,
-  });
-
   // TODO: backend pendente — filtros por source/triggerName ainda sendo implementados
   const { data: batches = [], isLoading: loadingBatches } = useQuery<CampaignBatch[]>({
     queryKey: ['campaign-batches', sourceFiltro, triggerFiltro, periodo, accountId],
@@ -97,7 +75,7 @@ export function CampaignDashboard({ accountId }: Props) {
         const params: Record<string, string> = { periodo };
         if (sourceFiltro !== 'todas') params.source = sourceFiltro;
         if (triggerFiltro.trim()) params.trigger_name = triggerFiltro.trim();
-        const res = await apiClient.get<any>(API_ENDPOINTS.PROSPECTING.BATCHES, { params });
+        const res = await apiClient.get<any>(API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED, { params });
         const data = (res as any).data ?? res;
         return Array.isArray(data) ? data : [];
       } catch {
@@ -107,7 +85,18 @@ export function CampaignDashboard({ accountId }: Props) {
     retry: false,
   });
 
-  const m = metrics ?? { total_enviadas: 0, taxa_entrega: 0, opt_outs: 0, campanhas_ativas: 0 };
+  // Métricas computadas localmente a partir dos batches carregados
+  // (endpoint /api/dispatch/metrics ainda não existe no backend)
+  const metrics = useMemo(() => {
+    const totalEnviadas = batches.reduce((acc, b) => acc + (b.sentCount ?? 0), 0);
+    const totalFalhas = batches.reduce((acc, b) => acc + (b.failedCount ?? 0), 0);
+    const totalTentativas = totalEnviadas + totalFalhas;
+    const taxaEntrega = totalTentativas > 0 ? (totalEnviadas / totalTentativas) * 100 : 0;
+    const campanhasAtivas = batches.filter(
+      b => b.status === 'running' || b.status === 'scheduled'
+    ).length;
+    return { totalEnviadas, totalFalhas, taxaEntrega, campanhasAtivas };
+  }, [batches]);
 
   return (
     <div className="space-y-6">
@@ -147,14 +136,14 @@ export function CampaignDashboard({ accountId }: Props) {
         </div>
       </div>
 
-      {/* Cards de métricas */}
+      {/* Cards de métricas (computadas localmente a partir dos batches) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
           <CardContent className="pt-5 pb-4">
-            {loadingMetrics ? (
+            {loadingBatches ? (
               <Skeleton className="h-8 w-16" />
             ) : (
-              <div className="text-2xl font-bold">{m.total_enviadas.toLocaleString('pt-BR')}</div>
+              <div className="text-2xl font-bold">{metrics.totalEnviadas.toLocaleString('pt-BR')}</div>
             )}
             <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
               <Send className="w-3 h-3" /> Total enviadas
@@ -163,10 +152,10 @@ export function CampaignDashboard({ accountId }: Props) {
         </Card>
         <Card>
           <CardContent className="pt-5 pb-4">
-            {loadingMetrics ? (
+            {loadingBatches ? (
               <Skeleton className="h-8 w-16" />
             ) : (
-              <div className="text-2xl font-bold text-green-600">{m.taxa_entrega.toFixed(1)}%</div>
+              <div className="text-2xl font-bold text-green-600">{metrics.taxaEntrega.toFixed(1)}%</div>
             )}
             <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3" /> Taxa de entrega
@@ -175,22 +164,22 @@ export function CampaignDashboard({ accountId }: Props) {
         </Card>
         <Card>
           <CardContent className="pt-5 pb-4">
-            {loadingMetrics ? (
+            {loadingBatches ? (
               <Skeleton className="h-8 w-16" />
             ) : (
-              <div className="text-2xl font-bold text-destructive">{m.opt_outs}</div>
+              <div className="text-2xl font-bold text-destructive">{metrics.totalFalhas.toLocaleString('pt-BR')}</div>
             )}
             <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-              <UserMinus className="w-3 h-3" /> Opt-outs gerados
+              <XCircle className="w-3 h-3" /> Falhas
             </p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-5 pb-4">
-            {loadingMetrics ? (
+            {loadingBatches ? (
               <Skeleton className="h-8 w-16" />
             ) : (
-              <div className="text-2xl font-bold text-blue-600">{m.campanhas_ativas}</div>
+              <div className="text-2xl font-bold text-blue-600">{metrics.campanhasAtivas}</div>
             )}
             <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
               <Zap className="w-3 h-3" /> Campanhas ativas
@@ -239,16 +228,16 @@ export function CampaignDashboard({ accountId }: Props) {
                       {b.keyword || 'Disparo manual'}
                       {b.location && <span className="text-muted-foreground ml-1">· {b.location}</span>}
                     </TableCell>
-                    <TableCell>{b.total_contacts}</TableCell>
+                    <TableCell>{b.totalContacts}</TableCell>
                     <TableCell>
                       <Badge variant="outline" className="text-xs">{getSourceLabel(b.source ?? 'manual')}</Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs">
-                      {b.trigger_name ?? '—'}
+                      {b.triggerName ?? '—'}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs">
-                      {b.scheduled_at
-                        ? new Date(b.scheduled_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
+                      {b.scheduledAt
+                        ? new Date(b.scheduledAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
                         : '—'}
                     </TableCell>
                     <TableCell>

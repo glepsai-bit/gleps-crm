@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate } from '../middlewares/auth.middleware';
+import { authenticate, requireRole } from '../middlewares/auth.middleware';
 import { whatsappConsentController } from '../controllers/whatsapp-consent.controller';
 
 // ============================================
@@ -8,6 +8,7 @@ import { whatsappConsentController } from '../controllers/whatsapp-consent.contr
 
 const router = Router();
 router.use(authenticate);
+router.use(requireRole('super_admin', 'admin'));
 
 // GET /api/whatsapp-consents/export?format=csv
 // Declarado ANTES de qualquer rota dinâmica para evitar colisão de matching.

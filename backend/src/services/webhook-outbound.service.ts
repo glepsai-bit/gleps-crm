@@ -447,10 +447,16 @@ class WebhookOutboundService {
   /**
    * Cron-driven retry sweep. Picks up to RETRY_BATCH_SIZE failed deliveries
    * whose nextRetryAt has passed and re-dispatches them in the background.
+   *
+   * Multi-replica safe: usa pre-claim via updateMany para mover as deliveries
+   * elegiveis de 'failed' para 'retrying' atomicamente, evitando que duas
+   * replicas do cron processem a mesma entrega em paralelo (race condition).
    */
   async processRetryQueue(): Promise<{ processed: number }> {
     const now = new Date();
-    const due = await prisma.webhookDelivery.findMany({
+
+    // 1. Selecionar candidatos (somente IDs) respeitando RETRY_BATCH_SIZE.
+    const candidates = await prisma.webhookDelivery.findMany({
       where: {
         status: 'failed',
         nextRetryAt: { lte: now },
@@ -460,7 +466,40 @@ class WebhookOutboundService {
       select: { id: true },
     });
 
-    for (const delivery of due) {
+    if (candidates.length === 0) {
+      return { processed: 0 };
+    }
+
+    const candidateIds = candidates.map(c => c.id);
+
+    // 2. Pre-claim atomico: marca somente as que ainda estao 'failed' como
+    // 'retrying'. updateMany retorna apenas as linhas efetivamente alteradas,
+    // o que garante mutual exclusion entre replicas concorrentes.
+    const claimed = await prisma.webhookDelivery.updateMany({
+      where: {
+        id: { in: candidateIds },
+        status: 'failed',
+        nextRetryAt: { lte: now },
+      },
+      data: { status: 'retrying' },
+    });
+
+    if (claimed.count === 0) {
+      return { processed: 0 };
+    }
+
+    // 3. Buscar as deliveries que conseguimos reservar (estao 'retrying' e
+    // pertencem ao conjunto que tentamos claimar nesta execucao).
+    const deliveries = await prisma.webhookDelivery.findMany({
+      where: {
+        id: { in: candidateIds },
+        status: 'retrying',
+      },
+      select: { id: true },
+    });
+
+    // 4. Disparar processDelivery — ele atualiza status para success/failed/dlq.
+    for (const delivery of deliveries) {
       this.processDelivery(delivery.id).catch(err => {
         logger.error('[webhook-outbound] retry processDelivery failed', err, {
           deliveryId: delivery.id,
@@ -468,7 +507,7 @@ class WebhookOutboundService {
       });
     }
 
-    return { processed: due.length };
+    return { processed: deliveries.length };
   }
 }
 

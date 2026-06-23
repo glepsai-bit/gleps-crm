@@ -1,6 +1,28 @@
 import { Request, Response, NextFunction } from 'express';
 import { apiKeyService } from '../services/api-key.service';
 
+/* ============================================================================
+ * TODO(t022-future): scopes são placeholder. Toda API key tem god-mode no
+ * escopo da sua conta. Implementar requireScope() antes de produção sensível.
+ *
+ * Hoje:
+ *   - O middleware abaixo apenas valida que a chave é válida e não-revogada,
+ *     e popula req.apiKey + req.accountId.
+ *   - O campo `scopes` é carregado do banco mas NUNCA é checado em nenhum
+ *     endpoint. Qualquer chave válida pode chamar qualquer rota protegida
+ *     por requireApiKey dentro do escopo da accountId dona da chave.
+ *
+ * Plano:
+ *   1. Definir taxonomia de scopes (ex: "leads:read", "leads:write",
+ *      "messages:send", "metrics:read", "*").
+ *   2. Adicionar requireScope(...allowed: string[]) que rejeita 403 se
+ *      req.apiKey.scopes não tiver intersecção com `allowed` (ou "*").
+ *   3. Anotar cada rota sensível com requireScope(...).
+ *   4. Reabilitar input de scopes na UI e validar no controller.
+ *
+ * Até lá: input de scopes foi removido da UI e o service força [] no insert.
+ * ========================================================================= */
+
 // Declaration merging: extend Express Request with apiKey + accountId fields
 declare module 'express-serve-static-core' {
   interface Request {

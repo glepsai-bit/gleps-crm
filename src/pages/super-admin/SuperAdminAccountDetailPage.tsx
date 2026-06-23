@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   ArrowLeft,
   Building2,
@@ -46,6 +47,8 @@ import {
   Smartphone,
   Key,
   ChevronRight,
+  AlertTriangle,
+  Save,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
 import { toast } from 'sonner';
@@ -119,6 +122,7 @@ export default function SuperAdminAccountDetailPage() {
   const [evolutionStatus, setEvolutionStatus] = useState<string | null>(null);
   const [isCheckingEvolutionStatus, setIsCheckingEvolutionStatus] = useState(false);
   const [isGeneratingQrCode, setIsGeneratingQrCode] = useState(false);
+  const [isSavingEvolution, setIsSavingEvolution] = useState(false);
 
   // Fetch account data from Supabase
   useEffect(() => {
@@ -134,8 +138,11 @@ export default function SuperAdminAccountDetailPage() {
         const accountData = await accountsCloudOrBackend.getById(accountId);
         setAccount(accountData);
         if (accountData) {
+          // BUG-020: client-side masking — não popular o state com a chave.
+          // Apenas URL e instance (não-secretos) entram no state.
+          // TODO: futuro: backend retornar mask + flag hasKey
           setEvolutionBaseUrl((accountData as any).evolution_base_url || '');
-          setEvolutionApiKey((accountData as any).evolution_api_key || '');
+          setEvolutionApiKey(''); // sempre vazio: placeholder mostra "•••• configurado"
           setEvolutionInstance((accountData as any).evolution_instance || '');
         }
         setError(null);
@@ -182,6 +189,10 @@ export default function SuperAdminAccountDetailPage() {
 
 
   const handleOpenControl = () => {
+    // BUG-020: client-side masking — NÃO popular state com valores secretos.
+    // Inputs de chave permanecem vazios; placeholder indica "•••• configurado".
+    // No save, se input vazio, NÃO envia o campo (mantém valor existente no backend).
+    // TODO: futuro: backend retornar mask + flag hasKey
     setEditFormData({
       nome: account.nome,
       idioma: (account as any).idioma || 'pt',
@@ -189,15 +200,15 @@ export default function SuperAdminAccountDetailPage() {
       chatwootEnabled: !!(account.chatwoot_account_id || account.chatwoot_api_key || account.chatwoot_base_url),
       chatwootBaseUrl: account.chatwoot_base_url || '',
       chatwootAccountId: account.chatwoot_account_id || '',
-      chatwootApiKey: account.chatwoot_api_key || '',
+      chatwootApiKey: '', // masked
       googleEnabled: !!(account.google_client_id || account.google_client_secret || account.google_redirect_uri),
       googleClientId: account.google_client_id || '',
-      googleClientSecret: account.google_client_secret || '',
+      googleClientSecret: '', // masked
       googleRedirectUri: account.google_redirect_uri || '',
       openaiEnabled: !!(account as any).openai_api_key,
-      openaiApiKey: (account as any).openai_api_key || '',
+      openaiApiKey: '', // masked
       sendgridEnabled: !!((account as any).sendgrid_api_key),
-      sendgridApiKey: (account as any).sendgrid_api_key || '',
+      sendgridApiKey: '', // masked
       sendgridFromEmail: (account as any).sendgrid_from_email || '',
       sendgridFromName: (account as any).sendgrid_from_name || '',
     });
@@ -207,12 +218,17 @@ export default function SuperAdminAccountDetailPage() {
 
   const handleTestConnection = async () => {
     setConnectionStatus('loading');
-    
+
     try {
+      // BUG-020: usa a chave existente do account quando o input está vazio (mascarado).
+      const apiKeyToTest =
+        editFormData.chatwootApiKey.trim() !== ''
+          ? editFormData.chatwootApiKey
+          : (account.chatwoot_api_key || '');
       const result = await accountsCloudOrBackend.testChatwootConnection(
         editFormData.chatwootBaseUrl,
         editFormData.chatwootAccountId,
-        editFormData.chatwootApiKey
+        apiKeyToTest
       );
       
       if (result.success) {
@@ -229,10 +245,11 @@ export default function SuperAdminAccountDetailPage() {
     }
   };
 
-  const canTestConnection = editFormData.chatwootEnabled && 
+  // BUG-020: aceita usar a chave existente no account quando o input está mascarado (vazio).
+  const canTestConnection = editFormData.chatwootEnabled &&
     editFormData.chatwootBaseUrl.trim() !== '' &&
-    editFormData.chatwootAccountId.trim() !== '' && 
-    editFormData.chatwootApiKey.trim() !== '';
+    editFormData.chatwootAccountId.trim() !== '' &&
+    (editFormData.chatwootApiKey.trim() !== '' || !!account.chatwoot_api_key);
 
   const handleToggleStatus = async () => {
     const newStatus = account.status === 'active' ? 'paused' : 'active';
@@ -258,35 +275,51 @@ export default function SuperAdminAccountDetailPage() {
 
     setIsValidatingUpdate(true);
     try {
-      await accountsCloudOrBackend.update(account.id, {
+      // BUG-020: campos de chave vazios NÃO são enviados — preserva valor existente.
+      // Helper local: retorna o valor se preenchido, ou undefined (drop do payload).
+      const keepOrSkip = (v: string): string | undefined =>
+        v && v.trim() !== '' ? v : undefined;
+
+      const payload: Record<string, any> = {
         nome: editFormData.nome,
         status: editFormData.status,
         chatwoot_base_url: editFormData.chatwootEnabled ? editFormData.chatwootBaseUrl : undefined,
         chatwoot_account_id: editFormData.chatwootEnabled ? editFormData.chatwootAccountId : undefined,
-        chatwoot_api_key: editFormData.chatwootEnabled ? editFormData.chatwootApiKey : undefined,
+        chatwoot_api_key: editFormData.chatwootEnabled ? keepOrSkip(editFormData.chatwootApiKey) : undefined,
         google_client_id: editFormData.googleEnabled ? editFormData.googleClientId : undefined,
-        google_client_secret: editFormData.googleEnabled ? editFormData.googleClientSecret : undefined,
+        google_client_secret: editFormData.googleEnabled ? keepOrSkip(editFormData.googleClientSecret) : undefined,
         google_redirect_uri: editFormData.googleEnabled ? editFormData.googleRedirectUri : undefined,
-        openai_api_key: editFormData.openaiEnabled ? editFormData.openaiApiKey : undefined,
-        sendgrid_api_key: editFormData.sendgridEnabled ? editFormData.sendgridApiKey : undefined,
+        openai_api_key: editFormData.openaiEnabled ? keepOrSkip(editFormData.openaiApiKey) : undefined,
+        sendgrid_api_key: editFormData.sendgridEnabled ? keepOrSkip(editFormData.sendgridApiKey) : undefined,
         sendgrid_from_email: editFormData.sendgridEnabled ? editFormData.sendgridFromEmail : undefined,
         sendgrid_from_name: editFormData.sendgridEnabled ? editFormData.sendgridFromName : undefined,
         evolution_base_url: evolutionBaseUrl,
-        evolution_api_key: evolutionApiKey,
+        evolution_api_key: keepOrSkip(evolutionApiKey),
         evolution_instance: evolutionInstance,
-      } as any);
+      };
+      // Remove undefined explicitamente para não sobrescrever no backend
+      Object.keys(payload).forEach((k) => {
+        if (payload[k] === undefined) delete payload[k];
+      });
+
+      await accountsCloudOrBackend.update(account.id, payload as any);
       setAccount({
         ...account,
         nome: editFormData.nome,
         status: editFormData.status,
+        // Mantém valores existentes para campos secretos quando vazios no form
         chatwoot_base_url: editFormData.chatwootEnabled ? editFormData.chatwootBaseUrl : undefined,
         chatwoot_account_id: editFormData.chatwootEnabled ? editFormData.chatwootAccountId : undefined,
-        chatwoot_api_key: editFormData.chatwootEnabled ? editFormData.chatwootApiKey : undefined,
+        chatwoot_api_key: editFormData.chatwootEnabled
+          ? (keepOrSkip(editFormData.chatwootApiKey) ?? account.chatwoot_api_key)
+          : undefined,
         google_client_id: editFormData.googleEnabled ? editFormData.googleClientId : undefined,
-        google_client_secret: editFormData.googleEnabled ? editFormData.googleClientSecret : undefined,
+        google_client_secret: editFormData.googleEnabled
+          ? (keepOrSkip(editFormData.googleClientSecret) ?? account.google_client_secret)
+          : undefined,
         google_redirect_uri: editFormData.googleEnabled ? editFormData.googleRedirectUri : undefined,
         evolution_base_url: evolutionBaseUrl,
-        evolution_api_key: evolutionApiKey,
+        evolution_api_key: keepOrSkip(evolutionApiKey) ?? (account as any).evolution_api_key,
         evolution_instance: evolutionInstance,
         updated_at: new Date().toISOString(),
       } as any);
@@ -347,6 +380,52 @@ export default function SuperAdminAccountDetailPage() {
       setIsGeneratingQrCode(false);
     }
   };
+
+  // BUG-019: salvar credenciais Evolution diretamente do card, sem precisar abrir Controle.
+  const handleSaveEvolutionCredentials = async () => {
+    if (!account) return;
+    setIsSavingEvolution(true);
+    try {
+      // BUG-020: chave vazia NÃO é enviada (preserva valor existente no backend).
+      const payload: Record<string, any> = {
+        evolution_base_url: evolutionBaseUrl,
+        evolution_instance: evolutionInstance,
+      };
+      if (evolutionApiKey && evolutionApiKey.trim() !== '') {
+        payload.evolution_api_key = evolutionApiKey;
+      }
+
+      await accountsCloudOrBackend.update(account.id, payload as any);
+      setAccount({
+        ...account,
+        evolution_base_url: evolutionBaseUrl,
+        evolution_instance: evolutionInstance,
+        evolution_api_key:
+          evolutionApiKey && evolutionApiKey.trim() !== ''
+            ? evolutionApiKey
+            : (account as any).evolution_api_key,
+        updated_at: new Date().toISOString(),
+      } as any);
+      // Limpa o input de chave após salvar (volta para o estado "•••• configurado")
+      setEvolutionApiKey('');
+      toast.success('Credenciais salvas');
+    } catch (error: any) {
+      toast.error('Erro ao salvar credenciais: ' + (error?.message || 'Erro desconhecido'));
+    } finally {
+      setIsSavingEvolution(false);
+    }
+  };
+
+  // BUG-019: detecta divergência entre state local e valores persistidos.
+  // Para evolution_api_key: divergência só quando o usuário digitou algo (state não-vazio).
+  const accountEvolutionBaseUrl = (account as any)?.evolution_base_url || '';
+  const accountEvolutionInstance = (account as any)?.evolution_instance || '';
+  const hasAccountEvolutionApiKey = !!(account as any)?.evolution_api_key;
+  const evolutionHasDivergence =
+    evolutionBaseUrl !== accountEvolutionBaseUrl ||
+    evolutionInstance !== accountEvolutionInstance ||
+    (evolutionApiKey.trim() !== '' && hasAccountEvolutionApiKey) ||
+    (evolutionApiKey.trim() !== '' && !hasAccountEvolutionApiKey);
 
   const getEvolutionStatusVariant = (status: string | null): 'default' | 'secondary' | 'destructive' | 'outline' => {
     if (!status) return 'outline';
@@ -652,8 +731,13 @@ export default function SuperAdminAccountDetailPage() {
                 type="password"
                 value={evolutionApiKey}
                 onChange={(e) => setEvolutionApiKey(e.target.value)}
-                placeholder="API Key da Evolution"
+                placeholder={hasAccountEvolutionApiKey ? '•••• configurado' : 'API Key da Evolution'}
               />
+              {hasAccountEvolutionApiKey && (
+                <p className="text-xs text-muted-foreground">
+                  Deixe em branco para manter a chave atual.
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="evolution-instance">Instance Name</Label>
@@ -667,10 +751,38 @@ export default function SuperAdminAccountDetailPage() {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Configure URL, API Key e instance, salve em <strong>Controle</strong> e use os botões abaixo para conectar o WhatsApp.
+            Configure URL, API Key e instance, clique em <strong>Salvar credenciais Evolution</strong> e
+            use os botões abaixo para conectar o WhatsApp.
           </p>
 
+          {/* BUG-019: aviso de divergência entre form e dados salvos */}
+          {evolutionHasDivergence && (
+            <Alert variant="default" className="border-amber-500/50 text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Alterações não salvas</AlertTitle>
+              <AlertDescription>
+                Os campos da Evolution foram alterados mas ainda não foram salvos.
+                Clique em <strong>Salvar credenciais Evolution</strong> antes de gerar o QR Code.
+              </AlertDescription>
+            </Alert>
+          )}
+
           <div className="flex flex-wrap items-center gap-2 pt-2">
+            {/* BUG-019: botão dedicado para salvar credenciais Evolution sem abrir Controle */}
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleSaveEvolutionCredentials}
+              disabled={isSavingEvolution}
+              className="gap-2"
+            >
+              {isSavingEvolution ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              Salvar credenciais Evolution
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -806,8 +918,13 @@ export default function SuperAdminAccountDetailPage() {
                     type="password"
                     value={editFormData.openaiApiKey}
                     onChange={(e) => setEditFormData({ ...editFormData, openaiApiKey: e.target.value })}
-                    placeholder="sk-..."
+                    placeholder={(account as any).openai_api_key ? '•••• configurado' : 'sk-...'}
                   />
+                  {(account as any).openai_api_key && (
+                    <p className="text-xs text-muted-foreground">
+                      Deixe em branco para manter a chave atual.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -834,8 +951,13 @@ export default function SuperAdminAccountDetailPage() {
                       type="password"
                       value={editFormData.sendgridApiKey}
                       onChange={(e) => setEditFormData({ ...editFormData, sendgridApiKey: e.target.value })}
-                      placeholder="SG...."
+                      placeholder={(account as any).sendgrid_api_key ? '•••• configurado' : 'SG....'}
                     />
+                    {(account as any).sendgrid_api_key && (
+                      <p className="text-xs text-muted-foreground">
+                        Deixe em branco para manter a chave atual.
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="edit-sendgrid-email">E-mail Remetente</Label>
@@ -906,8 +1028,13 @@ export default function SuperAdminAccountDetailPage() {
                       type="password"
                       value={editFormData.chatwootApiKey}
                       onChange={(e) => setEditFormData({ ...editFormData, chatwootApiKey: e.target.value })}
-                      placeholder="Access Token do usuário"
+                      placeholder={account.chatwoot_api_key ? '•••• configurado' : 'Access Token do usuário'}
                     />
+                    {account.chatwoot_api_key && (
+                      <p className="text-xs text-muted-foreground">
+                        Deixe em branco para manter a chave atual.
+                      </p>
+                    )}
                   </div>
 
                   {/* Test Connection Button */}
@@ -968,8 +1095,13 @@ export default function SuperAdminAccountDetailPage() {
                       type="password"
                       value={editFormData.googleClientSecret}
                       onChange={(e) => setEditFormData({ ...editFormData, googleClientSecret: e.target.value })}
-                      placeholder="GOCSPX-..."
+                      placeholder={account.google_client_secret ? '•••• configurado' : 'GOCSPX-...'}
                     />
+                    {account.google_client_secret && (
+                      <p className="text-xs text-muted-foreground">
+                        Deixe em branco para manter a chave atual.
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="edit-google-redirect-uri">Redirect URI</Label>

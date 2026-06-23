@@ -4,12 +4,14 @@ import {
   authenticate,
   requireAccountId,
   requirePermission,
+  requireRole,
 } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // All routes require authentication and an account context
 router.use(authenticate);
+router.use(requireRole('super_admin', 'admin'));
 router.use(requireAccountId);
 
 router.get('/', requirePermission('campaigns', 'emails'), (req, res, next) =>

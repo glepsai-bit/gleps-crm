@@ -1,7 +1,7 @@
 import type { DispatchBatch, DispatchLog } from '@prisma/client';
 import { prisma } from '../config/database';
 import { evolutionService } from './evolution.service';
-import { whatsappTemplateService } from './whatsapp-template.service';
+import { renderTemplate, whatsappTemplateService } from './whatsapp-template.service';
 import { whatsappConsentService } from './whatsapp-consent.service';
 import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
 import { webhookOutboundService } from './webhook-outbound.service';
@@ -73,14 +73,6 @@ export interface ListBatchesFilters {
 
 const DEFAULT_DELAY_SECONDS = 30;
 const MIN_DELAY_MS = 1000;
-
-function renderTemplate(content: string, variables: Record<string, string> = {}): string {
-  if (!content) return '';
-  return content.replace(/\{\{?\s*([\w.]+)\s*\}?\}/g, (_match, key) => {
-    const value = variables[key];
-    return value !== undefined && value !== null ? String(value) : '';
-  });
-}
 
 class WhatsappCampaignService {
   // ============================================
@@ -577,9 +569,7 @@ class WhatsappCampaignService {
             where: { id: batchId },
             data: { sentCount, failedCount },
           });
-          if (i < recipients.length - 1) {
-            await this.sleep(delayMs);
-          }
+          // BUG-017: opt-out não consome envio real — pular delay
           continue;
         }
 
@@ -602,9 +592,7 @@ class WhatsappCampaignService {
             where: { id: batchId },
             data: { sentCount, failedCount },
           });
-          if (i < recipients.length - 1) {
-            await this.sleep(delayMs);
-          }
+          // BUG-017: rate-limited não consome envio real — pular delay
           continue;
         }
 

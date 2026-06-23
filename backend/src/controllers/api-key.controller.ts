@@ -5,9 +5,11 @@ import { AuthenticatedRequest } from '../types';
 import { ValidationError, ForbiddenError, ErrorCodes } from '../utils/errors';
 
 // Validation schemas
+// TODO(t022-future): scopes não implementado. Aceitamos o campo no body por
+// compat com clientes antigos, mas é ignorado no service (sempre []).
+// Ver comentário no apiKey.middleware.ts.
 const generateApiKeySchema = z.object({
   name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
-  scopes: z.array(z.string()).optional(),
 });
 
 /**
@@ -56,8 +58,9 @@ export class ApiKeyController {
 
   /**
    * POST /api/api-keys/accounts/:accountId
-   * Body: { name, scopes? }
+   * Body: { name }
    * Retorna a chave em texto plano APENAS UMA VEZ.
+   * TODO(t022-future): scopes removido do schema — ver apiKey.middleware.ts.
    */
   async generate(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -66,11 +69,12 @@ export class ApiKeyController {
 
       const body = generateApiKeySchema.parse(req.body);
 
+      // TODO(t022-future): scopes ignorado por hora (god-mode na accountId).
       const result = await apiKeyService.generate(
         accountId,
         body.name,
         req.user!.id,
-        body.scopes ?? []
+        []
       );
 
       res.status(201).json({

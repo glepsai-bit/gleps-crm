@@ -74,8 +74,8 @@ function mapInbound(
     raw.webhookUrl
       ? String(raw.webhookUrl)
       : accountId
-      ? `${window.location.origin}/api/integrations/inbound/${accountId}/${slug}`
-      : `/api/integrations/inbound/:accountId/${slug}`;
+      ? `${window.location.origin}/api/integrations/inbound-receive/${accountId}/${slug}`
+      : `/api/integrations/inbound-receive/:accountId/${slug}`;
 
   return {
     slug,

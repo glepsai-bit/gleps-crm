@@ -18,7 +18,12 @@ import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
 import { useToast } from '@/hooks/use-toast';
+import { ComplianceWarning } from './ComplianceWarning';
 import type { ExtractedLead, ChatwootInbox } from './types';
+
+// BUG-013: Radix Select não aceita value="" em SelectItem.
+// Usamos um sentinel literal "none" para representar "sem template".
+const NO_TEMPLATE_VALUE = 'none';
 
 interface Props {
   open: boolean;
@@ -41,8 +46,9 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
   const [scheduledTime, setScheduledTime] = useState('');
   const [daquiQuantidade, setDaquiQuantidade] = useState('2');
   const [daquiUnidade, setDaquiUnidade] = useState<'horas' | 'dias'>('horas');
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(NO_TEMPLATE_VALUE);
   const [customMessage, setCustomMessage] = useState(false);
+  const [optOutCount, setOptOutCount] = useState(0);
 
   const { data: templates = [] } = useQuery({
     queryKey: ['whatsapp-templates'],
@@ -77,6 +83,51 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
     };
     fetchInboxes();
   }, [open, accountId]);
+
+  // BUG-022 — Compliance/opt-out check.
+  // Faz uma chamada otimista a /api/whatsapp-consents/check-batch ao abrir o dialog.
+  // TODO(backend): endpoint /api/whatsapp-consents/check-batch ainda não existe.
+  // Quando faltando (404 / erro de rede), tratamos gracefully com optOutCount = 0
+  // para não bloquear o disparo.
+  useEffect(() => {
+    if (!open) return;
+    if (!useBackend) {
+      setOptOutCount(0);
+      return;
+    }
+    if (leads.length === 0) {
+      setOptOutCount(0);
+      return;
+    }
+
+    let cancelled = false;
+    const phones = leads.map((l) => l.telefone).filter(Boolean);
+
+    (async () => {
+      try {
+        const resp = await apiClient.post<unknown>(
+          '/api/whatsapp-consents/check-batch',
+          { phones }
+        );
+        if (cancelled) return;
+        const data = (resp as { data?: unknown }).data ?? resp;
+        const count =
+          (data as { optOutCount?: number })?.optOutCount ??
+          (data as { count?: number })?.count ??
+          (Array.isArray((data as { optedOut?: unknown[] })?.optedOut)
+            ? (data as { optedOut: unknown[] }).optedOut.length
+            : 0);
+        setOptOutCount(Number(count) || 0);
+      } catch {
+        // 404 ou qualquer erro: ignora e segue com count=0.
+        if (!cancelled) setOptOutCount(0);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, leads]);
 
   const toggleInbox = useCallback((id: number) => {
     setSelectedInboxIds(prev => {
@@ -118,10 +169,10 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
     }
   };
 
-  const handleTemplateSelect = (templateId: string) => {
-    setSelectedTemplateId(templateId);
-    if (!templateId) return;
-    const tmpl = templates.find(t => t.id === templateId);
+  const handleTemplateSelect = (value: string) => {
+    setSelectedTemplateId(value);
+    if (value === NO_TEMPLATE_VALUE) return;
+    const tmpl = templates.find(t => t.id === value);
     if (tmpl) {
       setMessages([tmpl.content]);
       setCustomMessage(false);
@@ -131,7 +182,7 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
   const handleMessageUpdate = (idx: number, value: string) => {
     updateMessage(idx, value);
     setCustomMessage(true);
-    if (customMessage) setSelectedTemplateId('');
+    if (customMessage) setSelectedTemplateId(NO_TEMPLATE_VALUE);
   };
 
   const handleDispatch = async () => {
@@ -158,13 +209,46 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
 
       let data: any;
       if (useBackend) {
-        const response = await apiClient.post(API_ENDPOINTS.PROSPECTING.DISPATCH, {
-          inbox_assignments: assignments,
-          delay_seconds: Number(delay) || 30,
-          messages: validMessages,
-          ...(scheduledAt ? { scheduled_at: scheduledAt, source: 'manual_scheduled' } : { source: 'manual' }),
-        });
-        data = (response as any).data || response;
+        if (scheduledAt) {
+          // BUG-009 FE — disparos agendados precisam ir para o whatsappCampaignController
+          // (/api/dispatch/send-batch), porque /api/prospecting/dispatch dispara
+          // imediatamente e não aceita scheduledAt.
+          const phones = leads.map(l => ({ phone: l.telefone, name: l.nome }));
+          const selectedTmpl =
+            selectedTemplateId !== NO_TEMPLATE_VALUE
+              ? templates.find(t => t.id === selectedTemplateId)
+              : undefined;
+          const payload: Record<string, unknown> = {
+            phones,
+            scheduledAt,
+            source: 'manual_scheduled',
+          };
+          if (selectedTmpl) {
+            payload.templateId = selectedTmpl.id;
+          } else {
+            payload.content = validMessages[0];
+          }
+          const response = await apiClient.post(
+            API_ENDPOINTS.PROSPECTING.DISPATCH_START,
+            payload
+          );
+          const respData = (response as any).data || response;
+          // whatsappCampaignController retorna { batchId } sem `success` flag.
+          // Normalizamos para o shape esperado pelo bloco de pós-processamento.
+          data = {
+            success: true,
+            batch_id: respData?.batchId ?? respData?.batch_id,
+            ...respData,
+          };
+        } else {
+          const response = await apiClient.post(API_ENDPOINTS.PROSPECTING.DISPATCH, {
+            inbox_assignments: assignments,
+            delay_seconds: Number(delay) || 30,
+            messages: validMessages,
+            source: 'manual',
+          });
+          data = (response as any).data || response;
+        }
       } else {
         const result = await supabase.functions.invoke('dispatch-messages', {
           body: {
@@ -209,6 +293,8 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
         </DialogHeader>
 
         <div className="space-y-4 py-2">
+          <ComplianceWarning totalLote={leads.length} totalOptOut={optOutCount} />
+
           <div className="space-y-2">
             <Label>Números (Inboxes do Chatwoot)</Label>
             <p className="text-xs text-muted-foreground">
@@ -275,7 +361,7 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
                 <SelectValue placeholder="Selecionar template..." />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Sem template (mensagem livre)</SelectItem>
+                <SelectItem value={NO_TEMPLATE_VALUE}>Sem template (mensagem livre)</SelectItem>
                 {templates.map(t => (
                   <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                 ))}

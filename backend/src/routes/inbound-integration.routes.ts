@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { inboundIntegrationController } from '../controllers/inbound-integration.controller';
-import { authenticate } from '../middlewares/auth.middleware';
+import { authenticate, requireRole } from '../middlewares/auth.middleware';
 
 // ============================================
 // JWT router — CRUD (autenticado)
@@ -8,6 +8,7 @@ import { authenticate } from '../middlewares/auth.middleware';
 
 export const jwtRouter = Router();
 jwtRouter.use(authenticate);
+jwtRouter.use(requireRole('super_admin', 'admin'));
 
 jwtRouter.get('/', (req, res, next) =>
   inboundIntegrationController.list(req, res, next)
