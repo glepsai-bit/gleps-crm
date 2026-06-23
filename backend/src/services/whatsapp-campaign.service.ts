@@ -2,6 +2,9 @@ import type { DispatchBatch, DispatchLog } from '@prisma/client';
 import { prisma } from '../config/database';
 import { evolutionService } from './evolution.service';
 import { whatsappTemplateService } from './whatsapp-template.service';
+import { whatsappConsentService } from './whatsapp-consent.service';
+import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
+import { webhookOutboundService } from './webhook-outbound.service';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -163,12 +166,103 @@ class WhatsappCampaignService {
     let status: 'sent' | 'failed' = 'sent';
     let errorMessage: string | undefined;
 
+    // T-022 Sprint 3 — Compliance + Rate limit
+    const normalizedPhone = whatsappConsentService.normalizePhone(phone);
+
+    const hasConsent = await whatsappConsentService.hasConsent(accountId, normalizedPhone);
+    if (!hasConsent) {
+      errorMessage = 'Contato com opt-out';
+      await prisma.dispatchLog.create({
+        data: {
+          batchId: batch.id,
+          contactName: contactName || phone,
+          phone,
+          inboxId: 0,
+          inboxName: 'evolution',
+          status: 'blocked_optout',
+          errorMessage,
+          sentAt: new Date(),
+        },
+      });
+      await prisma.dispatchBatch.update({
+        where: { id: batch.id },
+        data: {
+          sentCount: 0,
+          failedCount: 1,
+          status: 'failed',
+          completedAt: new Date(),
+        },
+      });
+
+      // Mesmo bloqueado, batch foi finalizado — emite evento
+      webhookOutboundService
+        .emit(accountId, 'campaign.completed', {
+          batchId: batch.id,
+          totalContacts: 1,
+          sentCount: 0,
+          failedCount: 1,
+          reason: 'blocked_optout',
+        })
+        .catch(err =>
+          logger.warn('[whatsapp-campaign] falha ao emitir campaign.completed', {
+            batchId: batch.id,
+            error: err?.message ?? String(err),
+          })
+        );
+
+      return { batchId: batch.id, status: 'failed', error: errorMessage };
+    }
+
+    const rl = await whatsappRateLimitService.check(accountId, normalizedPhone);
+    if (!rl.allowed) {
+      errorMessage = rl.reason ?? 'rate_limited';
+      await prisma.dispatchLog.create({
+        data: {
+          batchId: batch.id,
+          contactName: contactName || phone,
+          phone,
+          inboxId: 0,
+          inboxName: 'evolution',
+          status: 'rate_limited',
+          errorMessage,
+          sentAt: new Date(),
+        },
+      });
+      await prisma.dispatchBatch.update({
+        where: { id: batch.id },
+        data: {
+          sentCount: 0,
+          failedCount: 1,
+          status: 'failed',
+          completedAt: new Date(),
+        },
+      });
+
+      webhookOutboundService
+        .emit(accountId, 'campaign.completed', {
+          batchId: batch.id,
+          totalContacts: 1,
+          sentCount: 0,
+          failedCount: 1,
+          reason: 'rate_limited',
+        })
+        .catch(err =>
+          logger.warn('[whatsapp-campaign] falha ao emitir campaign.completed', {
+            batchId: batch.id,
+            error: err?.message ?? String(err),
+          })
+        );
+
+      return { batchId: batch.id, status: 'failed', error: errorMessage };
+    }
+
     try {
       const result = await evolutionService.sendText(accountId, {
         number: phone,
         text: resolvedContent,
       });
       messageId = result.messageId || undefined;
+      whatsappRateLimitService.record(accountId, normalizedPhone);
 
       await prisma.dispatchLog.create({
         data: {
@@ -191,6 +285,21 @@ class WhatsappCampaignService {
           completedAt: new Date(),
         },
       });
+
+      // T-022 Sprint 3 — evento de finalização (sucesso)
+      webhookOutboundService
+        .emit(accountId, 'campaign.completed', {
+          batchId: batch.id,
+          totalContacts: 1,
+          sentCount: 1,
+          failedCount: 0,
+        })
+        .catch(err =>
+          logger.warn('[whatsapp-campaign] falha ao emitir campaign.completed', {
+            batchId: batch.id,
+            error: err?.message ?? String(err),
+          })
+        );
     } catch (err: any) {
       status = 'failed';
       errorMessage = err?.message ?? String(err);
@@ -223,6 +332,22 @@ class WhatsappCampaignService {
           completedAt: new Date(),
         },
       });
+
+      // T-022 Sprint 3 — evento de finalização (falha)
+      webhookOutboundService
+        .emit(accountId, 'campaign.completed', {
+          batchId: batch.id,
+          totalContacts: 1,
+          sentCount: 0,
+          failedCount: 1,
+          error: errorMessage,
+        })
+        .catch(emitErr =>
+          logger.warn('[whatsapp-campaign] falha ao emitir campaign.completed', {
+            batchId: batch.id,
+            error: emitErr?.message ?? String(emitErr),
+          })
+        );
     }
 
     return {
@@ -427,10 +552,67 @@ class WhatsappCampaignService {
         if (!recipient.phone) throw new Error('Telefone vazio');
         if (!message.trim()) throw new Error('Mensagem vazia após renderização');
 
+        // T-022 Sprint 3 — Compliance + Rate limit por destinatário
+        const normalizedPhone = whatsappConsentService.normalizePhone(recipient.phone);
+
+        const hasConsent = await whatsappConsentService.hasConsent(
+          batch.accountId,
+          normalizedPhone
+        );
+        if (!hasConsent) {
+          failedCount++;
+          await prisma.dispatchLog.create({
+            data: {
+              batchId,
+              contactName: recipient.name || recipient.phone,
+              phone: recipient.phone,
+              inboxId: 0,
+              inboxName: 'evolution',
+              status: 'blocked_optout',
+              errorMessage: 'Contato com opt-out',
+              sentAt: new Date(),
+            },
+          });
+          await prisma.dispatchBatch.update({
+            where: { id: batchId },
+            data: { sentCount, failedCount },
+          });
+          if (i < recipients.length - 1) {
+            await this.sleep(delayMs);
+          }
+          continue;
+        }
+
+        const rl = await whatsappRateLimitService.check(batch.accountId, normalizedPhone);
+        if (!rl.allowed) {
+          failedCount++;
+          await prisma.dispatchLog.create({
+            data: {
+              batchId,
+              contactName: recipient.name || recipient.phone,
+              phone: recipient.phone,
+              inboxId: 0,
+              inboxName: 'evolution',
+              status: 'rate_limited',
+              errorMessage: rl.reason ?? 'rate_limited',
+              sentAt: new Date(),
+            },
+          });
+          await prisma.dispatchBatch.update({
+            where: { id: batchId },
+            data: { sentCount, failedCount },
+          });
+          if (i < recipients.length - 1) {
+            await this.sleep(delayMs);
+          }
+          continue;
+        }
+
         await evolutionService.sendText(batch.accountId, {
           number: recipient.phone,
           text: message,
         });
+        whatsappRateLimitService.record(batch.accountId, normalizedPhone);
 
         sentCount++;
         await prisma.dispatchLog.create({
@@ -500,6 +682,22 @@ class WhatsappCampaignService {
       failedCount,
       total: recipients.length,
     });
+
+    // T-022 Sprint 3 — evento de finalização do batch
+    webhookOutboundService
+      .emit(batch.accountId, 'campaign.completed', {
+        batchId,
+        totalContacts: recipients.length,
+        sentCount,
+        failedCount,
+        status: finalStatus,
+      })
+      .catch(err =>
+        logger.warn('[whatsapp-campaign] falha ao emitir campaign.completed', {
+          batchId,
+          error: err?.message ?? String(err),
+        })
+      );
   }
 
   // ============================================

@@ -7,6 +7,7 @@ import { connectDatabase } from './config/database';
 import { metricsCollector } from './services/metrics-collector';
 import { emailService } from './services/email.service';
 import { whatsappCampaignService } from './services/whatsapp-campaign.service';
+import { webhookOutboundService } from './services/webhook-outbound.service';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import routes from './routes';
 import { logger } from './utils/logger';
@@ -46,6 +47,18 @@ async function bootstrap() {
       }
     }, WA_CRON_INTERVAL_MS);
     logger.info(`📲 WhatsApp campaign cron started (interval: ${WA_CRON_INTERVAL_MS / 1000}s)`);
+  }
+
+  // T-022 Sprint 3 — cron de retry da fila de webhooks outbound
+  {
+    const WH_CRON_INTERVAL_MS = 60 * 1000;  // 1 min
+    setInterval(async () => {
+      try {
+        const result = await webhookOutboundService.processRetryQueue();
+        if (result.processed > 0) logger.info(`🔁 Webhook retry: ${result.processed} processed`);
+      } catch (err) { logger.error('Webhook retry cron error:', err); }
+    }, WH_CRON_INTERVAL_MS);
+    logger.info(`🔁 Webhook retry cron started (interval: ${WH_CRON_INTERVAL_MS / 1000}s)`);
   }
 
   const app = express();

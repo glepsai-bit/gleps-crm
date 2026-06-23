@@ -21,6 +21,12 @@ import apiKeyRoutes from './api-key.routes';
 import whatsappTemplateRoutes from './whatsapp-template.routes';
 import whatsappCampaignJwtRoutes, { apiKeyRouter as whatsappCampaignApiKeyRoutes } from './whatsapp-campaign.routes';
 import contactsApiRoutes from './contacts-api.routes';
+import webhookRoutes from './webhook-outbound.routes';
+import {
+  jwtRouter as inboundIntegrationJwtRoutes,
+  publicRouter as inboundIntegrationPublicRoutes,
+} from './inbound-integration.routes';
+import whatsappConsentRoutes from './whatsapp-consent.routes';
 import { Router as LeadTagRouter } from 'express';
 import { contactController } from '../controllers/contact.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
@@ -69,6 +75,15 @@ router.use('/whatsapp/campaigns', whatsappCampaignJwtRoutes);
 router.use('/dispatch', whatsappCampaignJwtRoutes); // alias canonical para o frontend (DispatchDialog, aba Agendadas, Dashboard)
 router.use('/integrations/whatsapp/campaigns', whatsappCampaignApiKeyRoutes);
 router.use('/integrations/contatos', contactsApiRoutes);
+router.use('/webhooks', webhookRoutes);
+// Inbound integrations:
+// - PUBLIC receiver fica em '/integrations/inbound-receive/:accountId/:slug'
+//   (auth via HMAC opcional dentro do service) — separado pra evitar colisão
+//   com a rota JWT '/integrations/inbound/:slug' (DELETE).
+// - JWT (list/create/delete) fica em '/integrations/inbound'.
+router.use('/integrations/inbound-receive', inboundIntegrationPublicRoutes);
+router.use('/integrations/inbound', inboundIntegrationJwtRoutes);
+router.use('/whatsapp-consents', whatsappConsentRoutes);
 router.use('/lead-tags', leadTagRouter);
 
 export default router;

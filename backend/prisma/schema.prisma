@@ -72,6 +72,9 @@ model Account {
   prospectingAudiences ProspectingAudience[]
   apiKeys             ApiKey[]
   whatsappTemplates   WhatsappTemplate[]
+  webhookSubscriptions WebhookSubscription[]
+  inboundIntegrations  InboundIntegration[]
+  whatsappConsents     WhatsappConsent[]
 
   @@index([status])
   @@map("accounts")
@@ -94,6 +97,91 @@ model ApiKey {
   @@index([hashedKey])
   @@index([keyPrefix])
   @@map("api_keys")
+}
+
+// ============================================
+// WEBHOOK OUTBOUND (T-022 Sprint 3)
+// ============================================
+model WebhookSubscription {
+  id          String    @id @default(uuid()) @db.Uuid
+  accountId   String    @map("account_id") @db.Uuid
+  account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String    @db.VarChar(160)
+  url         String    @db.VarChar(1000)
+  events      String[]  @default([])
+  secret      String    @db.VarChar(255)  // HMAC SHA-256 secret
+  active      Boolean   @default(true)
+  lastDeliveryAt DateTime? @map("last_delivery_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  deliveries  WebhookDelivery[]
+
+  @@index([accountId])
+  @@index([active])
+  @@map("webhook_subscriptions")
+}
+
+model WebhookDelivery {
+  id              String    @id @default(uuid()) @db.Uuid
+  subscriptionId  String    @map("subscription_id") @db.Uuid
+  subscription    WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  eventType       String    @map("event_type") @db.VarChar(120)
+  payload         Json
+  status          String    @default("pending") @db.VarChar(20)  // pending | success | failed | dlq
+  httpStatus      Int?      @map("http_status")
+  responseBody    String?   @map("response_body") @db.Text
+  attemptCount    Int       @default(0) @map("attempt_count")
+  nextRetryAt     DateTime? @map("next_retry_at") @db.Timestamptz
+  latencyMs       Int?      @map("latency_ms")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([subscriptionId])
+  @@index([status, nextRetryAt])
+  @@index([eventType])
+  @@map("webhook_deliveries")
+}
+
+// ============================================
+// WEBHOOK INBOUND (T-022 Sprint 3)
+// ============================================
+model InboundIntegration {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @map("account_id") @db.Uuid
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  slug        String   @db.VarChar(80)         // identifica URL: /integrations/inbound/:accountId/:slug
+  handler     String   @db.VarChar(80)         // contact_upsert | tag_apply | campaign_trigger
+  config      Json     @default("{}")
+  secret      String?  @db.VarChar(255)        // HMAC opcional para validar payload entrante
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([accountId, slug])
+  @@index([accountId])
+  @@map("inbound_integrations")
+}
+
+// ============================================
+// COMPLIANCE: WHATSAPP CONSENT + OPT-OUT (T-022 Sprint 3)
+// ============================================
+model WhatsappConsent {
+  id            String    @id @default(uuid()) @db.Uuid
+  accountId     String    @map("account_id") @db.Uuid
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contactId     String?   @map("contact_id") @db.Uuid    // opcional, pode opt-out sem contato cadastrado
+  phone         String    @db.VarChar(30)                  // normalized 55DDDNUM
+  status        String    @default("opted_in") @db.VarChar(20)  // opted_in | opted_out
+  source        String    @default("manual") @db.VarChar(40)    // manual | auto_keyword | import | api
+  reason        String?   @db.VarChar(255)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([accountId, phone])
+  @@index([accountId, status])
+  @@index([phone])
+  @@map("whatsapp_consents")
 }
 
 enum AccountStatus {
