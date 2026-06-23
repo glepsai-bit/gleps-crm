@@ -86,9 +86,32 @@ class EvolutionService {
   /**
    * Normalize phone number: keep only digits.
    * Expected to already include country code (55 + DDD + number for BR).
+   *
+   * Validation rules:
+   * - length < 10 ou > 15: inválido
+   * - length === 11 (BR sem código país, ex: 11999998888): prefixa '55'
+   * - length === 10 (BR sem 9, ex: 1133334444): inválido — exige formato 55DDDNNNNN com 9
    */
   private normalizeNumber(number: string): string {
-    return (number || '').replace(/\D+/g, '');
+    const digits = (number || '').replace(/\D+/g, '');
+
+    if (digits.length < 10 || digits.length > 15) {
+      throw new ValidationError(
+        `Telefone inválido — comprimento ${digits.length} fora do intervalo permitido (10-15)`
+      );
+    }
+
+    if (digits.length === 10) {
+      throw new ValidationError(
+        'Telefone inválido — esperado formato 55DDDNNNNN com 9'
+      );
+    }
+
+    if (digits.length === 11) {
+      return `55${digits}`;
+    }
+
+    return digits;
   }
 
   /**
@@ -116,6 +139,7 @@ class EvolutionService {
       response = await fetch(url, {
         ...options,
         headers: baseHeaders,
+        signal: AbortSignal.timeout(15000),
       });
     } catch (error) {
       logger.error('Evolution Request Failed', { url, error });
@@ -127,12 +151,14 @@ class EvolutionService {
     const text = await response.text();
 
     if (!response.ok) {
+      // BUG-024: não propagar body cru no erro lançado.
+      // Log completo (truncado a 200 chars) fica no logger; mensagem do erro só leva o status.
       logger.error('Evolution API Error', {
         url,
         status: response.status,
-        body: text,
+        body: (text || '').slice(0, 200),
       });
-      throw new Error(`Evolution API error ${response.status}: ${text}`);
+      throw new Error(`Evolution API retornou status ${response.status}`);
     }
 
     if (!text) {
@@ -323,9 +349,28 @@ class EvolutionService {
       raw?.pairingCode ||
       raw?.data?.code;
 
+    const normalizedQr = typeof qrcodeBase64 === 'string' ? qrcodeBase64 : undefined;
+    const normalizedCode = typeof code === 'string' ? code : undefined;
+
+    // BUG-057: se ambos vierem undefined mas o raw tem dados, falhar explicitamente
+    // ao invés de devolver um QrCodeResult vazio que confunde o caller.
+    if (!normalizedQr && !normalizedCode) {
+      const hasRawPayload =
+        raw !== undefined &&
+        raw !== null &&
+        !(typeof raw === 'object' && Object.keys(raw).length === 0) &&
+        !(typeof raw === 'string' && raw.length === 0);
+
+      if (hasRawPayload) {
+        throw new Error(
+          `Evolution não retornou QR code nem code; resposta: ${JSON.stringify(raw).slice(0, 200)}`
+        );
+      }
+    }
+
     return {
-      qrcodeBase64: typeof qrcodeBase64 === 'string' ? qrcodeBase64 : undefined,
-      code: typeof code === 'string' ? code : undefined,
+      qrcodeBase64: normalizedQr,
+      code: normalizedCode,
       raw,
     };
   }

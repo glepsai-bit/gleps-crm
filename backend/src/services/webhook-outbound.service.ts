@@ -273,18 +273,22 @@ class WebhookOutboundService {
       return;
     }
 
-    for (const sub of subscriptions) {
-      const delivery = await prisma.webhookDelivery.create({
-        data: {
-          subscriptionId: sub.id,
-          eventType,
-          payload: payload as object,
-          status: 'pending',
-          attemptCount: 0,
-        },
-        select: { id: true },
-      });
+    const deliveries = await Promise.all(
+      subscriptions.map(sub =>
+        prisma.webhookDelivery.create({
+          data: {
+            subscriptionId: sub.id,
+            eventType,
+            payload: payload as object,
+            status: 'pending',
+            attemptCount: 0,
+          },
+          select: { id: true },
+        })
+      )
+    );
 
+    for (const delivery of deliveries) {
       // Fire-and-forget — do not await
       this.processDelivery(delivery.id).catch(err => {
         logger.error('[webhook-outbound] processDelivery failed', err, {
@@ -356,8 +360,12 @@ class WebhookOutboundService {
 
       httpStatus = response.status;
       try {
-        const text = await response.text();
-        responseBody = text.length > 4000 ? text.slice(0, 4000) : text;
+        const bodyText = await response.text().catch(() => '[binary or invalid encoding]');
+        if (typeof bodyText !== 'string') {
+          responseBody = '[binary or invalid encoding]';
+        } else {
+          responseBody = bodyText.length > 4000 ? bodyText.slice(0, 4000) : bodyText;
+        }
       } catch {
         responseBody = null;
       }

@@ -63,6 +63,7 @@ model Account {
   googleCalendarTokens GoogleCalendarToken[]
   apiUsageLogs        ApiUsageLog[]
   dispatchBatches     DispatchBatch[]
+  dispatchLogs        DispatchLog[]
   emailCadences       EmailCadence[]
   emailTemplates      EmailTemplate[]
   emailEnrollments    EmailEnrollment[]
@@ -95,7 +96,7 @@ model ApiKey {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([accountId])
-  @@index([hashedKey])
+  @@unique([hashedKey])
   @@index([keyPrefix])
   @@map("api_keys")
 }
@@ -172,6 +173,7 @@ model WhatsappConsent {
   accountId     String    @map("account_id") @db.Uuid
   account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   contactId     String?   @map("contact_id") @db.Uuid    // opcional, pode opt-out sem contato cadastrado
+  contact       Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
   phone         String    @db.VarChar(30)                  // normalized 55DDDNUM
   status        String    @default("opted_in") @db.VarChar(20)  // opted_in | opted_out
   source        String    @default("manual") @db.VarChar(40)    // manual | auto_keyword | import | api
@@ -298,6 +300,7 @@ model Contact {
   emailSends         EmailSend[]
   emailInboxMessages EmailInboxMessage[]
   emailAudienceContacts EmailAudienceContact[]
+  whatsappConsents      WhatsappConsent[]
 
   @@index([accountId])
   @@index([telefone])
@@ -758,8 +761,9 @@ model DispatchBatch {
   templateId    String?   @map("template_id") @db.Uuid
   inboxId       Int?      @map("inbox_id")  // pra suporte Chatwoot legacy
 
-  account Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  logs    DispatchLog[]
+  account  Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  template WhatsappTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  logs     DispatchLog[]
 
   @@index([accountId])
   @@index([scheduledAt, status])

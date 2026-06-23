@@ -47,15 +47,29 @@ export function extractTemplateVariables(content: string): string[] {
 /**
  * Renderiza um template substituindo variáveis pelos valores fornecidos.
  * Variáveis sem valor correspondente viram string vazia.
+ *
+ * Aceita opcionalmente um callback `onMissing(name)` invocado uma vez por
+ * variável declarada que não tem valor correspondente (útil para logging).
  */
 export function renderTemplate(
   content: string,
-  variables: Record<string, string> = {}
+  variables: Record<string, string> = {},
+  onMissing?: (name: string) => void
 ): string {
   if (!content) return '';
   return content.replace(TEMPLATE_VAR_REGEX, (_match, name: string) => {
     const value = variables[name];
-    return value !== undefined && value !== null ? String(value) : '';
+    if (value === undefined || value === null || value === '') {
+      if (onMissing) {
+        try {
+          onMissing(name);
+        } catch {
+          // callback nunca deve quebrar o render
+        }
+      }
+      return value !== undefined && value !== null ? String(value) : '';
+    }
+    return String(value);
   });
 }
 

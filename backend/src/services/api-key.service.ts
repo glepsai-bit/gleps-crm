@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import { prisma } from '../config/database';
+import { logger } from '../utils/logger';
 
 export interface GeneratedApiKey {
   id: string;
@@ -131,9 +132,7 @@ class ApiKeyService {
         where: { id: record.id },
         data: { lastUsedAt: new Date() },
       })
-      .catch(() => {
-        // best-effort; ignore errors
-      });
+      .catch(err => logger.warn('apiKey lastUsedAt update failed', { keyId: record.id, error: err.message }));
 
     return {
       id: record.id,
@@ -144,12 +143,14 @@ class ApiKeyService {
 
   /**
    * Revoke an API key (scoped by accountId for safety).
+   * Returns { count } so callers can detect not-found cases.
    */
-  async revoke(id: string, accountId: string): Promise<void> {
-    await prisma.apiKey.updateMany({
+  async revoke(id: string, accountId: string): Promise<{ count: number }> {
+    const result = await prisma.apiKey.updateMany({
       where: { id, accountId },
       data: { revokedAt: new Date() },
     });
+    return { count: result.count };
   }
 }
 

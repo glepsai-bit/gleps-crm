@@ -36,7 +36,21 @@ export interface ListOptedOutResult {
 
 // BUG-006: regex relaxada — aceita palavra-chave em qualquer posição da mensagem
 // e cobre mais variantes (descadastrar, remover, opt-out / opt_out / optout).
+// BUG-041: relaxa ainda mais — antes do test() normalizamos acentos via NFD
+// (cancelár → cancelar, descadastrár → descadastrar) para aceitar variações
+// em texto livre digitadas pelo usuário no WhatsApp.
 const OPT_OUT_KEYWORD_REGEX = /\b(sair|parar|stop|cancelar|opt[\s\-_]?out|descadastrar|remover)\b/i;
+
+/**
+ * Remove acentos/diacríticos de uma string usando decomposição NFD.
+ * Ex: "Não quero mais, cancelár!" → "Nao quero mais, cancelar!"
+ * Usado em handleInboundOptOut para que o regex de palavra-chave aceite
+ * variações comuns de digitação em português.
+ */
+function stripDiacritics(input: string): string {
+  return input.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
 
@@ -87,7 +101,29 @@ class WhatsappConsentService {
   // ============================================
 
   /**
-   * Regra inicial: opt-in é default. Só não tem consent quem fez opt-out explícito.
+   * Política de consent — DEFAULT: **opt-in implícito**.
+   *
+   * Regra atual (single policy global):
+   * - Se NÃO existe registro em `whatsapp_consent` para o par (accountId, phone),
+   *   o contato é considerado **com consent** (opt-in implícito). Isso significa
+   *   que o sistema pode disparar campanhas/mensagens para qualquer número que
+   *   ainda não solicitou opt-out.
+   * - Se existe registro, o consent depende exclusivamente do `status`:
+   *     - `opted_in`  → true
+   *     - `opted_out` → false
+   *
+   * Justificativa: no fluxo atual a maior parte dos contatos vem de leads
+   * inbound (formulário, chatwoot, conversas WhatsApp já iniciadas pelo cliente),
+   * onde o consent é considerado implícito pela própria iniciativa do contato.
+   * O opt-out é registrado quando o usuário pede explicitamente (palavra-chave
+   * ou ação manual no CRM) e bloqueia novos disparos.
+   *
+   * BUG-042 / TODO (Sprint futuro): tornar a política configurável por conta via
+   * `account.consentPolicy` ('opt_in_implicit' | 'opt_in_explicit'). Em
+   * 'opt_in_explicit', a ausência de registro deve retornar `false` e exigir
+   * opt-in explícito antes de qualquer disparo (requisito comum para contas
+   * sujeitas a regulação mais estrita ou políticas internas de LGPD/GDPR).
+   *
    * → true se NÃO existe registro OU registro tem status='opted_in'.
    */
   async hasConsent(accountId: string, phone: string): Promise<boolean> {
@@ -395,7 +431,11 @@ class WhatsappConsentService {
     const trimmed = messageText.trim();
     if (!trimmed) return false;
 
-    if (!OPT_OUT_KEYWORD_REGEX.test(trimmed)) {
+    // BUG-041: normaliza acentos antes do match para aceitar variações como
+    // "cancelár", "descadastrár", "não quero mais — sair" etc.
+    const sanitized = stripDiacritics(trimmed);
+
+    if (!OPT_OUT_KEYWORD_REGEX.test(sanitized)) {
       return false;
     }
 

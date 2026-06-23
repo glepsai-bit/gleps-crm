@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { apiKeyService } from '../services/api-key.service';
 import { AuthenticatedRequest } from '../types';
-import { ValidationError, ForbiddenError, ErrorCodes } from '../utils/errors';
+import { ValidationError, ForbiddenError, NotFoundError, ErrorCodes } from '../utils/errors';
 
 // Validation schemas
 // TODO(t022-future): scopes não implementado. Aceitamos o campo no body por
@@ -105,7 +105,10 @@ export class ApiKeyController {
       const accountId = (req.query.accountId as string) || '';
       assertCanAccessAccount(req, accountId);
 
-      await apiKeyService.revoke(id, accountId);
+      const { count } = await apiKeyService.revoke(id, accountId);
+      if (count === 0) {
+        throw new NotFoundError('API key não encontrada nesta conta');
+      }
 
       res.json({ data: { success: true } });
     } catch (error) {

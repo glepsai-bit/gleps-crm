@@ -362,6 +362,24 @@ class WhatsappCampaignService {
       throw new ValidationError('Informe templateId ou content para o disparo em massa');
     }
 
+    // BUG-029: agendamento no passado vira envio imediato (com warn)
+    let effectiveScheduledAt: Date | undefined = params.scheduledAt ?? undefined;
+    if (effectiveScheduledAt && effectiveScheduledAt.getTime() < Date.now()) {
+      logger.warn('[whatsapp-campaign] scheduledAt no passado — convertendo para envio imediato', {
+        accountId,
+        scheduledAt: effectiveScheduledAt.toISOString(),
+        now: new Date().toISOString(),
+      });
+      effectiveScheduledAt = undefined;
+    }
+
+    // BUG-061: inboxName usa o slug da instância Evolution da conta
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { evolutionInstance: true },
+    });
+    const inboxNameForLogs = `evolution:${account?.evolutionInstance ?? 'unknown'}`;
+
     // Resolve recipients
     const recipients: CampaignRecipient[] = [];
 
@@ -388,9 +406,14 @@ class WhatsappCampaignService {
       }
     }
 
+    // BUG-040: phones vazios viram entrada totalContacts + DispatchLog skipped_invalid_phone
+    const skippedPhones: { name?: string; variables?: Record<string, string> }[] = [];
     if (params.phones && params.phones.length > 0) {
       for (const p of params.phones) {
-        if (!p.phone) continue;
+        if (!p.phone) {
+          skippedPhones.push({ name: p.name, variables: p.variables });
+          continue;
+        }
         recipients.push({
           phone: p.phone,
           name: p.name,
@@ -399,7 +422,14 @@ class WhatsappCampaignService {
       }
     }
 
-    if (recipients.length === 0) {
+    if (skippedPhones.length > 0) {
+      logger.warn('[whatsapp-campaign] phones vazios ignorados no batch', {
+        accountId,
+        count: skippedPhones.length,
+      });
+    }
+
+    if (recipients.length === 0 && skippedPhones.length === 0) {
       throw new ValidationError('Nenhum destinatário válido encontrado para o disparo');
     }
 
@@ -409,7 +439,11 @@ class WhatsappCampaignService {
     }
 
     const delaySeconds = params.delaySeconds ?? DEFAULT_DELAY_SECONDS;
-    const isScheduled = !!(params.scheduledAt && params.scheduledAt.getTime() > Date.now());
+    const isScheduled = !!(effectiveScheduledAt && effectiveScheduledAt.getTime() > Date.now());
+
+    // BUG-040: totalContacts reflete a entrada (recipients válidos + skipped),
+    // pra deixar visível na UI quantos foram descartados.
+    const totalContacts = recipients.length + skippedPhones.length;
 
     const baseMetadata: Record<string, any> = {
       ...(params.metadata ?? {}),
@@ -421,21 +455,57 @@ class WhatsappCampaignService {
       })),
       defaultVariables: params.defaultVariables ?? {},
       content: params.content ?? null,
+      ...(skippedPhones.length > 0 ? { skippedInvalidPhones: skippedPhones.length } : {}),
     };
 
     const batch = await prisma.dispatchBatch.create({
       data: {
         accountId,
-        totalContacts: recipients.length,
+        totalContacts,
         status: isScheduled ? 'scheduled' : 'running',
         delaySeconds,
-        scheduledAt: params.scheduledAt ?? null,
+        scheduledAt: effectiveScheduledAt ?? null,
         source: params.source,
         triggerName: params.triggerName ?? null,
         templateId: params.templateId ?? null,
         metadata: baseMetadata as any,
       },
     });
+
+    // BUG-040: registra DispatchLog para cada phone vazio descartado
+    if (skippedPhones.length > 0) {
+      await Promise.all(
+        skippedPhones.map(sp =>
+          prisma.dispatchLog
+            .create({
+              data: {
+                batchId: batch.id,
+                contactName: sp.name || 'desconhecido',
+                phone: '',
+                inboxId: 0,
+                inboxName: inboxNameForLogs,
+                status: 'skipped_invalid_phone',
+                errorMessage: 'Telefone vazio',
+                sentAt: new Date(),
+              },
+            })
+            .catch(err =>
+              logger.warn('[whatsapp-campaign] falha ao gravar log de phone invalido', {
+                batchId: batch.id,
+                error: err?.message ?? String(err),
+              })
+            )
+        )
+      );
+
+      // Reflete os skipped no contador de falhas do batch
+      await prisma.dispatchBatch
+        .update({
+          where: { id: batch.id },
+          data: { failedCount: skippedPhones.length },
+        })
+        .catch(() => {});
+    }
 
     if (!isScheduled) {
       // Fire and forget — process in background
@@ -455,7 +525,7 @@ class WhatsappCampaignService {
 
     return {
       batchId: batch.id,
-      totalContacts: recipients.length,
+      totalContacts,
       scheduled: isScheduled,
     };
   }

@@ -7,6 +7,7 @@ import { connectDatabase } from './config/database';
 import { metricsCollector } from './services/metrics-collector';
 import { emailService } from './services/email.service';
 import { whatsappCampaignService } from './services/whatsapp-campaign.service';
+import { whatsappRateLimitService } from './services/whatsapp-rate-limit.service';
 import { webhookOutboundService } from './services/webhook-outbound.service';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import routes from './routes';
@@ -34,9 +35,14 @@ async function bootstrap() {
   logger.info(`📧 Email cadence cron started (interval: ${EMAIL_CRON_INTERVAL_MS / 1000}s)`);
 
   // T-022 Sprint 2 — cron de campanhas WhatsApp agendadas
+  // BUG-034: mutex global previne sobreposição de execuções caso a anterior
+  // ainda esteja em andamento quando o próximo tick disparar.
   {
     const WA_CRON_INTERVAL_MS = 5 * 60 * 1000;
+    let isProcessingWa = false;
     setInterval(async () => {
+      if (isProcessingWa) return;
+      isProcessingWa = true;
       try {
         const result = await whatsappCampaignService.processScheduledQueue();
         if (result.processed > 0 || result.failed > 0) {
@@ -44,9 +50,24 @@ async function bootstrap() {
         }
       } catch (err) {
         logger.error('WhatsApp scheduled cron error:', err);
+      } finally {
+        isProcessingWa = false;
       }
     }, WA_CRON_INTERVAL_MS);
     logger.info(`📲 WhatsApp campaign cron started (interval: ${WA_CRON_INTERVAL_MS / 1000}s)`);
+  }
+
+  // BUG-038 — cron de cleanup das janelas de rate-limit do WhatsApp (5 min)
+  {
+    const WA_RL_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+    setInterval(() => {
+      try {
+        whatsappRateLimitService.cleanupOld();
+      } catch (err) {
+        logger.error('WhatsApp rate-limit cleanup cron error:', err);
+      }
+    }, WA_RL_CLEANUP_INTERVAL_MS);
+    logger.info(`🧹 WhatsApp rate-limit cleanup cron started (interval: ${WA_RL_CLEANUP_INTERVAL_MS / 1000}s)`);
   }
 
   // T-022 Sprint 3 — cron de retry da fila de webhooks outbound
