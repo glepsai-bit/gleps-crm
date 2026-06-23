@@ -325,12 +325,14 @@ export default function SuperAdminAccountDetailPage() {
     setIsGeneratingQrCode(true);
     try {
       const response = await apiClient.get<any>(`/api/evolution/accounts/${account.id}/qrcode`);
+      // Backend returns { data: { qrcodeBase64, code, raw } }
       const base64 =
+        response?.data?.qrcodeBase64 ??
+        response?.data?.base64 ??
+        response?.data?.qrcode ??
         response?.base64 ??
         response?.qrcode ??
         response?.qrCode ??
-        response?.data?.base64 ??
-        response?.data?.qrcode ??
         null;
       if (base64) {
         const clean = String(base64).replace(/^data:image\/png;base64,/, '');
