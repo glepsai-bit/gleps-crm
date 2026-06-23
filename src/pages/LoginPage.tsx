@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { AlertCircle, Eye, EyeOff, LogIn, Loader2 } from 'lucide-react';
-import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
+import { Logo } from '@/components/branding/Logo';
 
 // Helper function to get default route based on role and permissions
 function getSmartDefaultRoute(user: { role: string; permissions?: string[] }): string {
@@ -108,17 +108,16 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md space-y-6 animate-fade-in">
         {/* Logo/Brand */}
         <div className="text-center space-y-3">
-          {/* Chip escuro: o logo é branco, então mantém um fundo escuro nos dois temas */}
+          {/* Chip escuro: logo branco sobre fundo escuro funciona nos 2 temas */}
           <div className="inline-flex items-center justify-center mb-2 rounded-2xl bg-sidebar px-8 py-4 shadow-lg">
-            <img
-              src={mychooiceLogo}
-              alt="MyChooice"
-              className="w-48 h-16 object-contain logo-glow"
+            <Logo
+              variant="full"
+              className="h-16 w-auto text-white logo-glow"
             />
           </div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-red-400 bg-clip-text text-transparent">GoodLeads</h1>
+          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">FitPark</h1>
           <p className="text-muted-foreground">
-            Powered by <span className="text-primary font-medium">MyChooice</span>
+            Atendimento &amp; <span className="text-primary font-medium">Gestão de Alunos</span>
           </p>
         </div>
 

@@ -24,7 +24,7 @@ import {
   X,
   ArrowLeftRight,
 } from 'lucide-react';
-import mychooiceLogo from '@/assets/mychooice-logo-white.svg';
+import { Logo } from '@/components/branding/Logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 
 interface SidebarLayoutProps {
@@ -76,8 +76,8 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
             {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
           <div className="flex items-center gap-2">
-            <img src={mychooiceLogo} alt="MyChooice" className="w-6 h-6 sm:w-7 sm:h-7 object-contain" />
-            <span className="font-semibold text-sidebar-foreground text-sm sm:text-base">GoodLeads Admin</span>
+            <Logo variant="icon" className="w-6 h-6 sm:w-7 sm:h-7 text-sidebar-foreground" />
+            <span className="font-semibold text-sidebar-foreground text-sm sm:text-base">FitPark Admin</span>
           </div>
         </div>
         <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />
@@ -103,12 +103,11 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
         <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border">
           {!collapsed && (
             <div className="flex items-center gap-2">
-              <img src={mychooiceLogo} alt="MyChooice" className="w-8 h-8 object-contain" />
-              <span className="font-bold text-lg text-sidebar-foreground">GoodLeads Admin</span>
+              <Logo variant="full" className="h-8 w-auto text-sidebar-foreground" />
             </div>
           )}
           {collapsed && (
-            <img src={mychooiceLogo} alt="MyChooice" className="w-8 h-8 object-contain mx-auto" />
+            <Logo variant="icon" className="w-8 h-8 text-sidebar-foreground mx-auto" />
           )}
           <button
             onClick={() => setCollapsed(!collapsed)}

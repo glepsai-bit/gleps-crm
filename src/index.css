@@ -6,9 +6,9 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 
-  MYCHOOICE GOODLEADS DESIGN SYSTEM - SaaS Moderno
-  Orange/Black brand identity
+/*
+  FITPARK DESIGN SYSTEM - Academia & Fitness
+  Verde energia / Laranja ação brand identity
 */
 
 @layer base {
@@ -28,11 +28,11 @@
     --text-secondary: 0 0% 30%;       /* #4D4D4D */
     --text-muted: 0 0% 55%;           /* #8C8C8C */
 
-    /* Primary - MyChooice Red #EE3924 */
-    --primary: 8 85% 54%;             /* #EE3924 */
+    /* Primary - FitPark Verde #10B981 */
+    --primary: 160 84% 39%;            /* #10B981 */
     --primary-foreground: 0 0% 100%;
-    --primary-hover: 7 79% 47%;       /* #D42F1C */
-    --primary-soft: 0 86% 97%;        /* #FEF2F2 */
+    --primary-hover: 160 84% 33%;      /* #0D9868 */
+    --primary-soft: 160 60% 95%;       /* #ECFDF5 */
 
     /* Secondary */
     --secondary: 210 40% 96%;
@@ -42,8 +42,8 @@
     --muted: 210 40% 96%;
     --muted-foreground: 0 0% 45%;     /* #737373 */
 
-    /* Accent - MyChooice Red lighter */
-    --accent: 8 85% 64%;              /* #F26B5A */
+    /* Accent - FitPark Laranja energia #F97316 */
+    --accent: 24 95% 53%;              /* #F97316 */
     --accent-foreground: 0 0% 100%;
 
     /* Status Colors */
@@ -65,38 +65,38 @@
     /* Borders & Input */
     --border: 214 32% 91%;            /* #E2E8F0 */
     --input: 214 32% 91%;
-    --ring: 8 85% 54%;
+    --ring: 160 84% 39%;
 
     /* Radius */
     --radius: 0.75rem;
 
     /* Chart Colors */
-    --chart-1: 8 85% 54%;             /* #EE3924 - vermelho */
+    --chart-1: 160 84% 39%;            /* #10B981 - verde FitPark */
     --chart-2: 142 71% 45%;           /* #16A34A - verde */
     --chart-3: 38 92% 50%;            /* #F59E0B - amarelo */
     --chart-4: 0 72% 51%;             /* #DC2626 - vermelho */
     --chart-grid: 220 13% 91%;        /* #E5E7EB */
 
-    /* Sidebar - Deep black */
+    /* Sidebar - Deep dark com acento verde FitPark */
     --sidebar-background: 0 0% 4%;    /* #0A0A0A */
     --sidebar-foreground: 0 0% 85%;   /* #D9D9D9 */
-    --sidebar-primary: 8 85% 54%;     /* #EE3924 */
+    --sidebar-primary: 160 84% 39%;   /* #10B981 verde FitPark */
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 0 0% 10%;       /* #1A1A1A */
     --sidebar-accent-foreground: 0 0% 85%;
     --sidebar-border: 0 0% 10%;
-    --sidebar-ring: 8 85% 54%;
+    --sidebar-ring: 160 84% 39%;
     --sidebar-muted: 0 0% 40%;
 
     /* Kanban tokens */
-    --kanban-new: 8 85% 54%;
+    --kanban-new: 160 84% 39%;         /* verde FitPark */
     --kanban-contact: 260 60% 55%;
     --kanban-interested: 38 92% 50%;
     --kanban-qualified: 142 71% 45%;
     --kanban-converted: 280 67% 50%;
 
     /* Role colors */
-    --role-super-admin: 8 85% 50%;
+    --role-super-admin: 160 84% 39%;   /* verde FitPark */
     --role-admin: 0 0% 20%;
     --role-agent: 0 0% 40%;
 
@@ -120,7 +120,7 @@
     --popover: 0 0% 8%;
     --popover-foreground: 0 0% 93%;
 
-    --primary: 8 85% 54%;             /* #EE3924 */
+    --primary: 160 84% 39%;            /* #10B981 verde FitPark */
     --primary-foreground: 0 0% 100%;
 
     --secondary: 0 0% 12%;
@@ -129,7 +129,7 @@
     --muted: 0 0% 12%;
     --muted-foreground: 0 0% 50%;
 
-    --accent: 8 85% 64%;              /* #F26B5A */
+    --accent: 24 95% 53%;              /* #F97316 laranja FitPark */
     --accent-foreground: 0 0% 100%;
 
     --destructive: 0 63% 35%;
@@ -141,23 +141,23 @@
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 100%;
 
-    --info: 8 85% 54%;
+    --info: 160 84% 39%;
     --info-foreground: 0 0% 100%;
 
     --border: 0 0% 18%;
     --input: 0 0% 15%;
     --input-foreground: 0 0% 100%;
-    --ring: 8 85% 54%;
+    --ring: 160 84% 39%;
 
-    /* Sidebar - Deeper black */
+    /* Sidebar - Deeper black com acento verde FitPark */
     --sidebar-background: 0 0% 3%;
     --sidebar-foreground: 0 0% 80%;
-    --sidebar-primary: 8 85% 54%;
+    --sidebar-primary: 160 84% 39%;    /* #10B981 verde FitPark */
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 0 0% 8%;
     --sidebar-accent-foreground: 0 0% 80%;
     --sidebar-border: 0 0% 8%;
-    --sidebar-ring: 8 85% 54%;
+    --sidebar-ring: 160 84% 39%;
     --sidebar-muted: 0 0% 40%;
 
     /* Gaps de token p/ dark mode (auditoria 2026-06-14) — tokens que ficavam
@@ -757,10 +757,10 @@
 /* Logo glow animation - for dark sidebar only */
 @keyframes logoGlow {
   0%, 100% {
-    filter: drop-shadow(0 0 8px hsl(8 85% 54% / 0.4));
+    filter: drop-shadow(0 0 8px hsl(160 84% 39% / 0.4));
   }
   50% {
-    filter: drop-shadow(0 0 16px hsl(8 85% 64% / 0.6));
+    filter: drop-shadow(0 0 16px hsl(160 84% 55% / 0.6));
   }
 }
 
