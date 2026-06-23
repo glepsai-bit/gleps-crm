@@ -15,18 +15,20 @@
 - [T-022.1.d] Frontend super-admin (Evolution config, QR code, ApiKeys page) — @dev-principal — ✅
 - [T-022.1.e] QA: validar Sprint 1 end-to-end (curl + UI + testes vitest) — @qa — ✅ APROVADO COM RESSALVAS (2026-06-23, commit caa34a0)
 
-### Sprint 2 — Campanhas WhatsApp + cron + API REST (em paralelo @dev-principal + @frontend)
-- [T-022.2.a] Backend: `scheduledAt`/`source`/`triggerName`/`metadata` no DispatchBatch + migration 0022
-- [T-022.2.b] Backend: cron scheduler 5min para campanhas agendadas
-- [T-022.2.c] Backend: model + service + controller + routes WhatsappTemplate
-- [T-022.2.d] Backend: transport Evolution no prospecting.service
-- [T-022.2.e] Backend: API `POST /api/campaigns/send-single` + `send-batch`
-- [T-022.2.f] Backend: API `GET /api/campaigns` + `GET /:id` + `GET /:id/logs`
-- [T-022.2.g] Backend: API `GET /api/contatos?aniversario=&tag=&last_activity_before=`
-- [T-022.2.h] Frontend: form de agendamento no DispatchDialog
-- [T-022.2.i] Frontend: aba "Agendadas" no AdminExtracaoPage
-- [T-022.2.j] Frontend: CRUD WhatsappTemplate
-- [T-022.2.k] Frontend: Dashboard de campanha unificado (filtros source/trigger)
+### Sprint 2 — Campanhas WhatsApp + cron + API REST — ✅ APROVADO COM RESSALVAS (2026-06-23, commit a1cc3c7)
+- [T-022.2.a] Backend: `scheduledAt`/`source`/`triggerName`/`metadata` no DispatchBatch + migration 0022 — ✅
+- [T-022.2.b] Backend: cron scheduler 5min para campanhas agendadas — ✅
+- [T-022.2.c] Backend: model + service + controller + routes WhatsappTemplate — ✅
+- [T-022.2.d] Backend: transport Evolution no prospecting.service — ✅
+- [T-022.2.e] Backend: API `POST /api/whatsapp/campaigns/send-single` + `send-batch` — ✅
+- [T-022.2.f] Backend: API `GET /api/whatsapp/campaigns/batches` + `GET /:id` — ✅
+- [T-022.2.g] Backend: API `GET /api/integrations/contatos` com filtros — ✅ (com ressalva BUG-D: aniversario/customAttribute ignorados)
+- [T-022.2.h] Frontend: form de agendamento no DispatchDialog — ✅
+- [T-022.2.i] Frontend: aba "Agendadas" no AdminExtracaoPage — ✅ (BUG-B corrigido pelo QA)
+- [T-022.2.j] Frontend: CRUD WhatsappTemplate — ✅
+- [T-022.2.k] Frontend: Dashboard de campanha unificado (filtros source/trigger) — ✅ (graceful fallback)
+- Bugs corrigidos pelo QA: BUG-A (DISPATCH_START path errado) + BUG-B (BATCH_CANCEL método+path errado)
+- Pendência dev-principal: BUG-C (divergência regex render), BUG-D (filtros queryForApi no-op), Compliance Sprint 3
 
 ### Sprint 3 — Webhook genérico + Compliance + Anti-ban (planejado)
 - Webhook OUTBOUND + INBOUND, `whatsapp_consents`, opt-out, rate-limit, página Integrações

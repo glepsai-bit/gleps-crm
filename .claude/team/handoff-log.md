@@ -10,6 +10,146 @@
 > - **Pendências/observações:** ...
 > ```
 
+---
+
+## 2026-06-23 T-022 Sprint 2 QA — Campanhas WhatsApp (@qa → @dev-principal)
+
+### O que foi testado
+
+**Análise estática completa** de todos os arquivos do escopo Sprint 2 (backend + frontend):
+
+**Backend:**
+- `backend/prisma/schema.prisma` — DispatchBatch novos campos + WhatsappTemplate
+- `backend/prisma/migrations/0022_whatsapp_campaigns/migration.sql`
+- `backend/src/services/whatsapp-template.service.ts` — 6 métodos
+- `backend/src/services/whatsapp-campaign.service.ts` — 653 linhas
+- `backend/src/services/contact.service.ts` (queryForApi)
+- `backend/src/services/prospecting.service.ts` (transport Evolution)
+- `backend/src/controllers/whatsapp-campaign.controller.ts` + `whatsapp-template.controller.ts`
+- `backend/src/routes/whatsapp-campaign.routes.ts` (jwtRouter + apiKeyRouter) + `whatsapp-template.routes.ts`
+- `backend/src/routes/contacts-api.routes.ts` + `backend/src/routes/index.ts`
+- `backend/src/server.ts` (cron WA)
+
+**Frontend:**
+- `src/api/endpoints.ts` (novos endpoints WA)
+- `src/services/whatsapp-templates.backend.service.ts`
+- `src/pages/admin/AdminExtracaoPage.tsx` (AgendadasTab)
+- `src/pages/admin/AdminWhatsappTemplatesPage.tsx`
+- `src/components/extracao/DispatchDialog.tsx`
+- `src/components/extracao/CampaignDashboard.tsx`
+
+**Testes unitários criados e rodados:**
+- `backend/src/services/__tests__/whatsapp-template.test.ts` — 12 testes (render, extractVariables, divergência regex)
+- `backend/src/services/__tests__/whatsapp-campaign.test.ts` — 21 testes (renderTemplate, isScheduled, processScheduledQueue, validações)
+
+**Bateria de verificação:**
+- `npx tsc -p tsconfig.app.json --noEmit` → exit 0
+- `cd backend && npx tsc --noEmit` → exit 0
+- `npx vitest run` (frontend) → 36/36
+- `cd backend && npm run test` → 46/46 (incluindo 33 novos do QA)
+
+**Testes de integração curl:** não executados (sem DB + Evolution local). Relatado como pendência.
+
+---
+
+### Bugs encontrados
+
+#### BUG-A (ALTA — corrigido pelo QA, commit a1cc3c7)
+**Arquivo:** `src/api/endpoints.ts` linha 169
+**Problema:** `DISPATCH_START = '/api/dispatch/start'` apontava para rota inexistente. O backend não tem `/dispatch/start`. O roteamento `router.use('/dispatch', whatsappCampaignJwtRoutes)` monta as rotas `/send-single` e `/send-batch` — portanto o endpoint correto é `/api/dispatch/send-batch`.
+**Impacto:** qualquer código que usasse `DISPATCH_START` (endpoint reservado no frontend para uso futuro) receberia 404 do backend.
+**Correção:** `DISPATCH_START: '/api/dispatch/send-batch'`
+
+#### BUG-B (ALTA — corrigido pelo QA, commit a1cc3c7)
+**Arquivos:** `src/api/endpoints.ts` linha 170 + `src/pages/admin/AdminExtracaoPage.tsx` linha 69
+**Problema duplo:**
+1. `BATCH_CANCEL: (id) => '/api/dispatch/batches/${id}/cancel'` — path com `/cancel` no final que não existe no backend. O backend tem `DELETE /batches/:id` (sem `/cancel`).
+2. Frontend chamava `apiClient.patch(...)` mas o backend define `jwtRouter.delete('/batches/:id')` — método HTTP errado causaria 404/405.
+**Impacto:** o botão "Cancelar" na aba "Agendadas" sempre falharia com erro de rede.
+**Correção:**
+- `BATCH_CANCEL: (id) => '/api/dispatch/batches/${id}'`
+- `apiClient.patch(...)` → `apiClient.delete(...)`
+
+#### BUG-C (MÉDIA — reportar, não bloqueia funcionalidade básica)
+**Arquivo:** `backend/src/services/whatsapp-template.service.ts` linha 18 + `backend/src/services/whatsapp-campaign.service.ts` linha 76
+**Problema:** divergência de regex de renderização de template:
+- `whatsapp-template.service` usa `/\{(\w+)\}/g` — captura apenas `{variavel}`
+- `whatsapp-campaign.service` usa `/\{\{?\s*([\w.]+)\s*\}?\}/g` — aceita `{{variavel}}`, `{ variavel }`, `{variavel.subchave}`
+
+**Efeito real (descoberto em teste):** se um template usar `{{nome}}`, o preview (template.service) retorna `{João}` (o `{` extra vaza), enquanto o envio real (campaign.service) envia `João`. Preview incorreto gera UX confusa — usuário vê resultado diferente do que será enviado.
+
+Templates com `{nome}` simples funcionam identicamente nos dois — portanto não afeta o fluxo padrão.
+**Ação:** unificar para a regex do campaign.service (mais permissiva) em ambos os services. Baixa urgência enquanto a documentação recomendar apenas `{variavel}`.
+
+#### BUG-D (BAIXA — documentação de TODO sem bloquear)
+**Arquivo:** `backend/src/services/contact.service.ts` linhas 599–623
+**Problema:** filtros `aniversario` e `customAttribute` do `queryForApi` são silenciosamente ignorados (campos não existem no schema). O endpoint aceita os parâmetros sem erro mas não filtra. Um consumidor n8n que use `?aniversario=today` receberá todos os contatos da conta.
+**Ação para Sprint futuro:** adicionar `dataNascimento` e `customAttributes` ao modelo `Contact` e implementar os filtros. Os TODOs já estão no código com warning de log.
+
+---
+
+### O que NÃO tem bug (validado):
+
+**Multi-tenancy (CRÍTICO):**
+- `whatsappTemplateService.list(accountId)` — WHERE accountId sempre presente.
+- `whatsappTemplateService.get(id, accountId)` — findFirst com accountId, não findUnique. Correto.
+- `whatsappTemplateService.delete(id, accountId)` — faz get() primeiro (verifica accountId) antes de deletar. Sem IDOR.
+- `whatsappCampaignService.sendSingle(accountId, ...)` — contato buscado com `{ id, accountId }`. Sem vazamento.
+- `whatsappCampaignService.listBatches(accountId, ...)` — WHERE accountId. Correto.
+- `whatsappCampaignService.getBatch(id, accountId)` — findFirst com ambos. Correto.
+- `whatsappCampaignService.cancelScheduled(id, accountId)` — findFirst com accountId antes de update. Sem IDOR.
+- `contactsApiRoutes` — `requireApiKey` popula `req.accountId` e o controller valida. Correto.
+- `processScheduledQueue` — processa batches de todas as contas (correto para cron global); cada batch carrega `batch.accountId` que é usado em todas as operações downstream.
+
+**Autenticação + Permissões:**
+- Rotas JWT (`/api/whatsapp/campaigns`, `/api/dispatch`) usam `authenticate`. Correto.
+- Rotas API Key (`/api/integrations/whatsapp/campaigns`) usam `requireApiKey`. Correto.
+- `whatsapp-template.routes.ts` usa `authenticate + requireAccountId + requirePermission('campaigns', 'emails')`. Agentes sem permissão recebem 403.
+- `getAccountId()` no controller suporta JWT e API key — sem path que bypasse a validação.
+
+**Cron de agendamento:**
+- Usa `updateMany({ where: { id, status: 'scheduled' } })` com verificação de `updated.count === 0` para evitar race condition multi-worker. Correto.
+- Erro em um batch não derruba os outros (try/catch por batch + catch no promise do processBatchInBackground). Correto.
+- `take: 50` evita starve de batches antigos — limite razoável para cron 5min.
+
+**Transport Evolution no prospecting:**
+- `resolveDispatchConfig` detecta Evolution por `evolutionBaseUrl + evolutionApiKey + evolutionInstance` (todos obrigatórios). Fallback correto para Chatwoot. Se nenhum configurado: lança `Error('Configure Chatwoot ou Evolution na conta')` — iGreen/Gleps360 com só Chatwoot funcionam normalmente.
+- `evolutionBaseUrl.replace(/\/$/, '')` presente em `evolution.service.ts` (confirmado Sprint 1). Trailing slash tratado.
+
+**Migration e schema:**
+- `dispatch_batches`: novos campos opcionais com DEFAULT adequados — não quebra batches antigos (retrocompatível).
+- `whatsapp_templates`: FK com ON DELETE CASCADE para accounts. Índices em `account_id` e `category`. Correto.
+- `source` com `NOT NULL DEFAULT 'manual'` — batches existentes recebem 'manual' automaticamente.
+
+**Regra de ouro (ROADMAP):**
+- Todo disparo WhatsApp passa por `whatsappCampaignService` que chama `evolutionService.sendText()`. n8n usa API key route que compartilha o mesmo controller/service. Regra mantida.
+
+**TODOs de compliance (Sprint 3 — documentados e aceitáveis):**
+- Consent/opt-out: não existem ainda. Código NÃO tem guard que bloqueie envio se sem consentimento. Documentado como Sprint 3. Risco aceitável para Sprint 2 interno; DEVE ser implementado antes de produção com usuários finais.
+- Rate-limit por conta: não existe no campaign.service. `delaySeconds` existe mas é delay entre mensagens, não throttle por conta. Sprint 3.
+
+---
+
+### Pendências para @dev-principal
+
+1. **(ALTA — já corrigido pelo QA)** BUG-A e BUG-B: endpoints corrigidos em `endpoints.ts` e `AdminExtracaoPage.tsx`. Commit `a1cc3c7`.
+2. **(MÉDIA)** BUG-C: unificar regex de renderização entre `whatsapp-template.service` e `whatsapp-campaign.service`. Usar `/\{\{?\s*([\w.]+)\s*\}?\}/g` em ambos.
+3. **(BAIXA)** BUG-D: `queryForApi` ignora filtros `aniversario` e `customAttribute` silenciosamente. Documentar isso no contrato da API para evitar confusão com n8n.
+4. **(MÉDIA — pré-produção)** Compliance/Sprint 3: consent, opt-out e rate-limit DEVEM existir antes de disparar para usuários reais. O campo `WhatsappConsent` e `WhatsappRateLimit` precisam ser criados.
+5. **(BAIXA)** Testes de integração curl dos endpoints WhatsApp: não executados nesta rodada por falta de DB + Evolution local. Sugestão: CI com Postgres + mock da Evolution API.
+
+---
+
+### Veredito geral: APROVADO COM RESSALVAS
+
+Sprint 2 é funcional e seguro para o escopo declarado. Os bugs A e B (endpoints) foram corrigidos pelo QA e o build está verde. O BUG-C (regex) é cosmético (não afeta fluxo padrão com `{variavel}`). O BUG-D é documentado com TODO no próprio código.
+
+Pontos críticos de multi-tenancy e autenticação estão corretos. A regra de ouro (todo disparo pelo CRM) é respeitada.
+
+**Commit QA:** `a1cc3c7` (branch `Variação-FitPark`)
+
+---
+
 ## 2026-06-23 T-022 Sprint 2 Front-end — Campanhas WhatsApp (@frontend → @qa)
 
 - **O que mudou:**
