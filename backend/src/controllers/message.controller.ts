@@ -10,6 +10,7 @@ import {
   type MessageContentType,
   type MessageSenderType,
 } from '../services/message.service';
+import { conversationService } from '../services/conversation.service';
 import { evolutionService } from '../services/evolution.service';
 import { apiKeyHasScope } from '../middlewares/apiKey.middleware';
 import {
@@ -222,6 +223,32 @@ export class MessageController {
       };
 
       const message = await messageService.create(accountId, input);
+
+      // LIFECYCLE-BUG-4: no fluxo nativo T-022 (sem Chatwoot), o circuit
+      // breaker do IA não tinha quem o acionasse — só o chatwoot.controller
+      // (legado) marcava `human_active=true`. Resultado: a IA via
+      // /integrations/chat seguia respondendo livremente mesmo depois do
+      // humano assumir, porque `checkAiCircuitBreaker` lê esse mesmo flag.
+      //
+      // Marca aqui sempre que um agente humano (senderType='agent') manda
+      // uma resposta pública (não nota interna). Idempotente: o próprio
+      // service faz early-return se já estiver true; falha não derruba a
+      // request (a mensagem já foi persistida e o dispatch ainda precisa rodar).
+      if (!isPrivate) {
+        try {
+          await conversationService.markHumanActive(
+            conversationId,
+            accountId,
+            req.user.id
+          );
+        } catch (err) {
+          logger.warn('[message] falha ao acionar circuit breaker do IA', {
+            conversationId,
+            accountId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
 
       let finalMessage = message;
 

@@ -334,6 +334,28 @@ class ProspectingService {
     const totalContacts = inboxAssignments.reduce((sum, a) => sum + a.contacts.length, 0);
     const delayMs = Math.max((delaySeconds || 30) * 1000, 5000);
 
+    // DISP-04 — Persistir metadata.recipients/content/source igual ao path
+    // canonical (whatsappCampaignController.sendBatch). Permite reprocessamento
+    // e facilita auditoria/debug de batches criados pelo legacy
+    // /api/prospecting/dispatch.
+    const recipientsMeta = inboxAssignments.flatMap(assignment =>
+      assignment.contacts.map(c => ({
+        contactId: null,
+        phone: c.telefone,
+        name: c.nome ?? null,
+        variables: {},
+        inboxId: assignment.inbox_id,
+        inboxName: assignment.inbox_name,
+      }))
+    );
+
+    const metadata = {
+      recipients: recipientsMeta,
+      content: messages.length === 1 ? messages[0] : null,
+      messages,
+      source: 'prospecting_legacy',
+    };
+
     // Create batch
     const batch = await prisma.dispatchBatch.create({
       data: {
@@ -343,6 +365,8 @@ class ProspectingService {
         totalContacts: totalContacts,
         status: 'running',
         delaySeconds: delaySeconds || 30,
+        source: 'prospecting_legacy',
+        metadata: metadata as any,
       },
     });
 
@@ -687,9 +711,16 @@ class ProspectingService {
   }
 
   /**
-   * Get logs for a batch
+   * Get logs for a batch (scoped por accountId para evitar cross-tenant leak)
    */
-  async getBatchLogs(batchId: string) {
+  async getBatchLogs(batchId: string, accountId: string) {
+    const batch = await prisma.dispatchBatch.findUnique({
+      where: { id: batchId },
+      select: { accountId: true },
+    });
+    if (!batch || batch.accountId !== accountId) {
+      throw Object.assign(new Error('Batch not found'), { statusCode: 404 });
+    }
     return prisma.dispatchLog.findMany({
       where: { batchId },
       orderBy: { createdAt: 'asc' },

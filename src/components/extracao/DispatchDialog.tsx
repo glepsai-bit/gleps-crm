@@ -80,6 +80,11 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
               name: i.name,
               channel_type: i.channelType,
               phone_number: i.evolutionInstance ?? undefined,
+              // DISP-07: backend popula `connectionState` (open|connecting|
+              // close|unknown|null). Repassamos pra UI bloquear seleção de
+              // canais não pareados — antes a UI exibia tudo como disponível
+              // e o admin só descobria após o dispatch (todas falham 400).
+              connection_state: i.connectionState ?? undefined,
             }));
         } else {
           const { data, error } = await supabase.functions.invoke('dispatch-messages', {
@@ -127,14 +132,47 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
     };
   }, [open, leads]);
 
+  // DISP-07: inbox "conectado" é aquele que (a) o backend não reporta estado
+  // (legacy / não-whatsapp = assume conectado), ou (b) reporta `'open'`.
+  // Qualquer outro valor (`connecting`/`close`/`unknown`/`null`) bloqueia
+  // seleção e disparo, porque a Evolution rejeitaria 100% dos envios.
+  const isInboxConnected = useCallback((inbox: ChatwootInbox): boolean => {
+    if (inbox.connection_state === undefined) return true;
+    return inbox.connection_state === 'open';
+  }, []);
+
   const toggleInbox = useCallback((id: string) => {
+    const inbox = inboxes.find(i => i.id === id);
+    if (inbox && !isInboxConnected(inbox)) {
+      // Defense-in-depth: a Checkbox já fica disabled no UI, mas se algum
+      // path alternativo (teclado/aria) disparar, ignoramos silenciosamente.
+      return;
+    }
     setSelectedInboxIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  }, []);
+  }, [inboxes, isInboxConnected]);
+
+  // DISP-07: limpa seleção de inboxes que ficaram desconectados após o último
+  // load (ex.: usuário deixou o dialog aberto e a instance caiu). Mantém o
+  // resto da seleção intacta.
+  useEffect(() => {
+    setSelectedInboxIds(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const id of prev) {
+        const inbox = inboxes.find(i => i.id === id);
+        if (inbox && !isInboxConnected(inbox)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [inboxes, isInboxConnected]);
 
   const selectedInboxes = inboxes.filter(i => selectedInboxIds.has(i.id));
   const leadsPerInbox = selectedInboxes.length > 0 ? Math.ceil(leads.length / selectedInboxes.length) : 0;
@@ -317,20 +355,50 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
               </div>
             ) : (
               <div className="space-y-2 max-h-40 overflow-y-auto border rounded-md p-2">
-                {inboxes.map(inbox => (
-                  <label key={inbox.id} className="flex items-center gap-3 py-1 px-2 rounded hover:bg-muted/50 cursor-pointer">
-                    <Checkbox
-                      checked={selectedInboxIds.has(inbox.id)}
-                      onCheckedChange={() => toggleInbox(inbox.id)}
-                    />
-                    <span className="text-sm flex-1">
-                      {inbox.name}
-                      {inbox.phone_number && (
-                        <span className="text-muted-foreground ml-1">· {inbox.phone_number}</span>
+                {inboxes.map(inbox => {
+                  const connected = isInboxConnected(inbox);
+                  // DISP-07: badge textual + cor por estado, pra que o admin
+                  // entenda *por que* o canal está bloqueado (não pareado vs
+                  // instance ausente na Evolution global).
+                  const stateLabel: Record<string, { label: string; cls: string }> = {
+                    open: { label: 'Conectado', cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400' },
+                    connecting: { label: 'Conectando', cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-400' },
+                    close: { label: 'Desconectado', cls: 'bg-destructive/15 text-destructive' },
+                    unknown: { label: 'Instância indisponível', cls: 'bg-destructive/15 text-destructive' },
+                  };
+                  const stateKey = inbox.connection_state ?? undefined;
+                  const meta = stateKey ? stateLabel[stateKey] : undefined;
+                  return (
+                    <label
+                      key={inbox.id}
+                      className={`flex items-center gap-3 py-1 px-2 rounded ${
+                        connected ? 'hover:bg-muted/50 cursor-pointer' : 'opacity-60 cursor-not-allowed'
+                      }`}
+                      title={
+                        connected
+                          ? undefined
+                          : 'Canal não pareado na Evolution — conecte em /admin/inboxes antes de disparar.'
+                      }
+                    >
+                      <Checkbox
+                        checked={selectedInboxIds.has(inbox.id)}
+                        onCheckedChange={() => toggleInbox(inbox.id)}
+                        disabled={!connected}
+                      />
+                      <span className="text-sm flex-1">
+                        {inbox.name}
+                        {inbox.phone_number && (
+                          <span className="text-muted-foreground ml-1">· {inbox.phone_number}</span>
+                        )}
+                      </span>
+                      {meta && (
+                        <span className={`text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded ${meta.cls}`}>
+                          {meta.label}
+                        </span>
                       )}
-                    </span>
-                  </label>
-                ))}
+                    </label>
+                  );
+                })}
                 {inboxes.length === 0 && (
                   <p className="text-sm text-muted-foreground text-center py-2">
                     Nenhum canal WhatsApp ativo. Cadastre/conecte um em{' '}
@@ -338,6 +406,18 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
                       /admin/inboxes
                     </a>
                     .
+                  </p>
+                )}
+                {/* DISP-07: existe inbox cadastrado mas nenhum efetivamente
+                    pareado na Evolution — mensagem explícita evita confusão
+                    com o caso "lista vazia". */}
+                {inboxes.length > 0 && inboxes.every(i => !isInboxConnected(i)) && (
+                  <p className="text-xs text-destructive text-center py-2">
+                    Todos os canais estão desconectados na Evolution. Reconecte em{' '}
+                    <a href="/admin/inboxes" className="underline">
+                      /admin/inboxes
+                    </a>{' '}
+                    antes de disparar.
                   </p>
                 )}
               </div>

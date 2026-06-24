@@ -1471,6 +1471,7 @@ model SLABreach {
   breachedAt     DateTime     @map("breached_at") @db.Timestamptz
   notifiedAt     DateTime?    @map("notified_at") @db.Timestamptz
 
+  @@unique([conversationId, breachType], map: "sla_breaches_conversation_type_unique")
   @@index([conversationId])
   @@index([slaPolicyId])
   @@map("sla_breaches")

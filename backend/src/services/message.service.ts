@@ -193,7 +193,11 @@ class MessageService {
    * Side effects:
    *  - Atualiza Conversation.updatedAt
    *  - Incrementa unreadCount quando senderType === 'customer'
-   *  - Seta firstResponseAt se ainda nulo e senderType === 'agent'
+   *  - Seta firstResponseAt se ainda nulo e senderType ∈ {'agent','ai_bot','integration'}
+   *    (LIFECYCLE-BUG-3: contas com alto volume de IA estavam sendo ignoradas
+   *    do cálculo de FRT porque a IA respondia antes do humano e o
+   *    `firstResponseAt` nunca era preenchido; passamos a contar qualquer
+   *    resposta não-cliente e não-privada como "first response").
    *  - Emite event interno + webhook outbound 'message.created'
    */
   async create(accountId: string, input: CreateMessageInput): Promise<Message> {
@@ -234,8 +238,15 @@ class MessageService {
 
     const now = new Date();
     const shouldIncrementUnread = input.senderType === 'customer';
+    // LIFECYCLE-BUG-3: qualquer resposta não-cliente e não-privada conta como
+    // "primeira resposta" para fins de FRT — inclui agent humano, ai_bot
+    // (resposta automatizada do CRM) e integration (provider externo/Chatwoot).
+    const isFirstResponseSender =
+      input.senderType === 'agent' ||
+      input.senderType === 'ai_bot' ||
+      input.senderType === 'integration';
     const shouldSetFirstResponse =
-      input.senderType === 'agent' && !conversation.firstResponseAt;
+      isFirstResponseSender && !conversation.firstResponseAt && input.isPrivate !== true;
 
     const message = await prisma.$transaction(async tx => {
       const created = await tx.message.create({

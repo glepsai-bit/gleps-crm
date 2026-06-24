@@ -109,12 +109,19 @@ router.use('/teams', teamRoutes);
 router.use('/conversations', conversationRoutes);
 // Aplica policy SLA a uma conversa específica: POST /conversations/:id/sla
 router.use('/conversations', slaConversationsRouter);
+// LIFECYCLE-BUG-1 fix: API Key router DEVE ser montado ANTES do JWT router
+// catch-all. messageJwtRoutes em '/' aplica middleware authenticate (JWT) a
+// TODA requisição que entra no sub-router — incluindo /integrations/chat/* —
+// rejeitando com 401 antes do requireApiKey ter chance de rodar. Ao registrar
+// '/integrations/chat' primeiro, o Express casa o handler do apiKeyRouter
+// (que responde sem chamar next), e o JWT router nunca é alcançado para
+// rotas de integração.
+// API Key router p/ integrações externas (n8n, agente IA)
+router.use('/integrations/chat', messageApiKeyRoutes);
 // messageJwtRoutes usa paths absolutos (/conversations/:id/messages,
 // /messages/:id/read, /messages/search) — montamos na raiz para cobrir
 // ambos os prefixos (/conversations e /messages) com um único mount.
 router.use('/', messageJwtRoutes);
-// API Key router p/ integrações externas (n8n, agente IA)
-router.use('/integrations/chat', messageApiKeyRoutes);
 router.use('/custom-attributes', customAttributeRoutes);
 router.use('/canned-responses', cannedResponseRoutes);
 router.use('/sla-policies', slaRoutes);

@@ -4,7 +4,7 @@ import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors'
 import { eventService } from './event.service';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
-import { contactService } from './contact.service';
+import { teamService } from './team.service';
 
 /**
  * Wrapper defensivo: o Socket.IO pode não estar inicializado em testes
@@ -436,6 +436,19 @@ class ConversationService {
       data.resolvedAt = null;
       data.resolvedBy = null;
     }
+    // LIFECYCLE-BUG-2: reabrir conversa (status=open) precisa limpar o
+    // circuit breaker do IA (human_active/human_intervened). Sem isso, depois
+    // que o humano interveio uma vez, o IA fica bloqueado eternamente mesmo
+    // quando a conversa é reaberta — n8n perde capacidade de responder.
+    if (status === 'open') {
+      const currentAttrs =
+        (existing.customAttributes as Record<string, unknown> | null) ?? {};
+      data.customAttributes = {
+        ...currentAttrs,
+        human_active: null,
+        human_intervened: null,
+      } as any;
+    }
 
     const updated = await prisma.conversation.update({
       where: { id },
@@ -781,6 +794,10 @@ class ConversationService {
       return existing;
     }
 
+    // LIFECYCLE-BUG-2: limpar circuit breaker do IA ao reabrir manualmente.
+    // Sem isso, IA segue bloqueada mesmo após reopen explícito do humano.
+    const currentAttrs =
+      (existing.customAttributes as Record<string, unknown> | null) ?? {};
     const updated = await prisma.conversation.update({
       where: { id },
       data: {
@@ -788,6 +805,11 @@ class ConversationService {
         resolvedAt: null,
         resolvedBy: null,
         snoozedUntil: null,
+        customAttributes: {
+          ...currentAttrs,
+          human_active: null,
+          human_intervened: null,
+        } as any,
       },
       include: FULL_CONVERSATION_INCLUDE,
     });
@@ -833,18 +855,132 @@ class ConversationService {
 
     const tag = await prisma.tag.findFirst({
       where: { id: tagId, accountId },
-      select: { id: true, type: true },
+      select: { id: true, type: true, name: true, slug: true },
     });
     if (!tag) throw new NotFoundError('Tag');
 
-    try {
-      await prisma.conversationLabel.create({
-        data: {
-          conversationId: id,
-          tagId,
-        },
+    // Pré-carrega o nome do contato fora da transação (usado em TagHistory).
+    let contactNome: string | null = null;
+    if (conversation.contactId && tag.type === 'stage') {
+      const ct = await prisma.contact.findFirst({
+        where: { id: conversation.contactId, accountId },
+        select: { nome: true },
       });
+      contactNome = ct?.nome ?? null;
+    }
 
+    // CHAT-TAG-SYNC-ATOMIC: as duas escritas (ConversationLabel + LeadTag) precisam
+    // ser atômicas. Antes ficavam fora de transação — se o espelhamento LeadTag
+    // falhasse por algo diferente de P2002, a label da conversa já estava persistida
+    // e o Kanban/contato ficavam dessincronizados. Pior pra stage tags: o applyTag
+    // delete-then-create podia deixar o contato SEM nenhuma stage (deletes commit,
+    // create falha). Agora ou tudo vai, ou tudo é revertido.
+    let labelWasCreated = false;
+    let mirroredLeadTagId: string | null = null;
+    const removedStageTagIds: string[] = [];
+    let removedStageTagsMeta: Array<{ tagId: string; tagName: string }> = [];
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        // 1) Cria a label da conversa (idempotente via P2002).
+        try {
+          await tx.conversationLabel.create({
+            data: {
+              conversationId: id,
+              tagId,
+            },
+          });
+          labelWasCreated = true;
+        } catch (err: any) {
+          if (err?.code !== 'P2002') throw err;
+          // Já existia — segue para o mirror mesmo assim (pode estar dessincronizado).
+        }
+
+        // 2) Espelha no LeadTag — idem aos invariantes de contactService.applyTag,
+        // mas inline e usando o mesmo `tx` pra garantir atomicidade.
+        if (conversation.contactId) {
+          if (tag.type === 'stage') {
+            // Invariante "uma stage por contato": remove stage tags anteriores
+            // dentro da MESMA transação. Se a criação abaixo falhar, esses deletes
+            // são revertidos — não deixamos o contato órfão de stage.
+            const existingStageTags = await tx.leadTag.findMany({
+              where: {
+                contactId: conversation.contactId,
+                tag: { type: 'stage' },
+                NOT: { tagId },
+              },
+              include: { tag: { select: { name: true } } },
+            });
+
+            for (const existing of existingStageTags) {
+              await tx.leadTag.delete({ where: { id: existing.id } });
+              removedStageTagIds.push(existing.tagId);
+              removedStageTagsMeta.push({
+                tagId: existing.tagId,
+                tagName: existing.tag.name,
+              });
+
+              await tx.tagHistory.create({
+                data: {
+                  contactId: conversation.contactId,
+                  tagId: existing.tagId,
+                  action: 'removed',
+                  actorType: 'user',
+                  actorId: userId,
+                  source: 'chatwoot',
+                  tagName: existing.tag.name,
+                  contactNome,
+                },
+              });
+            }
+          }
+
+          // Cria o LeadTag (idempotente via P2002).
+          try {
+            const created = await tx.leadTag.create({
+              data: {
+                contactId: conversation.contactId,
+                tagId,
+                appliedByType: 'user',
+                appliedById: userId,
+                source: 'chatwoot',
+              },
+            });
+            mirroredLeadTagId = created.id;
+
+            if (tag.type === 'stage') {
+              await tx.tagHistory.create({
+                data: {
+                  contactId: conversation.contactId,
+                  tagId,
+                  action: 'added',
+                  actorType: 'user',
+                  actorId: userId,
+                  source: 'chatwoot',
+                  tagName: tag.name,
+                  contactNome,
+                },
+              });
+            }
+          } catch (err: any) {
+            if (err?.code !== 'P2002') throw err;
+            // Já aplicada — no-op idempotente.
+          }
+        }
+      });
+    } catch (err) {
+      // Falha atômica: nada foi persistido. Loga e propaga para o caller saber.
+      logger.warn('[conversation] addLabel atômico falhou — rollback aplicado', {
+        conversationId: id,
+        contactId: conversation.contactId,
+        tagId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+
+    // Eventos de auditoria (fire-and-forget) — fora da transação por design do eventService.
+    if (labelWasCreated) {
       await eventService.create({
         accountId,
         eventType: 'conversation.label_added',
@@ -854,56 +990,34 @@ class ConversationService {
         entityId: id,
         payload: { tagId },
       });
-    } catch (err: any) {
-      // Unique violation = já existe; ignora silenciosamente (idempotente)
-      if (err?.code !== 'P2002') {
-        throw err;
-      }
     }
 
-    // CHAT-TAG-SYNC-1: espelhar a tag aplicada na conversa para LeadTag do
-    // contato, garantindo que o painel "Contato" do /admin/chat e o /admin/kanban
-    // (que filtram lead_tags por stage_id) reflitam a aplicação feita via chat.
-    if (conversation.contactId) {
-      try {
-        if (tag.type === 'stage') {
-          // Delega para contactService.applyTag: garante invariante de "um stage
-          // por contato" (remove stage tags anteriores) e dispara TagHistory +
-          // event log corretos. Source='chatwoot' indica origem na thread do chat.
-          await contactService.applyTag(
-            conversation.contactId,
-            accountId,
-            tagId,
-            'chatwoot',
-            userId
-          );
-        } else {
-          // Tag operacional: cria LeadTag direto (não há invariante de exclusividade).
-          // P2002 (já aplicada) é tratado como no-op idempotente.
-          try {
-            await prisma.leadTag.create({
-              data: {
-                contactId: conversation.contactId,
-                tagId,
-                appliedByType: 'user',
-                appliedById: userId,
-                source: 'chatwoot',
-              },
-            });
-          } catch (err: any) {
-            if (err?.code !== 'P2002') throw err;
-          }
-        }
-      } catch (err) {
-        // Não bloqueia a aplicação da label na conversa se o espelhamento falhar
-        // (ex.: contato deletado entre o requireConversation e o applyTag).
-        logger.warn('[conversation] falha ao espelhar label no LeadTag', {
-          conversationId: id,
-          contactId: conversation.contactId,
-          tagId,
-          error: err instanceof Error ? err.message : String(err),
+    if (conversation.contactId && tag.type === 'stage' && mirroredLeadTagId) {
+      for (const removed of removedStageTagsMeta) {
+        await eventService.create({
+          accountId,
+          eventType: 'lead.stage.changed',
+          actorType: 'user',
+          actorId: userId,
+          entityType: 'contact',
+          entityId: conversation.contactId,
+          payload: {
+            tagId: removed.tagId,
+            tagName: removed.tagName,
+            action: 'removed',
+            source: 'chatwoot',
+          },
         });
       }
+      await eventService.create({
+        accountId,
+        eventType: 'lead.stage.changed',
+        actorType: 'user',
+        actorId: userId,
+        entityType: 'contact',
+        entityId: conversation.contactId,
+        payload: { tagId, tagName: tag.name, source: 'chatwoot' },
+      });
     }
 
     // CHAT-LABEL-IDEMPOTENT-3: repassa actor para o get() preservar RBAC do agente.
@@ -1092,6 +1206,68 @@ class ConversationService {
   }
 
   // ============================================
+  // markHumanActive
+  // ============================================
+
+  /**
+   * LIFECYCLE-BUG-4: aciona o circuit breaker do IA quando um agente humano
+   * responde no fluxo nativo T-022 (POST /api/conversations/:id/messages).
+   *
+   * Equivalente ao bloco "HumanIntervention" do chatwoot.controller (legado),
+   * porém para conversas servidas SEM Chatwoot — onde nada mais estava setando
+   * `customAttributes.human_active=true`. Sem este flag, /integrations/chat
+   * (consumido pelo n8n) não respeita o `checkAiCircuitBreaker` e a IA continua
+   * respondendo livremente em paralelo ao humano.
+   *
+   * Idempotente: se já estiver true, retorna a conversa sem rebater update
+   * nem emitir socket. Emite `conversation:updated` quando muda de estado para
+   * que outras abas do operador reflitam o breaker em tempo real.
+   */
+  async markHumanActive(
+    id: string,
+    accountId: string,
+    userId: string
+  ): Promise<Conversation> {
+    const existing = await this.requireConversation(id, accountId);
+    const current =
+      (existing.customAttributes as Record<string, unknown> | null) ?? {};
+
+    if (current.human_active === true) {
+      return existing;
+    }
+
+    const merged = {
+      ...current,
+      human_active: true,
+      human_intervened: true,
+      human_intervened_at: new Date().toISOString(),
+    };
+
+    const updated = await prisma.conversation.update({
+      where: { id },
+      data: { customAttributes: merged as any },
+      include: FULL_CONVERSATION_INCLUDE,
+    });
+
+    await eventService.create({
+      accountId,
+      eventType: 'conversation.attributes_updated',
+      actorType: 'user',
+      actorId: userId,
+      entityType: 'conversation',
+      entityId: id,
+      payload: {
+        keys: ['human_active', 'human_intervened', 'human_intervened_at'],
+        reason: 'agent_replied_native',
+      },
+    });
+
+    safeEmitUpdated(accountId, id, updated);
+
+    return updated;
+  }
+
+  // ============================================
   // markAsRead
   // ============================================
 
@@ -1163,10 +1339,11 @@ class ConversationService {
       throw new ValidationError('externalId é obrigatório');
     }
 
-    // Garante que o inbox pertence à conta
+    // Garante que o inbox pertence à conta. Precisamos do defaultTeamId pra
+    // disparar round-robin automático ao criar conversa nova (CHAT-ACTIONS-A-1).
     const inbox = await prisma.inbox.findFirst({
       where: { id: inboxId, accountId },
-      select: { id: true },
+      select: { id: true, defaultTeamId: true },
     });
     if (!inbox) throw new NotFoundError('Inbox');
 
@@ -1191,6 +1368,36 @@ class ConversationService {
       if (!contact) throw new NotFoundError('Contato');
     }
 
+    // CHAT-ACTIONS-A-1 / FINDCREATE-ASSIGN-ATOMIC: round-robin é resolvido ANTES
+    // da transação (read-only, sem efeito colateral), e o update de assignee é
+    // executado DENTRO da mesma $transaction que cria a conversa. Antes, o update
+    // ficava fora — um webhook paralelo entrando em maybeReopen ao mesmo tempo
+    // podia clobberar customAttributes/status do outro fluxo. Agora ou tudo vai,
+    // ou nada vai. Best-effort se mantém: falha do pickAssignee NÃO aborta o create.
+    let preselectedAssignee: { id: string } | null = null;
+    if (inbox.defaultTeamId) {
+      try {
+        const picked = await teamService.pickAssignee(inbox.defaultTeamId, accountId);
+        if (picked) {
+          preselectedAssignee = { id: picked.id };
+        } else {
+          logger.debug('[conversation] auto round-robin sem membros ativos — skip', {
+            accountId,
+            inboxId,
+            teamId: inbox.defaultTeamId,
+          });
+        }
+      } catch (assignErr) {
+        // pickAssignee best-effort: erro aqui não pode abortar criação da conversa.
+        logger.warn('[conversation] auto round-robin falhou — conversa seguirá sem assignee', {
+          accountId,
+          inboxId,
+          teamId: inbox.defaultTeamId,
+          error: assignErr instanceof Error ? assignErr.message : String(assignErr),
+        });
+      }
+    }
+
     // H3 (CHAT findOrCreate race): tenta criar e, se houver corrida de webhooks
     // (3 mensagens em 1s podem chegar ao 'create' simultaneamente),
     // o catch P2002 ou um re-find dentro de transação retornam a conversa vencedora.
@@ -1200,12 +1407,12 @@ class ConversationService {
       // Retorna a conversa + flag explícita indicando se ela acabou de ser criada
       // nesta transação. Antes usávamos uma heurística baseada em createdAt vs
       // Date.now(), o que era frágil em VMs com clock skew ou GC pause longo.
-      const { conversation, wasCreated } = await prisma.$transaction(async (tx) => {
+      const { conversation, wasCreated, wasAssigned } = await prisma.$transaction(async (tx) => {
         const racingExisting = await tx.conversation.findFirst({
           where: { accountId, inboxId, externalId: input.externalId },
         });
         if (racingExisting) {
-          return { conversation: racingExisting, wasCreated: false };
+          return { conversation: racingExisting, wasCreated: false, wasAssigned: false };
         }
 
         const created = await tx.conversation.create({
@@ -1216,9 +1423,22 @@ class ConversationService {
             externalId: input.externalId,
             status: 'open',
             priority: 'medium',
+            // Atribuição atômica: setamos no próprio create quando há assignee
+            // pré-selecionado, evitando UPDATE separado que poderia colidir com
+            // um maybeReopen paralelo de outro webhook.
+            ...(preselectedAssignee && inbox.defaultTeamId
+              ? {
+                  assigneeId: preselectedAssignee.id,
+                  teamId: inbox.defaultTeamId,
+                }
+              : {}),
           },
         });
-        return { conversation: created, wasCreated: true };
+        return {
+          conversation: created,
+          wasCreated: true,
+          wasAssigned: Boolean(preselectedAssignee && inbox.defaultTeamId),
+        };
       });
 
       // Se já existia (não criou agora), trata reabertura igual ao path normal
@@ -1239,6 +1459,36 @@ class ConversationService {
           source: 'inbound',
         },
       });
+
+      if (wasAssigned && preselectedAssignee && inbox.defaultTeamId) {
+        await eventService.create({
+          accountId,
+          eventType: 'conversation.assigned',
+          actorType: 'system',
+          entityType: 'conversation',
+          entityId: conversation.id,
+          payload: {
+            from: null,
+            to: preselectedAssignee.id,
+            teamId: inbox.defaultTeamId,
+            strategy: 'round_robin',
+          },
+        });
+
+        safeEmitAssigned(accountId, conversation.id, {
+          type: 'agent',
+          assigneeId: preselectedAssignee.id,
+          teamId: inbox.defaultTeamId,
+          strategy: 'round_robin',
+        });
+
+        logger.info('[conversation] auto round-robin assign', {
+          accountId,
+          conversationId: conversation.id,
+          teamId: inbox.defaultTeamId,
+          assigneeId: preselectedAssignee.id,
+        });
+      }
 
       return conversation;
     } catch (err: any) {
@@ -1264,12 +1514,22 @@ class ConversationService {
   ): Promise<Conversation> {
     if (conv.status !== 'resolved') return conv;
 
+    // LIFECYCLE-BUG-2: cliente voltou a falar (nova mensagem inbound em
+    // conversa resolvida) — precisa limpar o circuit breaker do IA, senão
+    // ele fica bloqueado pra sempre e o n8n não responde mais nessa thread.
+    const currentAttrs =
+      (conv.customAttributes as Record<string, unknown> | null) ?? {};
     const reopened = await prisma.conversation.update({
       where: { id: conv.id },
       data: {
         status: 'open',
         resolvedAt: null,
         resolvedBy: null,
+        customAttributes: {
+          ...currentAttrs,
+          human_active: null,
+          human_intervened: null,
+        } as any,
       },
     });
 

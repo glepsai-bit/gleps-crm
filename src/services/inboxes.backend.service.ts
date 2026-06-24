@@ -13,6 +13,21 @@ import { API_ENDPOINTS } from '@/api/endpoints';
 
 export type InboxChannelType = 'whatsapp' | 'email' | 'facebook' | 'instagram';
 
+/**
+ * Estado da conexão Evolution para um inbox whatsapp (DISP-07).
+ * - `open`: pareado e pronto pra enviar
+ * - `connecting`: aguardando QR / handshake
+ * - `close`: deslogado/expirado
+ * - `unknown`: Evolution não respondeu ou instance não existe na global
+ * - `null`: não aplicável (inbox não-whatsapp ou sem evolutionInstance)
+ */
+export type InboxConnectionState =
+  | 'open'
+  | 'connecting'
+  | 'close'
+  | 'unknown'
+  | null;
+
 export interface InboxBusinessHours {
   // Ex.: { mon: { open: '08:00', close: '18:00' }, ... }
   [day: string]: { open: string; close: string };
@@ -30,6 +45,12 @@ export interface Inbox {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * DISP-07: estado da conexão Evolution. Devolvido por GET /api/inboxes;
+   * endpoints individuais (GET /:id, POST/PUT) podem não populá-lo —
+   * defaulta a `undefined` nesse caso.
+   */
+  connectionState?: InboxConnectionState;
 }
 
 export interface CreateInboxInput {
@@ -57,6 +78,19 @@ export interface UpdateInboxInput {
  * padrão de outros services (users/tags).
  */
 function mapInbox(raw: any): Inbox {
+  // DISP-07: connectionState pode vir como snake_case do legacy; só populamos
+  // se o backend enviou explicitamente, senão fica undefined (consumers tratam
+  // como "estado desconhecido — não bloquear").
+  const connectionStateRaw =
+    raw.connectionState ?? raw.connection_state ?? undefined;
+  const allowed: InboxConnectionState[] = ['open', 'connecting', 'close', 'unknown', null];
+  const connectionState: InboxConnectionState | undefined =
+    connectionStateRaw === undefined
+      ? undefined
+      : allowed.includes(connectionStateRaw as InboxConnectionState)
+        ? (connectionStateRaw as InboxConnectionState)
+        : 'unknown';
+
   return {
     id: raw.id,
     accountId: raw.accountId ?? raw.account_id,
@@ -69,6 +103,7 @@ function mapInbox(raw: any): Inbox {
     active: raw.active ?? true,
     createdAt: raw.createdAt ?? raw.created_at,
     updatedAt: raw.updatedAt ?? raw.updated_at,
+    connectionState,
   };
 }
 

@@ -396,7 +396,12 @@ export class EvolutionController {
       // ============================================
       // BUG-006: keyword opt-out em mensagens inbound do cliente
       // ============================================
-      if (event === 'messages.upsert') {
+      // WH-001: normaliza o nome do evento porque a Evolution pode emitir tanto
+      // 'messages.upsert' quanto 'MESSAGES_UPSERT'. Sem isso, o opt-out era
+      // silenciosamente pulado quando o provider entregava o formato UPPER_SNAKE.
+      const normalizedEvent =
+        typeof event === 'string' ? event.toLowerCase().replace(/_/g, '.') : event;
+      if (normalizedEvent === 'messages.upsert') {
         try {
           const body: any = req.body || {};
           const fromMe = Boolean(body?.data?.key?.fromMe);
@@ -456,13 +461,23 @@ export class EvolutionController {
   /**
    * Roteia eventos Evolution conhecidos para handlers especializados.
    * Eventos não mapeados são apenas logados em debug e ignorados.
+   *
+   * WH-001: Evolution v2 pode emitir nomes de evento em DUAS convenções:
+   *   - dot.case lowercase   ('messages.upsert')  — formato "novo"
+   *   - UPPER_SNAKE_CASE     ('MESSAGES_UPSERT')  — formato do DEFAULT_WEBHOOK_EVENTS
+   *
+   * Sem normalização, eventos UPPER_SNAKE caíam no `default` e eram silenciosamente
+   * descartados (tempo-bomba para upgrade da Evolution). Canonicalizamos para o
+   * formato lowercase com ponto antes de fazer o match.
    */
   private async dispatchEvolutionEvent(
     accountId: string,
     event: string,
     body: any
   ): Promise<void> {
-    switch (event) {
+    const normalized =
+      typeof event === 'string' ? event.toLowerCase().replace(/_/g, '.') : event;
+    switch (normalized) {
       case 'messages.upsert':
         await this.processNewMessage(accountId, body);
         return;
@@ -476,7 +491,11 @@ export class EvolutionController {
         await this.processContactUpdate(accountId, body);
         return;
       default:
-        logger.debug('[evolution-webhook] evento ignorado', { accountId, event });
+        logger.debug('[evolution-webhook] evento ignorado', {
+          accountId,
+          event,
+          normalized,
+        });
         return;
     }
   }

@@ -1,4 +1,5 @@
 import type { SLAPolicy, SLABreach } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
@@ -318,27 +319,32 @@ class SLAService {
     expectedAt: Date,
     breachedAt: Date
   ): Promise<boolean> {
-    const existing = await prisma.sLABreach.findFirst({
-      where: {
-        conversationId,
-        breachType,
-      },
-      select: { id: true },
-    });
-
-    if (existing) {
-      return false;
+    // CRON-002: confiamos no unique @@unique([conversationId, breachType])
+    // para evitar duplicacao em multi-replica. O check-then-act
+    // (findFirst + create) tinha race condition: duas instancias
+    // poderiam passar o findFirst e criar dois breaches identicos,
+    // disparando webhook sla.breached duplicado.
+    let breach;
+    try {
+      breach = await prisma.sLABreach.create({
+        data: {
+          conversationId,
+          slaPolicyId: policy.id,
+          breachType,
+          expectedAt,
+          breachedAt,
+        },
+      });
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        // Outra replica criou primeiro — nao e erro, so nao criamos.
+        return false;
+      }
+      throw err;
     }
-
-    const breach = await prisma.sLABreach.create({
-      data: {
-        conversationId,
-        slaPolicyId: policy.id,
-        breachType,
-        expectedAt,
-        breachedAt,
-      },
-    });
 
     logger.warn('[sla] breach detected', {
       accountId,

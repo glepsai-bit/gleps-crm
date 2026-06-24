@@ -30,7 +30,7 @@ export const inboxController = {
 
   async getMessage(req: Request, res: Response, next: NextFunction) {
     try {
-      const data = await inboxService.getMessage(req.params.id as string);
+      const data = await inboxService.getMessage(req.params.id as string, getAccountId(req));
       if (!data) return res.status(404).json({ error: 'Mensagem não encontrada' });
       res.json(data);
     } catch (error) { next(error); }
@@ -38,7 +38,7 @@ export const inboxController = {
 
   async markRead(req: Request, res: Response, next: NextFunction) {
     try {
-      const data = await inboxService.markRead(req.params.id as string);
+      const data = await inboxService.markRead(req.params.id as string, getAccountId(req));
       res.json(data);
     } catch (error) { next(error); }
   },
@@ -56,7 +56,7 @@ export const inboxController = {
       const accountId = getAccountId(req);
       const { messageId, subject, bodyHtml, bodyText } = req.body;
 
-      const message = await inboxService.getMessage(messageId);
+      const message = await inboxService.getMessage(messageId, accountId);
       if (!message) return res.status(404).json({ error: 'Mensagem não encontrada' });
 
       const creds = await sendgridService.getAccountCredentials(accountId);
@@ -73,8 +73,9 @@ export const inboxController = {
       });
 
       if (result.success) {
-        await prisma.emailInboxMessage.update({
-          where: { id: messageId },
+        // MT-H2 fix: updateMany com accountId pra evitar mutation cross-tenant.
+        await prisma.emailInboxMessage.updateMany({
+          where: { id: messageId, accountId },
           data: { replied: true, repliedAt: new Date() },
         });
       }
@@ -89,7 +90,7 @@ export const inboxController = {
       const accountId = getAccountId(req);
       const { messageId, instructions } = req.body;
 
-      const message = await inboxService.getMessage(messageId);
+      const message = await inboxService.getMessage(messageId, accountId);
       if (!message) return res.status(404).json({ error: 'Mensagem não encontrada' });
 
       const account = await prisma.account.findUnique({
@@ -180,9 +181,17 @@ Responda em formato JSON: {"subject":"...","bodyHtml":"...","bodyText":"..."}`;
   // Mark as replied manually (when user replied outside the platform)
   async markRepliedManually(req: Request, res: Response, next: NextFunction) {
     try {
-      const data = await prisma.emailInboxMessage.update({
-        where: { id: req.params.id as string },
+      const accountId = getAccountId(req);
+      // MT-H2 fix: updateMany com accountId pra evitar mutation cross-tenant.
+      const result = await prisma.emailInboxMessage.updateMany({
+        where: { id: req.params.id as string, accountId },
         data: { replied: true, repliedAt: new Date(), read: true },
+      });
+      if (result.count === 0) {
+        return res.status(404).json({ error: 'Mensagem não encontrada' });
+      }
+      const data = await prisma.emailInboxMessage.findFirst({
+        where: { id: req.params.id as string, accountId },
       });
       res.json(data);
     } catch (error) { next(error); }
@@ -191,8 +200,16 @@ Responda em formato JSON: {"subject":"...","bodyHtml":"...","bodyText":"..."}`;
   // Pause / Resume / Unenroll the cadence linked to a message
   async pauseEnrollment(req: Request, res: Response, next: NextFunction) {
     try {
-      const message = await inboxService.getMessage(req.params.id as string);
+      const accountId = getAccountId(req);
+      const message = await inboxService.getMessage(req.params.id as string, accountId);
       if (!message?.enrollmentId) return res.status(404).json({ error: 'Mensagem sem inscrição vinculada' });
+      // MT-H2 fix: valida que a cadence do enrollment pertence ao mesmo
+      // tenant da mensagem (defense-in-depth — getMessage já escopa por
+      // accountId, mas garante que nunca pause cadence de outro tenant
+      // mesmo se houver inconsistência de dados).
+      if (message.enrollment?.cadence?.accountId !== accountId) {
+        return res.status(403).json({ error: 'Cadência de outra conta' });
+      }
       const updated = await prisma.emailEnrollment.update({
         where: { id: message.enrollmentId },
         data: { status: 'paused' },
@@ -203,8 +220,12 @@ Responda em formato JSON: {"subject":"...","bodyHtml":"...","bodyText":"..."}`;
 
   async resumeEnrollment(req: Request, res: Response, next: NextFunction) {
     try {
-      const message = await inboxService.getMessage(req.params.id as string);
+      const accountId = getAccountId(req);
+      const message = await inboxService.getMessage(req.params.id as string, accountId);
       if (!message?.enrollmentId) return res.status(404).json({ error: 'Mensagem sem inscrição vinculada' });
+      if (message.enrollment?.cadence?.accountId !== accountId) {
+        return res.status(403).json({ error: 'Cadência de outra conta' });
+      }
       const updated = await prisma.emailEnrollment.update({
         where: { id: message.enrollmentId },
         data: { status: 'active' },
@@ -215,8 +236,12 @@ Responda em formato JSON: {"subject":"...","bodyHtml":"...","bodyText":"..."}`;
 
   async unenrollFromCadence(req: Request, res: Response, next: NextFunction) {
     try {
-      const message = await inboxService.getMessage(req.params.id as string);
+      const accountId = getAccountId(req);
+      const message = await inboxService.getMessage(req.params.id as string, accountId);
       if (!message?.enrollmentId) return res.status(404).json({ error: 'Mensagem sem inscrição vinculada' });
+      if (message.enrollment?.cadence?.accountId !== accountId) {
+        return res.status(403).json({ error: 'Cadência de outra conta' });
+      }
       const updated = await prisma.emailEnrollment.update({
         where: { id: message.enrollmentId },
         data: { status: 'unsubscribed', completedAt: new Date() },
@@ -266,6 +291,11 @@ const updateInboxChannelSchema = z.object({
 export class InboxChannelController {
   /**
    * GET /inboxes
+   *
+   * DISP-07: devolve cada inbox com `connectionState` (open|connecting|close|
+   * unknown|null) pra que a UI possa desabilitar/sinalizar canais WhatsApp
+   * desconectados antes do disparo — em vez de descobrir só depois (todas
+   * as msgs falham 400 na Evolution).
    */
   async list(
     req: AuthenticatedRequest,
@@ -273,7 +303,9 @@ export class InboxChannelController {
     next: NextFunction
   ): Promise<void> {
     try {
-      const result = await inboxChannelService.list(req.user!.accountId!);
+      const result = await inboxChannelService.listWithConnectionStatus(
+        req.user!.accountId!
+      );
       res.json({ data: result });
     } catch (error) {
       next(error);

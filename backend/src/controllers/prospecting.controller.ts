@@ -113,9 +113,13 @@ export class ProspectingController {
   async getBatchLogs(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const batchId = req.params.batchId as string;
-      const logs = await prospectingService.getBatchLogs(batchId);
+      const logs = await prospectingService.getBatchLogs(batchId, req.user!.accountId!);
       res.json({ data: logs });
-    } catch (error) {
+    } catch (error: any) {
+      if (error.statusCode) {
+        res.status(error.statusCode).json({ success: false, error: error.message });
+        return;
+      }
       next(error);
     }
   }

@@ -87,13 +87,24 @@ async function bootstrap() {
   }
 
   // T-022 Sprint 4 — cron de checagem de breaches de SLA (1 min)
+  // CRON-002: mutex isCheckingSla evita overlap caso uma execucao demore
+  // mais que o intervalo. Idempotencia entre replicas e garantida pelo
+  // @@unique([conversationId, breachType]) + tratamento P2002.
   {
     const SLA_CRON_INTERVAL_MS = 60 * 1000;
+    let isCheckingSla = false;
     setInterval(async () => {
+      if (isCheckingSla) {
+        logger.warn('[sla] previous check still running, skipping tick');
+        return;
+      }
+      isCheckingSla = true;
       try {
         await slaService.checkBreaches();
       } catch (err) {
         logger.error('SLA breach check cron error:', err);
+      } finally {
+        isCheckingSla = false;
       }
     }, SLA_CRON_INTERVAL_MS);
     logger.info(`⏱️  SLA breach check cron started (interval: ${SLA_CRON_INTERVAL_MS / 1000}s)`);

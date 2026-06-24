@@ -28,6 +28,15 @@ export interface ChatwootInbox {
   name: string;
   channel_type?: string;
   phone_number?: string;
+  /**
+   * DISP-07: estado da conexão Evolution para canais whatsapp.
+   * - `'open'` → pareado, pode disparar
+   * - `'connecting'` / `'close'` / `'unknown'` → não conectado; UI deve
+   *   bloquear seleção
+   * - `null` / `undefined` → não aplicável (não-whatsapp) ou backend não
+   *   reportou estado (legacy/edge)
+   */
+  connection_state?: 'open' | 'connecting' | 'close' | 'unknown' | null;
 }
 
 export interface DispatchConfig {

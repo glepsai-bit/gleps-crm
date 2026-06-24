@@ -4,6 +4,7 @@ import {
   conversationService,
   type ListConversationFilters,
   type GetConversationInclude,
+  type ConversationActor,
 } from '../services/conversation.service';
 import { AuthenticatedRequest } from '../types';
 import { ValidationError } from '../utils/errors';
@@ -105,6 +106,18 @@ function getAccountId(req: AuthenticatedRequest): string {
   return req.user!.accountId!;
 }
 
+/**
+ * CHAT-ACTIONS-A-2: monta o ConversationActor a partir do req.user para
+ * que o service aplique RBAC (agente só vê/muta conversas que lhe
+ * pertencem; admin/super_admin passam direto).
+ */
+function getActor(req: AuthenticatedRequest): ConversationActor {
+  return {
+    userId: req.user!.id,
+    role: req.user!.role as ConversationActor['role'],
+  };
+}
+
 // ============================================
 // Controller
 // ============================================
@@ -135,7 +148,7 @@ export class ConversationController {
         filters.teamId = parsed.teamId === 'null' ? null : parsed.teamId;
       }
 
-      const result = await conversationService.list(getAccountId(req), filters);
+      const result = await conversationService.list(getAccountId(req), filters, getActor(req));
       res.json(result);
     } catch (error) {
       next(error);
@@ -149,7 +162,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const include = parseInclude(req);
-      const data = await conversationService.get(id, getAccountId(req), include);
+      const data = await conversationService.get(id, getAccountId(req), include, getActor(req));
       res.json({ data });
     } catch (error) {
       next(error);
@@ -176,6 +189,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { status } = statusSchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.updateStatus(
         id,
         getAccountId(req),
@@ -195,6 +209,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { priority } = prioritySchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.updatePriority(
         id,
         getAccountId(req),
@@ -214,6 +229,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { assigneeId } = assignSchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.assign(
         id,
         getAccountId(req),
@@ -233,6 +249,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { teamId } = assignTeamSchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.assignToTeam(
         id,
         getAccountId(req),
@@ -252,6 +269,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { to, targetId, note } = transferSchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.transfer(id, getAccountId(req), {
         to,
         targetId,
@@ -277,6 +295,7 @@ export class ConversationController {
         throw new ValidationError('Data de snooze inválida');
       }
 
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.snooze(id, getAccountId(req), date, req.user!.id);
       res.json({ data });
     } catch (error) {
@@ -291,6 +310,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { resolvedBy } = resolveSchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.resolve(id, getAccountId(req), {
         resolvedBy,
         userId: req.user!.id,
@@ -307,6 +327,7 @@ export class ConversationController {
   async reopen(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = req.params.id as string;
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.reopen(id, getAccountId(req), req.user!.id);
       res.json({ data });
     } catch (error) {
@@ -321,6 +342,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { tagId } = labelSchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.addLabel(
         id,
         getAccountId(req),
@@ -340,6 +362,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const tagId = req.params.tagId as string;
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.removeLabel(
         id,
         getAccountId(req),
@@ -359,6 +382,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { userId } = participantSchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.addParticipant(
         id,
         getAccountId(req),
@@ -382,6 +406,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const userId = req.params.userId as string;
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.removeParticipant(
         id,
         getAccountId(req),
@@ -405,6 +430,7 @@ export class ConversationController {
     try {
       const id = req.params.id as string;
       const { attrs } = customAttrsSchema.parse(req.body);
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.setCustomAttributes(
         id,
         getAccountId(req),
@@ -423,6 +449,7 @@ export class ConversationController {
   async markAsRead(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = req.params.id as string;
+      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.markAsRead(id, getAccountId(req), req.user!.id);
       res.json({ data });
     } catch (error) {

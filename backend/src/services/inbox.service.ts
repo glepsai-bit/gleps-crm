@@ -1,14 +1,25 @@
 import * as crypto from 'crypto';
 import type { Inbox } from '@prisma/client';
 import { prisma as sharedPrisma } from '../config/database';
-import { env } from '../config/env';
+import { env, isProduction } from '../config/env';
 import { NotFoundError, ConflictError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 import {
   evolutionService,
   DEFAULT_WEBHOOK_EVENTS,
+  type EvolutionConnectionState,
   type QrCodeResult,
 } from './evolution.service';
+
+/**
+ * Inbox enriquecido com o estado de conexão Evolution (DISP-07).
+ * O campo `connectionState` é populado só para inboxes whatsapp com
+ * `evolutionInstance`; nos demais casos vem `null` (não aplicável) ou
+ * `'unknown'` quando a Evolution falhou em responder.
+ */
+export type InboxWithStatus = Inbox & {
+  connectionState: EvolutionConnectionState | null;
+};
 
 /**
  * Garante que a conta tem `evolutionWebhookSecret` populado.
@@ -54,13 +65,36 @@ async function ensureAccountWebhookSecret(accountId: string): Promise<string> {
  * resolver `localhost` do servidor dela — o operador precisa configurar um
  * túnel público (ngrok/cloudflared) ou apontar `WEBHOOK_BASE_URL` para o
  * deploy real, senão nenhuma mensagem volta pro CRM.
+ *
+ * WH-003: em produção (NODE_ENV=production), localhost/127.0.0.1 NUNCA é
+ * aceitável — a Evolution está hospedada em VPS externa e não resolve
+ * `localhost` do servidor dela. Se passar, o sistema parece "saudável"
+ * (createInstance/setWebhook retornam 200), mas ZERO eventos chegam e os
+ * atendentes não veem mensagens. Por isso REJEITAMOS aqui com erro explícito
+ * — falha rápida na configuração é muito melhor que produção silenciosamente
+ * quebrada. Operador precisa setar WEBHOOK_BASE_URL (ou API_URL) pro hostname
+ * público do deploy (ex.: https://gleps-variacao-v1k.dqnaqh.easypanel.host).
  */
 function deriveWebhookUrlForAccount(accountId: string): string {
   const rawBase = env.WEBHOOK_BASE_URL || env.API_URL || '';
   const base = rawBase.replace(/\/$/, '');
   const url = `${base}/api/evolution/webhook/${accountId}`;
 
-  if (/localhost|127\.0\.0\.1/i.test(base)) {
+  const isLocalhost = /localhost|127\.0\.0\.1/i.test(base);
+
+  if (isLocalhost) {
+    if (isProduction) {
+      logger.error(
+        '[Inbox] WEBHOOK_BASE_URL/API_URL aponta para localhost em produção — Evolution externa NUNCA conseguirá entregar eventos. Configure WEBHOOK_BASE_URL para o hostname público do deploy.',
+        { accountId, base, url }
+      );
+      throw new ValidationError(
+        'Webhook URL inválida: localhost/127.0.0.1 não é acessível para a Evolution em produção. ' +
+          'Defina WEBHOOK_BASE_URL (ou API_URL) com o hostname público do deploy ' +
+          '(ex.: https://gleps-variacao-v1k.dqnaqh.easypanel.host) e reinicie o backend.'
+      );
+    }
+
     logger.warn(
       '[Inbox] webhook URL é localhost — Evolution externa não conseguirá chamar; ' +
         'configure ngrok/tunnel/deploy via WEBHOOK_BASE_URL ou API_URL',
@@ -93,21 +127,31 @@ export const inboxService = {
     });
   },
 
-  async getMessage(id: string) {
-    return prisma.emailInboxMessage.findUnique({
-      where: { id },
+  async getMessage(id: string, accountId: string) {
+    // MT-H2 fix: escopar por accountId pra evitar leak cross-tenant.
+    // findUnique({id}) deixava admin de qualquer conta ler corpo integral de
+    // emails de outras contas (incl. bodyText com segredos). findFirst com
+    // accountId garante isolamento.
+    return prisma.emailInboxMessage.findFirst({
+      where: { id, accountId },
       include: {
         contact: { select: { id: true, nome: true, email: true } },
-        enrollment: { include: { cadence: { select: { id: true, name: true } } } },
+        enrollment: { include: { cadence: { select: { id: true, name: true, accountId: true } } } },
       },
     });
   },
 
-  async markRead(id: string) {
-    return prisma.emailInboxMessage.update({
-      where: { id },
+  async markRead(id: string, accountId: string) {
+    // MT-H2 fix: updateMany com accountId previne mutation cross-tenant.
+    // update({where:{id}}) permitia flippar read flag em msg de outro tenant.
+    const result = await prisma.emailInboxMessage.updateMany({
+      where: { id, accountId },
       data: { read: true },
     });
+    if (result.count === 0) {
+      throw new NotFoundError('Mensagem');
+    }
+    return prisma.emailInboxMessage.findFirst({ where: { id, accountId } });
   },
 
   async getUnreadCount(accountId: string) {
@@ -235,6 +279,54 @@ class InboxService {
       where: { accountId },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /**
+   * Lista todos os inboxes da conta enriquecidos com o estado da conexão
+   * Evolution (DISP-07).
+   *
+   * Para inboxes whatsapp com `evolutionInstance` definido, consulta
+   * `evolutionService.getStatus` em paralelo (best-effort, com timeout do
+   * próprio service). Falhas individuais (404 instance inexistente, timeout,
+   * Evolution offline) viram `connectionState = 'unknown'` — o UI pode
+   * tratar como "não conectado" e impedir disparos sem precisar quebrar a
+   * listagem inteira.
+   *
+   * Inboxes não-whatsapp ou whatsapp sem `evolutionInstance` recebem
+   * `connectionState = null` (não aplicável / não pareado).
+   */
+  async listWithConnectionStatus(accountId: string): Promise<InboxWithStatus[]> {
+    const inboxes = await this.list(accountId);
+
+    const enriched = await Promise.all(
+      inboxes.map(async (inbox): Promise<InboxWithStatus> => {
+        if (inbox.channelType !== 'whatsapp' || !inbox.evolutionInstance) {
+          return { ...inbox, connectionState: null };
+        }
+
+        try {
+          const status = await evolutionService.getStatus(
+            accountId,
+            inbox.evolutionInstance
+          );
+          return { ...inbox, connectionState: status.state };
+        } catch (err: any) {
+          // Instance inexistente / Evolution offline / timeout: marca como
+          // unknown e segue. Não logamos como erro porque é esperado quando
+          // o admin remove a instance manualmente da Evolution global mas
+          // mantém o registro no CRM.
+          logger.warn('[Inbox] falha ao consultar status Evolution', {
+            accountId,
+            inboxId: inbox.id,
+            instance: inbox.evolutionInstance,
+            error: err?.message,
+          });
+          return { ...inbox, connectionState: 'unknown' };
+        }
+      })
+    );
+
+    return enriched;
   }
 
   /**
