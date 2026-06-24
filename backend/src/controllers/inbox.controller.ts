@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { inboxService, inboxChannelService } from '../services/inbox.service';
 import { sendgridService } from '../services/sendgrid.service';
 import { emailAiService } from '../services/email-ai.service';
+import { evolutionService } from '../services/evolution.service';
 import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 import { AuthenticatedRequest } from '../types';
@@ -349,6 +350,141 @@ export class InboxChannelController {
       const id = req.params.id as string;
       await inboxChannelService.delete(id, req.user!.accountId!);
       res.json({ data: { success: true } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /inboxes/:id/whatsapp/connect
+   *
+   * Cria a instance Evolution se ainda não existir (persiste o nome no Inbox)
+   * e devolve o QR code base64 pra pareamento. Idempotente: chamar 2x só
+   * re-emite QR.
+   */
+  async connectWhatsApp(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const result = await inboxChannelService.ensureEvolutionInstance(
+        id,
+        req.user!.accountId!
+      );
+      res.json({
+        data: {
+          inboxId: result.inbox.id,
+          evolutionInstance: result.inbox.evolutionInstance,
+          qrcodeBase64: result.qrcode.qrcodeBase64 ?? null,
+          code: result.qrcode.code ?? null,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /inboxes/:id/whatsapp/status
+   *
+   * Retorna o estado da conexão Evolution para o Inbox: open | connecting |
+   * close | unknown.
+   */
+  async getWhatsAppStatus(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const accountId = req.user!.accountId!;
+      const inbox = await inboxChannelService.get(id, accountId);
+
+      if (inbox.channelType !== 'whatsapp') {
+        res.status(400).json({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: `Inbox ${id} não é WhatsApp (channelType=${inbox.channelType})`,
+          },
+        });
+        return;
+      }
+
+      if (!inbox.evolutionInstance) {
+        res.json({
+          data: {
+            inboxId: inbox.id,
+            evolutionInstance: null,
+            state: 'close',
+          },
+        });
+        return;
+      }
+
+      const status = await evolutionService.getStatus(
+        accountId,
+        inbox.evolutionInstance
+      );
+
+      res.json({
+        data: {
+          inboxId: inbox.id,
+          evolutionInstance: inbox.evolutionInstance,
+          state: status.state,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /inboxes/:id/whatsapp/disconnect
+   *
+   * Faz logout da instance Evolution do Inbox. Não apaga o `evolutionInstance`
+   * persistido — assim o admin pode reconectar via /connect sem regerar nome.
+   */
+  async disconnectWhatsApp(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const accountId = req.user!.accountId!;
+      const inbox = await inboxChannelService.get(id, accountId);
+
+      if (inbox.channelType !== 'whatsapp') {
+        res.status(400).json({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: `Inbox ${id} não é WhatsApp (channelType=${inbox.channelType})`,
+          },
+        });
+        return;
+      }
+
+      if (!inbox.evolutionInstance) {
+        res.json({
+          data: { ok: true, message: 'Inbox não tem instance ativa' },
+        });
+        return;
+      }
+
+      const result = await evolutionService.disconnect(
+        accountId,
+        inbox.evolutionInstance
+      );
+
+      res.json({
+        data: {
+          inboxId: inbox.id,
+          evolutionInstance: inbox.evolutionInstance,
+          ok: result.ok,
+        },
+      });
     } catch (error) {
       next(error);
     }

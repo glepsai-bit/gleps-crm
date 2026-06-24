@@ -32,6 +32,7 @@ import SuperAdminAccountsPage from "./pages/super-admin/SuperAdminAccountsPage";
 import SuperAdminAccountDetailPage from "./pages/super-admin/SuperAdminAccountDetailPage";
 import SuperAdminApiKeysPage from "./pages/super-admin/SuperAdminApiKeysPage";
 import SuperAdminUsersPage from "./pages/super-admin/SuperAdminUsersPage";
+import SuperAdminSystemSettingsPage from "./pages/super-admin/SuperAdminSystemSettingsPage";
 
 // Admin
 import AdminLayout from "./layouts/AdminLayout";
@@ -99,6 +100,7 @@ const App = () => (
             <Route path="/super-admin/accounts/:accountId" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminAccountDetailPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
             <Route path="/super-admin/accounts/:accountId/api-keys" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminApiKeysPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
             <Route path="/super-admin/users" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminUsersPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
+            <Route path="/super-admin/system-settings" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminSystemSettingsPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
 
             {/* Admin Routes */}
             <Route path="/admin" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminDashboard /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />

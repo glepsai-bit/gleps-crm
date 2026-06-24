@@ -1,6 +1,7 @@
 import { prisma } from '../config/database';
 import { ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { systemSettingsService } from './system-settings.service';
 
 // ============================================
 // Types
@@ -54,15 +55,42 @@ export interface DisconnectResult {
   raw: any;
 }
 
+export interface CreateInstanceInput {
+  instance: string;
+  webhookUrl?: string | null;
+}
+
+export interface CreateInstanceResult {
+  qrcodeBase64?: string;
+  code?: string;
+  raw: any;
+}
+
 class EvolutionService {
   // ============================================
   // Private Helpers
   // ============================================
 
   /**
-   * Get account with Evolution API configuration
+   * Resolve Evolution API configuration para uma conta.
+   *
+   * Modelo correto (refactor pós-Sprint 4):
+   *   - Super Admin configura URL+Key GLOBAIS em SystemSettings (1 vez).
+   *   - Cada Inbox da conta carrega seu próprio `evolutionInstance` (escaneado via QR).
+   *   - O nome da instância continua sendo lido do Account (campo `evolutionInstance`)
+   *     para preservar a assinatura externa do adapter; callers que operam por Inbox
+   *     devem ser migrados em sprint dedicado.
+   *
+   * Resolução de credenciais (baseUrl + apiKey):
+   *   1. Se a Account tem ambos `evolutionBaseUrl` + `evolutionApiKey` preenchidos,
+   *      usa o override per-account (enterprise).
+   *   2. Senão, usa o singleton global de SystemSettings.
+   *   3. Senão, lança ValidationError pedindo configuração global.
    */
-  private async getAccountConfig(accountId: string): Promise<EvolutionConfig> {
+  private async getAccountConfig(
+    accountId: string,
+    instanceOverride?: string | null
+  ): Promise<EvolutionConfig> {
     const account = await prisma.account.findUnique({
       where: { id: accountId },
       select: {
@@ -72,15 +100,48 @@ class EvolutionService {
       },
     });
 
-    if (!account || !account.evolutionBaseUrl || !account.evolutionApiKey || !account.evolutionInstance) {
-      throw new ValidationError(`Configuração Evolution incompleta para conta ${accountId}`);
+    if (!account) {
+      throw new ValidationError(`Conta ${accountId} não encontrada`);
     }
 
-    return {
-      baseUrl: account.evolutionBaseUrl.replace(/\/$/, ''),
-      apiKey: account.evolutionApiKey,
-      instance: account.evolutionInstance,
-    };
+    // Modelo per-Inbox: callers que operam sobre um Inbox específico passam o
+    // `instanceOverride` (campo Inbox.evolutionInstance). Quando ausente,
+    // caímos no legacy account.evolutionInstance pra manter compat com sends
+    // antigos (campanhas, prospecção) ainda não migrados pra per-Inbox.
+    const instance = instanceOverride ?? account.evolutionInstance ?? null;
+
+    if (!instance) {
+      throw new ValidationError(
+        `Conta ${accountId} sem instância Evolution (passe instanceOverride ou configure Account.evolutionInstance)`
+      );
+    }
+
+    // 1) Override per-account: ambos campos preenchidos.
+    const hasAccountOverride = Boolean(account.evolutionBaseUrl && account.evolutionApiKey);
+
+    if (hasAccountOverride) {
+      return {
+        baseUrl: account.evolutionBaseUrl!.replace(/\/$/, ''),
+        apiKey: account.evolutionApiKey!,
+        instance,
+      };
+    }
+
+    // 2) Global singleton de SystemSettings.
+    const globalConfig = await systemSettingsService.getEvolutionConfig();
+
+    if (globalConfig) {
+      return {
+        baseUrl: globalConfig.baseUrl.replace(/\/$/, ''),
+        apiKey: globalConfig.apiKey,
+        instance,
+      };
+    }
+
+    // 3) Nenhuma configuração disponível.
+    throw new ValidationError(
+      'Evolution não configurado: super-admin precisa preencher URL+Key globalmente em /super-admin/system-settings'
+    );
   }
 
   /**
@@ -334,10 +395,15 @@ class EvolutionService {
   // ============================================
 
   /**
-   * Get connection state of the Evolution instance
+   * Get connection state of the Evolution instance.
+   * `instanceOverride` permite consultar uma instance específica de um Inbox
+   * (novo modelo per-Inbox); sem ele, usa Account.evolutionInstance (legacy).
    */
-  async getStatus(accountId: string): Promise<StatusResult> {
-    const config = await this.getAccountConfig(accountId);
+  async getStatus(
+    accountId: string,
+    instanceOverride?: string | null
+  ): Promise<StatusResult> {
+    const config = await this.getAccountConfig(accountId, instanceOverride);
 
     const raw = await this.makeRequest<any>(
       config,
@@ -361,10 +427,14 @@ class EvolutionService {
   }
 
   /**
-   * Get pairing QR code / pairing code for the Evolution instance
+   * Get pairing QR code / pairing code for the Evolution instance.
+   * `instanceOverride` permite consultar uma instance específica de um Inbox.
    */
-  async getQrCode(accountId: string): Promise<QrCodeResult> {
-    const config = await this.getAccountConfig(accountId);
+  async getQrCode(
+    accountId: string,
+    instanceOverride?: string | null
+  ): Promise<QrCodeResult> {
+    const config = await this.getAccountConfig(accountId, instanceOverride);
 
     const raw = await this.makeRequest<any>(
       config,
@@ -411,10 +481,14 @@ class EvolutionService {
   }
 
   /**
-   * Disconnect / logout the Evolution instance
+   * Disconnect / logout the Evolution instance.
+   * `instanceOverride` permite deslogar uma instance específica de um Inbox.
    */
-  async disconnect(accountId: string): Promise<DisconnectResult> {
-    const config = await this.getAccountConfig(accountId);
+  async disconnect(
+    accountId: string,
+    instanceOverride?: string | null
+  ): Promise<DisconnectResult> {
+    const config = await this.getAccountConfig(accountId, instanceOverride);
 
     // makeRequest já lança em HTTP não-2xx, então chegar aqui implica 2xx.
     // Default ok=true; só negamos se houver marcador explícito de erro no corpo.
@@ -438,6 +512,75 @@ class EvolutionService {
     logger.info('Evolution disconnect', { accountId, ok });
 
     return { ok, raw };
+  }
+
+  /**
+   * Cria uma nova instance Evolution. Idempotente do lado do CRM:
+   * o caller (inboxChannelService.ensureEvolutionInstance) é responsável
+   * por checar se já existe antes de chamar — aqui apenas executamos o POST.
+   *
+   * Resolve URL+Key via SystemSettings (global) ou Account override (fallback),
+   * usando o mesmo getAccountConfig com `instanceOverride` passando a instance nova.
+   *
+   * Evolution responde já com o QR code no body do create, então devolvemos
+   * `qrcodeBase64` + `code` quando disponíveis.
+   */
+  async createInstance(
+    accountId: string,
+    input: CreateInstanceInput
+  ): Promise<CreateInstanceResult> {
+    if (!input.instance || input.instance.trim() === '') {
+      throw new ValidationError('instance é obrigatório');
+    }
+
+    const config = await this.getAccountConfig(accountId, input.instance);
+
+    const body: Record<string, any> = {
+      instanceName: input.instance,
+      qrcode: true,
+      integration: 'WHATSAPP-BAILEYS',
+    };
+
+    if (input.webhookUrl) {
+      body.webhook = input.webhookUrl;
+    }
+
+    const raw = await this.makeRequest<any>(
+      config,
+      `/instance/create`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    );
+
+    const qrcodeBase64: string | undefined =
+      raw?.qrcode?.base64 ||
+      raw?.base64 ||
+      raw?.instance?.qrcode?.base64 ||
+      raw?.data?.qrcode?.base64;
+
+    const code: string | undefined =
+      raw?.qrcode?.code ||
+      raw?.code ||
+      raw?.pairingCode ||
+      raw?.data?.code;
+
+    const normalizedQr = typeof qrcodeBase64 === 'string' ? qrcodeBase64 : undefined;
+    const normalizedCode = typeof code === 'string' ? code : undefined;
+
+    logger.info('Evolution createInstance ok', {
+      accountId,
+      instance: input.instance,
+      hasQrcode: Boolean(normalizedQr),
+      hasCode: Boolean(normalizedCode),
+    });
+
+    return {
+      qrcodeBase64: normalizedQr,
+      code: normalizedCode,
+      raw,
+    };
   }
 }
 

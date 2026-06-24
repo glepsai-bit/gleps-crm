@@ -1,7 +1,8 @@
 import type { Inbox } from '@prisma/client';
 import { prisma as sharedPrisma } from '../config/database';
-import { NotFoundError, ConflictError } from '../utils/errors';
+import { NotFoundError, ConflictError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { evolutionService, type QrCodeResult } from './evolution.service';
 
 // Reuse a single Prisma pool (singleton from config/database).
 // Não criar new PrismaClient() aqui — vaza connection pool (H1).
@@ -283,6 +284,72 @@ class InboxService {
         evolutionInstance: instance,
       },
     });
+  }
+
+  /**
+   * Garante que o Inbox tenha uma instance Evolution criada e retorna o QR code
+   * pronto pra pareamento.
+   *
+   * Fluxo:
+   *  1. Carrega o Inbox (com escopo de accountId).
+   *  2. Valida channelType === 'whatsapp'.
+   *  3. Se `evolutionInstance` ainda não está persistido, gera nome único
+   *     (`acc-<8>-inb-<8>`), chama `evolutionService.createInstance` (resolve
+   *     credenciais via SystemSettings global + fallback per-account) e persiste
+   *     o nome no Inbox. O create já costuma vir com QR code no body.
+   *  4. Se já existe instance, apenas chama `evolutionService.getQrCode` pra
+   *     buscar um QR fresco (caso o anterior tenha expirado).
+   *
+   * Idempotente: chamar 2x não duplica instance — só re-emite QR.
+   */
+  async ensureEvolutionInstance(
+    inboxId: string,
+    accountId: string
+  ): Promise<{ inbox: Inbox; qrcode: QrCodeResult }> {
+    const inbox = await this.get(inboxId, accountId);
+
+    if (inbox.channelType !== 'whatsapp') {
+      throw new ValidationError(
+        `Inbox ${inboxId} não é WhatsApp (channelType=${inbox.channelType})`
+      );
+    }
+
+    // Caso 1: ainda não tem instance criada na Evolution — cria agora.
+    if (!inbox.evolutionInstance) {
+      const generatedInstance = `acc-${accountId.slice(0, 8)}-inb-${inboxId.slice(0, 8)}`;
+
+      logger.info('[Inbox] criando instance Evolution', {
+        accountId,
+        inboxId,
+        instance: generatedInstance,
+      });
+
+      const created = await evolutionService.createInstance(accountId, {
+        instance: generatedInstance,
+      });
+
+      const updated = await sharedPrisma.inbox.update({
+        where: { id: inboxId },
+        data: { evolutionInstance: generatedInstance },
+      });
+
+      return {
+        inbox: updated,
+        qrcode: {
+          qrcodeBase64: created.qrcodeBase64,
+          code: created.code,
+          raw: created.raw,
+        },
+      };
+    }
+
+    // Caso 2: instance já existe — só pede QR code fresco.
+    const qrcode = await evolutionService.getQrCode(
+      accountId,
+      inbox.evolutionInstance
+    );
+
+    return { inbox, qrcode };
   }
 }
 

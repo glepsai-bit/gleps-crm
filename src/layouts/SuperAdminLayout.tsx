@@ -23,6 +23,7 @@ import {
   Menu,
   X,
   ArrowLeftRight,
+  Settings,
 } from 'lucide-react';
 import { Logo } from '@/components/branding/Logo';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -35,6 +36,7 @@ const superAdminNavItems = [
   { title: 'Dashboard', href: '/super-admin', icon: LayoutDashboard },
   { title: 'Contas', href: '/super-admin/accounts', icon: Building2 },
   { title: 'Usuários', href: '/super-admin/users', icon: Users },
+  { title: 'Configurações', href: '/super-admin/system-settings', icon: Settings },
 ];
 
 export default function SuperAdminLayout({ children }: SidebarLayoutProps) {

@@ -3,17 +3,26 @@
  *
  * CRUD dos canais de atendimento (Inbox no schema Prisma).
  * - Tabela com nome, channelType (badge), evolutionInstance, default team,
+ *   coluna "WhatsApp Status" (apenas para channelType=whatsapp),
  *   toggle de ativo e ações editar/excluir.
  * - Dialog criar/editar com Select de tipo de canal, Input nome,
  *   Input evolutionInstance (apenas WhatsApp), Textarea greeting,
  *   editor de BusinessHours em Collapsible (segunda a domingo, open/close HH:MM)
  *   e Select para defaultTeam.
+ * - Botão "Conectar WhatsApp" em cada row de Inbox WhatsApp abre a modal de QR
+ *   (componente local `WhatsappQrModal`) com polling de status a cada 3s
+ *   (máx. 60s). Quando status === 'open' mostra check + toast e fecha em 1.5s.
+ * - Checkbox "Conectar WhatsApp após criar" no form abre a modal automatica
+ *   após o POST quando o canal recém-criado é WhatsApp.
  * - AlertDialog para confirmar exclusão.
  *
- * Backend: src/services/inboxes.backend.service.ts (+ teams.backend.service.ts).
+ * Backend:
+ *   - src/services/inboxes.backend.service.ts (CRUD)
+ *   - src/services/inboxes-whatsapp.backend.service.ts (connect/status/disconnect)
+ *   - src/services/teams.backend.service.ts (lookup do time padrão)
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -26,6 +35,9 @@ import inboxesBackendService, {
   CreateInboxInput,
   UpdateInboxInput,
 } from '@/services/inboxes.backend.service';
+import inboxesWhatsappBackendService, {
+  WhatsappConnectionStatus,
+} from '@/services/inboxes-whatsapp.backend.service';
 import teamsBackendService, { Team } from '@/services/teams.backend.service';
 
 import { Button } from '@/components/ui/button';
@@ -68,6 +80,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Collapsible,
   CollapsibleContent,
@@ -85,6 +98,10 @@ import {
   Mail,
   Facebook,
   Instagram,
+  QrCode,
+  Power,
+  CheckCircle2,
+  Loader2,
 } from 'lucide-react';
 
 // ============================================
@@ -114,6 +131,9 @@ const schema = z.object({
   evolutionInstance: z.string().optional(),
   greeting: z.string().optional(),
   defaultTeamId: z.string().optional(),
+  // Checkbox apenas no fluxo de criação WhatsApp; abre a modal de QR
+  // automaticamente após o POST. Ignorado na edição.
+  connectNow: z.boolean().optional(),
   businessHours: z.object({
     mon: businessHoursDaySchema,
     tue: businessHoursDaySchema,
@@ -187,6 +207,47 @@ function channelBadgeVariant(
 }
 
 /**
+ * Renderiza o badge da coluna "WhatsApp Status".
+ * - `open`        → verde
+ * - `connecting`  → laranja
+ * - `close`       → cinza
+ * - `unknown`/sem instance → label discreta "—"
+ */
+function WhatsappStatusBadge({
+  status,
+  hasInstance,
+}: {
+  status: WhatsappConnectionStatus | null | undefined;
+  hasInstance: boolean;
+}) {
+  if (!hasInstance || !status || status === 'unknown') {
+    return (
+      <span className="text-xs italic text-muted-foreground opacity-60">—</span>
+    );
+  }
+  if (status === 'open') {
+    return (
+      <Badge className="bg-green-600 text-white hover:bg-green-600">
+        Conectado
+      </Badge>
+    );
+  }
+  if (status === 'connecting') {
+    return (
+      <Badge className="bg-orange-500 text-white hover:bg-orange-500">
+        Conectando
+      </Badge>
+    );
+  }
+  // close
+  return (
+    <Badge variant="secondary" className="text-muted-foreground">
+      Desconectado
+    </Badge>
+  );
+}
+
+/**
  * Converte o objeto vindo do backend (apenas dias presentes com {open, close})
  * para o formato do formulário (todos os dias + flag enabled).
  */
@@ -240,6 +301,8 @@ export default function AdminInboxesPage() {
   const [editingInbox, setEditingInbox] = useState<Inbox | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [businessHoursOpen, setBusinessHoursOpen] = useState(false);
+  // Modal "Conectar WhatsApp" — guardamos só o id do inbox alvo. null = fechada.
+  const [whatsappInboxId, setWhatsappInboxId] = useState<string | null>(null);
 
   const { data: inboxes = [], isLoading } = useQuery({
     queryKey: ['inboxes'],
@@ -272,6 +335,7 @@ export default function AdminInboxesPage() {
       evolutionInstance: '',
       greeting: '',
       defaultTeamId: NO_TEAM_VALUE,
+      connectNow: true,
       businessHours: DEFAULT_BUSINESS_HOURS,
     },
   });
@@ -279,17 +343,30 @@ export default function AdminInboxesPage() {
   const channelType = watch('channelType');
   const defaultTeamId = watch('defaultTeamId');
   const businessHoursValue = watch('businessHours');
+  const connectNowValue = watch('connectNow');
 
   // ----- Mutations -----
 
+  // Guarda local: se o usuário marcou "Conectar agora" no submit, abrimos a
+  // modal de QR assim que o backend devolver o Inbox recém-criado.
+  const autoConnectAfterCreateRef = useRef(false);
+
   const mutateCriar = useMutation({
     mutationFn: (body: CreateInboxInput) => inboxesBackendService.createInbox(body),
-    onSuccess: () => {
+    onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['inboxes'] });
       toast({ title: 'Canal criado com sucesso!' });
+      const shouldConnect =
+        autoConnectAfterCreateRef.current &&
+        created?.channelType === 'whatsapp';
+      autoConnectAfterCreateRef.current = false;
       fecharDialog();
+      if (shouldConnect && created?.id) {
+        setWhatsappInboxId(created.id);
+      }
     },
     onError: (err: Error) => {
+      autoConnectAfterCreateRef.current = false;
       toast({
         title: 'Erro ao criar canal',
         description: err.message,
@@ -359,6 +436,7 @@ export default function AdminInboxesPage() {
       evolutionInstance: '',
       greeting: '',
       defaultTeamId: NO_TEAM_VALUE,
+      connectNow: true,
       businessHours: DEFAULT_BUSINESS_HOURS,
     });
     setBusinessHoursOpen(false);
@@ -373,6 +451,7 @@ export default function AdminInboxesPage() {
       evolutionInstance: inbox.evolutionInstance ?? '',
       greeting: inbox.greeting ?? '',
       defaultTeamId: inbox.defaultTeamId ?? NO_TEAM_VALUE,
+      connectNow: false,
       businessHours: businessHoursFromBackend(inbox.businessHours),
     });
     setBusinessHoursOpen(!!inbox.businessHours);
@@ -411,6 +490,9 @@ export default function AdminInboxesPage() {
         },
       });
     } else {
+      // Marca para o onSuccess do mutateCriar abrir a modal de QR.
+      autoConnectAfterCreateRef.current =
+        isWhatsapp && !!data.connectNow;
       mutateCriar.mutate({
         name: data.name,
         channelType: data.channelType,
@@ -477,6 +559,7 @@ export default function AdminInboxesPage() {
                   <TableHead className="hidden md:table-cell">
                     Instância Evolution
                   </TableHead>
+                  <TableHead>WhatsApp</TableHead>
                   <TableHead className="hidden lg:table-cell">Time padrão</TableHead>
                   <TableHead>Ativo</TableHead>
                   <TableHead className="text-right">Ações</TableHead>
@@ -487,6 +570,7 @@ export default function AdminInboxesPage() {
                   const team = inbox.defaultTeamId
                     ? teamsById.get(inbox.defaultTeamId)
                     : null;
+                  const isWhatsapp = inbox.channelType === 'whatsapp';
                   return (
                     <TableRow key={inbox.id}>
                       <TableCell className="font-medium">
@@ -514,6 +598,15 @@ export default function AdminInboxesPage() {
                           <span className="italic opacity-60">—</span>
                         )}
                       </TableCell>
+                      <TableCell>
+                        {isWhatsapp ? (
+                          <WhatsappStatusCell inbox={inbox} />
+                        ) : (
+                          <span className="text-xs italic text-muted-foreground opacity-60">
+                            —
+                          </span>
+                        )}
+                      </TableCell>
                       <TableCell className="hidden lg:table-cell text-sm">
                         {team ? (
                           team.name
@@ -538,6 +631,17 @@ export default function AdminInboxesPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
+                          {isWhatsapp && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setWhatsappInboxId(inbox.id)}
+                              title="Conectar WhatsApp"
+                              aria-label={`Conectar WhatsApp de ${inbox.name}`}
+                            >
+                              <QrCode className="w-4 h-4" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"
@@ -633,8 +737,35 @@ export default function AdminInboxesPage() {
                   placeholder="Ex: minha-instancia-01"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Identificador da instância configurada na Evolution API.
+                  Identificador da instância configurada na Evolution API. Deixe
+                  em branco para que o backend gere automaticamente ao conectar.
                 </p>
+              </div>
+            )}
+
+            {/* Conectar agora (apenas criação WhatsApp) */}
+            {channelType === 'whatsapp' && !editingInbox && (
+              <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-3">
+                <Checkbox
+                  id="connect-now"
+                  checked={!!connectNowValue}
+                  onCheckedChange={(checked) =>
+                    setValue('connectNow', checked === true, {
+                      shouldValidate: false,
+                    })
+                  }
+                />
+                <div className="space-y-0.5">
+                  <Label
+                    htmlFor="connect-now"
+                    className="cursor-pointer text-sm font-medium"
+                  >
+                    Conectar WhatsApp agora
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Após criar o canal, abre a janela para escanear o QR Code.
+                  </p>
+                </div>
               </div>
             )}
 
@@ -809,6 +940,306 @@ export default function AdminInboxesPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Modal Conectar WhatsApp (QR Code + polling) */}
+      <WhatsappQrModal
+        inboxId={whatsappInboxId}
+        onOpenChange={(open) => {
+          if (!open) setWhatsappInboxId(null);
+        }}
+      />
     </div>
+  );
+}
+
+// ============================================
+// WhatsappStatusCell — busca o estado da instance Evolution sob demanda.
+// Usado na coluna "WhatsApp" da tabela. Cacheia por 15s pra evitar
+// flood de requests; refaz só quando o inbox volta a ficar visível.
+// ============================================
+
+function WhatsappStatusCell({ inbox }: { inbox: Inbox }) {
+  const hasInstance = !!inbox.evolutionInstance;
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['inboxes', inbox.id, 'whatsapp-status'],
+    queryFn: () =>
+      inboxesWhatsappBackendService.getWhatsappStatus(inbox.id),
+    enabled: hasInstance,
+    refetchInterval: 15_000,
+    staleTime: 15_000,
+  });
+
+  if (!hasInstance) {
+    return <WhatsappStatusBadge status={null} hasInstance={false} />;
+  }
+  if (isLoading) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        <Loader2 className="w-3 h-3 animate-spin" />
+        Verificando
+      </span>
+    );
+  }
+  if (isError) {
+    return (
+      <Badge variant="outline" className="text-destructive border-destructive">
+        Erro
+      </Badge>
+    );
+  }
+  return (
+    <WhatsappStatusBadge status={data?.status ?? null} hasInstance={true} />
+  );
+}
+
+// ============================================
+// WhatsappQrModal — modal de QR Code com polling.
+//
+// Fluxo:
+//   1. Abre → POST /whatsapp/connect → recebe { qrcodeBase64, status }
+//   2. Renderiza <img> do QR centralizado
+//   3. Inicia polling /whatsapp/status a cada 3s, máx 60s (20 tentativas)
+//   4. Se status === 'open' → toast + check + fecha em 1.5s
+//   5. Botão "Desconectar" quando conectado → POST /whatsapp/disconnect
+//
+// Lifecycle: ao desmontar / fechar, todos os timers são limpos.
+// ============================================
+
+const POLLING_INTERVAL_MS = 3_000;
+const POLLING_TIMEOUT_MS = 60_000;
+
+function WhatsappQrModal({
+  inboxId,
+  onOpenChange,
+}: {
+  inboxId: string | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const isOpen = !!inboxId;
+
+  const [qrcodeBase64, setQrcodeBase64] = useState<string | null>(null);
+  const [status, setStatus] = useState<WhatsappConnectionStatus>('connecting');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isInitializing, setIsInitializing] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+
+  // Refs para conseguir cancelar timers no cleanup.
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const giveUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopPolling = () => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    if (giveUpTimerRef.current) {
+      clearTimeout(giveUpTimerRef.current);
+      giveUpTimerRef.current = null;
+    }
+  };
+
+  // Reseta estado interno quando fecha; ao abrir, dispara o /connect inicial.
+  useEffect(() => {
+    if (!isOpen || !inboxId) {
+      stopPolling();
+      if (autoCloseTimerRef.current) {
+        clearTimeout(autoCloseTimerRef.current);
+        autoCloseTimerRef.current = null;
+      }
+      setQrcodeBase64(null);
+      setStatus('connecting');
+      setErrorMessage(null);
+      setIsInitializing(false);
+      setIsDisconnecting(false);
+      setTimedOut(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsInitializing(true);
+    setErrorMessage(null);
+    setTimedOut(false);
+
+    inboxesWhatsappBackendService
+      .connectWhatsapp(inboxId)
+      .then((res) => {
+        if (cancelled) return;
+        setQrcodeBase64(res.qrcodeBase64);
+        setStatus(res.status);
+        setIsInitializing(false);
+
+        // Se já veio open, não precisa polling — apenas dispara auto-close.
+        if (res.status === 'open') {
+          toast({ title: 'WhatsApp conectado!' });
+          autoCloseTimerRef.current = setTimeout(() => {
+            onOpenChange(false);
+          }, 1500);
+          return;
+        }
+
+        // Inicia polling
+        pollTimerRef.current = setInterval(async () => {
+          try {
+            const next =
+              await inboxesWhatsappBackendService.getWhatsappStatus(inboxId);
+            if (cancelled) return;
+            setStatus(next.status);
+            if (next.status === 'open') {
+              stopPolling();
+              toast({ title: 'WhatsApp conectado!' });
+              queryClient.invalidateQueries({
+                queryKey: ['inboxes', inboxId, 'whatsapp-status'],
+              });
+              autoCloseTimerRef.current = setTimeout(() => {
+                onOpenChange(false);
+              }, 1500);
+            }
+          } catch {
+            // Erros transientes no polling não derrubam o modal; só logamos.
+          }
+        }, POLLING_INTERVAL_MS);
+
+        giveUpTimerRef.current = setTimeout(() => {
+          stopPolling();
+          if (!cancelled) setTimedOut(true);
+        }, POLLING_TIMEOUT_MS);
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setIsInitializing(false);
+        setErrorMessage(err.message || 'Falha ao gerar QR Code');
+      });
+
+    return () => {
+      cancelled = true;
+      stopPolling();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, inboxId]);
+
+  const handleDisconnect = async () => {
+    if (!inboxId) return;
+    setIsDisconnecting(true);
+    try {
+      await inboxesWhatsappBackendService.disconnectWhatsapp(inboxId);
+      toast({ title: 'WhatsApp desconectado.' });
+      queryClient.invalidateQueries({
+        queryKey: ['inboxes', inboxId, 'whatsapp-status'],
+      });
+      onOpenChange(false);
+    } catch (err) {
+      toast({
+        title: 'Erro ao desconectar',
+        description: (err as Error)?.message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDisconnecting(false);
+    }
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Conectar WhatsApp</DialogTitle>
+        </DialogHeader>
+
+        <div className="flex flex-col items-center justify-center gap-4 py-4 min-h-[320px]">
+          {isInitializing && (
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="w-8 h-8 animate-spin" />
+              <p className="text-sm">Gerando QR Code...</p>
+            </div>
+          )}
+
+          {!isInitializing && errorMessage && (
+            <div className="text-center space-y-2">
+              <p className="text-sm text-destructive font-medium">
+                {errorMessage}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Verifique se a URL e API Key da Evolution estão configuradas
+                em System Settings.
+              </p>
+            </div>
+          )}
+
+          {!isInitializing && !errorMessage && status === 'open' && (
+            <div className="flex flex-col items-center gap-2">
+              <CheckCircle2 className="w-16 h-16 text-green-600" />
+              <p className="text-sm font-medium">Conectado!</p>
+            </div>
+          )}
+
+          {!isInitializing &&
+            !errorMessage &&
+            status !== 'open' &&
+            qrcodeBase64 && (
+              <>
+                <img
+                  src={
+                    qrcodeBase64.startsWith('data:')
+                      ? qrcodeBase64
+                      : `data:image/png;base64,${qrcodeBase64}`
+                  }
+                  alt="QR Code WhatsApp"
+                  className="w-64 h-64 object-contain border rounded"
+                />
+                <div className="text-center space-y-1">
+                  <p className="text-sm font-medium">
+                    Escaneie com o WhatsApp do celular
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Abra WhatsApp → Aparelhos conectados → Conectar aparelho
+                  </p>
+                  {!timedOut && (
+                    <p className="text-xs text-muted-foreground inline-flex items-center gap-1 mt-1">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Aguardando conexão...
+                    </p>
+                  )}
+                  {timedOut && (
+                    <p className="text-xs text-orange-600 mt-1">
+                      Tempo esgotado. Feche e tente novamente.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+
+          {!isInitializing &&
+            !errorMessage &&
+            status !== 'open' &&
+            !qrcodeBase64 && (
+              <p className="text-sm text-muted-foreground">
+                Nenhum QR disponível. Tente novamente.
+              </p>
+            )}
+        </div>
+
+        <DialogFooter className="gap-2 sm:gap-2">
+          {status === 'open' ? (
+            <Button
+              variant="destructive"
+              onClick={handleDisconnect}
+              disabled={isDisconnecting}
+            >
+              <Power className="w-4 h-4 mr-2" />
+              {isDisconnecting ? 'Desconectando...' : 'Desconectar'}
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Fechar
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

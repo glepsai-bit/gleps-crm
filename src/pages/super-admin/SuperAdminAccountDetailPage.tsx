@@ -779,6 +779,26 @@ export default function SuperAdminAccountDetailPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Wave 3: Evolution agora é global. Este card é override per-account (enterprise). */}
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Configuração movida para Configurações Globais</AlertTitle>
+            <AlertDescription className="space-y-3">
+              <p>
+                Evolution agora é configurado globalmente em <strong>Configurações do Sistema</strong>.
+                Este card é apenas pra <strong>OVERRIDE per-account</strong> (uso enterprise).
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate('/super-admin/system-settings')}
+                className="gap-2"
+              >
+                Ir pra Configurações Globais
+                <ChevronRight className="w-4 h-4" />
+              </Button>
+            </AlertDescription>
+          </Alert>
           <div className="grid md:grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label htmlFor="evolution-base-url">URL Base</Label>

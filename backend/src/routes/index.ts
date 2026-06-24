@@ -18,6 +18,7 @@ import emailExtendedRoutes from './email-extended.routes';
 import audienceRoutes from './audience.routes';
 import evolutionRoutes from './evolution.routes';
 import apiKeyRoutes from './api-key.routes';
+import systemSettingsRoutes from './system-settings.routes';
 import whatsappTemplateRoutes from './whatsapp-template.routes';
 import whatsappCampaignJwtRoutes, { apiKeyRouter as whatsappCampaignApiKeyRoutes } from './whatsapp-campaign.routes';
 import contactsApiRoutes from './contacts-api.routes';
@@ -83,6 +84,7 @@ router.use('/email', emailExtendedRoutes);
 router.use('/email/audiences', audienceRoutes);
 router.use('/evolution', evolutionRoutes);
 router.use('/api-keys', apiKeyRoutes);
+router.use('/system-settings', systemSettingsRoutes);
 router.use('/whatsapp-templates', whatsappTemplateRoutes);
 router.use('/whatsapp/campaigns', whatsappCampaignJwtRoutes);
 router.use('/dispatch', whatsappCampaignJwtRoutes); // alias canonical para o frontend (DispatchDialog, aba Agendadas, Dashboard)

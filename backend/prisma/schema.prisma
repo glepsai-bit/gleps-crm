@@ -11,18 +11,33 @@ datasource db {
 }
 
 // ============================================
+// SYSTEM SETTINGS (Singleton — configurações globais)
+// ============================================
+// SystemSettings: configurações globais do sistema (1 row only)
+model SystemSettings {
+  id                  String   @id @default("singleton") @db.VarChar(40)
+  evolutionBaseUrl    String?  @map("evolution_base_url") @db.VarChar(500)
+  evolutionApiKey     String?  @map("evolution_api_key") @db.VarChar(500)
+  evolutionWebhookUrl String?  @map("evolution_webhook_url") @db.VarChar(500) // base do CRM pra Evolution chamar back
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("system_settings")
+}
+
+// ============================================
 // ACCOUNTS (Multi-tenant)
 // ============================================
 model Account {
-  id              String        @id @default(uuid()) @db.Uuid
-  nome            String        @db.VarChar(255)
-  timezone        String        @default("America/Sao_Paulo") @db.VarChar(100)
-  plano           String?       @db.VarChar(50)
-  status          AccountStatus @default(active)
-  limiteUsuarios  Int           @default(10) @map("limite_usuarios")
-  monthlyExtractionLimit Int?  @default(500) @map("monthly_extraction_limit")
-  monthlyEmailLimit      Int?  @default(3000) @map("monthly_email_limit")
-  dailyEmailLimit        Int?  @default(100)  @map("daily_email_limit")
+  id                     String        @id @default(uuid()) @db.Uuid
+  nome                   String        @db.VarChar(255)
+  timezone               String        @default("America/Sao_Paulo") @db.VarChar(100)
+  plano                  String?       @db.VarChar(50)
+  status                 AccountStatus @default(active)
+  limiteUsuarios         Int           @default(10) @map("limite_usuarios")
+  monthlyExtractionLimit Int?          @default(500) @map("monthly_extraction_limit")
+  monthlyEmailLimit      Int?          @default(3000) @map("monthly_email_limit")
+  dailyEmailLimit        Int?          @default(100) @map("daily_email_limit")
 
   // Chatwoot Integration
   chatwootBaseUrl   String? @map("chatwoot_base_url") @db.VarChar(500)
@@ -30,6 +45,8 @@ model Account {
   chatwootApiKey    String? @map("chatwoot_api_key") @db.VarChar(500)
 
   // Evolution API Integration (WhatsApp non-official) — T-022 FitPark
+  // @deprecated Usar SystemSettings global. Estes campos permanecem como override
+  // opcional per-account para clientes enterprise com instância Evolution dedicada.
   evolutionBaseUrl       String? @map("evolution_base_url") @db.VarChar(500)
   evolutionApiKey        String? @map("evolution_api_key") @db.VarChar(500)
   evolutionInstance      String? @map("evolution_instance") @db.VarChar(255)
@@ -44,36 +61,36 @@ model Account {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   // Email/AI Integration
-  openaiApiKey       String? @map("openai_api_key") @db.VarChar(500)
-  sendgridApiKey     String? @map("sendgrid_api_key") @db.VarChar(500)
-  sendgridFromEmail  String? @map("sendgrid_from_email") @db.VarChar(255)
-  sendgridFromName   String? @map("sendgrid_from_name") @db.VarChar(255)
-  emailBatchSize     Int     @default(100) @map("email_batch_size")
-  emailDelayMs       Int     @default(500) @map("email_delay_ms")
+  openaiApiKey      String? @map("openai_api_key") @db.VarChar(500)
+  sendgridApiKey    String? @map("sendgrid_api_key") @db.VarChar(500)
+  sendgridFromEmail String? @map("sendgrid_from_email") @db.VarChar(255)
+  sendgridFromName  String? @map("sendgrid_from_name") @db.VarChar(255)
+  emailBatchSize    Int     @default(100) @map("email_batch_size")
+  emailDelayMs      Int     @default(500) @map("email_delay_ms")
 
   // Relations
-  users               User[]
-  contacts            Contact[]
-  products            Product[]
-  sales               Sale[]
-  tags                Tag[]
-  funnels             Funnel[]
-  calendarEvents      CalendarEvent[]
-  events              Event[]
+  users                User[]
+  contacts             Contact[]
+  products             Product[]
+  sales                Sale[]
+  tags                 Tag[]
+  funnels              Funnel[]
+  calendarEvents       CalendarEvent[]
+  events               Event[]
   googleCalendarTokens GoogleCalendarToken[]
-  apiUsageLogs        ApiUsageLog[]
-  dispatchBatches     DispatchBatch[]
-  dispatchLogs        DispatchLog[]
-  emailCadences       EmailCadence[]
-  emailTemplates      EmailTemplate[]
-  emailEnrollments    EmailEnrollment[]
-  emailSends          EmailSend[]
-  emailCampaigns      EmailCampaign[]
-  emailInboxMessages  EmailInboxMessage[]
-  emailAudiences      EmailAudience[]
+  apiUsageLogs         ApiUsageLog[]
+  dispatchBatches      DispatchBatch[]
+  dispatchLogs         DispatchLog[]
+  emailCadences        EmailCadence[]
+  emailTemplates       EmailTemplate[]
+  emailEnrollments     EmailEnrollment[]
+  emailSends           EmailSend[]
+  emailCampaigns       EmailCampaign[]
+  emailInboxMessages   EmailInboxMessage[]
+  emailAudiences       EmailAudience[]
   prospectingAudiences ProspectingAudience[]
-  apiKeys             ApiKey[]
-  whatsappTemplates   WhatsappTemplate[]
+  apiKeys              ApiKey[]
+  whatsappTemplates    WhatsappTemplate[]
   webhookSubscriptions WebhookSubscription[]
   inboundIntegrations  InboundIntegration[]
   whatsappConsents     WhatsappConsent[]
@@ -103,8 +120,8 @@ model ApiKey {
   revokedAt   DateTime? @map("revoked_at") @db.Timestamptz
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
-  @@index([accountId])
   @@unique([hashedKey])
+  @@index([accountId])
   @@index([keyPrefix])
   @@map("api_keys")
 }
@@ -113,19 +130,19 @@ model ApiKey {
 // WEBHOOK OUTBOUND (T-022 Sprint 3)
 // ============================================
 model WebhookSubscription {
-  id          String    @id @default(uuid()) @db.Uuid
-  accountId   String    @map("account_id") @db.Uuid
-  account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  name        String    @db.VarChar(160)
-  url         String    @db.VarChar(1000)
-  events      String[]  @default([])
-  secret      String    @db.VarChar(255)  // HMAC SHA-256 secret
-  active      Boolean   @default(true)
+  id             String    @id @default(uuid()) @db.Uuid
+  accountId      String    @map("account_id") @db.Uuid
+  account        Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name           String    @db.VarChar(160)
+  url            String    @db.VarChar(1000)
+  events         String[]  @default([])
+  secret         String    @db.VarChar(255) // HMAC SHA-256 secret
+  active         Boolean   @default(true)
   lastDeliveryAt DateTime? @map("last_delivery_at") @db.Timestamptz
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  deliveries  WebhookDelivery[]
+  deliveries WebhookDelivery[]
 
   @@index([accountId])
   @@index([active])
@@ -133,19 +150,19 @@ model WebhookSubscription {
 }
 
 model WebhookDelivery {
-  id              String    @id @default(uuid()) @db.Uuid
-  subscriptionId  String    @map("subscription_id") @db.Uuid
-  subscription    WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  eventType       String    @map("event_type") @db.VarChar(120)
-  payload         Json
-  status          String    @default("pending") @db.VarChar(20)  // pending | success | failed | dlq
-  httpStatus      Int?      @map("http_status")
-  responseBody    String?   @map("response_body") @db.Text
-  attemptCount    Int       @default(0) @map("attempt_count")
-  nextRetryAt     DateTime? @map("next_retry_at") @db.Timestamptz
-  latencyMs       Int?      @map("latency_ms")
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  completedAt     DateTime? @map("completed_at") @db.Timestamptz
+  id             String              @id @default(uuid()) @db.Uuid
+  subscriptionId String              @map("subscription_id") @db.Uuid
+  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  eventType      String              @map("event_type") @db.VarChar(120)
+  payload        Json
+  status         String              @default("pending") @db.VarChar(20) // pending | success | failed | dlq
+  httpStatus     Int?                @map("http_status")
+  responseBody   String?             @map("response_body") @db.Text
+  attemptCount   Int                 @default(0) @map("attempt_count")
+  nextRetryAt    DateTime?           @map("next_retry_at") @db.Timestamptz
+  latencyMs      Int?                @map("latency_ms")
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  completedAt    DateTime?           @map("completed_at") @db.Timestamptz
 
   @@index([subscriptionId])
   @@index([status, nextRetryAt])
@@ -157,16 +174,16 @@ model WebhookDelivery {
 // WEBHOOK INBOUND (T-022 Sprint 3)
 // ============================================
 model InboundIntegration {
-  id          String   @id @default(uuid()) @db.Uuid
-  accountId   String   @map("account_id") @db.Uuid
-  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  slug        String   @db.VarChar(80)         // identifica URL: /integrations/inbound/:accountId/:slug
-  handler     String   @db.VarChar(80)         // contact_upsert | tag_apply | campaign_trigger
-  config      Json     @default("{}")
-  secret      String?  @db.VarChar(255)        // HMAC opcional para validar payload entrante
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String   @map("account_id") @db.Uuid
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  slug      String   @db.VarChar(80) // identifica URL: /integrations/inbound/:accountId/:slug
+  handler   String   @db.VarChar(80) // contact_upsert | tag_apply | campaign_trigger
+  config    Json     @default("{}")
+  secret    String?  @db.VarChar(255) // HMAC opcional para validar payload entrante
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   @@unique([accountId, slug])
   @@index([accountId])
@@ -177,17 +194,17 @@ model InboundIntegration {
 // COMPLIANCE: WHATSAPP CONSENT + OPT-OUT (T-022 Sprint 3)
 // ============================================
 model WhatsappConsent {
-  id            String    @id @default(uuid()) @db.Uuid
-  accountId     String    @map("account_id") @db.Uuid
-  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  contactId     String?   @map("contact_id") @db.Uuid    // opcional, pode opt-out sem contato cadastrado
-  contact       Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  phone         String    @db.VarChar(30)                  // normalized 55DDDNUM
-  status        String    @default("opted_in") @db.VarChar(20)  // opted_in | opted_out
-  source        String    @default("manual") @db.VarChar(40)    // manual | auto_keyword | import | api
-  reason        String?   @db.VarChar(255)
-  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String   @map("account_id") @db.Uuid
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contactId String?  @map("contact_id") @db.Uuid // opcional, pode opt-out sem contato cadastrado
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  phone     String   @db.VarChar(30) // normalized 55DDDNUM
+  status    String   @default("opted_in") @db.VarChar(20) // opted_in | opted_out
+  source    String   @default("manual") @db.VarChar(40) // manual | auto_keyword | import | api
+  reason    String?  @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   @@unique([accountId, phone])
   @@index([accountId, status])
@@ -224,25 +241,25 @@ model User {
   updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   // Relations
-  account         Account?        @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  sales           Sale[]          @relation("SalesResponsavel")
-  refundedSales   Sale[]          @relation("SalesRefundedBy")
-  leadNotes       LeadNote[]
-  calendarEvents  CalendarEvent[]
-  actorEvents     Event[]         @relation("EventActor")
-  refreshTokens   RefreshToken[]
+  account                  Account?           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sales                    Sale[]             @relation("SalesResponsavel")
+  refundedSales            Sale[]             @relation("SalesRefundedBy")
+  leadNotes                LeadNote[]
+  calendarEvents           CalendarEvent[]
+  actorEvents              Event[]            @relation("EventActor")
+  refreshTokens            RefreshToken[]
   whatsappTemplatesCreated WhatsappTemplate[] @relation("WhatsappTemplateCreatedBy")
 
   // T-022 Sprint 4 — Chat interno
-  conversationsAssigned     Conversation[]            @relation("ConversationAssignee")
-  messagesSent              Message[]
+  conversationsAssigned      Conversation[]            @relation("ConversationAssignee")
+  messagesSent               Message[]
   conversationParticipations ConversationParticipant[]
-  conversationNotes         ConversationNote[]
-  cannedResponsesCreated    CannedResponse[]
-  teamMemberships           TeamMember[]
-  mentions                  Mention[]
-  readReceipts              ReadReceipt[]
-  availability              AgentAvailability?
+  conversationNotes          ConversationNote[]
+  cannedResponsesCreated     CannedResponse[]
+  teamMemberships            TeamMember[]
+  mentions                   Mention[]
+  readReceipts               ReadReceipt[]
+  availability               AgentAvailability?
 
   @@index([accountId])
   @@index([email])
@@ -266,11 +283,11 @@ enum UserStatus {
 // REFRESH TOKENS
 // ============================================
 model RefreshToken {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  token     String   @unique @db.VarChar(500)
-  expiresAt DateTime @map("expires_at") @db.Timestamptz
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  token     String    @unique @db.VarChar(500)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
   revokedAt DateTime? @map("revoked_at") @db.Timestamptz
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -296,9 +313,9 @@ model Contact {
   chatwootConversationId Int? @map("chatwoot_conversation_id")
 
   // Segmentation
-  nicho    String? @db.VarChar(255)
-  cidade   String? @db.VarChar(255)
-  estado   String? @db.VarChar(100)
+  nicho  String? @db.VarChar(255)
+  cidade String? @db.VarChar(255)
+  estado String? @db.VarChar(100)
 
   firstResolvedAt DateTime? @map("first_resolved_at") @db.Timestamptz
 
@@ -310,29 +327,29 @@ model Contact {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   // Relations
-  account            Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  sales              Sale[]
-  leadTags           LeadTag[]
-  tagHistory         TagHistory[]
-  leadNotes          LeadNote[]
-  calendarEvents     CalendarEvent[]
-  emailEnrollments   EmailEnrollment[]
-  emailSends         EmailSend[]
-  emailInboxMessages EmailInboxMessage[]
+  account               Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sales                 Sale[]
+  leadTags              LeadTag[]
+  tagHistory            TagHistory[]
+  leadNotes             LeadNote[]
+  calendarEvents        CalendarEvent[]
+  emailEnrollments      EmailEnrollment[]
+  emailSends            EmailSend[]
+  emailInboxMessages    EmailInboxMessage[]
   emailAudienceContacts EmailAudienceContact[]
   whatsappConsents      WhatsappConsent[]
 
   // T-022 Sprint 4 — Chat interno
   conversations Conversation[]
 
+  // Garante dedupe de contato dentro do tenant — usado pelo
+  // findOrCreateForCustomer (webhook Evolution faz retry agressivo).
+  @@unique([accountId, telefone], name: "contacts_account_telefone_key")
   @@index([accountId])
   @@index([telefone])
   @@index([email])
   @@index([nicho])
   @@index([cidade])
-  // Garante dedupe de contato dentro do tenant — usado pelo
-  // findOrCreateForCustomer (webhook Evolution faz retry agressivo).
-  @@unique([accountId, telefone], name: "contacts_account_telefone_key")
   @@map("contacts")
 }
 
@@ -448,12 +465,12 @@ enum LeadTagSource {
 // TAG_HISTORY (Immutable Audit Log)
 // ============================================
 model TagHistory {
-  id        String          @id @default(uuid()) @db.Uuid
-  contactId String?         @map("contact_id") @db.Uuid
-  tagId     String?         @map("tag_id") @db.Uuid
+  id        String           @id @default(uuid()) @db.Uuid
+  contactId String?          @map("contact_id") @db.Uuid
+  tagId     String?          @map("tag_id") @db.Uuid
   action    TagHistoryAction
-  actorType ActorType       @map("actor_type")
-  actorId   String?         @map("actor_id") @db.Uuid
+  actorType ActorType        @map("actor_type")
+  actorId   String?          @map("actor_id") @db.Uuid
   source    LeadTagSource
   reason    String?
 
@@ -507,19 +524,19 @@ model Product {
 // SALES
 // ============================================
 model Sale {
-  id               String        @id @default(uuid()) @db.Uuid
-  accountId        String        @map("account_id") @db.Uuid
-  contactId        String        @map("contact_id") @db.Uuid
-  valor            Decimal       @db.Decimal(10, 2)
-  status           SaleStatus    @default(pending)
-  metodoPagamento  PaymentMethod @map("metodo_pagamento")
-  convenioNome     String?       @map("convenio_nome") @db.VarChar(255)
-  responsavelId    String        @map("responsavel_id") @db.Uuid
-  isRecurring      Boolean       @default(false) @map("is_recurring")
+  id              String        @id @default(uuid()) @db.Uuid
+  accountId       String        @map("account_id") @db.Uuid
+  contactId       String        @map("contact_id") @db.Uuid
+  valor           Decimal       @db.Decimal(10, 2)
+  status          SaleStatus    @default(pending)
+  metodoPagamento PaymentMethod @map("metodo_pagamento")
+  convenioNome    String?       @map("convenio_nome") @db.VarChar(255)
+  responsavelId   String        @map("responsavel_id") @db.Uuid
+  isRecurring     Boolean       @default(false) @map("is_recurring")
 
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  paidAt      DateTime? @map("paid_at") @db.Timestamptz
-  refundedAt  DateTime? @map("refunded_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  paidAt     DateTime? @map("paid_at") @db.Timestamptz
+  refundedAt DateTime? @map("refunded_at") @db.Timestamptz
 
   // Refund metadata
   refundReason String? @map("refund_reason")
@@ -560,15 +577,15 @@ enum PaymentMethod {
 // SALE_ITEMS
 // ============================================
 model SaleItem {
-  id            String   @id @default(uuid()) @db.Uuid
-  saleId        String   @map("sale_id") @db.Uuid
-  productId     String   @map("product_id") @db.Uuid
-  quantidade    Int      @default(1)
-  valorUnitario Decimal  @map("valor_unitario") @db.Decimal(10, 2)
-  valorTotal    Decimal  @map("valor_total") @db.Decimal(10, 2)
-  refunded      Boolean  @default(false)
+  id            String    @id @default(uuid()) @db.Uuid
+  saleId        String    @map("sale_id") @db.Uuid
+  productId     String    @map("product_id") @db.Uuid
+  quantidade    Int       @default(1)
+  valorUnitario Decimal   @map("valor_unitario") @db.Decimal(10, 2)
+  valorTotal    Decimal   @map("valor_total") @db.Decimal(10, 2)
+  refunded      Boolean   @default(false)
   refundedAt    DateTime? @map("refunded_at") @db.Timestamptz
-  refundReason  String?  @map("refund_reason")
+  refundReason  String?   @map("refund_reason")
 
   // Relations
   sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
@@ -653,9 +670,9 @@ model CalendarEvent {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   // Relations
-  account   Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  contact   Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  createdBy User?               @relation(fields: [createdById], references: [id])
+  account   Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contact   Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  createdBy User?              @relation(fields: [createdById], references: [id])
   attendees CalendarAttendee[]
 
   @@index([accountId])
@@ -710,15 +727,15 @@ enum AttendeeStatus {
 // RESOLUTION LOGS
 // ============================================
 model ResolutionLog {
-  id              String   @id @default(uuid()) @db.Uuid
-  accountId       String   @map("account_id") @db.Uuid
-  conversationId  Int      @map("conversation_id")
-  resolvedBy      String   @map("resolved_by")
-  resolutionType  String   @default("explicit") @map("resolution_type")
-  aiParticipated  Boolean? @default(false) @map("ai_participated")
-  agentId         Int?     @map("agent_id")
-  resolvedAt      DateTime @default(now()) @map("resolved_at") @db.Timestamptz
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id             String   @id @default(uuid()) @db.Uuid
+  accountId      String   @map("account_id") @db.Uuid
+  conversationId Int      @map("conversation_id")
+  resolvedBy     String   @map("resolved_by")
+  resolutionType String   @default("explicit") @map("resolution_type")
+  aiParticipated Boolean? @default(false) @map("ai_participated")
+  agentId        Int?     @map("agent_id")
+  resolvedAt     DateTime @default(now()) @map("resolved_at") @db.Timestamptz
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([accountId])
   @@index([resolvedAt])
@@ -784,12 +801,12 @@ model DispatchBatch {
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
   // T-022 Sprint 2 — agendamento + origem unificada (manual + n8n + API)
-  scheduledAt   DateTime? @map("scheduled_at") @db.Timestamptz
-  source        String    @default("manual") @map("source")  // manual | manual_scheduled | n8n | api
-  triggerName   String?   @map("trigger_name") @db.VarChar(120)
-  metadata      Json?     @db.JsonB
-  templateId    String?   @map("template_id") @db.Uuid
-  inboxId       Int?      @map("inbox_id")  // pra suporte Chatwoot legacy
+  scheduledAt DateTime? @map("scheduled_at") @db.Timestamptz
+  source      String    @default("manual") @map("source") // manual | manual_scheduled | n8n | api
+  triggerName String?   @map("trigger_name") @db.VarChar(120)
+  metadata    Json?     @db.JsonB
+  templateId  String?   @map("template_id") @db.Uuid
+  inboxId     Int?      @map("inbox_id") // pra suporte Chatwoot legacy
 
   account  Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
   template WhatsappTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
@@ -834,8 +851,8 @@ model WhatsappTemplate {
   account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
   name        String   @db.VarChar(120)
   content     String   @db.Text
-  category    String   @default("custom") @db.VarChar(40)  // relacionamento | promocional | transacional | custom
-  variables   String[] @default([])  // lista de variáveis detectadas em content (ex: ["nome", "valor"])
+  category    String   @default("custom") @db.VarChar(40) // relacionamento | promocional | transacional | custom
+  variables   String[] @default([]) // lista de variáveis detectadas em content (ex: ["nome", "valor"])
   createdById String?  @map("created_by_id") @db.Uuid
   createdBy   User?    @relation("WhatsappTemplateCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
@@ -909,12 +926,12 @@ model EmailCadence {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  account      Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  campaign     EmailCampaign?       @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  steps        EmailCadenceStep[]
-  enrollments  EmailEnrollment[]
-  rulesFrom    EmailCadenceRule[]   @relation("RulesFromCadence")
-  rulesTo      EmailCadenceRule[]   @relation("RulesToCadence")
+  account     Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign    EmailCampaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  steps       EmailCadenceStep[]
+  enrollments EmailEnrollment[]
+  rulesFrom   EmailCadenceRule[] @relation("RulesFromCadence")
+  rulesTo     EmailCadenceRule[] @relation("RulesToCadence")
 
   @@index([accountId])
   @@index([campaignId])
@@ -986,8 +1003,8 @@ model EmailTemplate {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  account            Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  emailCadenceSteps  EmailCadenceStep[]
+  account           Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  emailCadenceSteps EmailCadenceStep[]
 
   @@index([accountId])
   @@map("email_templates")
@@ -1018,11 +1035,11 @@ model EmailEnrollment {
   completedAt DateTime?             @map("completed_at") @db.Timestamptz
   createdAt   DateTime              @default(now()) @map("created_at") @db.Timestamptz
 
-  account  Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  cadence  EmailCadence @relation(fields: [cadenceId], references: [id], onDelete: Cascade)
-  contact  Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  sends          EmailSend[]
-  inboxMessages  EmailInboxMessage[]
+  account       Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  cadence       EmailCadence        @relation(fields: [cadenceId], references: [id], onDelete: Cascade)
+  contact       Contact             @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sends         EmailSend[]
+  inboxMessages EmailInboxMessage[]
 
   @@index([accountId])
   @@index([cadenceId])
@@ -1048,26 +1065,26 @@ enum EmailSendStatus {
 }
 
 model EmailSend {
-  id                String         @id @default(uuid()) @db.Uuid
-  accountId         String         @map("account_id") @db.Uuid
-  enrollmentId      String?        @map("enrollment_id") @db.Uuid
-  stepId            String?        @map("step_id") @db.Uuid
-  contactId         String         @map("contact_id") @db.Uuid
-  toEmail           String         @map("to_email") @db.VarChar(255)
-  subject           String         @db.VarChar(500)
-  sendgridMessageId String?        @map("sendgrid_message_id") @db.VarChar(255)
+  id                String          @id @default(uuid()) @db.Uuid
+  accountId         String          @map("account_id") @db.Uuid
+  enrollmentId      String?         @map("enrollment_id") @db.Uuid
+  stepId            String?         @map("step_id") @db.Uuid
+  contactId         String          @map("contact_id") @db.Uuid
+  toEmail           String          @map("to_email") @db.VarChar(255)
+  subject           String          @db.VarChar(500)
+  sendgridMessageId String?         @map("sendgrid_message_id") @db.VarChar(255)
   status            EmailSendStatus @default(queued)
-  openedAt          DateTime?      @map("opened_at") @db.Timestamptz
-  clickedAt         DateTime?      @map("clicked_at") @db.Timestamptz
-  bouncedAt         DateTime?      @map("bounced_at") @db.Timestamptz
-  errorMessage      String?        @map("error_message")
-  sentAt            DateTime?      @map("sent_at") @db.Timestamptz
-  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  openedAt          DateTime?       @map("opened_at") @db.Timestamptz
+  clickedAt         DateTime?       @map("clicked_at") @db.Timestamptz
+  bouncedAt         DateTime?       @map("bounced_at") @db.Timestamptz
+  errorMessage      String?         @map("error_message")
+  sentAt            DateTime?       @map("sent_at") @db.Timestamptz
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz
 
-  account    Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  enrollment EmailEnrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  account    Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  enrollment EmailEnrollment?  @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
   step       EmailCadenceStep? @relation(fields: [stepId], references: [id], onDelete: SetNull)
-  contact    Contact          @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contact    Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
   @@index([accountId])
   @@index([enrollmentId])
@@ -1174,43 +1191,47 @@ model EmailAudienceContact {
 // ============================================
 
 model Inbox {
-  id              String   @id @default(uuid()) @db.Uuid
-  accountId       String   @map("account_id") @db.Uuid
-  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  name            String   @db.VarChar(120)
-  channelType     String   @default("whatsapp") @map("channel_type") @db.VarChar(40) // whatsapp | email | facebook | instagram (futuro)
-  evolutionInstance String? @map("evolution_instance") @db.VarChar(120) // pra channelType=whatsapp
-  greeting        String?  @db.Text
-  businessHours   Json?    @map("business_hours") // {monday: {open: "09:00", close: "18:00"}, ...}
-  defaultTeamId   String?  @map("default_team_id") @db.Uuid
-  defaultTeam     Team?    @relation("DefaultTeam", fields: [defaultTeamId], references: [id], onDelete: SetNull)
-  active          Boolean  @default(true)
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  id                String   @id @default(uuid()) @db.Uuid
+  accountId         String   @map("account_id") @db.Uuid
+  account           Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name              String   @db.VarChar(120)
+  channelType       String   @default("whatsapp") @map("channel_type") @db.VarChar(40) // whatsapp | email | facebook | instagram (futuro)
+  evolutionInstance String?  @map("evolution_instance") @db.VarChar(120) // pra channelType=whatsapp
+  greeting          String?  @db.Text
+  businessHours     Json?    @map("business_hours") // {monday: {open: "09:00", close: "18:00"}, ...}
+  defaultTeamId     String?  @map("default_team_id") @db.Uuid
+  defaultTeam       Team?    @relation("DefaultTeam", fields: [defaultTeamId], references: [id], onDelete: SetNull)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  conversations  Conversation[]
-  slaPolicies    SLAPolicy[]
+  conversations Conversation[]
+  slaPolicies   SLAPolicy[]
 
+  // Per-account uniqueness: nome de instance é único DENTRO da conta.
+  // (Globalmente os nomes gerados já são únicos pela construção `acc-<8>-inb-<8>`,
+  // mas a invariante semântica do app é per-account — bate com inboxService.create.)
+  @@unique([accountId, evolutionInstance])
   @@index([accountId])
   @@index([active])
   @@map("inboxes")
 }
 
 model Team {
-  id          String   @id @default(uuid()) @db.Uuid
-  accountId   String   @map("account_id") @db.Uuid
-  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  name        String   @db.VarChar(120)
-  description String?  @db.Text
-  allowAutoAssign Boolean @default(true) @map("allow_auto_assign")
-  businessHours Json? @map("business_hours")
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  id              String   @id @default(uuid()) @db.Uuid
+  accountId       String   @map("account_id") @db.Uuid
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name            String   @db.VarChar(120)
+  description     String?  @db.Text
+  allowAutoAssign Boolean  @default(true) @map("allow_auto_assign")
+  businessHours   Json?    @map("business_hours")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  members         TeamMember[]
-  inboxesAsDefault Inbox[]      @relation("DefaultTeam")
-  conversations   Conversation[]
-  slaPolicies     SLAPolicy[]
+  members          TeamMember[]
+  inboxesAsDefault Inbox[]        @relation("DefaultTeam")
+  conversations    Conversation[]
+  slaPolicies      SLAPolicy[]
 
   @@unique([accountId, name])
   @@index([accountId])
@@ -1218,12 +1239,12 @@ model Team {
 }
 
 model TeamMember {
-  id       String @id @default(uuid()) @db.Uuid
-  teamId   String @map("team_id") @db.Uuid
-  team     Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  userId   String @map("user_id") @db.Uuid
-  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role     String @default("member") @db.VarChar(20) // member | leader
+  id        String   @id @default(uuid()) @db.Uuid
+  teamId    String   @map("team_id") @db.Uuid
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId    String   @map("user_id") @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String   @default("member") @db.VarChar(20) // member | leader
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@unique([teamId, userId])
@@ -1233,38 +1254,41 @@ model TeamMember {
 }
 
 model Conversation {
-  id              String   @id @default(uuid()) @db.Uuid
-  accountId       String   @map("account_id") @db.Uuid
-  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  inboxId         String   @map("inbox_id") @db.Uuid
-  inbox           Inbox    @relation(fields: [inboxId], references: [id], onDelete: Cascade)
-  contactId       String?  @map("contact_id") @db.Uuid
-  contact         Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  status          String   @default("open") @db.VarChar(20) // open | pending | resolved | snoozed
-  priority        String   @default("medium") @db.VarChar(20) // urgent | high | medium | low
-  assigneeId      String?  @map("assignee_id") @db.Uuid
-  assignee        User?    @relation("ConversationAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  teamId          String?  @map("team_id") @db.Uuid
-  team            Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  slaPolicyId     String?  @map("sla_policy_id") @db.Uuid
-  slaPolicy       SLAPolicy? @relation(fields: [slaPolicyId], references: [id], onDelete: SetNull)
-  snoozedUntil    DateTime? @map("snoozed_until") @db.Timestamptz
-  firstResponseAt DateTime? @map("first_response_at") @db.Timestamptz
-  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz
-  resolvedBy      String?   @map("resolved_by") @db.VarChar(20) // ai | human | timeout
-  externalId      String?   @map("external_id") @db.VarChar(120) // remoteJid do WhatsApp
-  customAttributes Json?    @map("custom_attributes") @default("{}")
-  unreadCount     Int      @default(0) @map("unread_count")
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  id               String     @id @default(uuid()) @db.Uuid
+  accountId        String     @map("account_id") @db.Uuid
+  account          Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  inboxId          String     @map("inbox_id") @db.Uuid
+  inbox            Inbox      @relation(fields: [inboxId], references: [id], onDelete: Cascade)
+  contactId        String?    @map("contact_id") @db.Uuid
+  contact          Contact?   @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  status           String     @default("open") @db.VarChar(20) // open | pending | resolved | snoozed
+  priority         String     @default("medium") @db.VarChar(20) // urgent | high | medium | low
+  assigneeId       String?    @map("assignee_id") @db.Uuid
+  assignee         User?      @relation("ConversationAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  teamId           String?    @map("team_id") @db.Uuid
+  team             Team?      @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  slaPolicyId      String?    @map("sla_policy_id") @db.Uuid
+  slaPolicy        SLAPolicy? @relation(fields: [slaPolicyId], references: [id], onDelete: SetNull)
+  snoozedUntil     DateTime?  @map("snoozed_until") @db.Timestamptz
+  firstResponseAt  DateTime?  @map("first_response_at") @db.Timestamptz
+  resolvedAt       DateTime?  @map("resolved_at") @db.Timestamptz
+  resolvedBy       String?    @map("resolved_by") @db.VarChar(20) // ai | human | timeout
+  externalId       String?    @map("external_id") @db.VarChar(120) // remoteJid do WhatsApp
+  customAttributes Json?      @default("{}") @map("custom_attributes")
+  unreadCount      Int        @default(0) @map("unread_count")
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  messages       Message[]
-  labels         ConversationLabel[]
-  participants   ConversationParticipant[]
-  notes          ConversationNote[]
-  mentions       Mention[]
-  slaBreaches    SLABreach[]
+  messages     Message[]
+  labels       ConversationLabel[]
+  participants ConversationParticipant[]
+  notes        ConversationNote[]
+  mentions     Mention[]
+  slaBreaches  SLABreach[]
 
+  // Garante dedupe de conversa por remoteJid dentro do inbox — usado
+  // pelo findOrCreateForCustomer (webhook Evolution faz retry agressivo).
+  @@unique([accountId, inboxId, externalId], name: "conversations_account_inbox_external_key")
   @@index([accountId])
   @@index([inboxId])
   @@index([contactId])
@@ -1272,45 +1296,42 @@ model Conversation {
   @@index([teamId])
   @@index([status])
   @@index([externalId])
-  // Garante dedupe de conversa por remoteJid dentro do inbox — usado
-  // pelo findOrCreateForCustomer (webhook Evolution faz retry agressivo).
-  @@unique([accountId, inboxId, externalId], name: "conversations_account_inbox_external_key")
   @@map("conversations")
 }
 
 model Message {
-  id              String   @id @default(uuid()) @db.Uuid
-  conversationId  String   @map("conversation_id") @db.Uuid
-  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  senderType      String   @map("sender_type") @db.VarChar(20) // customer | agent | ai_bot | system | integration
-  senderId        String?  @map("sender_id") @db.Uuid // userId quando agent; null para customer/system
-  sender          User?    @relation(fields: [senderId], references: [id], onDelete: SetNull)
-  content         String?  @db.Text
-  contentType     String   @default("text") @map("content_type") @db.VarChar(40) // text | media | audio | document | system_note | template
-  isPrivate       Boolean  @default(false) @map("is_private") // notas internas
-  status          String   @default("sent") @db.VarChar(20) // sending | sent | delivered | read | failed
-  externalId      String?  @map("external_id") @db.VarChar(120) // messageId do Evolution
-  replyToId       String?  @map("reply_to_id") @db.Uuid
-  replyTo         Message? @relation("MessageReply", fields: [replyToId], references: [id], onDelete: SetNull)
-  replies         Message[] @relation("MessageReply")
-  deliveredAt     DateTime? @map("delivered_at") @db.Timestamptz
-  readAt          DateTime? @map("read_at") @db.Timestamptz
-  metadata        Json?    @default("{}")
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderType     String       @map("sender_type") @db.VarChar(20) // customer | agent | ai_bot | system | integration
+  senderId       String?      @map("sender_id") @db.Uuid // userId quando agent; null para customer/system
+  sender         User?        @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  content        String?      @db.Text
+  contentType    String       @default("text") @map("content_type") @db.VarChar(40) // text | media | audio | document | system_note | template
+  isPrivate      Boolean      @default(false) @map("is_private") // notas internas
+  status         String       @default("sent") @db.VarChar(20) // sending | sent | delivered | read | failed
+  externalId     String?      @map("external_id") @db.VarChar(120) // messageId do Evolution
+  replyToId      String?      @map("reply_to_id") @db.Uuid
+  replyTo        Message?     @relation("MessageReply", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]    @relation("MessageReply")
+  deliveredAt    DateTime?    @map("delivered_at") @db.Timestamptz
+  readAt         DateTime?    @map("read_at") @db.Timestamptz
+  metadata       Json?        @default("{}")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
 
-  attachments    Attachment[]
-  readReceipts   ReadReceipt[]
+  attachments  Attachment[]
+  readReceipts ReadReceipt[]
 
-  @@index([conversationId])
-  @@index([senderType])
-  @@index([externalId])
-  @@index([createdAt])
   // SE-H2: idempotência de Evolution messages.upsert. Postgres permite múltiplos NULLs
   // num UNIQUE comum, então mensagens sem externalId (ex: notas internas) seguem livres,
   // mas duas mensagens com mesmo (conversationId, externalId) levantam P2002 — que o
   // controller trata como skip silencioso. Sem esse unique a janela de retry da Evolution
   // duplicava Messages, inflava unreadCount e disparava webhookOutbound 2x.
   @@unique([conversationId, externalId])
+  @@index([conversationId])
+  @@index([senderType])
+  @@index([externalId])
+  @@index([createdAt])
   @@map("messages")
 }
 
@@ -1324,7 +1345,7 @@ model Attachment {
   fileName     String?  @map("file_name") @db.VarChar(255)
   mimeType     String?  @map("mime_type") @db.VarChar(120)
   thumbnailUrl String?  @map("thumbnail_url") @db.VarChar(2000)
-  duration     Int?     // segundos pra audio/video
+  duration     Int? // segundos pra audio/video
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([messageId])
@@ -1332,12 +1353,12 @@ model Attachment {
 }
 
 model ConversationLabel {
-  id             String   @id @default(uuid()) @db.Uuid
-  conversationId String   @map("conversation_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  tagId          String   @map("tag_id") @db.Uuid
-  tag            Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  tagId          String       @map("tag_id") @db.Uuid
+  tag            Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
 
   @@unique([conversationId, tagId])
   @@index([conversationId])
@@ -1346,12 +1367,12 @@ model ConversationLabel {
 }
 
 model ConversationParticipant {
-  id             String   @id @default(uuid()) @db.Uuid
-  conversationId String   @map("conversation_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  userId         String   @map("user_id") @db.Uuid
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  userId         String       @map("user_id") @db.Uuid
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
 
   @@unique([conversationId, userId])
   @@index([conversationId])
@@ -1360,13 +1381,13 @@ model ConversationParticipant {
 }
 
 model ConversationNote {
-  id             String   @id @default(uuid()) @db.Uuid
-  conversationId String   @map("conversation_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  userId         String   @map("user_id") @db.Uuid
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  content        String   @db.Text
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  userId         String       @map("user_id") @db.Uuid
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content        String       @db.Text
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([conversationId])
   @@map("conversation_notes")
@@ -1390,16 +1411,16 @@ model CannedResponse {
 }
 
 model CustomAttributeDefinition {
-  id          String   @id @default(uuid()) @db.Uuid
-  accountId   String   @map("account_id") @db.Uuid
-  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  scope       String   @db.VarChar(20) // conversation | contact | account
-  key         String   @db.VarChar(80)
-  label       String   @db.VarChar(120)
-  type        String   @db.VarChar(20) // text | number | date | list | boolean
-  options     Json?    // pra type=list
-  required    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String   @map("account_id") @db.Uuid
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  scope     String   @db.VarChar(20) // conversation | contact | account
+  key       String   @db.VarChar(80)
+  label     String   @db.VarChar(120)
+  type      String   @db.VarChar(20) // text | number | date | list | boolean
+  options   Json? // pra type=list
+  required  Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@unique([accountId, scope, key])
   @@index([accountId, scope])
@@ -1429,15 +1450,15 @@ model SLAPolicy {
 }
 
 model SLABreach {
-  id              String   @id @default(uuid()) @db.Uuid
-  conversationId  String   @map("conversation_id") @db.Uuid
-  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  slaPolicyId     String   @map("sla_policy_id") @db.Uuid
-  slaPolicy       SLAPolicy @relation(fields: [slaPolicyId], references: [id], onDelete: Cascade)
-  breachType      String   @map("breach_type") @db.VarChar(40) // first_response | resolution
-  expectedAt      DateTime @map("expected_at") @db.Timestamptz
-  breachedAt      DateTime @map("breached_at") @db.Timestamptz
-  notifiedAt      DateTime? @map("notified_at") @db.Timestamptz
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  slaPolicyId    String       @map("sla_policy_id") @db.Uuid
+  slaPolicy      SLAPolicy    @relation(fields: [slaPolicyId], references: [id], onDelete: Cascade)
+  breachType     String       @map("breach_type") @db.VarChar(40) // first_response | resolution
+  expectedAt     DateTime     @map("expected_at") @db.Timestamptz
+  breachedAt     DateTime     @map("breached_at") @db.Timestamptz
+  notifiedAt     DateTime?    @map("notified_at") @db.Timestamptz
 
   @@index([conversationId])
   @@index([slaPolicyId])
@@ -1445,14 +1466,14 @@ model SLABreach {
 }
 
 model Mention {
-  id             String   @id @default(uuid()) @db.Uuid
-  conversationId String   @map("conversation_id") @db.Uuid
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  userId         String   @map("user_id") @db.Uuid
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  messageId      String?  @map("message_id") @db.Uuid
-  read           Boolean  @default(false)
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  userId         String       @map("user_id") @db.Uuid
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageId      String?      @map("message_id") @db.Uuid
+  read           Boolean      @default(false)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([userId, read])
   @@index([conversationId])

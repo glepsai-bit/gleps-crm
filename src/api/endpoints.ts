@@ -297,14 +297,30 @@ export const API_ENDPOINTS = {
     CHECK_BATCH: '/api/whatsapp-consents/check-batch',
   },
 
+  // ============= SYSTEM SETTINGS (T-022 — config global do super admin) =============
+  // Singleton de configurações globais (Evolution URL/API key/Webhook).
+  // Acesso restrito a super_admin. API key vem mascarada como '***SET***'
+  // quando preenchida no GET; o frontend deve evitar reenviar essa string
+  // literal no PATCH para não sobrescrever o valor real.
+  SYSTEM_SETTINGS: {
+    GET: '/api/system-settings',
+    UPDATE: '/api/system-settings',
+    TEST_EVOLUTION: '/api/system-settings/test-evolution',
+  },
+
   // ============= INBOXES (T-022 — canais de atendimento) =============
   // CRUD do modelo Prisma `Inbox` (whatsapp/email/facebook/instagram).
+  // WHATSAPP_* controla a conexão Evolution por Inbox (QR/status/logout).
   INBOXES: {
     LIST: '/api/inboxes',
     GET: (id: string) => `/api/inboxes/${id}`,
     CREATE: '/api/inboxes',
     UPDATE: (id: string) => `/api/inboxes/${id}`,
     DELETE: (id: string) => `/api/inboxes/${id}`,
+    WHATSAPP_CONNECT: (id: string) => `/api/inboxes/${id}/whatsapp/connect`,
+    WHATSAPP_STATUS: (id: string) => `/api/inboxes/${id}/whatsapp/status`,
+    WHATSAPP_DISCONNECT: (id: string) =>
+      `/api/inboxes/${id}/whatsapp/disconnect`,
   },
 
   // ============= TEAMS (T-022 — times de atendimento) =============

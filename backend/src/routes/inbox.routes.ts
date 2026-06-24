@@ -39,4 +39,27 @@ router.delete('/:id', requireRole('super_admin', 'admin'), (req, res, next) =>
   inboxChannelController.delete(req, res, next)
 );
 
+// ============================================
+// Conexão Evolution / WhatsApp por Inbox (T-022 refactor)
+// agent/admin/super_admin — qualquer um da conta pode parear/consultar/desconectar
+// o WhatsApp do seu próprio Inbox (já tá escopado por accountId no controller).
+// ============================================
+router.post(
+  '/:id/whatsapp/connect',
+  requireRole('super_admin', 'admin', 'agent'),
+  (req, res, next) => inboxChannelController.connectWhatsApp(req, res, next)
+);
+
+router.get(
+  '/:id/whatsapp/status',
+  requireRole('super_admin', 'admin', 'agent'),
+  (req, res, next) => inboxChannelController.getWhatsAppStatus(req, res, next)
+);
+
+router.post(
+  '/:id/whatsapp/disconnect',
+  requireRole('super_admin', 'admin', 'agent'),
+  (req, res, next) => inboxChannelController.disconnectWhatsApp(req, res, next)
+);
+
 export default router;
