@@ -332,7 +332,7 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
   return (
     <div
       className={cn(
-        'border-t border-border bg-card p-3 space-y-2',
+        'border-t border-border bg-card p-3 space-y-2 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_-2px_8px_rgba(0,0,0,0.3)] focus-within:border-t-primary/40 transition-colors',
         isPrivate && 'bg-yellow-50 dark:bg-yellow-950/30'
       )}
     >
@@ -408,7 +408,7 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         }
         rows={2}
         className={cn(
-          'resize-none text-sm min-h-[44px] max-h-[200px]',
+          'resize-none text-sm min-h-[44px] max-h-[200px] focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:border-primary/50',
           isPrivate && 'bg-yellow-100/60 dark:bg-yellow-900/30'
         )}
       />

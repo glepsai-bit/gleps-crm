@@ -553,13 +553,22 @@ export function ConversationList({
                   key={conv.id}
                   type="button"
                   onClick={() => onSelectConversation(conv.id)}
+                  aria-current={isSelected ? 'true' : undefined}
+                  aria-selected={isSelected}
+                  data-state={isSelected ? 'active' : 'inactive'}
                   className={cn(
-                    'flex w-full items-start gap-2 p-3 text-left hover:bg-accent transition-colors',
-                    isSelected && 'bg-accent'
+                    'relative flex w-full items-start gap-2 p-3 text-left transition-colors border-l-2 border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+                    !isSelected && 'hover:bg-muted/60 dark:hover:bg-muted/40',
+                    isSelected && 'bg-primary/10 border-l-primary dark:bg-primary/15'
                   )}
                 >
                   <Avatar className="h-9 w-9 shrink-0">
-                    <AvatarFallback className="text-xs bg-primary/10 text-primary">
+                    <AvatarFallback
+                      className={cn(
+                        'text-xs text-primary',
+                        isSelected ? 'bg-primary/20 dark:bg-primary/25' : 'bg-primary/10'
+                      )}
+                    >
                       {getInitials(contactName)}
                     </AvatarFallback>
                   </Avatar>

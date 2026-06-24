@@ -313,15 +313,15 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-3 py-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <Avatar className="h-9 w-9 shrink-0">
-            <AvatarFallback className="text-xs bg-primary/10 text-primary">
+      <div className="flex items-center justify-between gap-3 border-b border-border bg-card px-4 py-3 shadow-sm">
+        <div className="flex items-center gap-3 min-w-0">
+          <Avatar className="h-10 w-10 shrink-0">
+            <AvatarFallback className="text-sm bg-primary/10 text-primary">
               {getInitials(contactName)}
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0">
-            <p className="text-sm font-semibold truncate text-foreground">
+            <p className="text-base font-semibold truncate text-foreground">
               {contactName}
             </p>
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
