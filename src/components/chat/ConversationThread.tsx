@@ -311,49 +311,51 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
     conversation.contact?.nome || conversation.contact?.telefone || 'Sem nome';
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 border-b border-border bg-card px-4 py-3 shadow-sm">
-        <div className="flex items-center gap-3 min-w-0">
-          <Avatar className="h-10 w-10 shrink-0">
+    <div className="flex h-full flex-col overflow-hidden bg-background">
+      {/* Header — altura fixa (shrink-0) para não comprimir a área de mensagens */}
+      <div className="shrink-0 flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2.5 shadow-sm min-w-0">
+        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <Avatar className="h-9 w-9 shrink-0">
             <AvatarFallback className="text-sm bg-primary/10 text-primary">
               {getInitials(contactName)}
             </AvatarFallback>
           </Avatar>
-          <div className="min-w-0">
-            <p className="text-base font-semibold truncate text-foreground">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold truncate text-foreground">
               {contactName}
             </p>
-            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <div className="flex items-center gap-1 overflow-hidden text-[11px] text-muted-foreground min-w-0">
               <Badge
                 variant="outline"
-                className={cn('text-[10px] py-0 px-1 h-4 border-0', STATUS_COLOR[conversation.status])}
+                className={cn('text-[10px] py-0 px-1 h-4 border-0 shrink-0', STATUS_COLOR[conversation.status])}
               >
                 {STATUS_LABEL[conversation.status]}
               </Badge>
-              <span>•</span>
-              <span>Prioridade: {PRIORITY_LABEL[conversation.priority]}</span>
+              <span className="shrink-0">•</span>
+              <span className="shrink-0">P: {PRIORITY_LABEL[conversation.priority]}</span>
               {conversation.assignee?.nome && (
                 <>
-                  <span>•</span>
-                  <span>Atribuído: {conversation.assignee.nome}</span>
+                  <span className="shrink-0">•</span>
+                  <span className="shrink-0 truncate max-w-[80px]">{conversation.assignee.nome}</span>
                 </>
               )}
               {conversation.inbox?.name && (
                 <>
-                  <span>•</span>
-                  <span className="capitalize">{conversation.inbox.name}</span>
+                  <span className="shrink-0">•</span>
+                  <span className="truncate min-w-0 capitalize">{conversation.inbox.name}</span>
                 </>
               )}
             </div>
           </div>
         </div>
 
-        <ConversationActions conversation={conversation} />
+        <div className="shrink-0">
+          <ConversationActions conversation={conversation} />
+        </div>
       </div>
 
-      {/* Mensagens */}
-      <ScrollArea className="flex-1" ref={scrollRef as never}>
+      {/* Mensagens — flex-1 + min-h-0 garante que a ScrollArea não vaze */}
+      <ScrollArea className="flex-1 min-h-0" ref={scrollRef as never}>
         <div
           ref={(el) => {
             // ScrollArea encapsula o viewport; usamos o div interno para scrollTo.

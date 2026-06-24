@@ -73,6 +73,13 @@ import { teamsBackendService } from '@/services/teams.backend.service';
 import { tagsBackendService } from '@/services/tags.backend.service';
 import { chatSocket } from '@/services/socket.client';
 
+const PRIORITY_LABEL: Record<ConversationPriority, string> = {
+  urgent: 'Urgente',
+  high: 'Alta',
+  medium: 'Média',
+  low: 'Baixa',
+};
+
 interface ConversationActionsProps {
   conversation: Conversation;
 }
@@ -244,18 +251,17 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
   const currentLabelIds = new Set(conversation.labels?.map((l) => l.tagId) ?? []);
   const isResolved = conversation.status === 'resolved';
 
-  // CHAT-LAYOUT-003: header do thread quebrava ao tentar render todas as ações +
-  // chips numa linha só. Aplicar flex-wrap permite que linhas adicionais fluam
-  // para baixo (em vez de sobrepor o metadata da conversa) e gap-y separa as
-  // linhas com respiro vertical.
+  // CHAT-LAYOUT-003 (fix v2): substituir flex-wrap por flex-nowrap + shrink-0 no
+  // wrapper. Com flex-wrap as ações ocupavam múltiplas linhas tornando o header
+  // ~171px (comprimindo a área de mensagens a ~279px). Agora os botões ficam
+  // em linha única e o header mantém ~56px.
   return (
-    <div className="flex flex-wrap items-center gap-1 gap-y-1.5">
+    <div className="flex flex-nowrap items-center gap-1 shrink-0">
       {/* Atribuir */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="h-8" title="Atribuir">
-            <UserPlus className="w-3.5 h-3.5 mr-1" />
-            <span className="text-xs hidden md:inline">Atribuir</span>
+          <Button variant="ghost" size="icon" className="h-8 w-8" title="Atribuir">
+            <UserPlus className="w-3.5 h-3.5" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
@@ -281,11 +287,13 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
       {/* Tags / Labels */}
       <Popover>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="sm" className="h-8" title="Tags">
-            <TagIcon className="w-3.5 h-3.5 mr-1" />
-            <span className="text-xs hidden md:inline">
-              Tags{currentLabelIds.size > 0 ? ` (${currentLabelIds.size})` : ''}
-            </span>
+          <Button variant="ghost" size="icon" className="h-8 w-8 relative" title={`Tags${currentLabelIds.size > 0 ? ` (${currentLabelIds.size})` : ''}`}>
+            <TagIcon className="w-3.5 h-3.5" />
+            {currentLabelIds.size > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 bg-primary text-primary-foreground text-[9px] rounded-full w-3.5 h-3.5 flex items-center justify-center leading-none">
+                {currentLabelIds.size}
+              </span>
+            )}
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-64 p-2 space-y-1">
@@ -323,22 +331,32 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
         </PopoverContent>
       </Popover>
 
-      {/* Prioridade */}
-      <Select
-        value={conversation.priority}
-        onValueChange={(v) => priorityMutation.mutate(v as ConversationPriority)}
-      >
-        <SelectTrigger className="h-8 w-28 text-xs">
-          <Flag className="w-3 h-3 mr-1" />
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="urgent">Urgente</SelectItem>
-          <SelectItem value="high">Alta</SelectItem>
-          <SelectItem value="medium">Média</SelectItem>
-          <SelectItem value="low">Baixa</SelectItem>
-        </SelectContent>
-      </Select>
+      {/* Prioridade — dropdown compacto (ícone apenas) para caber no header estreito */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            title={`Prioridade: ${PRIORITY_LABEL[conversation.priority]}`}
+          >
+            <Flag className="w-3.5 h-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          <DropdownMenuLabel className="text-xs">Prioridade</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {(['urgent', 'high', 'medium', 'low'] as const).map((p) => (
+            <DropdownMenuItem
+              key={p}
+              onClick={() => priorityMutation.mutate(p)}
+              className={conversation.priority === p ? 'font-semibold text-primary' : ''}
+            >
+              {PRIORITY_LABEL[p]}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       {/* Menu adicional */}
       <DropdownMenu>
@@ -388,7 +406,7 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           continua vendo as tags no painel direito (ContactSidePanel) e no
           contador do popover de Tags. */}
       {conversation.labels && conversation.labels.length > 0 && (
-        <div className="hidden xl:flex items-center gap-1 ml-1 min-w-0 flex-wrap">
+        <div className="hidden xl:flex items-center gap-1 ml-1 max-w-[200px] flex-nowrap overflow-hidden">
           {conversation.labels.slice(0, 2).map((l) => (
             <Badge
               key={l.id}
