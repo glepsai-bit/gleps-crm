@@ -8,6 +8,13 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().transform(Number).default('3000'),
   API_URL: z.string().url().default('http://localhost:3000'),
+  /**
+   * URL base pública usada para derivar o webhookUrl que enviamos pra Evolution.
+   * Se ausente, cai em API_URL. Em dev, dá pra apontar pra um túnel
+   * (ngrok/cloudflared) ou pra `http://host.docker.internal:3010` quando
+   * a Evolution roda em container e o backend roda no host.
+   */
+  WEBHOOK_BASE_URL: z.string().url().optional(),
   FRONTEND_URL: z.string().url().default('http://localhost:8080'),
 
   // Database
@@ -31,6 +38,19 @@ const envSchema = z.object({
 
   // Chatwoot (optional)
   CHATWOOT_WEBHOOK_SECRET: z.string().optional(),
+
+  // Evolution webhook hardening (optional)
+  // EVOLUTION_ALLOWED_IPS: comma-separated allow-list (CIDR or exact IPv4/IPv6).
+  //   Quando definido, requests vindas de IPs fora dessa lista são rejeitadas (401).
+  // EVOLUTION_WEBHOOK_TOKEN: token bearer fixo aceito via header x-evolution-token.
+  //   Útil para Evolution API v2 que NÃO calcula HMAC sobre o body — repassa apenas
+  //   headers fixos configurados em webhook.headers.
+  // EVOLUTION_HMAC_REQUIRED: 'true' força HMAC obrigatório mesmo em dev (default: prod=true, dev=false).
+  EVOLUTION_ALLOWED_IPS: z.string().optional(),
+  EVOLUTION_WEBHOOK_TOKEN: z.string().optional(),
+  EVOLUTION_HMAC_REQUIRED: z
+    .enum(['true', 'false'])
+    .optional(),
 
   // RapidAPI (for prospecting)
   RAPIDAPI_KEY: z.string().optional(),

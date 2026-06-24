@@ -110,6 +110,14 @@ const FULL_CONVERSATION_INCLUDE = {
   assignee: { select: { id: true, nome: true, email: true } },
   team: { select: { id: true, name: true } },
   labels: { include: { tag: true } },
+  // BUG-FIX: incluir a última mensagem permite que a ConversationList do
+  // /admin/chat mostre snippet real ("Olá, bom dia") em vez de
+  // "Sem mensagens ainda" mesmo com mensagens persistidas. Limitamos a 1 pra
+  // não inflar payload da lista (50 conversas × N mensagens cada seria pesado).
+  messages: {
+    orderBy: { createdAt: 'desc' } as const,
+    take: 1,
+  },
 } satisfies Prisma.ConversationInclude;
 
 // ============================================

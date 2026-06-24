@@ -1,8 +1,75 @@
+import * as crypto from 'crypto';
 import type { Inbox } from '@prisma/client';
 import { prisma as sharedPrisma } from '../config/database';
+import { env } from '../config/env';
 import { NotFoundError, ConflictError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
-import { evolutionService, type QrCodeResult } from './evolution.service';
+import {
+  evolutionService,
+  DEFAULT_WEBHOOK_EVENTS,
+  type QrCodeResult,
+} from './evolution.service';
+
+/**
+ * Garante que a conta tem `evolutionWebhookSecret` populado.
+ * Em prod (NODE_ENV=production) o webhook Evolution exige HMAC SHA-256 sobre o
+ * body, e sem secret na conta o controller rejeita 100% das mensagens com 401.
+ * Contas legadas (fitpark-principal) nasceram sem o campo — auto-popula com 32
+ * bytes hex randômicos no primeiro connect/QR. Idempotente: se já existe,
+ * mantém. Retorna o secret efetivo.
+ */
+async function ensureAccountWebhookSecret(accountId: string): Promise<string> {
+  const account = await sharedPrisma.account.findUnique({
+    where: { id: accountId },
+    select: { evolutionWebhookSecret: true },
+  });
+  if (account?.evolutionWebhookSecret) {
+    return account.evolutionWebhookSecret;
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  await sharedPrisma.account.update({
+    where: { id: accountId },
+    data: { evolutionWebhookSecret: generated },
+  });
+  logger.info('[Inbox] evolutionWebhookSecret gerado automaticamente para a conta', {
+    accountId,
+  });
+  return generated;
+}
+
+/**
+ * Deriva a URL pública do webhook Evolution para uma conta.
+ *
+ * Prioriza `env.WEBHOOK_BASE_URL` (override para túneis ngrok/cloudflared em dev
+ * ou para hostnames públicos distintos do API_URL em prod), caindo em
+ * `env.API_URL` quando ausente. Concatena o path do controller que recebe
+ * o webhook (`/api/evolution/webhook/:accountId`).
+ *
+ * Centralizado aqui pra ser reutilizado tanto no createInstance quanto
+ * em reconnect/healthcheck — a derivação precisa bater 1:1 entre os dois,
+ * senão a Evolution acaba apontando pra URL errada.
+ *
+ * Em dev, se a URL resolvida apontar pra `localhost`, emite um warning: uma
+ * instância Evolution externa (autevo.gleps.com.br, p.ex.) não consegue
+ * resolver `localhost` do servidor dela — o operador precisa configurar um
+ * túnel público (ngrok/cloudflared) ou apontar `WEBHOOK_BASE_URL` para o
+ * deploy real, senão nenhuma mensagem volta pro CRM.
+ */
+function deriveWebhookUrlForAccount(accountId: string): string {
+  const rawBase = env.WEBHOOK_BASE_URL || env.API_URL || '';
+  const base = rawBase.replace(/\/$/, '');
+  const url = `${base}/api/evolution/webhook/${accountId}`;
+
+  if (/localhost|127\.0\.0\.1/i.test(base)) {
+    logger.warn(
+      '[Inbox] webhook URL é localhost — Evolution externa não conseguirá chamar; ' +
+        'configure ngrok/tunnel/deploy via WEBHOOK_BASE_URL ou API_URL',
+      { accountId, base, url }
+    );
+  }
+
+  return url;
+}
 
 // Reuse a single Prisma pool (singleton from config/database).
 // Não criar new PrismaClient() aqui — vaza connection pool (H1).
@@ -314,6 +381,21 @@ class InboxService {
       );
     }
 
+    // Webhook URL derivada da env API_URL — Evolution vai postar eventos
+    // (MESSAGES_UPSERT, CONNECTION_UPDATE, etc) nesse endpoint pro CRM.
+    // Sem isso o fluxo end-to-end quebra: a mensagem chega no WhatsApp mas
+    // o CRM nunca é notificado e a UI não atualiza.
+    const webhookUrl = deriveWebhookUrlForAccount(accountId);
+
+    // BUG-FIX: contas legadas (fitpark-principal) nasceram sem
+    // `evolutionWebhookSecret`. Em prod o controller do webhook rejeita 401 sem
+    // secret, então auto-popula AGORA — antes do primeiro setWebhook — pra
+    // garantir que o secret existe quando a Evolution começar a postar eventos.
+    // Idempotente: se já existe, mantém. Mesma string serve como bearer token
+    // (header `x-crm-webhook-token`) E como HMAC secret no controller — por isso
+    // capturamos o valor pra repassar em createInstance/setWebhook.
+    const webhookAuthToken = await ensureAccountWebhookSecret(accountId);
+
     // Caso 1: ainda não tem instance criada na Evolution — cria agora.
     if (!inbox.evolutionInstance) {
       const generatedInstance = `acc-${accountId.slice(0, 8)}-inb-${inboxId.slice(0, 8)}`;
@@ -322,16 +404,39 @@ class InboxService {
         accountId,
         inboxId,
         instance: generatedInstance,
+        webhookUrl,
       });
 
       const created = await evolutionService.createInstance(accountId, {
         instance: generatedInstance,
+        webhookUrl,
+        webhookAuthToken,
       });
 
       const updated = await sharedPrisma.inbox.update({
         where: { id: inboxId },
         data: { evolutionInstance: generatedInstance },
       });
+
+      // Garante idempotentemente que o webhook ficou setado mesmo que
+      // o /instance/create da Evolution tenha ignorado o campo `webhook`
+      // (versões mais antigas exigem POST separado em /webhook/set).
+      // Falha aqui não bloqueia o pareamento — só loga warning;
+      // healthcheck/reconnect re-aplica.
+      try {
+        await evolutionService.setWebhook(accountId, generatedInstance, {
+          url: webhookUrl,
+          events: DEFAULT_WEBHOOK_EVENTS,
+          authToken: webhookAuthToken,
+        });
+      } catch (err: any) {
+        logger.warn('[Inbox] setWebhook falhou após createInstance — será retentado em reconnect', {
+          accountId,
+          inboxId,
+          instance: generatedInstance,
+          error: err?.message,
+        });
+      }
 
       return {
         inbox: updated,
@@ -343,7 +448,24 @@ class InboxService {
       };
     }
 
-    // Caso 2: instance já existe — só pede QR code fresco.
+    // Caso 2: instance já existe — re-aplica o webhook (idempotente) e
+    // pede QR code fresco. Isto cobre o cenário de reconexão onde a
+    // instance Evolution perdeu a config de webhook (ex.: reset do container).
+    try {
+      await evolutionService.setWebhook(accountId, inbox.evolutionInstance, {
+        url: webhookUrl,
+        events: DEFAULT_WEBHOOK_EVENTS,
+        authToken: webhookAuthToken,
+      });
+    } catch (err: any) {
+      logger.warn('[Inbox] setWebhook falhou em reconnect — seguindo com QR mesmo assim', {
+        accountId,
+        inboxId,
+        instance: inbox.evolutionInstance,
+        error: err?.message,
+      });
+    }
+
     const qrcode = await evolutionService.getQrCode(
       accountId,
       inbox.evolutionInstance

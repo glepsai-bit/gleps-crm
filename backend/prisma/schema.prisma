@@ -1286,9 +1286,12 @@ model Conversation {
   mentions     Mention[]
   slaBreaches  SLABreach[]
 
-  // Garante dedupe de conversa por remoteJid dentro do inbox — usado
-  // pelo findOrCreateForCustomer (webhook Evolution faz retry agressivo).
-  @@unique([accountId, inboxId, externalId], name: "conversations_account_inbox_external_key")
+  // SE-H1: dedupe de conversa por remoteJid dentro do inbox — usado pelo
+  // findOrCreateForCustomer (webhook Evolution faz retry agressivo).
+  // Implementado como índice ÚNICO PARCIAL (WHERE external_id IS NOT NULL) via
+  // migration 0028_conversation_external_unique — Prisma não suporta partial
+  // unique no schema, então o índice fica fora do model mas o Postgres garante.
+  // Conversas sem externalId (ex: criadas manualmente) seguem livres pra duplicar.
   @@index([accountId])
   @@index([inboxId])
   @@index([contactId])

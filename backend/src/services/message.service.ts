@@ -378,6 +378,54 @@ class MessageService {
   }
 
   /**
+   * Wrapper de `markDelivered` que aceita apenas o `externalId` (provider id).
+   *
+   * Útil para callbacks de webhook (ex.: Evolution `messages.update`) onde
+   * só temos o id do provider — o lookup interno descobre o `Message.id`
+   * via `findFirst({ externalId })`. Multi-tenant pode ser opcionalmente
+   * escopado por `accountId` quando fornecido (recomendado para evitar
+   * ACK forgery cross-tenant). Se `accountId` for omitido, faz lookup
+   * global pelo `externalId` — só usar em fluxos confiáveis.
+   *
+   * Idempotente / silencioso: se não achar a mensagem, apenas loga em
+   * debug e retorna `null` (não levanta — webhooks não devem 5xx só
+   * porque a mensagem ainda não foi persistida do lado do CRM).
+   */
+  async markDeliveredByExternalId(
+    externalId: string,
+    accountId?: string
+  ): Promise<Message | null> {
+    if (!externalId) {
+      throw new ValidationError('externalId obrigatório');
+    }
+
+    const where: Prisma.MessageWhereInput = accountId
+      ? { externalId, conversation: { accountId } }
+      : { externalId };
+
+    const existing = await prisma.message.findFirst({
+      where,
+      select: { id: true, status: true, conversation: { select: { accountId: true } } },
+    });
+
+    if (!existing) {
+      logger.debug('[message.service] markDeliveredByExternalId — mensagem não encontrada', {
+        externalId,
+        accountId,
+      });
+      return null;
+    }
+
+    return prisma.message.update({
+      where: { id: existing.id },
+      data: {
+        status: existing.status === 'read' ? 'read' : 'delivered',
+        deliveredAt: new Date(),
+      },
+    });
+  }
+
+  /**
    * Mark message as read by a user. Cria/atualiza ReadReceipt e
    * zera unreadCount da conversa (assumindo leitura por agente).
    */

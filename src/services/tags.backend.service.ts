@@ -75,7 +75,15 @@ export const tagsBackendService = {
   },
 
   async getLeadTags(contactId: string): Promise<LeadTag[]> {
-    return apiClient.get<LeadTag[]>(API_ENDPOINTS.TAGS.BY_CONTACT(contactId));
+    // Backend devolve { data: LeadTag[] } (contact.controller.getTags).
+    // Sem unwrap o componente recebe um objeto e `.map`/`.length` explodem
+    // (bug do ContactSidePanel ao selecionar conversa em /admin/chat).
+    const response = await apiClient.get<LeadTag[] | { data: LeadTag[] }>(
+      API_ENDPOINTS.TAGS.BY_CONTACT(contactId)
+    );
+    if (Array.isArray(response)) return response;
+    const data = (response as { data?: unknown })?.data;
+    return Array.isArray(data) ? (data as LeadTag[]) : [];
   },
 
   async applyStageTag(contactId: string, tagId: string, source: string = 'kanban'): Promise<void> {

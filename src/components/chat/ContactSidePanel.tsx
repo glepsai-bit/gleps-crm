@@ -110,21 +110,33 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
     },
   });
 
-  // Tags do contato
-  const { data: contactTags = [] } = useQuery({
+  // Tags do contato — coerção defensiva: alguns endpoints históricos retornam
+  // { data: [...] } ou null em vez de array nu. Sem o Array.isArray, qualquer
+  // `.map` aqui quebra a página inteira do /admin/chat.
+  const { data: contactTagsRaw } = useQuery({
     queryKey: ['contact-tags', contactId],
     queryFn: () => tagsBackendService.getLeadTags(contactId!),
     enabled: Boolean(contactId),
     staleTime: 30_000,
   });
+  const contactTags = Array.isArray(contactTagsRaw)
+    ? contactTagsRaw
+    : Array.isArray((contactTagsRaw as any)?.data)
+      ? ((contactTagsRaw as any).data as typeof contactTagsRaw)
+      : [];
 
-  // Vendas do contato
-  const { data: contactSales = [] } = useQuery({
+  // Vendas do contato — mesma coerção defensiva.
+  const { data: contactSalesRaw } = useQuery({
     queryKey: ['contact-sales', contactId],
     queryFn: () => salesService.getByContact(contactId!),
     enabled: Boolean(contactId),
     staleTime: 30_000,
   });
+  const contactSales = Array.isArray(contactSalesRaw)
+    ? contactSalesRaw
+    : Array.isArray((contactSalesRaw as any)?.data)
+      ? ((contactSalesRaw as any).data as typeof contactSalesRaw)
+      : [];
 
   // Presença dos agentes da conta (assignee online/offline) — T-022 Sprint 4
   const assigneeId = conversation.assigneeId;

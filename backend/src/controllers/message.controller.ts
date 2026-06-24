@@ -230,7 +230,9 @@ export class MessageController {
           where: { id: conversationId, accountId },
           include: {
             contact: { select: { telefone: true } },
-            inbox: { select: { channelType: true } },
+            inbox: {
+              select: { channelType: true, evolutionInstance: true },
+            },
           },
         });
 
@@ -238,9 +240,13 @@ export class MessageController {
 
         if (conversation?.inbox?.channelType === 'whatsapp' && phone) {
           try {
+            // Per-Inbox: respeitar a instância do Inbox da conversa para não
+            // cair no fallback Account.evolutionInstance (que pode estar null
+            // ou apontar para outro número).
             const result = await evolutionService.sendText(accountId, {
               number: phone,
               text: parsed.content as string,
+              instance: conversation.inbox.evolutionInstance ?? null,
             });
 
             if (result.messageId) {
@@ -382,7 +388,9 @@ export class MessageController {
           id: true,
           customAttributes: true,
           contact: { select: { telefone: true } },
-          inbox: { select: { channelType: true } },
+          inbox: {
+            select: { channelType: true, evolutionInstance: true },
+          },
         },
       });
 
@@ -449,9 +457,12 @@ export class MessageController {
         const phone = conversation.contact?.telefone ?? '';
         if (conversation.inbox?.channelType === 'whatsapp' && phone) {
           try {
+            // Per-Inbox: idem rota JWT — passar instance do Inbox para
+            // garantir que o dispatch vai pela conexão certa.
             const result = await evolutionService.sendText(accountId, {
               number: phone,
               text: parsed.content as string,
+              instance: conversation.inbox.evolutionInstance ?? null,
             });
             if (result.messageId) {
               finalMessage = await prisma.message.update({

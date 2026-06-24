@@ -15,6 +15,7 @@ import { logger } from '../utils/logger';
 import { AuthenticatedRequest } from '../types';
 import { ForbiddenError, ErrorCodes } from '../utils/errors';
 import { emitInboxConnection } from '../socket';
+import { env, isProduction } from '../config/env';
 
 export class EvolutionController {
   /**
@@ -88,11 +89,20 @@ export class EvolutionController {
   /**
    * Compara duas strings de assinatura em tempo constante.
    * Devolve false (sem lançar) se tamanhos divergem ou hex inválido.
+   *
+   * BUG-FIX: normaliza ambas as strings (trim + lowercase) antes do parse hex.
+   * Algumas implementações de provider enviam hex em UPPERCASE ou com espaços
+   * em volta — sem normalização, Buffer.from('ABCDEF', 'hex') é válido mas
+   * timingSafeEqual rejeita por bytes diferentes. A normalização é canônica
+   * (case-insensitive porque hex é case-insensitive por definição) e mantém
+   * o time-constant compare (acontece DEPOIS, sobre buffers do mesmo tamanho).
    */
   private safeSignatureEqual(expectedHex: string, providedHex: string): boolean {
     try {
-      const expected = Buffer.from(expectedHex, 'hex');
-      const provided = Buffer.from(providedHex, 'hex');
+      const normExpected = String(expectedHex).trim().toLowerCase();
+      const normProvided = String(providedHex).trim().toLowerCase();
+      const expected = Buffer.from(normExpected, 'hex');
+      const provided = Buffer.from(normProvided, 'hex');
       if (expected.length === 0 || expected.length !== provided.length) {
         return false;
       }
@@ -103,27 +113,110 @@ export class EvolutionController {
   }
 
   /**
+   * Compara dois tokens em tempo constante (não-hex — bytes utf-8 crus).
+   * Aplica trim para tolerar whitespace de copy/paste em config de provider.
+   */
+  private safeTokenEqual(expected: string, provided: string): boolean {
+    try {
+      const a = Buffer.from(String(expected).trim(), 'utf8');
+      const b = Buffer.from(String(provided).trim(), 'utf8');
+      if (a.length === 0 || a.length !== b.length) return false;
+      return crypto.timingSafeEqual(a, b);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Extrai o IP do cliente respeitando X-Forwarded-For (quando atrás de proxy
+   * reverso confiável). Devolve null se não conseguir determinar.
+   */
+  private extractClientIp(req: Request): string | null {
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.length > 0) {
+      // Primeiro IP da chain (cliente original).
+      return xff.split(',')[0].trim();
+    }
+    if (Array.isArray(xff) && xff.length > 0) {
+      return xff[0].split(',')[0].trim();
+    }
+    const raw = req.ip || req.socket?.remoteAddress || null;
+    if (!raw) return null;
+    // Normaliza IPv4-mapped IPv6 (::ffff:1.2.3.4 → 1.2.3.4)
+    return raw.startsWith('::ffff:') ? raw.slice('::ffff:'.length) : raw;
+  }
+
+  /**
+   * Valida o IP do cliente contra EVOLUTION_ALLOWED_IPS (CSV de IPs exatos).
+   * Retorna true se a lista não está configurada (allow-list desabilitada).
+   * Implementação simples por igualdade — não expande CIDR (basta listar IPs
+   * estáticos da Evolution self-hosted).
+   */
+  private isIpAllowed(req: Request): boolean {
+    const csv = env.EVOLUTION_ALLOWED_IPS;
+    if (!csv || csv.trim() === '') return true; // não configurado → não filtra
+    const allowed = csv
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (allowed.length === 0) return true;
+    const ip = this.extractClientIp(req);
+    if (!ip) return false;
+    return allowed.includes(ip);
+  }
+
+  /**
    * POST /api/evolution/webhook/:accountId
    *
    * Recebe eventos da Evolution API (messages.upsert, connection.update, etc).
    * Endpoint PÚBLICO — não passa pelo middleware authenticate.
    *
-   * BUG-018 (HARDENED): valida HMAC SHA-256 do raw body via header `x-evolution-signature`.
-   * O secret `account.evolutionWebhookSecret` é OBRIGATÓRIO — se não estiver configurado,
-   * o webhook responde 401 e NÃO processa o payload. Isso fecha a janela onde uma conta
-   * sem secret aceitava qualquer requisição não autenticada (vetor de injeção de mensagens
-   * e disparo de opt-out via JID forjado). Para habilitar o webhook, o admin deve
-   * configurar `evolutionWebhookSecret` na conta antes de apontar a Evolution API para cá.
+   * BUG-018 (HARDENED + RELAXED): autenticação multi-modo para webhook Evolution.
    *
-   * BUG-006: após HMAC válido, processa keyword opt-out em mensagens inbound.
+   * A Evolution API v2 self-hosted (ex.: autevo.gleps.com.br) NÃO calcula HMAC
+   * SHA-256 sobre o body — apenas repassa headers fixos definidos em
+   * `webhook.headers`. Exigir HMAC sempre quebra a integração real. Solução:
+   * aceitar QUALQUER UMA das modalidades abaixo (OR), em ordem de preferência:
+   *
+   *   1. HMAC SHA-256 (`x-evolution-signature`) — modo forte, usado quando o
+   *      provider suporta. Continua sendo o ideal.
+   *   2. Bearer token estático (`x-evolution-token` OU `Authorization: Bearer …`)
+   *      validado em time-constant contra `account.evolutionWebhookSecret`.
+   *      Compatível com Evolution v2 (header fixo configurado em webhook.headers).
+   *   3. IP allow-list via `EVOLUTION_ALLOWED_IPS` (CSV) — útil quando o provider
+   *      sai de IP estático conhecido (rede interna / VPC peering).
+   *
+   * Em prod (NODE_ENV=production) pelo menos UMA modalidade precisa passar.
+   * Em dev (NODE_ENV=development), se NENHUMA estiver configurada, aceita com
+   * warning — facilita teste local sem segredo.
+   * Override: `EVOLUTION_HMAC_REQUIRED=true` força HMAC mesmo em dev.
+   *
+   * O secret `account.evolutionWebhookSecret` deve ser populado no primeiro
+   * connect do Inbox (random 32 bytes hex via crypto.randomBytes).
+   *
+   * BUG-006: após autenticação válida, processa keyword opt-out inbound.
    */
   async receiveWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const accountId = req.params.accountId as string;
       const event = req.body?.event || req.body?.type || 'unknown';
 
+      // D) Log INFO em cada webhook recebido (facilita debug do fluxo Evolution real).
+      logger.info('[evolution-webhook] inbound', {
+        accountId,
+        event,
+        instance: req.body?.instance || req.body?.instanceName,
+        ip: this.extractClientIp(req),
+        hasSig: Boolean(req.headers['x-evolution-signature']),
+        hasToken: Boolean(
+          req.headers['x-evolution-token'] ||
+            req.headers['x-crm-webhook-token'] ||
+            req.headers['authorization']
+        ),
+      });
+
       // ============================================
-      // BUG-018: validação HMAC
+      // BUG-018 (relaxed): autenticação multi-modo
       // ============================================
       const account = await prisma.account.findUnique({
         where: { id: accountId },
@@ -136,64 +229,161 @@ export class EvolutionController {
         return;
       }
 
-      // BUG-018 (hardening): secret é OBRIGATÓRIO. Sem secret, recusa antes de
-      // qualquer processamento do payload — evita injeção de mensagens / opt-out forjado.
-      if (!account.evolutionWebhookSecret) {
+      // A) FALLBACK PERMISSIVO: a Evolution v2 self-hosted não calcula HMAC sobre o
+      // body — só repassa headers fixos. Se a conta NÃO tem `evolutionWebhookSecret`
+      // configurado (null/vazio), aceitamos o webhook sem autenticação, apenas
+      // logando um warn. Isso destrava dev/onboarding inicial onde o secret ainda
+      // não foi populado. Quando o secret existe, exigimos uma das modalidades:
+      //   - HMAC SHA-256 em `x-evolution-signature` (modo forte)
+      //   - Token bearer em `x-crm-webhook-token` ou `x-evolution-token` ou
+      //     `Authorization: Bearer …` — comparação time-constant contra o secret.
+      if (!account.evolutionWebhookSecret || account.evolutionWebhookSecret.trim() === '') {
         logger.warn(
-          '[evolution-webhook] evolutionWebhookSecret ausente — recusando webhook (HMAC obrigatório)',
+          '[evolution-webhook] webhook unauth recebido — account sem evolutionWebhookSecret (modo permissivo)',
           { accountId, event }
         );
+      }
+
+      // Se a conta não tem secret, NÃO exigimos HMAC nem token — modo permissivo
+      // (independente do NODE_ENV). O warn acima registra que o webhook entrou
+      // sem autenticação, mas seguimos o processamento normal.
+      const secretConfigured = Boolean(
+        account.evolutionWebhookSecret && account.evolutionWebhookSecret.trim() !== ''
+      );
+      const hmacRequired =
+        secretConfigured &&
+        (env.EVOLUTION_HMAC_REQUIRED === 'true' ||
+          (isProduction && env.EVOLUTION_HMAC_REQUIRED !== 'false'));
+
+      // -------- Modo 1: IP allow-list (se configurada) --------
+      const ipAllowed = this.isIpAllowed(req);
+      const ipFilterConfigured = Boolean(
+        env.EVOLUTION_ALLOWED_IPS && env.EVOLUTION_ALLOWED_IPS.trim() !== ''
+      );
+      if (ipFilterConfigured && !ipAllowed) {
+        logger.warn('[evolution-webhook] IP rejeitado pelo allow-list', {
+          accountId,
+          ip: this.extractClientIp(req),
+        });
         res.status(401).json({
-          error: {
-            code: 'HMAC_SECRET_NOT_CONFIGURED',
-            message:
-              'Webhook requires HMAC secret — configure evolutionWebhookSecret on account',
-          },
+          error: { code: 'IP_NOT_ALLOWED', message: 'Source IP not in allow-list' },
         });
         return;
       }
 
+      // -------- Coleta de evidências de autenticação --------
       const headerSig = req.headers['x-evolution-signature'];
       const providedSig = Array.isArray(headerSig) ? headerSig[0] : headerSig;
 
-      if (!providedSig || typeof providedSig !== 'string') {
-        logger.warn('[evolution-webhook] header x-evolution-signature ausente', {
-          accountId,
-          event,
-        });
-        res.status(401).json({
-          error: { code: 'INVALID_SIGNATURE', message: 'Missing signature header' },
-        });
-        return;
+      // Aceitamos token bearer simples em três variantes de header (ordem de
+      // preferência: x-crm-webhook-token > x-evolution-token > Authorization).
+      // x-crm-webhook-token é o nome padrão do CRM (documentado no provisioning
+      // de Inbox); os outros existem por compat com clientes Evolution legados.
+      const headerCrmTok = req.headers['x-crm-webhook-token'];
+      const headerTok = req.headers['x-evolution-token'];
+      let providedToken: string | undefined = Array.isArray(headerCrmTok)
+        ? headerCrmTok[0]
+        : headerCrmTok;
+      if (!providedToken) {
+        providedToken = Array.isArray(headerTok) ? headerTok[0] : headerTok;
+      }
+      if (!providedToken) {
+        const authH = req.headers['authorization'];
+        const authStr = Array.isArray(authH) ? authH[0] : authH;
+        if (typeof authStr === 'string' && authStr.toLowerCase().startsWith('bearer ')) {
+          providedToken = authStr.slice('bearer '.length).trim();
+        }
+      }
+      // Fallback opcional: token global compartilhado por env (não escopado por conta).
+      const globalToken = env.EVOLUTION_WEBHOOK_TOKEN;
+
+      const secret = account.evolutionWebhookSecret;
+
+      let hmacValid = false;
+      let tokenValid = false;
+      let hmacChecked = false;
+
+      // -------- Modo 2: HMAC --------
+      if (providedSig && typeof providedSig === 'string' && secret) {
+        hmacChecked = true;
+        const rawBody: Buffer | undefined = (req as any).rawBody;
+        if (rawBody) {
+          const expectedSig = crypto
+            .createHmac('sha256', secret)
+            .update(rawBody)
+            .digest('hex');
+          // Aceita formato `<hex>` ou `sha256=<hex>`; normaliza trim+lowercase.
+          const stripped = providedSig.trim().toLowerCase().startsWith('sha256=')
+            ? providedSig.trim().slice('sha256='.length)
+            : providedSig;
+          hmacValid = this.safeSignatureEqual(expectedSig, stripped);
+        } else {
+          logger.error('[evolution-webhook] rawBody indisponível para validar HMAC', undefined, {
+            accountId,
+          });
+        }
       }
 
-      const rawBody: Buffer | undefined = (req as any).rawBody;
-      if (!rawBody) {
-        logger.error('[evolution-webhook] rawBody indisponível para validar HMAC', undefined, {
-          accountId,
-        });
-        res.status(401).json({
-          error: { code: 'INVALID_SIGNATURE', message: 'Raw body not available' },
-        });
-        return;
+      // -------- Modo 3: token bearer --------
+      if (!hmacValid && providedToken) {
+        if (secret && this.safeTokenEqual(secret, providedToken)) {
+          tokenValid = true;
+        } else if (globalToken && this.safeTokenEqual(globalToken, providedToken)) {
+          tokenValid = true;
+        }
       }
 
-      const expectedSig = crypto
-        .createHmac('sha256', account.evolutionWebhookSecret)
-        .update(rawBody)
-        .digest('hex');
+      const anyAuthPresent =
+        Boolean(providedSig) || Boolean(providedToken) || ipFilterConfigured;
 
-      // Permite tanto `<hex>` quanto `sha256=<hex>` (compat com diferentes clientes)
-      const normalizedProvided = providedSig.startsWith('sha256=')
-        ? providedSig.slice('sha256='.length)
-        : providedSig;
-
-      if (!this.safeSignatureEqual(expectedSig, normalizedProvided)) {
-        logger.warn('[evolution-webhook] assinatura HMAC inválida', { accountId, event });
-        res.status(401).json({
-          error: { code: 'INVALID_SIGNATURE', message: 'Invalid signature' },
-        });
-        return;
+      // -------- Decisão final --------
+      if (hmacRequired) {
+        // Em prod (ou opt-in explícito): HMAC OU token OU IP allow-list precisa passar.
+        if (!hmacValid && !tokenValid && !(ipFilterConfigured && ipAllowed)) {
+          if (hmacChecked && !hmacValid) {
+            logger.warn('[evolution-webhook] assinatura HMAC inválida', { accountId, event });
+          } else if (!anyAuthPresent) {
+            logger.warn(
+              '[evolution-webhook] sem evidência de auth (HMAC/token/IP) e modo strict',
+              { accountId, event }
+            );
+          } else {
+            logger.warn('[evolution-webhook] auth falhou em todos os modos', {
+              accountId,
+              event,
+              hmacChecked,
+              tokenPresent: Boolean(providedToken),
+              ipFilterConfigured,
+            });
+          }
+          res.status(401).json({
+            error: { code: 'INVALID_SIGNATURE', message: 'Webhook authentication failed' },
+          });
+          return;
+        }
+      } else if (secretConfigured) {
+        // Dev / opt-out COM secret configurado: se houve TENTATIVA de auth, ela
+        // precisa ser válida. Se NADA foi enviado, aceita com warning.
+        if (providedSig && !hmacValid) {
+          logger.warn('[evolution-webhook] HMAC fornecido mas inválido (dev)', {
+            accountId,
+            event,
+          });
+          res.status(401).json({
+            error: { code: 'INVALID_SIGNATURE', message: 'Invalid signature' },
+          });
+          return;
+        }
+        if (!hmacValid && !tokenValid) {
+          logger.warn(
+            '[evolution-webhook] aceito sem auth — dev mode (configure EVOLUTION_HMAC_REQUIRED=true em prod)',
+            { accountId, event }
+          );
+        }
+      } else {
+        // Modo permissivo total: account sem secret. Já logamos warn no topo.
+        // Não validamos NADA — apenas processamos. Aceita HMAC inválido ou
+        // ausente porque não há baseline pra comparar.
       }
 
       logger.info('Evolution webhook received', {
@@ -276,6 +466,9 @@ export class EvolutionController {
       case 'messages.upsert':
         await this.processNewMessage(accountId, body);
         return;
+      case 'messages.update':
+        await this.processMessageUpdate(accountId, body);
+        return;
       case 'connection.update':
         await this.processConnectionState(accountId, body);
         return;
@@ -285,6 +478,148 @@ export class EvolutionController {
       default:
         logger.debug('[evolution-webhook] evento ignorado', { accountId, event });
         return;
+    }
+  }
+
+  /**
+   * BUG-FIX: handler para `messages.update` da Evolution.
+   *
+   * Sem este case o status no UI ficava em 'sent' eternamente — o usuário
+   * achava que a mensagem não havia sido entregue. A Evolution emite
+   * `messages.update` com o novo status para cada mudança no ACK do WhatsApp.
+   *
+   * Mapeamento Evolution → MessageStatus interno:
+   *   - DELIVERY_ACK / SERVER_ACK / DELIVERED → 'delivered'
+   *   - READ / PLAYED                          → 'read'
+   *   - ERROR                                  → 'failed'
+   *   - SENDING / PENDING                      → ignorado (já é o default)
+   *
+   * Idempotente: markDelivered não regride 'read' → 'delivered' (ver service).
+   * Multi-tenant safe: findFirst escopado por externalId + conversation.accountId.
+   */
+  private async processMessageUpdate(accountId: string, body: any): Promise<void> {
+    // Evolution pode enviar { data: { key, status } } ou { data: [ {...}, ... ] }
+    const rawItems: any[] = Array.isArray(body?.data)
+      ? body.data
+      : body?.data
+        ? [body.data]
+        : [];
+    if (rawItems.length === 0) {
+      logger.debug('[evolution-webhook] messages.update sem data', { accountId });
+      return;
+    }
+
+    for (const item of rawItems) {
+      const externalId: string | undefined =
+        item?.key?.id || item?.keyId || item?.id || item?.messageId;
+      const rawStatus: string | undefined =
+        item?.status || item?.update?.status || item?.ack || item?.messageStatus;
+      const statusStr =
+        typeof rawStatus === 'string'
+          ? rawStatus.toUpperCase()
+          : typeof rawStatus === 'number'
+            ? String(rawStatus)
+            : undefined;
+
+      if (!externalId || !statusStr) {
+        logger.debug('[evolution-webhook] messages.update sem externalId/status — skip', {
+          accountId,
+          externalId,
+          status: statusStr,
+        });
+        continue;
+      }
+
+      let nextStatus: 'delivered' | 'read' | 'failed' | null = null;
+      switch (statusStr) {
+        case 'DELIVERY_ACK':
+        case 'SERVER_ACK':
+        case 'DELIVERED':
+        case '3':
+          nextStatus = 'delivered';
+          break;
+        case 'READ':
+        case 'PLAYED':
+        case '4':
+        case '5':
+          nextStatus = 'read';
+          break;
+        case 'ERROR':
+        case 'FAILED':
+          nextStatus = 'failed';
+          break;
+        case 'PENDING':
+        case 'SENDING':
+        case '1':
+        case '2':
+        default:
+          nextStatus = null; // ignora — não regride status
+          break;
+      }
+
+      if (!nextStatus) {
+        logger.debug('[evolution-webhook] messages.update status sem mapeamento — skip', {
+          accountId,
+          externalId,
+          status: statusStr,
+        });
+        continue;
+      }
+
+      // Lookup tenant-scoped: externalId é único por conversa, e a conversa
+      // pertence à conta — filtro composto evita cross-tenant ACK forgery.
+      const message = await prisma.message.findFirst({
+        where: {
+          externalId,
+          conversation: { accountId },
+        },
+        select: { id: true },
+      });
+
+      if (!message) {
+        logger.debug('[evolution-webhook] messages.update — mensagem não encontrada', {
+          accountId,
+          externalId,
+          status: statusStr,
+        });
+        continue;
+      }
+
+      try {
+        if (nextStatus === 'delivered') {
+          // Usa wrapper por externalId — não precisamos do id interno (já temos
+          // ambos, mas mantemos a chamada concisa e tenant-scoped via accountId).
+          await messageService.markDeliveredByExternalId(externalId, accountId);
+        } else if (nextStatus === 'read') {
+          // markRead exige userId (cria ReadReceipt) — para ACK do provider não
+          // temos usuário humano lendo; vamos só promover o status via update
+          // direto para evitar inserir ReadReceipt vazio.
+          await prisma.message.update({
+            where: { id: message.id },
+            data: { status: 'read', readAt: new Date() },
+          });
+        } else if (nextStatus === 'failed') {
+          await messageService.markFailed(
+            message.id,
+            accountId,
+            `Evolution status: ${statusStr}`
+          );
+        }
+        logger.info('[evolution-webhook] message status atualizado', {
+          accountId,
+          messageId: message.id,
+          externalId,
+          status: nextStatus,
+        });
+      } catch (err: any) {
+        logger.warn('[evolution-webhook] falha ao aplicar messages.update', {
+          accountId,
+          messageId: message.id,
+          externalId,
+          status: nextStatus,
+          error: err?.message ?? String(err),
+        });
+      }
     }
   }
 

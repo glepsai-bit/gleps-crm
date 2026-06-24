@@ -145,7 +145,11 @@ function getInitials(name: string | null | undefined): string {
 }
 
 function lastMessageSnippet(conv: Conversation): string {
-  const msg = conv.messages?.[conv.messages.length - 1];
+  // Backend `FULL_CONVERSATION_INCLUDE` agora retorna messages ordenadas desc
+  // com take=1, então o item mais recente é messages[0]. Mantém fallback
+  // pro último item caso outro caller envie array com ordem ascendente.
+  const list = conv.messages ?? [];
+  const msg = list[0] ?? list[list.length - 1];
   if (!msg) return 'Sem mensagens ainda';
   if (msg.contentType === 'media') return '📎 Mídia';
   if (msg.contentType === 'audio') return '🎤 Áudio';

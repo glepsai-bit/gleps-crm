@@ -19,6 +19,12 @@ export interface SendTextInput {
   number: string;
   text: string;
   delay?: number;
+  /**
+   * Override per-Inbox: nome da instância Evolution a usar para este send.
+   * Quando ausente, cai no legacy Account.evolutionInstance (campanhas e
+   * prospecção ainda não migradas para per-Inbox).
+   */
+  instance?: string | null;
 }
 
 export interface SendMediaInput {
@@ -27,11 +33,13 @@ export interface SendMediaInput {
   mediaType: 'image' | 'video' | 'document';
   caption?: string;
   fileName?: string;
+  instance?: string | null;
 }
 
 export interface SendAudioInput {
   number: string;
   audioUrl: string;
+  instance?: string | null;
 }
 
 export interface SendResult {
@@ -58,6 +66,11 @@ export interface DisconnectResult {
 export interface CreateInstanceInput {
   instance: string;
   webhookUrl?: string | null;
+  /**
+   * Token compartilhado enviado pelo webhook como header `x-crm-webhook-token`,
+   * usado para autenticar callbacks da Evolution no nosso endpoint.
+   */
+  webhookAuthToken?: string | null;
 }
 
 export interface CreateInstanceResult {
@@ -65,6 +78,31 @@ export interface CreateInstanceResult {
   code?: string;
   raw: any;
 }
+
+export interface SetWebhookInput {
+  url: string;
+  events?: string[];
+  byEvents?: boolean;
+  base64?: boolean;
+  /**
+   * Token compartilhado enviado pelo webhook como header `x-crm-webhook-token`,
+   * usado para autenticar callbacks da Evolution no nosso endpoint.
+   */
+  authToken?: string | null;
+}
+
+export interface SetWebhookResult {
+  ok: boolean;
+  raw: any;
+}
+
+export const DEFAULT_WEBHOOK_EVENTS = [
+  'MESSAGES_UPSERT',
+  'MESSAGES_UPDATE',
+  'CONNECTION_UPDATE',
+  'CONTACTS_UPDATE',
+  'SEND_MESSAGE',
+];
 
 class EvolutionService {
   // ============================================
@@ -267,7 +305,7 @@ class EvolutionService {
       throw new ValidationError('text é obrigatório');
     }
 
-    const config = await this.getAccountConfig(accountId);
+    const config = await this.getAccountConfig(accountId, input.instance);
     const number = this.normalizeNumber(input.number);
 
     const body: Record<string, any> = {
@@ -311,7 +349,7 @@ class EvolutionService {
       );
     }
 
-    const config = await this.getAccountConfig(accountId);
+    const config = await this.getAccountConfig(accountId, input.instance);
     const number = this.normalizeNumber(input.number);
 
     const body: Record<string, any> = {
@@ -366,7 +404,7 @@ class EvolutionService {
       );
     }
 
-    const config = await this.getAccountConfig(accountId);
+    const config = await this.getAccountConfig(accountId, input.instance);
     const number = this.normalizeNumber(input.number);
 
     const body: Record<string, any> = {
@@ -542,7 +580,22 @@ class EvolutionService {
     };
 
     if (input.webhookUrl) {
-      body.webhook = input.webhookUrl;
+      body.webhook = {
+        enabled: true,
+        url: input.webhookUrl,
+        byEvents: false,
+        base64: false,
+        events: [
+          'MESSAGES_UPSERT',
+          'MESSAGES_UPDATE',
+          'CONNECTION_UPDATE',
+          'CONTACTS_UPDATE',
+          'SEND_MESSAGE',
+        ],
+        headers: input.webhookAuthToken
+          ? { 'x-crm-webhook-token': input.webhookAuthToken }
+          : undefined,
+      };
     }
 
     const raw = await this.makeRequest<any>(
@@ -581,6 +634,70 @@ class EvolutionService {
       code: normalizedCode,
       raw,
     };
+  }
+
+  /**
+   * Configura (ou reconfigura) o webhook de uma instance Evolution.
+   * Idempotente: o endpoint POST /webhook/set/{instance} sobrescreve a config
+   * existente, então pode ser chamado tanto no create quanto em healthcheck/reconnect.
+   *
+   * Falhas aqui NÃO devem derrubar o fluxo principal (create/connect) — o caller
+   * deve capturar e logar warning, garantindo que QR code volte pro usuário mesmo
+   * que a configuração de webhook tenha falhado (será re-tentada no próximo healthcheck).
+   */
+  async setWebhook(
+    accountId: string,
+    instance: string,
+    input: SetWebhookInput
+  ): Promise<SetWebhookResult> {
+    if (!instance || instance.trim() === '') {
+      throw new ValidationError('instance é obrigatório');
+    }
+    if (!input.url || input.url.trim() === '') {
+      throw new ValidationError('webhook url é obrigatório');
+    }
+
+    const config = await this.getAccountConfig(accountId, instance);
+
+    const body = {
+      webhook: {
+        enabled: true,
+        url: input.url,
+        byEvents: input.byEvents ?? false,
+        base64: input.base64 ?? false,
+        events: input.events ?? DEFAULT_WEBHOOK_EVENTS,
+        headers: input.authToken
+          ? { 'x-crm-webhook-token': input.authToken }
+          : undefined,
+      },
+    };
+
+    const raw = await this.makeRequest<any>(
+      config,
+      `/webhook/set/${encodeURIComponent(instance)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    );
+
+    let ok = true;
+    if (raw && typeof raw === 'object') {
+      const hasError =
+        (raw.error !== undefined && raw.error !== false && raw.error !== null) ||
+        raw.success === false ||
+        raw.ok === false;
+      if (hasError) ok = false;
+    }
+
+    logger.info('Evolution setWebhook', {
+      accountId,
+      instance,
+      url: input.url,
+      ok,
+    });
+
+    return { ok, raw };
   }
 }
 

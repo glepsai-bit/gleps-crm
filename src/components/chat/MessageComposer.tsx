@@ -13,6 +13,15 @@
  * mantemos compat com o backend `sendMessage` que aceita `attachments[]`
  * com `fileUrl` já hospedado. O input de file converte para base64 inline
  * em data URL como fallback, sinalizado por toast.
+ *
+ * IMPORTANTE (bug HIGH): o fallback base64 quebra o body do POST quando o
+ * arquivo passa do limite do `express.json` (10MB) — o Evolution também
+ * rejeita base64 mal-formado / muito grande. Enquanto o endpoint dedicado
+ * de upload não existir, aplicamos:
+ *   - limite explícito de 5 MB por arquivo (após base64 o body cresce ~33%)
+ *   - validação do esquema do `fileUrl` (http(s):// ou data:)
+ *   - aviso visual (toast) sempre que cair no fallback inline
+ *   - bloqueio do envio quando algum anexo excede o limite
  */
 import {
   ChangeEvent,
@@ -48,6 +57,31 @@ const EMOJIS = [
   '🤔','😐','😴','😅','😬','😭','😡','👍','👎','👏',
   '🙏','💪','🎉','❤️','🔥','✅','❌','⏰','📎','📞',
 ];
+
+/**
+ * Limite máximo (em bytes) por anexo enquanto não existir endpoint dedicado de
+ * upload. O backend recebe via `express.json` (default ~10MB) e o base64 inflaciona
+ * em ~33%, então mantemos 5MB de margem segura. Anexos acima desse limite são
+ * recusados no cliente antes de qualquer chamada de rede.
+ */
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Schemes aceitos para `fileUrl` no payload de mensagens. Backend espera URL
+ * hospedada (http/https) ou data URL para o fallback inline. Qualquer outro
+ * esquema (blob:, file:, javascript:, etc.) é rejeitado.
+ */
+const ALLOWED_FILE_URL_SCHEMES = /^(https?:\/\/|data:)/i;
+
+function isAllowedFileUrl(url: string): boolean {
+  return ALLOWED_FILE_URL_SCHEMES.test(url);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function mimeToFileType(mime: string): AttachmentFileType {
   if (mime.startsWith('image/')) return 'image';
@@ -164,10 +198,36 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         throw new Error('Mensagem vazia');
       }
 
+      // Enforcement de tamanho: sem endpoint dedicado de upload, base64 inline
+      // estoura o limite do express.json e o Evolution rejeita payloads muito
+      // grandes. Abortamos antes de chamar a API.
+      const oversized = pending.filter((p) => p.file.size > MAX_ATTACHMENT_BYTES);
+      if (oversized.length > 0) {
+        const names = oversized.map((p) => `${p.file.name} (${formatBytes(p.file.size)})`).join(', ');
+        throw new Error(
+          `Arquivo(s) acima do limite de ${formatBytes(MAX_ATTACHMENT_BYTES)}: ${names}. Hospede em URL pública e cole o link.`
+        );
+      }
+
+      // Aviso ao usuário de que estamos no fallback base64 (não é upload real).
+      if (pending.length > 0) {
+        toast({
+          title: 'Enviando anexo inline (base64)',
+          description:
+            'Upload dedicado ainda não disponível — arquivos grandes podem demorar ou falhar. Limite por arquivo: ' +
+            formatBytes(MAX_ATTACHMENT_BYTES),
+        });
+      }
+
       // Converte anexos pendentes (fallback: data URL inline).
       const attachments: SendAttachmentInput[] = await Promise.all(
         pending.map(async (p) => {
           const dataUrl = await fileToDataUrl(p.file);
+          if (!isAllowedFileUrl(dataUrl)) {
+            throw new Error(
+              `URL de anexo inválida para "${p.file.name}". Apenas http(s):// ou data: são aceitos.`
+            );
+          }
           return {
             fileType: p.fileType,
             fileUrl: dataUrl,
@@ -215,13 +275,37 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
   function handleFileSelected(e: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
-    const next: PendingAttachment[] = files.map((file) => ({
+
+    // Bloqueia já na seleção arquivos acima do limite — feedback imediato.
+    const accepted: File[] = [];
+    const rejected: File[] = [];
+    for (const file of files) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        rejected.push(file);
+      } else {
+        accepted.push(file);
+      }
+    }
+    if (rejected.length > 0) {
+      const names = rejected
+        .map((f) => `${f.name} (${formatBytes(f.size)})`)
+        .join(', ');
+      toast({
+        title: 'Arquivo muito grande',
+        description: `Limite de ${formatBytes(MAX_ATTACHMENT_BYTES)} por anexo. Rejeitado(s): ${names}.`,
+        variant: 'destructive',
+      });
+    }
+
+    const next: PendingAttachment[] = accepted.map((file) => ({
       id: crypto.randomUUID(),
       file,
       fileType: mimeToFileType(file.type),
       previewUrl: URL.createObjectURL(file),
     }));
-    setPending((prev) => [...prev, ...next]);
+    if (next.length > 0) {
+      setPending((prev) => [...prev, ...next]);
+    }
     e.target.value = ''; // permite re-selecionar o mesmo arquivo
   }
 
@@ -259,9 +343,13 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
             <div
               key={p.id}
               className="relative flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+              title={`${p.file.name} — ${formatBytes(p.file.size)}`}
             >
               <Paperclip className="w-3 h-3 text-muted-foreground" />
               <span className="max-w-[140px] truncate">{p.file.name}</span>
+              <span className="text-[10px] text-muted-foreground">
+                {formatBytes(p.file.size)}
+              </span>
               <button
                 type="button"
                 onClick={() => removePending(p.id)}
