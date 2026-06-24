@@ -806,6 +806,28 @@ export class EvolutionController {
       }
     );
 
+    // BUG-2: o `contactName` acima só é aplicado no CREATE do Contact.
+    // Em mensagens subsequentes precisamos manter `Contact.pushName` em dia
+    // (auditoria + detecção de WhatsApp compartilhado) sem fazer flush no
+    // `Contact.nome` quando o agente já o editou manualmente. Reaproveitamos
+    // o mesmo guard (nameSource + OCC) do contacts.update — assim qualquer
+    // que seja o caminho de chegada do pushName, a regra é a mesma.
+    if (!fromMe && pushName && conversation.contactId) {
+      try {
+        await this.processContactUpdate(accountId, {
+          data: { id: remoteJid, pushName },
+        });
+      } catch (err) {
+        // Best-effort: nunca pode abortar a ingestão da mensagem.
+        logger.warn('[evolution-webhook] processContactUpdate (inbound) falhou', {
+          accountId,
+          conversationId: conversation.id,
+          phone,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     // Idempotência: se já temos Message com este externalId nesta conversa, skip.
     const existing = await prisma.message.findFirst({
       where: { conversationId: conversation.id, externalId: messageId },
@@ -986,8 +1008,26 @@ export class EvolutionController {
   }
 
   /**
-   * Processa `contacts.update` — atualiza nome do contato se o pushName/notify mudou.
-   * Matching por telefone dentro da conta (multi-tenant safe).
+   * Processa `contacts.update` — atualiza pushName do contato e, quando
+   * autorizado (`nameSource !== 'manual'`), também sobrescreve o `nome`.
+   *
+   * BUG-2 (Baldinho x Matheus Deloroso): antes este handler sobrescrevia
+   * `Contact.nome` incondicionalmente, então (1) o agente editava o nome
+   * pela UI mas o próximo webhook trazia de volta o pushName do WhatsApp,
+   * e (2) quando o mesmo número estava cadastrado em 2 devices/sessões
+   * WhatsApp distintos os webhooks ficavam alternando entre os 2 pushNames
+   * em paralelo (race lost-update sem optimistic concurrency).
+   *
+   * Correções aplicadas:
+   *  1. `Contact.nameSource = 'manual'` ⇒ NUNCA mexe em `nome` (preserva
+   *     edição do agente). pushName segue sendo atualizado como auditoria.
+   *  2. UPDATE escopado por `updatedAt` (optimistic concurrency token) —
+   *     se outro webhook tocou o contato entre o read e o write, este
+   *     update perde silenciosamente e a próxima rodada reconcilia.
+   *  3. Detecção de WhatsApp compartilhado: logamos `warn` quando o
+   *     `pushNameChangeCount` ultrapassa 3 mudanças em < 1 h.
+   *  4. `pushName` é gravado em campo separado pra histórico — `Contact.nome`
+   *     fica estável até o agente editar manualmente.
    */
   private async processContactUpdate(accountId: string, body: any): Promise<void> {
     // Evolution pode mandar array ou objeto único em data
@@ -1004,9 +1044,19 @@ export class EvolutionController {
 
       const phone = jid.split('@')[0];
 
+      // Snapshot do estado atual — usado tanto pra decidir o que escrever
+      // quanto como token de OCC (`updatedAt`) no WHERE do UPDATE.
       const contact = await prisma.contact.findFirst({
         where: { accountId, telefone: phone },
-        select: { id: true, nome: true },
+        select: {
+          id: true,
+          nome: true,
+          nameSource: true,
+          pushName: true,
+          pushNameUpdatedAt: true,
+          pushNameChangeCount: true,
+          updatedAt: true,
+        },
       });
       if (!contact) {
         logger.debug('[evolution-webhook] contacts.update — sem contato local', {
@@ -1015,17 +1065,83 @@ export class EvolutionController {
         });
         continue;
       }
-      if (contact.nome === name) continue;
 
-      await prisma.contact.update({
-        where: { id: contact.id },
-        data: { nome: name },
+      const pushNameChanged = contact.pushName !== name;
+      const nomeChanged = contact.nome !== name;
+      const canOverwriteNome = contact.nameSource !== 'manual';
+
+      // Nada a fazer: pushName igual ao registrado E (não pode/precisa mexer no nome).
+      if (!pushNameChanged && !(canOverwriteNome && nomeChanged)) continue;
+
+      // Janela de 1 h pra detectar WhatsApp compartilhado (>3 trocas/h).
+      const now = new Date();
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+      const withinWindow =
+        contact.pushNameUpdatedAt !== null &&
+        contact.pushNameUpdatedAt !== undefined &&
+        contact.pushNameUpdatedAt > oneHourAgo;
+      const nextChangeCount = pushNameChanged
+        ? (withinWindow ? contact.pushNameChangeCount + 1 : 1)
+        : contact.pushNameChangeCount;
+
+      // Update atômico com guard de OCC: where exige `updatedAt === snapshot`.
+      // Se outro webhook concorrente já bumpou o updatedAt entre o read
+      // acima e este write, o updateMany devolve `count: 0` e desistimos
+      // — a próxima webhook reconcilia. Não usamos `update({where:{id}})`
+      // porque ele lança P2025 e queremos ignoração silenciosa.
+      const data: Record<string, unknown> = {};
+      if (pushNameChanged) {
+        data.pushName = name;
+        data.pushNameUpdatedAt = now;
+        data.pushNameChangeCount = nextChangeCount;
+      }
+      if (canOverwriteNome && nomeChanged) {
+        data.nome = name;
+        // nameSource segue 'inbound' (ou o que estava); não promovemos pra manual.
+      }
+
+      const result = await prisma.contact.updateMany({
+        where: {
+          id: contact.id,
+          accountId,
+          updatedAt: contact.updatedAt,
+        },
+        data,
       });
+
+      if (result.count === 0) {
+        // OCC perdeu: outro fluxo já tocou o contato. Não é erro — apenas
+        // sinaliza concorrência pra debug e segue.
+        logger.debug('[evolution-webhook] contacts.update — OCC lost, skipping', {
+          accountId,
+          contactId: contact.id,
+          phone,
+        });
+        continue;
+      }
+
+      if (pushNameChanged && nextChangeCount > 3 && withinWindow) {
+        logger.warn(
+          '[evolution-webhook] pushName oscilando >3x em 1h — possível WhatsApp compartilhado',
+          {
+            accountId,
+            contactId: contact.id,
+            phone,
+            previousPushName: contact.pushName,
+            currentPushName: name,
+            changeCount: nextChangeCount,
+            nameSource: contact.nameSource,
+          }
+        );
+      }
 
       logger.info('[evolution-webhook] contato atualizado via contacts.update', {
         accountId,
         contactId: contact.id,
         phone,
+        pushNameChanged,
+        nomeUpdated: Boolean(data.nome),
+        nameSource: contact.nameSource,
       });
     }
   }

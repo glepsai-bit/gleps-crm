@@ -125,7 +125,12 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+    // BUG-3: invalida AMBAS as variantes da conversa (thread-full +
+    // sidepanel-meta) via predicate.
+    queryClient.invalidateQueries({
+      predicate: (q) =>
+        q.queryKey[0] === 'conversation' && q.queryKey[1] === conversationId,
+    });
     // CHAT-TAG-SYNC-2 (front): após aplicar/remover label numa conversa o
     // backend espelha LeadTag do contato (CHAT-TAG-SYNC-1 no
     // conversation.service). O painel "Tags do contato" (ContactSidePanel),

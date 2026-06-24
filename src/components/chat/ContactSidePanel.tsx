@@ -100,7 +100,13 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
     mutationFn: () =>
       conversationsBackendService.setCustomAttributes(conversation.id, values),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversation.id] });
+      // BUG-3: invalida AMBAS as variantes (thread-full + sidepanel-meta)
+      // via predicate, em vez de match por prefixo (que sob certas versoes
+      // do TanStack Query pode nao casar a entrada com sufixo extra).
+      queryClient.invalidateQueries({
+        predicate: (q) =>
+          q.queryKey[0] === 'conversation' && q.queryKey[1] === conversation.id,
+      });
       toast({ title: 'Atributos salvos' });
       setDirty(false);
     },

@@ -10,12 +10,10 @@
  * no header. O Socket.IO (namespace /chat) é conectado/desconectado com base
  * no JWT do usuário autenticado e join na conversa selecionada.
  */
-import { useEffect, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { MessageSquare, Inbox as InboxIcon, User } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { tokenManager } from '@/api/client';
-import { chatSocket } from '@/services/socket.client';
 import { conversationsBackendService } from '@/services/conversations.backend.service';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
@@ -24,65 +22,55 @@ import { ConversationThread } from '@/components/chat/ConversationThread';
 import { ContactSidePanel } from '@/components/chat/ContactSidePanel';
 
 export default function AdminChatPage() {
-  const { user, account } = useAuth();
-  const queryClient = useQueryClient();
+  const { account } = useAuth();
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
     null
   );
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [mobileContactOpen, setMobileContactOpen] = useState(false);
 
-  // Conexão socket — depende do JWT do usuário logado.
-  useEffect(() => {
-    if (!user?.id) return;
-    const token = tokenManager.getToken();
-    if (!token) return;
-    chatSocket.connect(token);
-    return () => {
-      chatSocket.disconnect();
-    };
-  }, [user?.id]);
-
-  // Join/leave room conforme conversa selecionada + invalidação reativa.
-  useEffect(() => {
-    if (!selectedConversationId) return;
-    chatSocket.joinConversation(selectedConversationId);
-
-    const unsubMsg = chatSocket.onMessageCreated((payload) => {
-      if (payload.conversationId === selectedConversationId) {
-        queryClient.invalidateQueries({
-          queryKey: ['conversation', selectedConversationId],
-        });
-      }
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    });
-
-    const unsubConv = chatSocket.onConversationUpdated((payload) => {
-      queryClient.invalidateQueries({
-        queryKey: ['conversation', payload.conversationId],
-      });
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    });
-
-    const unsubAssigned = chatSocket.onAssigned((payload) => {
-      queryClient.invalidateQueries({
-        queryKey: ['conversation', payload.conversationId],
-      });
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    });
-
-    return () => {
-      unsubMsg();
-      unsubConv();
-      unsubAssigned();
-      chatSocket.leaveConversation(selectedConversationId);
-    };
-  }, [selectedConversationId, queryClient]);
+  // OBS sobre Socket.IO (T-022 / BUG-4):
+  //
+  //  - connect/disconnect é de propriedade do AdminLayout (lifecycle global).
+  //    Se chamássemos disconnect() aqui no cleanup ao desmontar a página,
+  //    derrubaríamos o listener de menções (sino do header) e os listeners
+  //    de ConversationList — eles só re-conectam quando outro componente
+  //    chama connect() novamente.
+  //
+  //  - join/leave da sala da conversa é de propriedade do ConversationThread,
+  //    que já entra no `chatSocket.joinConversation(conversationId)` dentro do
+  //    seu próprio useEffect com dependência [conversationId]. Joinar aqui
+  //    também causava duplicidade de eventos (o servidor mantém em room por
+  //    socket, mas o cliente registrava callbacks redundantes).
+  //
+  //  - Listeners onMessageCreated/onConversationUpdated/onAssigned ficam
+  //    APENAS no ConversationThread (escopo: thread aberta) e ConversationList
+  //    (escopo: lista lateral). Registrar aqui também causava 2-3
+  //    invalidateQueries no MESMO queryKey por evento, disparando refetches
+  //    simultâneos. O "último ganha" zerava a thread (Bug 3 — "Nenhuma
+  //    mensagem ainda" piscando) e a mensagem própria do agente só aparecia
+  //    depois do refetch tardio (Bug 1 — delay no envio). A oscilação do
+  //    nome do contato (Bug 2) também caía nessa categoria: a query do
+  //    sidepanel e a do thread compartilhavam queryKey ['conversation', id]
+  //    e a resposta mais leve sobrescrevia a mais completa. Por isso o key
+  //    abaixo agora tem o sufixo 'meta'.
 
   // Conversa selecionada (apenas para o ContactSidePanel — o thread carrega
-  // por conta própria via [conversation, id]).
+  // por conta própria via ['conversation', id, 'thread-full'] em
+  // ConversationThread).
+  //
+  // BUG-3: QueryKey isolado por intenção: 'sidepanel-meta' (SEM messages) vs
+  // 'thread-full' (COM messages). Sem isolar, as duas queries dividiam a
+  // mesma entrada de cache ['conversation', id]: o pai (sidepanel) pedia
+  // sem `messages` e podia sobrescrever a resposta do filho que vinha COM
+  // messages, zerando a thread momentaneamente ("Nenhuma mensagem ainda"
+  // piscando no meio da conversa). Quem precisa invalidar AMBAS as
+  // variantes deve usar predicate-based invalidation:
+  //   queryClient.invalidateQueries({
+  //     predicate: q => q.queryKey[0] === 'conversation' && q.queryKey[1] === id
+  //   })
   const selectedConversationQuery = useQuery({
-    queryKey: ['conversation', selectedConversationId],
+    queryKey: ['conversation', selectedConversationId, 'sidepanel-meta'],
     queryFn: () =>
       conversationsBackendService.getConversation(selectedConversationId!, {
         labels: true,

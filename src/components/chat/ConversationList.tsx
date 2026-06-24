@@ -197,7 +197,34 @@ export function ConversationList({
     setSavedViews(loadSavedViews(account?.id));
   }, [account?.id]);
 
-  // Socket.IO: invalida a lista de conversas em eventos relevantes (T-022)
+  // Socket.IO: a divisão de responsabilidade entre componentes (T-022) garante
+  // que cada evento socket dispara uma ÚNICA cadeia de invalidação:
+  //
+  //   - ConversationList    → invalida ['conversations'] em qualquer evento
+  //                          e ['conversation', id, 'sidepanel-meta'] em
+  //                          conversation:updated/assigned (rare events).
+  //   - ConversationThread  → faz setQueryData direto em 'thread-full' (zero
+  //                          refetch para message:created) e invalida AMBAS
+  //                          as variantes em conversation:updated/assigned.
+  //   - AdminChatPage       → não registra socket listener nenhum.
+  //
+  // BUG-4 (listeners duplicados, root cause comum):
+  //   Antes, ConversationList invalidava 'thread-full' + 'sidepanel-meta' via
+  //   predicate, E ConversationThread invalidava o mesmo predicate. Resultado:
+  //   2 refetches paralelos por evento. Em rajada (cliente manda 3 msgs/s),
+  //   o vencedor variável da corrida zerava o cache (Bug 3 — "Nenhuma
+  //   mensagem ainda" piscando) e a resposta tardia da query reescrevia
+  //   contact/inbox com snapshot velho (Bug 2 — nome oscilando).
+  //   Corrigido aqui: este efeito NÃO mais toca 'thread-full' — quando a
+  //   conversa está aberta, o ConversationThread cuida; quando não está,
+  //   não há cache 'thread-full' pra invalidar mesmo. O 'sidepanel-meta'
+  //   é invalidado pelos dois lados, mas o cache é leve (sem messages),
+  //   o refetch é idempotente e os dois fluxos convergem pro mesmo valor.
+  //
+  // BUG-2 (cross-aba): mantém invalidação de 'sidepanel-meta' aqui para
+  // que outra aba que edite o contato veja o nome correto na sidebar.
+  // message:created NÃO invalida o meta porque mensagem nova nunca muda
+  // contact/inbox/assignee.
   useEffect(() => {
     if (!account?.id) return;
     const token = tokenManager.getToken();
@@ -206,14 +233,34 @@ export function ConversationList({
     // connect() é idempotente — não derruba conexões existentes do mesmo token.
     chatSocket.connect(token);
 
-    const invalidate = () =>
+    const invalidateList = () =>
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
 
-    // Nova mensagem em qualquer conversa → reordena/atualiza unread/snippet
-    const offMessage = chatSocket.onMessageCreated(invalidate);
-    // Mudanças nas conversas (status, assignee, priority, snooze, etc.)
-    const offUpdated = chatSocket.onConversationUpdated(invalidate);
-    const offAssigned = chatSocket.onAssigned(invalidate);
+    const offMessage = chatSocket.onMessageCreated(() => {
+      // Mensagem nova só altera snippet/unread/updatedAt da lista — não toca
+      // o cache da conversa individual (isso é do ConversationThread).
+      invalidateList();
+    });
+    const offUpdated = chatSocket.onConversationUpdated((payload) => {
+      invalidateList();
+      if (payload?.conversationId) {
+        // Apenas o cache leve do sidepanel — o thread-full é responsabilidade
+        // do ConversationThread (que tem listener próprio e contexto pra
+        // setQueryData incremental). Invalidar aqui também causaria refetch
+        // duplo e re-introduziria o piscar de "Nenhuma mensagem ainda".
+        queryClient.invalidateQueries({
+          queryKey: ['conversation', payload.conversationId, 'sidepanel-meta'],
+        });
+      }
+    });
+    const offAssigned = chatSocket.onAssigned((payload) => {
+      invalidateList();
+      if (payload?.conversationId) {
+        queryClient.invalidateQueries({
+          queryKey: ['conversation', payload.conversationId, 'sidepanel-meta'],
+        });
+      }
+    });
 
     return () => {
       offMessage();

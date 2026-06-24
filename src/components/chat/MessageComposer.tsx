@@ -50,7 +50,11 @@ import {
 } from '@/services/messages.backend.service';
 import { cannedResponsesBackendService } from '@/services/canned-responses.backend.service';
 import { chatSocket } from '@/services/socket.client';
-import type { AttachmentFileType } from '@/services/conversations.backend.service';
+import type {
+  AttachmentFileType,
+  Conversation,
+  Message,
+} from '@/services/conversations.backend.service';
 
 const EMOJIS = [
   '😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🙂',
@@ -191,41 +195,107 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
     [conversationId]
   );
 
-  const sendMutation = useMutation({
-    mutationFn: async () => {
-      const text = content.trim();
-      if (!text && pending.length === 0) {
-        throw new Error('Mensagem vazia');
-      }
+  // ============================================
+  // Otimismo no envio (Bug HIGH)
+  // ============================================
+  // Sem optimistic UI, a mensagem so aparece quando o POST resolve (~200-500ms
+  // para WhatsApp + Evolution). Pior: o backend emite `message:created` via
+  // socket.io SINCRONAMENTE apos a transacao, ou seja, ANTES do response do
+  // POST chegar ao FE. O ConversationThread invalida o cache no socket, dispara
+  // refetch, e o refetch pode vencer (ou nao) contra o `onSuccess` aqui — sem
+  // optimistic, a mensagem "aparece depois" e ate "some" por instantes.
+  //
+  // Estrategia:
+  //  1. `onMutate` injeta uma mensagem otimistica com id `optimistic:<uuid>`
+  //     e status `'sending'` direto no cache `['conversation', conversationId]`.
+  //  2. `cancelQueries` evita que um refetch em voo sobrescreva a otimistica
+  //     antes do `onSuccess`.
+  //  3. `onSuccess` substitui a otimistica pela mensagem real retornada
+  //     pelo POST (match por id `optimistic:<uuid>`). Se um refetch ja
+  //     trouxe a real (mesmo `id` canonical do servidor), apenas removemos
+  //     a otimistica — sem duplicacao.
+  //  4. `onError` reverte para o snapshot e re-popula o textarea / anexos
+  //     para o usuario nao perder o texto digitado.
+  //  5. Mantemos `setQueryData` em vez de `invalidateQueries` no sucesso —
+  //     o socket ja invalidou (e o refetch ja esta em voo); duplicar
+  //     invalidate so amplifica o race.
+  const OPTIMISTIC_PREFIX = 'optimistic:';
 
-      // Enforcement de tamanho: sem endpoint dedicado de upload, base64 inline
-      // estoura o limite do express.json e o Evolution rejeita payloads muito
-      // grandes. Abortamos antes de chamar a API.
-      const oversized = pending.filter((p) => p.file.size > MAX_ATTACHMENT_BYTES);
-      if (oversized.length > 0) {
-        const names = oversized.map((p) => `${p.file.name} (${formatBytes(p.file.size)})`).join(', ');
-        throw new Error(
-          `Arquivo(s) acima do limite de ${formatBytes(MAX_ATTACHMENT_BYTES)}: ${names}. Hospede em URL pública e cole o link.`
-        );
-      }
+  interface SendVariables {
+    text: string;
+    isPrivate: boolean;
+    pendingAttachments: PendingAttachment[];
+    optimisticId: string;
+  }
 
-      // Aviso ao usuário de que estamos no fallback base64 (não é upload real).
-      if (pending.length > 0) {
+  interface SendContext {
+    optimisticId: string;
+    previousConversation: Conversation | undefined;
+    previousContent: string;
+    previousIsPrivate: boolean;
+    previousPending: PendingAttachment[];
+  }
+
+  function buildOptimisticMessage(
+    optimisticId: string,
+    text: string,
+    privateFlag: boolean,
+    pendingAttachments: PendingAttachment[]
+  ): Message {
+    const nowIso = new Date().toISOString();
+    return {
+      id: `${OPTIMISTIC_PREFIX}${optimisticId}`,
+      conversationId,
+      senderType: 'agent',
+      senderId: user?.id ?? null,
+      content: text || null,
+      contentType: pendingAttachments.length > 0 ? 'media' : 'text',
+      isPrivate: privateFlag,
+      status: 'sending',
+      externalId: null,
+      replyToId: null,
+      deliveredAt: null,
+      readAt: null,
+      metadata: { __optimisticId: optimisticId },
+      createdAt: nowIso,
+      attachments: pendingAttachments.map((p) => ({
+        id: `${OPTIMISTIC_PREFIX}att:${p.id}`,
+        messageId: `${OPTIMISTIC_PREFIX}${optimisticId}`,
+        fileType: p.fileType,
+        fileUrl: p.previewUrl,
+        fileSize: p.file.size,
+        fileName: p.file.name,
+        mimeType: p.file.type,
+        thumbnailUrl: null,
+        duration: null,
+        createdAt: nowIso,
+      })),
+    };
+  }
+
+  function isOptimisticMessage(m: Message): boolean {
+    return typeof m.id === 'string' && m.id.startsWith(OPTIMISTIC_PREFIX);
+  }
+
+  const sendMutation = useMutation<Message, Error, SendVariables, SendContext>({
+    mutationFn: async (vars) => {
+      // Aviso ao usuario de que estamos no fallback base64 (nao e upload real).
+      if (vars.pendingAttachments.length > 0) {
         toast({
           title: 'Enviando anexo inline (base64)',
           description:
-            'Upload dedicado ainda não disponível — arquivos grandes podem demorar ou falhar. Limite por arquivo: ' +
+            'Upload dedicado ainda nao disponivel — arquivos grandes podem demorar ou falhar. Limite por arquivo: ' +
             formatBytes(MAX_ATTACHMENT_BYTES),
         });
       }
 
       // Converte anexos pendentes (fallback: data URL inline).
       const attachments: SendAttachmentInput[] = await Promise.all(
-        pending.map(async (p) => {
+        vars.pendingAttachments.map(async (p) => {
           const dataUrl = await fileToDataUrl(p.file);
           if (!isAllowedFileUrl(dataUrl)) {
             throw new Error(
-              `URL de anexo inválida para "${p.file.name}". Apenas http(s):// ou data: são aceitos.`
+              `URL de anexo invalida para "${p.file.name}". Apenas http(s):// ou data: sao aceitos.`
             );
           }
           return {
@@ -239,36 +309,197 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
       );
 
       return messagesBackendService.sendMessage(conversationId, {
-        content: text || undefined,
-        isPrivate,
+        content: vars.text || undefined,
+        isPrivate: vars.isPrivate,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
     },
-    onSuccess: () => {
+    onMutate: async (vars) => {
+      // BUG-1: queryKey alinhada com a do ConversationThread
+      // (['conversation', id, 'thread-full']). Antes estava sem o sufixo
+      // 'thread-full', entao o setQueryData escrevia numa entrada de cache
+      // que ninguem lia — o optimistic nao aparecia na tela, anulando todo o
+      // beneficio do onMutate.
+      const queryKey = ['conversation', conversationId, 'thread-full'] as const;
+      // Cancela refetches em voo para nao sobrescrever a otimistica.
+      await queryClient.cancelQueries({ queryKey });
+
+      const previousConversation = queryClient.getQueryData<Conversation>(queryKey);
+      const optimistic = buildOptimisticMessage(
+        vars.optimisticId,
+        vars.text,
+        vars.isPrivate,
+        vars.pendingAttachments
+      );
+
+      queryClient.setQueryData<Conversation | undefined>(queryKey, (prev) => {
+        if (!prev) return prev;
+        const nextMessages = [...(prev.messages ?? []), optimistic];
+        return { ...prev, messages: nextMessages };
+      });
+
+      // Limpa UI imediatamente — usuario percebe envio instantaneo. Se der
+      // erro restauramos via `previousContent`/`previousPending` no onError.
+      const previousContent = content;
+      const previousIsPrivate = isPrivate;
+      const previousPending = pending;
       setContent('');
-      pending.forEach((p) => URL.revokeObjectURL(p.previewUrl));
       setPending([]);
       setIsPrivate(false);
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+
+      return {
+        optimisticId: vars.optimisticId,
+        previousConversation,
+        previousContent,
+        previousIsPrivate,
+        previousPending,
+      };
+    },
+    onSuccess: (realMessage, _vars, ctx) => {
+      const queryKey = ['conversation', conversationId, 'thread-full'] as const;
+      const optimisticId = ctx?.optimisticId;
+      const optimisticFullId = optimisticId ? `${OPTIMISTIC_PREFIX}${optimisticId}` : null;
+
+      queryClient.setQueryData<Conversation | undefined>(queryKey, (prev) => {
+        if (!prev) return prev;
+        const existing = prev.messages ?? [];
+        // Se a mensagem real ja chegou via socket/refetch entre o onMutate e o
+        // onSuccess, apenas remove a otimistica (evita duplicacao).
+        const realAlreadyPresent = existing.some(
+          (m) => !isOptimisticMessage(m) && m.id === realMessage.id
+        );
+        if (realAlreadyPresent) {
+          return {
+            ...prev,
+            messages: existing.filter((m) => m.id !== optimisticFullId),
+          };
+        }
+        // Caso normal: troca otimistica pela real preservando posicao.
+        const next: Message[] = [];
+        let swapped = false;
+        for (const m of existing) {
+          if (m.id === optimisticFullId) {
+            next.push(realMessage);
+            swapped = true;
+          } else {
+            next.push(m);
+          }
+        }
+        if (!swapped) {
+          // Otimistica ja foi removida (ex.: o refetch a substituiu sem
+          // identificar match); garante append se a real ainda nao esta la.
+          next.push(realMessage);
+        }
+        return { ...prev, messages: next };
+      });
+
+      // Atualiza apenas a lista de conversas (snippet/unread). Para a thread
+      // ja escrevemos direto no cache — evita refetch redundante que disputa
+      // com o evento socket e produz flicker / "mensagem some".
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
       onMessageSent?.();
     },
-    onError: (err) => {
+    onError: (err, _vars, ctx) => {
+      const queryKey = ['conversation', conversationId, 'thread-full'] as const;
+      const optimisticFullId = ctx?.optimisticId
+        ? `${OPTIMISTIC_PREFIX}${ctx.optimisticId}`
+        : null;
+
+      // Restaura snapshot do cache (remove a otimistica). Se nao havia
+      // snapshot, apenas filtra a otimistica do estado atual.
+      if (ctx?.previousConversation) {
+        queryClient.setQueryData(queryKey, ctx.previousConversation);
+      } else if (optimisticFullId) {
+        queryClient.setQueryData<Conversation | undefined>(queryKey, (prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            messages: (prev.messages ?? []).filter((m) => m.id !== optimisticFullId),
+          };
+        });
+      }
+
+      // Devolve texto/anexos para o usuario poder reenviar.
+      if (ctx) {
+        if (ctx.previousContent) setContent(ctx.previousContent);
+        if (ctx.previousPending.length > 0) setPending(ctx.previousPending);
+        setIsPrivate(ctx.previousIsPrivate);
+      }
+
       const message = err instanceof Error ? err.message : 'Erro ao enviar';
       toast({ title: 'Falha no envio', description: message, variant: 'destructive' });
     },
+    // BUG-1: removido onSettled com invalidateQueries.
+    //
+    // O invalidate forcado aqui destruia o ganho do optimistic update: depois
+    // do setQueryData (onSuccess), invalidamos imediatamente o cache, o que
+    // dispara um GET /conversations/:id. Se esse GET demorasse 100-500ms, a
+    // mensagem real podia "sumir" e voltar (a thread renderizava com
+    // [previous + real], depois com [previous (stale)] enquanto loading, e
+    // por fim com [previous + real + outras].
+    //
+    // O cache ja esta consistente: onSuccess colocou a mensagem real no
+    // lugar da otimistica, e o socket onMessageCreated faz merge final
+    // (com dedup por id) quando o backend emitir 'message:created' a partir
+    // do servidor. Sidepanel-meta (unreadCount) e atualizado pelo socket.
+    // Apenas o ['conversations'] continua sendo invalidado no onSuccess para
+    // atualizar snippet/unread na lista lateral.
   });
+
+  /**
+   * Encapsula validacao + montagem das variaveis. Retorna `null` quando
+   * nao houver nada a enviar OU quando algum anexo violar limites — nesse
+   * caso a funcao ja exibiu o toast apropriado.
+   */
+  function prepareSend(): SendVariables | null {
+    const text = content.trim();
+    if (!text && pending.length === 0) {
+      toast({
+        title: 'Mensagem vazia',
+        description: 'Digite algo ou anexe um arquivo antes de enviar.',
+        variant: 'destructive',
+      });
+      return null;
+    }
+    const oversized = pending.filter((p) => p.file.size > MAX_ATTACHMENT_BYTES);
+    if (oversized.length > 0) {
+      const names = oversized
+        .map((p) => `${p.file.name} (${formatBytes(p.file.size)})`)
+        .join(', ');
+      toast({
+        title: 'Anexo acima do limite',
+        description: `Arquivo(s) acima do limite de ${formatBytes(MAX_ATTACHMENT_BYTES)}: ${names}. Hospede em URL publica e cole o link.`,
+        variant: 'destructive',
+      });
+      return null;
+    }
+    return {
+      text,
+      isPrivate,
+      pendingAttachments: pending,
+      optimisticId:
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+  }
+
+  function triggerSend() {
+    const vars = prepareSend();
+    if (!vars) return;
+    sendMutation.mutate(vars);
+  }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      sendMutation.mutate();
+      triggerSend();
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey && !cannedOpen) {
       // Enter simples envia também (padrão chat). Shift+Enter quebra linha.
       e.preventDefault();
-      sendMutation.mutate();
+      triggerSend();
     }
   }
 
@@ -483,7 +714,7 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         <Button
           type="button"
           size="sm"
-          onClick={() => sendMutation.mutate()}
+          onClick={() => triggerSend()}
           disabled={
             sendMutation.isPending ||
             (!content.trim() && pending.length === 0)

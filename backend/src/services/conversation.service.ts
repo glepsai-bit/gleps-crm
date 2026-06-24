@@ -1353,6 +1353,47 @@ class ConversationService {
     });
 
     if (existing) {
+      // BUG-5 (conversas órfãs): conversas criadas antes do hardening de
+      // resolveOrCreateContact, ou em janelas raras onde o create do
+      // contact falhou silenciosamente, podem ficar com contactId=null.
+      // Quando o webhook trouxer telefone/nome novamente, backfillamos
+      // best-effort SEM bloquear o fluxo de mensagem caso falhe. Isto
+      // evita conversas anônimas que aparecem como "Sem nome" na UI
+      // mesmo já tendo Contact correspondente na conta.
+      if (!existing.contactId && (input.contactId || input.contactPhone)) {
+        try {
+          const backfilledContactId = await this.resolveOrCreateContact(
+            accountId,
+            input
+          );
+          if (backfilledContactId) {
+            // Update atômico com guard de contactId atual nulo — se outra
+            // execução concorrente já preencheu, updateMany devolve count:0
+            // e respeitamos o que estiver lá (não sobrescreve).
+            const result = await prisma.conversation.updateMany({
+              where: { id: existing.id, accountId, contactId: null },
+              data: { contactId: backfilledContactId },
+            });
+            if (result.count > 0) {
+              existing.contactId = backfilledContactId;
+              logger.info(
+                '[conversation] backfill de contactId em conversa orfa',
+                {
+                  accountId,
+                  conversationId: existing.id,
+                  contactId: backfilledContactId,
+                }
+              );
+            }
+          }
+        } catch (err) {
+          logger.warn('[conversation] backfill de contactId falhou', {
+            accountId,
+            conversationId: existing.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
       return this.maybeReopen(existing, accountId, input.externalId);
     }
 

@@ -308,6 +308,15 @@ model Contact {
   email     String?        @db.VarChar(255)
   origem    ContactOrigin?
 
+  // BUG-2: rastreabilidade da origem do `nome` pra evitar oscilação
+  // (pushName WhatsApp vs nome digitado pelo agente). Quando 'manual',
+  // webhooks NUNCA sobrescrevem; quando 'inbound', podem atualizar.
+  // pushName guarda o último valor visto no WhatsApp pra auditoria.
+  nameSource    ContactNameSource @default(inbound) @map("name_source")
+  pushName      String?           @map("push_name") @db.VarChar(255)
+  pushNameUpdatedAt DateTime?     @map("push_name_updated_at") @db.Timestamptz
+  pushNameChangeCount Int         @default(0) @map("push_name_change_count")
+
   // Chatwoot Integration
   chatwootContactId      Int? @map("chatwoot_contact_id")
   chatwootConversationId Int? @map("chatwoot_conversation_id")
@@ -360,6 +369,16 @@ enum ContactOrigin {
   indicacao
   integration
   outro
+}
+
+// BUG-2: origem do Contact.nome — controla quem pode sobrescrever.
+// 'manual'   = agente editou via UI; webhooks NÃO sobrescrevem.
+// 'inbound'  = veio de pushName/notify do WhatsApp; webhooks podem atualizar.
+// 'imported' = veio de CSV/integração; tratado como manual (não sobrescreve).
+enum ContactNameSource {
+  manual
+  inbound
+  imported
 }
 
 // ============================================

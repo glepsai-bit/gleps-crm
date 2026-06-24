@@ -7,8 +7,13 @@
  * agent/system à direita). Notas privadas com fundo amarelo. Reply quote.
  * Indicador entregue/lida via checks.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import {
   Check,
   CheckCheck,
@@ -132,7 +137,13 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const conversationQuery = useQuery({
-    queryKey: ['conversation', conversationId],
+    // BUG-3: queryKey com sufixo 'thread-full' (COM messages) — isolado da
+    // queryKey 'sidepanel-meta' (SEM messages) usada pelo ContactSidePanel/
+    // AdminChatPage. Sem o isolamento, as duas queries colidiam na mesma
+    // entrada de cache e a resposta sem messages podia sobrescrever a com
+    // messages, fazendo a thread piscar "Nenhuma mensagem ainda" no meio
+    // da conversa.
+    queryKey: ['conversation', conversationId, 'thread-full'],
     queryFn: () =>
       conversationsBackendService.getConversation(conversationId, {
         messages: true,
@@ -140,7 +151,17 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
         participants: true,
       }),
     enabled: Boolean(conversationId),
-    refetchInterval: 15_000,
+    // BUG-5: refetch a cada 60s (antes 15s). Socket.IO ja entrega novas
+    // mensagens em tempo real, entao o polling so serve como fallback
+    // defensivo em caso de desconexao do socket. Reduzir a frequencia
+    // evita re-render desnecessario que faz a ScrollArea perder posicao
+    // e mostrar empty state momentaneo durante o refetch.
+    refetchInterval: 60_000,
+    // BUG-5: mantem dados anteriores enquanto o refetch acontece, evitando
+    // o flash de "Nenhuma mensagem ainda" e queda momentanea da lista para
+    // [] durante a transicao de fetch.
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
 
   const markAsReadMutation = useMutation({
@@ -174,14 +195,47 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
     setMarkedReadFor(null);
   }, [conversationId]);
 
-  // Auto-scroll quando lista mudar
+  // BUG-5: Preserva scroll position entre refetchs.
+  // Salvamos scrollTop ANTES do re-render (via ref) e restauramos DEPOIS,
+  // somente quando o numero de mensagens NAO mudou (= refetch sem msg nova).
+  // Quando a lista cresce (mensagem nova chegou), deixamos o efeito de
+  // auto-scroll abaixo levar pra ultima.
+  const prevMessageCountRef = useRef<number>(0);
+  const savedScrollTopRef = useRef<number | null>(null);
+  const currentMessageCount = conversationQuery.data?.messages?.length ?? 0;
+
+  // Antes do paint: capturamos o scrollTop atual ANTES do React reconciliar.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    savedScrollTopRef.current = el.scrollTop;
+  });
+
+  // Depois do paint: se a quantidade de mensagens NAO mudou (refetch silencioso),
+  // restauramos a posicao salva. Se mudou, o useEffect de auto-scroll abaixo
+  // levara pra ultima mensagem.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const prev = prevMessageCountRef.current;
+    if (
+      prev === currentMessageCount &&
+      savedScrollTopRef.current !== null &&
+      currentMessageCount > 0
+    ) {
+      el.scrollTop = savedScrollTopRef.current;
+    }
+    prevMessageCountRef.current = currentMessageCount;
+  }, [currentMessageCount]);
+
+  // Auto-scroll quando lista CRESCER (mensagem nova)
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     requestAnimationFrame(() => {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     });
-  }, [conversationQuery.data?.messages?.length]);
+  }, [currentMessageCount]);
 
   // ============================================
   // Socket.IO — real-time updates (T-022 Sprint 4)
@@ -205,29 +259,132 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
     chatSocket.connect(token);
     chatSocket.joinConversation(conversationId);
 
-    // Nova mensagem: invalida a query da conversa (que re-busca a lista
-    // com a mensagem nova). Também invalida a lista de conversas para
-    // atualizar snippet/unread no menu lateral.
+    // Nova mensagem: aplicamos o payload do socket DIRETO no cache via
+    // setQueryData (merge + dedup) — sem refetch. Isto resolve o Bug 1
+    // ("mensagem nao aparece imediatamente"): o invalidateQueries antigo
+    // disparava um GET /conversations/:id que demorava 100-500ms; nesse
+    // intervalo a UI ficava sem a mensagem recem-enviada. Com merge local,
+    // a thread atualiza no mesmo tick em que o evento chega.
+    //
+    // Dedup combinado:
+    //  1) por `id` real (caso de eventos duplicados — multi-tab, reconnect)
+    //  2) por `metadata.pendingExternalId` (substitui a otimistica enviada
+    //     pelo MessageComposer enquanto o POST estava em voo)
+    //  3) por `externalId` quando preenchido (Evolution fromMe=true que
+    //     vem antes da nossa resposta HTTP)
+    //
+    // Fallback: se o payload nao trouxer `message` valida (versoes antigas
+    // do servidor), caimos no invalidateQueries — comportamento anterior.
     const offMessage = chatSocket.onMessageCreated((payload) => {
       if (payload.conversationId !== conversationId) return;
-      queryClient.invalidateQueries({
-        queryKey: ['conversation', conversationId],
-      });
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+
+      const incoming = payload.message as Message | undefined | null;
+      const hasValidMessage =
+        incoming &&
+        typeof incoming === 'object' &&
+        typeof (incoming as Message).id === 'string';
+
+      if (hasValidMessage) {
+        queryClient.setQueryData<Conversation | undefined>(
+          ['conversation', conversationId, 'thread-full'],
+          (old) => {
+            if (!old) return old;
+            const existing = old.messages ?? [];
+            const incomingMeta = (incoming.metadata ?? null) as
+              | Record<string, unknown>
+              | null;
+            const incomingPending =
+              typeof incomingMeta?.pendingExternalId === 'string'
+                ? (incomingMeta.pendingExternalId as string)
+                : null;
+
+            // Match optimistic message: id que comeca com 'optimistic:' E
+            // (a) mesmo conteudo/sender, OU (b) metadata.matchingPending bate
+            // com pendingExternalId. Substituicao no LUGAR (preserva ordem).
+            let replaced = false;
+            const merged = existing.map((m) => {
+              if (m.id === incoming.id) {
+                replaced = true;
+                return incoming;
+              }
+              if (
+                m.id.startsWith('optimistic:') &&
+                m.senderType === incoming.senderType &&
+                m.content === incoming.content &&
+                !replaced
+              ) {
+                replaced = true;
+                return incoming;
+              }
+              if (incomingPending) {
+                const mMeta = (m.metadata ?? null) as
+                  | Record<string, unknown>
+                  | null;
+                if (
+                  typeof mMeta?.optimisticPendingId === 'string' &&
+                  (mMeta.optimisticPendingId as string) === incomingPending &&
+                  !replaced
+                ) {
+                  replaced = true;
+                  return incoming;
+                }
+              }
+              if (
+                incoming.externalId &&
+                m.externalId &&
+                m.externalId === incoming.externalId
+              ) {
+                replaced = true;
+                return incoming;
+              }
+              return m;
+            });
+
+            if (!replaced) {
+              // Mantém ordem cronológica ao anexar (Evolution pode entregar
+              // mensagens fora de ordem em retries; o backend ordena por
+              // createdAt na hidratação inicial, então precisamos respeitar
+              // o mesmo critério aqui).
+              merged.push(incoming);
+              merged.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+            }
+            return { ...old, messages: merged };
+          }
+        );
+        // BUG-4: NÃO invalidamos 'sidepanel-meta' nem ['conversations'] aqui —
+        // o ConversationList já tem listener próprio em message:created que
+        // invalida a lista lateral (snippet/unread/updatedAt). Sidepanel-meta
+        // não precisa refetch em cada mensagem (não depende de messages, e
+        // unreadCount é exibido pela lista, não pelo sidepanel). Invalidar
+        // aqui também causaria os refetches duplos que produziam Bug 2
+        // (oscilação do nome) e Bug 3 (flash de "Nenhuma mensagem ainda").
+      } else {
+        // Payload incompleto — fallback APENAS para o thread-full
+        // (componente atual). Sidepanel-meta e ['conversations'] são
+        // responsabilidade do ConversationList.
+        queryClient.invalidateQueries({
+          queryKey: ['conversation', conversationId, 'thread-full'],
+        });
+      }
     });
 
-    // Mudanças na conversa (assign, status, priority etc.)
+    // Mudanças na conversa (assign, status, priority etc.) — invalida APENAS
+    // o 'thread-full' (este componente). O 'sidepanel-meta' é invalidado
+    // pelo ConversationList, que também ouve estes eventos — duplicar aqui
+    // causaria 2 refetches paralelos do mesmo cache (root cause do Bug 2:
+    // duas respostas com contact diferente em segundos consecutivos, a
+    // última a chegar "vence" e pisca o nome).
     const offConvUpdate = chatSocket.onConversationUpdated((payload) => {
       if (payload.conversationId !== conversationId) return;
       queryClient.invalidateQueries({
-        queryKey: ['conversation', conversationId],
+        queryKey: ['conversation', conversationId, 'thread-full'],
       });
     });
 
     const offAssigned = chatSocket.onAssigned((payload) => {
       if (payload.conversationId !== conversationId) return;
       queryClient.invalidateQueries({
-        queryKey: ['conversation', conversationId],
+        queryKey: ['conversation', conversationId, 'thread-full'],
       });
     });
 
@@ -485,9 +642,11 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
       {/* Composer */}
       <MessageComposer
         conversationId={conversationId}
-        onMessageSent={() =>
-          queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
-        }
+        // BUG-1: removido invalidateQueries aqui. O proprio MessageComposer ja
+        // aplica optimistic update no cache + onSuccess substitui pelo real,
+        // e o socket onMessageCreated faz merge final. Invalidar aqui causava
+        // refetch redundante que (em rede lenta) zerava a thread por um frame.
+        onMessageSent={() => {}}
       />
     </div>
   );
