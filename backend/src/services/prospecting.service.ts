@@ -65,7 +65,11 @@ interface Contact {
 }
 
 interface InboxAssignment {
-  inbox_id: number;
+  // T-022 — Inboxes do CRM (`prisma.inbox`) usam UUID string; Chatwoot legacy
+  // ainda envia number. DispatchLog.inboxId continua Int? para preservar o
+  // legado: UUIDs são gravados como null (Evolution não usa esse campo no
+  // envio — sendViaTransport ignora inboxId).
+  inbox_id: string | number;
   inbox_name: string;
   contacts: Contact[];
 }
@@ -351,7 +355,10 @@ class ProspectingService {
         batchId: batch.id,
         contactName: c.nome,
         phone: c.telefone,
-        inboxId: assignment.inbox_id,
+        // DispatchLog.inboxId é Int? (legacy Chatwoot). Para UUIDs do CRM
+        // (T-022), persistimos null — a identificação do canal fica no
+        // inboxName e o envio Evolution não consome inboxId.
+        inboxId: typeof assignment.inbox_id === 'number' ? assignment.inbox_id : null,
         inboxName: assignment.inbox_name,
         status: 'pending',
       }))
@@ -391,7 +398,7 @@ class ProspectingService {
   ) {
     // Build round-robin task list — cada task carrega o logId específico
     // para que os updates usem where:{id} (evita updateMany afetar duplicatas).
-    const allTasks: Array<{ contact: Contact; inboxId: number; inboxName: string; logId: string }> = [];
+    const allTasks: Array<{ contact: Contact; inboxId: string | number; inboxName: string; logId: string }> = [];
     const maxLen = Math.max(...inboxAssignments.map(a => a.contacts.length));
     for (let i = 0; i < maxLen; i++) {
       for (let a = 0; a < inboxAssignments.length; a++) {
@@ -627,10 +634,10 @@ class ProspectingService {
             continue;
           }
 
-          await this.sendViaTransport(config, contact, log.inboxId, message);
+          await this.sendViaTransport(config, contact, log.inboxId ?? '', message);
           whatsappRateLimitService.record(config.accountId, normalized);
         } else {
-          await this.sendViaTransport(config, contact, log.inboxId, message);
+          await this.sendViaTransport(config, contact, log.inboxId ?? '', message);
         }
 
         sentCount++;
@@ -714,7 +721,7 @@ class ProspectingService {
   private async sendViaTransport(
     config: DispatchConfig,
     contact: Contact,
-    inboxId: number,
+    inboxId: string | number,
     message: string
   ) {
     if (config.transport === 'evolution') {
@@ -725,8 +732,20 @@ class ProspectingService {
       return;
     }
 
-    // Chatwoot (default — preserva o comportamento original).
-    const { conversationId } = await this.createContactAndConversation(config, contact, inboxId);
+    // Chatwoot (default — preserva o comportamento original; espera inbox_id
+    // numérico vindo da Chatwoot API). UUIDs/string vazia indicam que o
+    // dispatch foi disparado pelo caminho CRM (T-022) e não tem inbox
+    // Chatwoot equivalente — não há como criar a conversação.
+    const numericInboxId =
+      typeof inboxId === 'number'
+        ? inboxId
+        : typeof inboxId === 'string' && /^\d+$/.test(inboxId)
+          ? Number(inboxId)
+          : NaN;
+    if (!Number.isFinite(numericInboxId) || numericInboxId <= 0) {
+      throw new Error(`Chatwoot inbox_id inválido: ${inboxId}`);
+    }
+    const { conversationId } = await this.createContactAndConversation(config, contact, numericInboxId);
     await this.sendMessage(config, conversationId, message);
   }
 

@@ -8,9 +8,12 @@ const extractSchema = z.object({
   localizacao: z.string().min(1),
 });
 
+// T-022 — DispatchDialog hoje envia inbox_id como UUID (string) vindo da
+// tabela Prisma `Inbox`. O caminho Chatwoot legacy ainda manda number.
+// Aceita ambos no Zod e o service normaliza para gravar no DispatchLog.inboxId.
 const dispatchSchema = z.object({
   inbox_assignments: z.array(z.object({
-    inbox_id: z.number(),
+    inbox_id: z.union([z.string(), z.number()]),
     inbox_name: z.string(),
     contacts: z.array(z.object({
       nome: z.string(),

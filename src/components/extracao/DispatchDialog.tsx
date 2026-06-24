@@ -14,6 +14,7 @@ import { Plus, Trash2, Loader2, Send, Calendar } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { listTemplates } from '@/services/whatsapp-templates.backend.service';
 import { whatsappConsentsBackendService } from '@/services/whatsapp-consents.backend.service';
+import { inboxesBackendService } from '@/services/inboxes.backend.service';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
@@ -37,7 +38,7 @@ interface Props {
 export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatchStarted }: Props) {
   const { toast } = useToast();
   const [inboxes, setInboxes] = useState<ChatwootInbox[]>([]);
-  const [selectedInboxIds, setSelectedInboxIds] = useState<Set<number>>(new Set());
+  const [selectedInboxIds, setSelectedInboxIds] = useState<Set<string>>(new Set());
   const [delay, setDelay] = useState('30');
   const [messages, setMessages] = useState<string[]>(['']);
   const [isSending, setIsSending] = useState(false);
@@ -65,9 +66,21 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
       try {
         let inboxData: ChatwootInbox[];
         if (useBackend) {
-          const response = await apiClient.get<any>(API_ENDPOINTS.PROSPECTING.INBOXES);
-          const data = (response as any).data || response;
-          inboxData = data.inboxes || data;
+          // T-022 — DispatchDialog agora consome o endpoint canônico do CRM
+          // (/api/inboxes) em vez do legacy /api/prospecting/inboxes que
+          // proxiava a Chatwoot API. Contas que operam via Evolution
+          // (sem chatwootBaseUrl) recebiam 500 "Chatwoot not configured"
+          // e o UI exibia "Nenhuma inbox encontrada" mesmo com canais
+          // ativos na tabela `inboxes`. Filtramos só whatsapp/active.
+          const all = await inboxesBackendService.listInboxes();
+          inboxData = all
+            .filter(i => i.channelType === 'whatsapp' && i.active !== false)
+            .map(i => ({
+              id: i.id,
+              name: i.name,
+              channel_type: i.channelType,
+              phone_number: i.evolutionInstance ?? undefined,
+            }));
         } else {
           const { data, error } = await supabase.functions.invoke('dispatch-messages', {
             body: { action: 'list-inboxes', account_id: accountId },
@@ -114,7 +127,7 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
     };
   }, [open, leads]);
 
-  const toggleInbox = useCallback((id: number) => {
+  const toggleInbox = useCallback((id: string) => {
     setSelectedInboxIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -293,9 +306,9 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
           <ComplianceWarning totalLote={leads.length} totalOptOut={optOutCount} />
 
           <div className="space-y-2">
-            <Label>Números (Inboxes do Chatwoot)</Label>
+            <Label>Números (Canais WhatsApp)</Label>
             <p className="text-xs text-muted-foreground">
-              Selecione uma ou mais inboxes para distribuir os leads igualmente
+              Selecione um ou mais canais para distribuir os leads igualmente
             </p>
             {loadingInboxes ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -319,7 +332,13 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
                   </label>
                 ))}
                 {inboxes.length === 0 && (
-                  <p className="text-sm text-muted-foreground text-center py-2">Nenhuma inbox encontrada</p>
+                  <p className="text-sm text-muted-foreground text-center py-2">
+                    Nenhum canal WhatsApp ativo. Cadastre/conecte um em{' '}
+                    <a href="/admin/inboxes" className="underline text-primary">
+                      /admin/inboxes
+                    </a>
+                    .
+                  </p>
                 )}
               </div>
             )}
