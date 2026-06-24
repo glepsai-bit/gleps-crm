@@ -851,9 +851,10 @@ export class EvolutionController {
       throw err;
     }
 
-    // TODO[T-022/sprint5]: emitir Socket.IO ('conversation:new_message') quando
-    // o gateway WS estiver disponível. Por ora, frontends polling ou consumers
-    // n8n recebem via webhookOutbound 'message.created' (disparado por messageService.create).
+    // CHAT-SOCKET-006: o emit real (`message:created` no namespace da conversa)
+    // já é disparado por messageService.create via emitMessageCreated (socket.ts).
+    // Webhook outbound 'message.created' também sai pra consumers n8n no mesmo
+    // ponto. Mantemos esta nota pra evitar reintrodução de um emit duplicado aqui.
 
     logger.info('[evolution-webhook] message persistida', {
       accountId,

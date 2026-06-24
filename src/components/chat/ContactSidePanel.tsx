@@ -356,10 +356,50 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
             </>
           )}
 
-          {/* Tags do contato */}
+          {/* Tags da conversa (labels) — refletem ConversationLabel; alimentam
+              o Kanban via sync espelho (CHAT-TAG-SYNC-1/2). */}
           <div className="space-y-2">
             <h3 className="text-xs font-semibold text-muted-foreground uppercase">
-              Tags
+              Tags da conversa
+            </h3>
+            {(() => {
+              const conversationLabels = Array.isArray(conversation.labels)
+                ? conversation.labels
+                : [];
+              if (conversationLabels.length === 0) {
+                return (
+                  <p className="text-xs text-muted-foreground">
+                    Sem tags nesta conversa
+                  </p>
+                );
+              }
+              return (
+                <div className="flex flex-wrap gap-1">
+                  {conversationLabels.map((label) => (
+                    <Badge
+                      key={label.id}
+                      variant="secondary"
+                      className="text-[10px] py-0 px-1.5 h-5"
+                      style={{
+                        borderColor: label.tag?.color || undefined,
+                      }}
+                    >
+                      {label.tag?.name || '—'}
+                    </Badge>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+
+          <Separator />
+
+          {/* Tags do contato — agregadas de todas as conversas/histórico do
+              contato. Pode ou não conter as mesmas tags acima dependendo do
+              modo de sync ativo. */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+              Tags do contato
             </h3>
             {contactTags.length === 0 ? (
               <p className="text-xs text-muted-foreground">Sem tags</p>
@@ -416,23 +456,67 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
                 </Button>
               )}
             </div>
-            {attrDefs.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                Nenhum atributo customizado configurado.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {attrDefs.map((def) => (
-                  <div key={def.id} className="space-y-1">
-                    <Label className="text-[11px]">
-                      {def.label}
-                      {def.required && <span className="text-destructive">*</span>}
-                    </Label>
-                    {renderAttrInput(def)}
-                  </div>
-                ))}
-              </div>
-            )}
+            {(() => {
+              // CHAT-CUSTOMATTR-005: PATCH /conversations/:id/custom-attributes
+              // persiste qualquer chave no JSON `customAttributes`. Antes, a UI
+              // só renderizava chaves declaradas em /api/custom-attributes —
+              // valores avulsos (gravados via API/webhook/n8n) ficavam invisíveis.
+              // Agora mostramos também as chaves "extras" como read-only com um
+              // hint pro usuário criar a definição se quiser editar via UI.
+              const definedKeys = new Set(attrDefs.map((d) => d.key));
+              const extraEntries = Object.entries(values).filter(
+                ([k, v]) =>
+                  !definedKeys.has(k) &&
+                  v !== null &&
+                  v !== undefined &&
+                  v !== ''
+              );
+              if (attrDefs.length === 0 && extraEntries.length === 0) {
+                return (
+                  <p className="text-xs text-muted-foreground">
+                    Nenhum atributo customizado configurado.
+                  </p>
+                );
+              }
+              return (
+                <div className="space-y-2">
+                  {attrDefs.map((def) => (
+                    <div key={def.id} className="space-y-1">
+                      <Label className="text-[11px]">
+                        {def.label}
+                        {def.required && <span className="text-destructive">*</span>}
+                      </Label>
+                      {renderAttrInput(def)}
+                    </div>
+                  ))}
+                  {extraEntries.length > 0 && (
+                    <div className="space-y-1 pt-1">
+                      {attrDefs.length > 0 && (
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Outros (sem definição)
+                        </p>
+                      )}
+                      {extraEntries.map(([key, val]) => (
+                        <div
+                          key={key}
+                          className="flex items-center justify-between gap-2 rounded border border-border bg-background px-2 py-1 text-xs"
+                          title={`${key}: ${String(val)}`}
+                        >
+                          <span className="font-mono text-[10px] text-muted-foreground truncate">
+                            {key}
+                          </span>
+                          <span className="text-foreground truncate max-w-[60%]">
+                            {typeof val === 'object'
+                              ? JSON.stringify(val)
+                              : String(val)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           <Separator />

@@ -510,6 +510,46 @@ class MessageService {
     });
   }
 
+  /**
+   * CHAT-MSG-FAILED-007: limpa o estado de erro de uma mensagem, voltando
+   * o status para 'sending' para permitir uma nova tentativa de dispatch
+   * (a UI/controller chama isto antes de re-enviar pelo provider).
+   *
+   * Escopo obrigatório por accountId.
+   */
+  async resetFailed(id: string, accountId: string): Promise<Message> {
+    if (!accountId) {
+      throw new ValidationError('accountId obrigatório');
+    }
+
+    const existing = await prisma.message.findFirst({
+      where: { id, conversation: { accountId } },
+      select: { id: true, status: true, metadata: true },
+    });
+    if (!existing) {
+      throw new NotFoundError('Mensagem');
+    }
+    if (existing.status !== 'failed') {
+      throw new ValidationError('Apenas mensagens com status=failed podem ser reenviadas');
+    }
+
+    const baseMetadata =
+      existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+        ? (existing.metadata as Record<string, unknown>)
+        : {};
+
+    // Mantemos lastError/failedAt para auditoria mas marcamos retryAt.
+    const metadata: Prisma.InputJsonValue = {
+      ...baseMetadata,
+      retryAt: new Date().toISOString(),
+    };
+
+    return prisma.message.update({
+      where: { id: existing.id },
+      data: { status: 'sending', metadata },
+    });
+  }
+
   // ============================================
   // Utilities
   // ============================================

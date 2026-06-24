@@ -119,6 +119,19 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['conversations'] });
     queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+    // CHAT-TAG-SYNC-2 (front): após aplicar/remover label numa conversa o
+    // backend espelha LeadTag do contato (CHAT-TAG-SYNC-1 no
+    // conversation.service). O painel "Tags do contato" (ContactSidePanel),
+    // o /admin/kanban e o /admin/leads consomem essas LeadTags via outras
+    // queries, então invalidamos aqui pra refletir imediatamente sem F5.
+    const contactId = conversation.contactId;
+    if (contactId) {
+      queryClient.invalidateQueries({ queryKey: ['contact-tags', contactId] });
+    }
+    queryClient.invalidateQueries({ queryKey: ['contacts'] });
+    queryClient.invalidateQueries({ queryKey: ['leads'] });
+    queryClient.invalidateQueries({ queryKey: ['kanban'] });
+    queryClient.invalidateQueries({ queryKey: ['kanban-leads'] });
   }
 
   function handleMutationError(err: unknown, fallback: string) {
@@ -231,8 +244,12 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
   const currentLabelIds = new Set(conversation.labels?.map((l) => l.tagId) ?? []);
   const isResolved = conversation.status === 'resolved';
 
+  // CHAT-LAYOUT-003: header do thread quebrava ao tentar render todas as ações +
+  // chips numa linha só. Aplicar flex-wrap permite que linhas adicionais fluam
+  // para baixo (em vez de sobrepor o metadata da conversa) e gap-y separa as
+  // linhas com respiro vertical.
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex flex-wrap items-center gap-1 gap-y-1.5">
       {/* Atribuir */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -366,22 +383,26 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* Tags ativas (chips) */}
+      {/* Tags ativas (chips) — só renderiza em telas xl+ pra não competir com
+          as ações no espaço horizontal do header. Em telas menores o usuário
+          continua vendo as tags no painel direito (ContactSidePanel) e no
+          contador do popover de Tags. */}
       {conversation.labels && conversation.labels.length > 0 && (
-        <div className="hidden lg:flex items-center gap-1 ml-1">
-          {conversation.labels.slice(0, 3).map((l) => (
+        <div className="hidden xl:flex items-center gap-1 ml-1 min-w-0 flex-wrap">
+          {conversation.labels.slice(0, 2).map((l) => (
             <Badge
               key={l.id}
               variant="secondary"
-              className="text-[10px] py-0 px-1.5 h-5"
+              className="text-[10px] py-0 px-1.5 h-5 max-w-[120px] truncate"
               style={{ borderColor: l.tag?.color || undefined }}
+              title={l.tag?.name || l.tagId}
             >
               {l.tag?.name || l.tagId}
             </Badge>
           ))}
-          {conversation.labels.length > 3 && (
+          {conversation.labels.length > 2 && (
             <Badge variant="outline" className="text-[10px] py-0 px-1.5 h-5">
-              +{conversation.labels.length - 3}
+              +{conversation.labels.length - 2}
             </Badge>
           )}
         </div>

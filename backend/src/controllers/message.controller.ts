@@ -304,6 +304,84 @@ export class MessageController {
   }
 
   /**
+   * POST /api/messages/:id/retry
+   *
+   * CHAT-MSG-FAILED-007: tenta reenviar uma mensagem que ficou status='failed'
+   * (ex.: Evolution voltou 400 na primeira tentativa). Reseta o status para
+   * 'sending' via messageService.resetFailed e re-dispara pelo provider
+   * exatamente como o create() faz. Mensagem privada/sem content não é re-enviada.
+   */
+  async retry(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user) throw new UnauthorizedError();
+      const accountId = req.user.accountId;
+      if (!accountId) throw new ValidationError('accountId obrigatório');
+
+      const id = req.params.id as string;
+
+      const message = await prisma.message.findFirst({
+        where: { id, conversation: { accountId } },
+        include: {
+          conversation: {
+            include: {
+              contact: { select: { telefone: true } },
+              inbox: {
+                select: { channelType: true, evolutionInstance: true },
+              },
+            },
+          },
+        },
+      });
+      if (!message) throw new NotFoundError('Mensagem');
+
+      if (message.isPrivate) {
+        throw new ValidationError('Nota interna não pode ser reenviada');
+      }
+      if (!message.content || message.content.trim() === '') {
+        throw new ValidationError('Mensagem sem conteúdo não pode ser reenviada');
+      }
+
+      // Resetar para 'sending'; falha aqui (status != failed) propaga 422.
+      let updated = await messageService.resetFailed(id, accountId);
+
+      const phone = message.conversation.contact?.telefone ?? '';
+      const channel = message.conversation.inbox?.channelType;
+
+      if (channel === 'whatsapp' && phone) {
+        try {
+          const result = await evolutionService.sendText(accountId, {
+            number: phone,
+            text: message.content,
+            instance: message.conversation.inbox?.evolutionInstance ?? null,
+          });
+          if (result.messageId) {
+            updated = await prisma.message.update({
+              where: { id },
+              data: { externalId: result.messageId, status: 'sent' },
+            });
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          logger.warn('[message] retry falhou no Evolution', {
+            messageId: id,
+            accountId,
+            error: errMsg,
+          });
+          updated = await messageService.markFailed(id, accountId, errMsg);
+        }
+      }
+
+      res.json({ data: updated });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * POST /api/messages/:id/read
    * Marca a mensagem como lida pelo usuário autenticado.
    */

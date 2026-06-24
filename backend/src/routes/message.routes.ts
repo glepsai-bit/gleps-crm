@@ -36,6 +36,11 @@ jwtRouter.post('/messages/:id/read', (req, res, next) =>
   messageController.markRead(req, res, next)
 );
 
+// CHAT-MSG-FAILED-007: retry de mensagem failed (ex.: Evolution 400 transient).
+jwtRouter.post('/messages/:id/retry', (req, res, next) =>
+  messageController.retry(req, res, next)
+);
+
 jwtRouter.get('/messages/search', (req, res, next) =>
   messageController.search(req, res, next)
 );

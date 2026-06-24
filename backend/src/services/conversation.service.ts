@@ -4,6 +4,7 @@ import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors'
 import { eventService } from './event.service';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
+import { contactService } from './contact.service';
 
 /**
  * Wrapper defensivo: o Socket.IO pode não estar inicializado em testes
@@ -824,13 +825,15 @@ class ConversationService {
     id: string,
     accountId: string,
     tagId: string,
-    userId: string
+    userId: string,
+    actor?: ConversationActor
   ): Promise<Conversation> {
-    await this.requireConversation(id, accountId);
+    // Precisamos do contactId pra espelhar a tag no LeadTag (CHAT-TAG-SYNC-1).
+    const conversation = await this.requireConversation(id, accountId);
 
     const tag = await prisma.tag.findFirst({
       where: { id: tagId, accountId },
-      select: { id: true },
+      select: { id: true, type: true },
     });
     if (!tag) throw new NotFoundError('Tag');
 
@@ -858,7 +861,57 @@ class ConversationService {
       }
     }
 
-    return this.get(id, accountId, { labels: true });
+    // CHAT-TAG-SYNC-1: espelhar a tag aplicada na conversa para LeadTag do
+    // contato, garantindo que o painel "Contato" do /admin/chat e o /admin/kanban
+    // (que filtram lead_tags por stage_id) reflitam a aplicação feita via chat.
+    if (conversation.contactId) {
+      try {
+        if (tag.type === 'stage') {
+          // Delega para contactService.applyTag: garante invariante de "um stage
+          // por contato" (remove stage tags anteriores) e dispara TagHistory +
+          // event log corretos. Source='chatwoot' indica origem na thread do chat.
+          await contactService.applyTag(
+            conversation.contactId,
+            accountId,
+            tagId,
+            'chatwoot',
+            userId
+          );
+        } else {
+          // Tag operacional: cria LeadTag direto (não há invariante de exclusividade).
+          // P2002 (já aplicada) é tratado como no-op idempotente.
+          try {
+            await prisma.leadTag.create({
+              data: {
+                contactId: conversation.contactId,
+                tagId,
+                appliedByType: 'user',
+                appliedById: userId,
+                source: 'chatwoot',
+              },
+            });
+          } catch (err: any) {
+            if (err?.code !== 'P2002') throw err;
+          }
+        }
+      } catch (err) {
+        // Não bloqueia a aplicação da label na conversa se o espelhamento falhar
+        // (ex.: contato deletado entre o requireConversation e o applyTag).
+        logger.warn('[conversation] falha ao espelhar label no LeadTag', {
+          conversationId: id,
+          contactId: conversation.contactId,
+          tagId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // CHAT-LABEL-IDEMPOTENT-3: repassa actor para o get() preservar RBAC do agente.
+    // CHAT-LABEL-NO-SOCKET-EMIT-5: emite conversation:updated pra que outros tabs/agents
+    // recebam a mudança em tempo real (assign/priority/snooze/resolve já fazem isso).
+    const updated = await this.get(id, accountId, { labels: true }, actor);
+    safeEmitUpdated(accountId, id, updated);
+    return updated;
   }
 
   // ============================================
@@ -869,9 +922,10 @@ class ConversationService {
     id: string,
     accountId: string,
     tagId: string,
-    userId: string
+    userId: string,
+    actor?: ConversationActor
   ): Promise<Conversation> {
-    await this.requireConversation(id, accountId);
+    const conversation = await this.requireConversation(id, accountId);
 
     const result = await prisma.conversationLabel.deleteMany({
       where: { conversationId: id, tagId },
@@ -887,9 +941,38 @@ class ConversationService {
         entityId: id,
         payload: { tagId },
       });
+
+      // CHAT-TAG-SYNC-1 (simetria): se for tag operacional, remove do LeadTag.
+      // Stage tags NÃO são removidas automaticamente — remover unilateralmente
+      // jogaria o contato pra fora de todas as colunas do Kanban, o que quebra
+      // a UX (mover entre colunas precisa setar a nova stage; só remover é
+      // ambíguo). Movimentação no Kanban segue sendo o canal de mudança de stage.
+      if (conversation.contactId) {
+        try {
+          const tag = await prisma.tag.findFirst({
+            where: { id: tagId, accountId },
+            select: { type: true },
+          });
+          if (tag && tag.type === 'operational') {
+            await prisma.leadTag.deleteMany({
+              where: { contactId: conversation.contactId, tagId },
+            });
+          }
+        } catch (err) {
+          logger.warn('[conversation] falha ao espelhar removeLabel no LeadTag', {
+            conversationId: id,
+            contactId: conversation.contactId,
+            tagId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
     }
 
-    return this.get(id, accountId, { labels: true });
+    // CHAT-LABEL-IDEMPOTENT-3 + CHAT-LABEL-NO-SOCKET-EMIT-5
+    const updated = await this.get(id, accountId, { labels: true }, actor);
+    safeEmitUpdated(accountId, id, updated);
+    return updated;
   }
 
   // ============================================
@@ -900,7 +983,8 @@ class ConversationService {
     id: string,
     accountId: string,
     userId: string,
-    byUserId: string
+    byUserId: string,
+    actor?: ConversationActor
   ): Promise<Conversation> {
     await this.requireConversation(id, accountId);
 
@@ -933,7 +1017,8 @@ class ConversationService {
       }
     }
 
-    return this.get(id, accountId, { participants: true });
+    // CHAT-LABEL-IDEMPOTENT-3: repassa actor para preservar RBAC do agente.
+    return this.get(id, accountId, { participants: true }, actor);
   }
 
   // ============================================
@@ -944,7 +1029,8 @@ class ConversationService {
     id: string,
     accountId: string,
     userId: string,
-    byUserId: string
+    byUserId: string,
+    actor?: ConversationActor
   ): Promise<Conversation> {
     await this.requireConversation(id, accountId);
 
@@ -964,7 +1050,8 @@ class ConversationService {
       });
     }
 
-    return this.get(id, accountId, { participants: true });
+    // CHAT-LABEL-IDEMPOTENT-3: repassa actor para preservar RBAC do agente.
+    return this.get(id, accountId, { participants: true }, actor);
   }
 
   // ============================================

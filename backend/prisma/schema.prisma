@@ -1383,6 +1383,14 @@ model ConversationParticipant {
   @@map("conversation_participants")
 }
 
+// IMPORTANTE: ConversationNote eh EXCLUSIVO para "transfer notes"
+// (nota anexada quando um agente transfere a conversa pra outro agente/team via
+// conversation.service.ts -> transferConversation). Notas internas digitadas pelo
+// agente no chat (estilo Chatwoot "Private Note") NAO vivem aqui: elas sao gravadas
+// como Message com isPrivate=true (ver message.controller.ts / message.service.ts).
+// Antes de usar este model para qualquer outro fluxo, considerar consolidar tudo em
+// Message (ex: contentType='transfer_note') e deletar este model, para reduzir
+// superficie de dados de "notas".
 model ConversationNote {
   id             String       @id @default(uuid()) @db.Uuid
   conversationId String       @map("conversation_id") @db.Uuid
