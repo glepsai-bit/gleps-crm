@@ -241,6 +241,7 @@ const businessHoursSchema = z
       close: z.string().regex(/^\d{2}:\d{2}$/, 'Formato HH:MM'),
     })
   )
+  .nullable()
   .optional();
 
 const createInboxChannelSchema = z.object({
