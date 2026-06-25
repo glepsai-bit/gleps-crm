@@ -41,6 +41,7 @@ import cannedResponseRoutes from './canned-response.routes';
 import slaRoutes, { conversationsRouter as slaConversationsRouter } from './sla.routes';
 import chatMetricsRoutes from './chat-metrics.routes';
 import agentAvailabilityRoutes from './agent-availability.routes';
+import attachmentRoutes from './attachment.routes';
 import { Router as LeadTagRouter } from 'express';
 import { contactController } from '../controllers/contact.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
@@ -127,5 +128,7 @@ router.use('/canned-responses', cannedResponseRoutes);
 router.use('/sla-policies', slaRoutes);
 router.use('/chat', chatMetricsRoutes);
 router.use('/availability', agentAvailabilityRoutes);
+// Bug A: media proxy (audio/image/video baixados da Evolution)
+router.use('/attachments', attachmentRoutes);
 
 export default router;

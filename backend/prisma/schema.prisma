@@ -102,6 +102,7 @@ model Account {
   cannedResponses            CannedResponse[]
   customAttributeDefinitions CustomAttributeDefinition[]
   slaPolicies                SLAPolicy[]
+  conversationCycles         ConversationCycle[]
 
   @@index([status])
   @@map("accounts")
@@ -260,6 +261,8 @@ model User {
   mentions                   Mention[]
   readReceipts               ReadReceipt[]
   availability               AgentAvailability?
+  cyclesResolved             ConversationCycle[]       @relation("CycleResolver")
+  cyclesFirstResponded       ConversationCycle[]       @relation("CycleResponder")
 
   @@index([accountId])
   @@index([email])
@@ -1295,6 +1298,7 @@ model Conversation {
   externalId       String?    @map("external_id") @db.VarChar(120) // remoteJid do WhatsApp
   customAttributes Json?      @default("{}") @map("custom_attributes")
   unreadCount      Int        @default(0) @map("unread_count")
+  openCycleId      String?    @map("open_cycle_id") @db.Uuid // ciclo ativo (open) OU null
   createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1304,6 +1308,7 @@ model Conversation {
   notes        ConversationNote[]
   mentions     Mention[]
   slaBreaches  SLABreach[]
+  cycles       ConversationCycle[]
 
   // SE-H1: dedupe de conversa por remoteJid dentro do inbox — usado pelo
   // findOrCreateForCustomer (webhook Evolution faz retry agressivo).
@@ -1319,6 +1324,34 @@ model Conversation {
   @@index([status])
   @@index([externalId])
   @@map("conversations")
+}
+
+model ConversationCycle {
+  id                    String       @id @default(uuid()) @db.Uuid
+  conversationId        String       @map("conversation_id") @db.Uuid
+  conversation          Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  accountId             String       @map("account_id") @db.Uuid
+  account               Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  openedAt              DateTime     @default(now()) @map("opened_at") @db.Timestamptz
+  resolvedAt            DateTime?    @map("resolved_at") @db.Timestamptz
+  resolvedBy            String?      @map("resolved_by") @db.VarChar(20)
+  resolvedByUserId      String?      @map("resolved_by_user_id") @db.Uuid
+  resolvedByUser        User?        @relation("CycleResolver", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+  firstResponseAt       DateTime?    @map("first_response_at") @db.Timestamptz
+  firstResponseByUserId String?      @map("first_response_by_user_id") @db.Uuid
+  firstResponseByUser   User?        @relation("CycleResponder", fields: [firstResponseByUserId], references: [id], onDelete: SetNull)
+  customerMessagesCount Int          @default(0) @map("customer_messages_count")
+  agentMessagesCount    Int          @default(0) @map("agent_messages_count")
+  durationSec           Int?         @map("duration_sec")
+  slaBreached           Boolean      @default(false) @map("sla_breached")
+  slaBreachedAt         DateTime?    @map("sla_breached_at") @db.Timestamptz
+  snapshot              Json? // priority, team, assignee, labels no momento da resolucao
+
+  @@index([accountId, resolvedAt])
+  @@index([conversationId])
+  @@index([resolvedBy])
+  @@index([accountId, openedAt])
+  @@map("conversation_cycles")
 }
 
 model Message {
@@ -1362,15 +1395,25 @@ model Attachment {
   messageId    String   @map("message_id") @db.Uuid
   message      Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
   fileType     String   @map("file_type") @db.VarChar(40) // image | video | audio | document
+  // fileUrl: URL servível pelo frontend. Após baixar a mídia da Evolution,
+  // passa a ser '/api/attachments/<id>' (proxy autenticado). Em rows legadas
+  // pode estar a URL original (Evolution) — preservada também em sourceUrl.
   fileUrl      String   @map("file_url") @db.VarChar(2000)
   fileSize     Int?     @map("file_size")
   fileName     String?  @map("file_name") @db.VarChar(255)
   mimeType     String?  @map("mime_type") @db.VarChar(120)
   thumbnailUrl String?  @map("thumbnail_url") @db.VarChar(2000)
   duration     Int? // segundos pra audio/video
+  // Bug A: storagePath = caminho relativo a backend/uploads onde a mídia foi
+  // materializada (ex.: '<accountId>/<id>.ogg'). storageStatus = pending |
+  // downloaded | failed. sourceUrl = URL original da Evolution pra retry/fallback.
+  storagePath   String?  @map("storage_path") @db.VarChar(500)
+  storageStatus String?  @default("pending") @map("storage_status") @db.VarChar(20)
+  sourceUrl     String?  @map("source_url") @db.VarChar(2000)
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([messageId])
+  @@index([storageStatus])
   @@map("attachments")
 }
 

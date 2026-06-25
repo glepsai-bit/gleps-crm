@@ -677,7 +677,11 @@ export class EvolutionController {
       if (!url) return null;
       return {
         fileType,
+        // Bug A: fileUrl recebe a URL da Evolution só como placeholder.
+        // O message.service grava em sourceUrl e dispara materialize();
+        // após o download, fileUrl passa a ser '/api/attachments/<id>'.
         fileUrl: url,
+        sourceUrl: url,
         fileName: node.fileName ?? null,
         mimeType: node.mimetype ?? node.mimeType ?? null,
         fileSize:

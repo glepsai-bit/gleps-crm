@@ -5,6 +5,7 @@ import { eventService } from './event.service';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
 import { teamService } from './team.service';
+import { conversationCycleService } from './conversation-cycle.service';
 
 /**
  * Wrapper defensivo: o Socket.IO pode não estar inicializado em testes
@@ -391,6 +392,17 @@ class ConversationService {
       },
     });
 
+    // CYCLE-WIRE: abre o primeiro ConversationCycle da conversa. Failure
+    // aqui não pode abortar a criação — log e segue (best-effort).
+    try {
+      await conversationCycleService.openCycle(conversation.id, accountId);
+    } catch (err) {
+      logger.warn('[conversation] openCycle inicial falhou', {
+        conversationId: conversation.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     await eventService.create({
       accountId,
       eventType: 'conversation.created',
@@ -455,6 +467,28 @@ class ConversationService {
       data,
       include: FULL_CONVERSATION_INCLUDE,
     });
+
+    // CYCLE-WIRE em updateStatus:
+    // - resolved (e antes não era): fecha ciclo ativo
+    // - open (e antes era resolved): abre ciclo novo
+    // pending/snoozed não mexem em ciclo (cliente continua aberto).
+    try {
+      if (status === 'resolved' && existing.status !== 'resolved') {
+        await conversationCycleService.closeCycle(id, accountId, {
+          resolvedBy: 'human',
+          resolvedByUserId: userId,
+        });
+      } else if (status === 'open' && existing.status === 'resolved') {
+        await conversationCycleService.openCycle(id, accountId);
+      }
+    } catch (err) {
+      logger.warn('[conversation] cycle wire em updateStatus falhou', {
+        conversationId: id,
+        from: existing.status,
+        to: status,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     await eventService.create({
       accountId,
@@ -743,16 +777,36 @@ class ConversationService {
       return existing;
     }
 
+    const resolvedAt = new Date();
     const updated = await prisma.conversation.update({
       where: { id },
       data: {
         status: 'resolved',
-        resolvedAt: new Date(),
+        resolvedAt,
         resolvedBy: input.resolvedBy,
         snoozedUntil: null,
       },
       include: FULL_CONVERSATION_INCLUDE,
     });
+
+    // CYCLE-WIRE: fecha o ciclo ativo com snapshot do estado atual e
+    // resolvedBy/resolvedByUserId. Best-effort (não aborta resolve).
+    try {
+      await conversationCycleService.closeCycle(
+        id,
+        accountId,
+        {
+          resolvedBy: input.resolvedBy,
+          resolvedByUserId: input.resolvedBy === 'ai' ? null : input.userId,
+        },
+        { resolvedAt }
+      );
+    } catch (err) {
+      logger.warn('[conversation] closeCycle em resolve falhou', {
+        conversationId: id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     await eventService.create({
       accountId,
@@ -813,6 +867,18 @@ class ConversationService {
       },
       include: FULL_CONVERSATION_INCLUDE,
     });
+
+    // CYCLE-WIRE: reopen cria um NOVO ConversationCycle. O ciclo anterior
+    // (já resolved) fica preservado pra histórico/métricas — é o ponto
+    // central de Bug B. Best-effort: se falhar, log e segue.
+    try {
+      await conversationCycleService.openCycle(id, accountId);
+    } catch (err) {
+      logger.warn('[conversation] openCycle em reopen falhou', {
+        conversationId: id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     await eventService.create({
       accountId,
@@ -1487,6 +1553,16 @@ class ConversationService {
         return this.maybeReopen(conversation, accountId, input.externalId);
       }
 
+      // CYCLE-WIRE: conversa nova criada via webhook inbound → abre 1º ciclo.
+      try {
+        await conversationCycleService.openCycle(conversation.id, accountId);
+      } catch (err) {
+        logger.warn('[conversation] openCycle no findOrCreate falhou', {
+          conversationId: conversation.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
       await eventService.create({
         accountId,
         eventType: 'conversation.created',
@@ -1573,6 +1649,17 @@ class ConversationService {
         } as any,
       },
     });
+
+    // CYCLE-WIRE: cliente voltou a falar = novo ciclo. Preserva ciclo anterior
+    // (já resolved no banco) pra histórico/métricas — coração de Bug B.
+    try {
+      await conversationCycleService.openCycle(conv.id, accountId);
+    } catch (err) {
+      logger.warn('[conversation] openCycle em maybeReopen falhou', {
+        conversationId: conv.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     await eventService.create({
       accountId,

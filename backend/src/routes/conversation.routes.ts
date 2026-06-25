@@ -98,4 +98,12 @@ router.post('/:id/read', (req, res, next) =>
   conversationController.markAsRead(req, res, next)
 );
 
+// ============================================
+// Cycles (Bug B) — histórico de ConversationCycle
+// ============================================
+
+router.get('/:id/cycles', (req, res, next) =>
+  conversationController.listCycles(req, res, next)
+);
+
 export default router;

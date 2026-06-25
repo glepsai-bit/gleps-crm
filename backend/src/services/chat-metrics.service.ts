@@ -220,21 +220,55 @@ class ChatMetricsService {
       (c) => c.status === 'resolved'
     ).length;
 
-    const resolvedByAi = conversations.filter(
-      (c) => c.status === 'resolved' && c.resolvedBy === 'ai'
+    // ============================================
+    // KPIs por CICLO (Bug B): agrega ConversationCycle dentro da janela.
+    // Reabertura cria novo ciclo → ciclo anterior continua contando aqui,
+    // diferente do método antigo que olhava só Conversation.resolvedAt atual.
+    //
+    // Filtros (inboxId/teamId/agentId) viajam pelo Conversation parent —
+    // reflete o estado atual da conversa. (Para snapshot histórico,
+    // ler cycle.snapshot.)
+    // ============================================
+    const cycles = await prisma.conversationCycle.findMany({
+      where: {
+        accountId,
+        OR: [
+          { openedAt: { gte: fromDate, lte: toDate } },
+          { resolvedAt: { gte: fromDate, lte: toDate } },
+        ],
+        ...(inboxId || teamId || agentId
+          ? {
+              conversation: {
+                ...(inboxId ? { inboxId } : {}),
+                ...(teamId ? { teamId } : {}),
+                ...(agentId ? { assigneeId: agentId } : {}),
+              },
+            }
+          : {}),
+      },
+      select: {
+        openedAt: true,
+        resolvedAt: true,
+        resolvedBy: true,
+        firstResponseAt: true,
+      },
+    });
+
+    const resolvedByAi = cycles.filter(
+      (cy) => cy.resolvedAt && cy.resolvedBy === 'ai'
     ).length;
-    const resolvedByHuman = conversations.filter(
-      (c) => c.status === 'resolved' && c.resolvedBy === 'human'
+    const resolvedByHuman = cycles.filter(
+      (cy) => cy.resolvedAt && cy.resolvedBy === 'human'
     ).length;
 
     const frtSamples: number[] = [];
     const resolutionSamples: number[] = [];
-    for (const c of conversations) {
-      if (c.firstResponseAt) {
-        frtSamples.push(diffMinutes(c.firstResponseAt, c.createdAt));
+    for (const cy of cycles) {
+      if (cy.firstResponseAt) {
+        frtSamples.push(diffMinutes(cy.firstResponseAt, cy.openedAt));
       }
-      if (c.resolvedAt) {
-        resolutionSamples.push(diffMinutes(c.resolvedAt, c.createdAt));
+      if (cy.resolvedAt) {
+        resolutionSamples.push(diffMinutes(cy.resolvedAt, cy.openedAt));
       }
     }
 
@@ -489,18 +523,38 @@ class ChatMetricsService {
       ['open', 'pending', 'snoozed'].includes(c.status)
     ).length;
 
-    const resolvedByAi = conversations.filter(
-      (c) => c.status === 'resolved' && c.resolvedBy === 'ai'
+    // Bug B: AI vs Humano por ciclo. Conta TODOS os ciclos resolvidos
+    // pelo agente (resolvedByUserId), mesmo de conversas reabertas
+    // depois — não só o resolveBy atual da conversa.
+    const agentCycles = await prisma.conversationCycle.findMany({
+      where: {
+        accountId,
+        OR: [
+          { openedAt: { gte: fromDate, lte: toDate } },
+          { resolvedAt: { gte: fromDate, lte: toDate } },
+        ],
+        conversation: { assigneeId: userId },
+      },
+      select: {
+        openedAt: true,
+        resolvedAt: true,
+        resolvedBy: true,
+        firstResponseAt: true,
+      },
+    });
+
+    const resolvedByAi = agentCycles.filter(
+      (cy) => cy.resolvedAt && cy.resolvedBy === 'ai'
     ).length;
-    const resolvedByHuman = conversations.filter(
-      (c) => c.status === 'resolved' && c.resolvedBy === 'human'
+    const resolvedByHuman = agentCycles.filter(
+      (cy) => cy.resolvedAt && cy.resolvedBy === 'human'
     ).length;
 
     const frt: number[] = [];
     const res: number[] = [];
-    for (const c of conversations) {
-      if (c.firstResponseAt) frt.push(diffMinutes(c.firstResponseAt, c.createdAt));
-      if (c.resolvedAt) res.push(diffMinutes(c.resolvedAt, c.createdAt));
+    for (const cy of agentCycles) {
+      if (cy.firstResponseAt) frt.push(diffMinutes(cy.firstResponseAt, cy.openedAt));
+      if (cy.resolvedAt) res.push(diffMinutes(cy.resolvedAt, cy.openedAt));
     }
 
     const slaBreaches = await prisma.sLABreach.count({

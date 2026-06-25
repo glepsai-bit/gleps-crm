@@ -6,6 +6,7 @@ import {
   type GetConversationInclude,
   type ConversationActor,
 } from '../services/conversation.service';
+import { conversationCycleService } from '../services/conversation-cycle.service';
 import { AuthenticatedRequest } from '../types';
 import { ValidationError } from '../utils/errors';
 
@@ -451,6 +452,32 @@ export class ConversationController {
       const id = req.params.id as string;
       await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.markAsRead(id, getAccountId(req), req.user!.id);
+      res.json({ data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /conversations/:id/cycles — histórico de ConversationCycle (Bug B)
+   *
+   * Retorna todos os ciclos open->resolved da conversa, do mais recente
+   * para o mais antigo. Cada reabertura cria novo ciclo (não apaga o
+   * anterior), permitindo trilha completa pra UI/auditoria.
+   *
+   * Respeita RBAC: agente só lê ciclos de conversas que lhe pertencem
+   * (ensureConversationAccess usa o mesmo critério das demais mutations).
+   */
+  async listCycles(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const accountId = getAccountId(req);
+      await conversationService.ensureConversationAccess(id, accountId, getActor(req));
+      const data = await conversationCycleService.listCycles(id, accountId);
       res.json({ data });
     } catch (error) {
       next(error);

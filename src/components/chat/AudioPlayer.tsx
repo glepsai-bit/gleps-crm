@@ -1,21 +1,24 @@
 /**
- * AudioPlayer — T-022 BUG-5
+ * AudioPlayer — T-022 BUG-5 / Bug A
  *
- * Player de áudio custom estilizado (verde primary) para substituir o
+ * Player de áudio custom estilizado (verde primary) — substitui o
  * <audio controls /> nativo (UX pobre, visual quebrado em dark mode).
  *
- * Features:
- *  - Botão play/pause com ícones lucide
- *  - Barra de progresso (Slider shadcn) com scrub
- *  - Tempo decorrido / total em mm:ss
- *  - Botão de velocidade (1x / 1.5x / 2x) — comum em áudios de WhatsApp
- *  - Fallback para <audio controls /> se MediaElement API indisponível
+ * Bug A: a src do attachment passou a apontar pra '/api/attachments/<id>',
+ * um endpoint AUTENTICADO (Bearer JWT). O <audio> nativo não envia headers
+ * customizados em request de mídia — então buscamos via fetch+auth, geramos
+ * um blob URL com URL.createObjectURL e usamos esse blob como src. O blob
+ * fica vinculado ao ciclo de vida do componente (revoke no unmount/troca).
+ *
+ * Aceita também URLs absolutas (legado, mensagens antigas com URL pública).
+ * Nesse caso pula o fetch e usa src direto.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pause, Play, Volume2 } from 'lucide-react';
+import { Loader2, Pause, Play, Volume2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { cn } from '@/lib/utils';
+import { tokenManager } from '@/api/client';
 
 interface AudioPlayerProps {
   src: string;
@@ -32,20 +35,87 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+/**
+ * Detecta se o src é o proxy autenticado do backend
+ * (caminho relativo iniciando em /api/attachments/...).
+ */
+function isProxyUrl(src: string): boolean {
+  return /^\/?api\/attachments\//.test(src);
+}
+
 export function AudioPlayer({ src, mimeType, className }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [rate, setRate] = useState<number>(1);
   const [isSeeking, setIsSeeking] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+  const [isResolving, setIsResolving] = useState<boolean>(false);
 
   // Sync rate -> audio element
   useEffect(() => {
     const el = audioRef.current;
     if (el) el.playbackRate = rate;
   }, [rate]);
+
+  // Resolve src: se for proxy autenticado, baixa com Bearer e gera blob URL.
+  // Caso contrário, usa direto.
+  useEffect(() => {
+    let cancelled = false;
+    setHasError(false);
+    setResolvedSrc(null);
+
+    const cleanupBlob = () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+    };
+
+    if (!src) {
+      setHasError(true);
+      return cleanupBlob;
+    }
+
+    if (!isProxyUrl(src)) {
+      // URL pública direta (data: ou https://...) — toca direto.
+      setResolvedSrc(src);
+      return cleanupBlob;
+    }
+
+    setIsResolving(true);
+    const token = tokenManager.getToken();
+    const url = src.startsWith('/') ? src : `/${src}`;
+
+    fetch(url, {
+      method: 'GET',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const blob = await res.blob();
+        if (cancelled) return;
+        cleanupBlob();
+        const objectUrl = URL.createObjectURL(blob);
+        blobUrlRef.current = objectUrl;
+        setResolvedSrc(objectUrl);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setHasError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setIsResolving(false);
+      });
+
+    return () => {
+      cancelled = true;
+      cleanupBlob();
+    };
+  }, [src]);
 
   const onLoadedMetadata = useCallback(() => {
     const el = audioRef.current;
@@ -100,13 +170,13 @@ export function AudioPlayer({ src, mimeType, className }: AudioPlayerProps) {
     });
   }, []);
 
-  // Fallback caso o browser barre completamente o áudio
+  // Fallback caso o browser barre completamente o áudio ou o download falhe
   if (hasError) {
     return (
-      <audio controls preload="metadata" className={cn('max-w-[260px]', className)}>
-        <source src={src} type={mimeType || 'audio/mpeg'} />
-        Seu navegador não suporta o player de áudio.
-      </audio>
+      <div className={cn('flex items-center gap-2 max-w-[260px] rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive', className)}>
+        <Volume2 className="w-4 h-4 shrink-0" />
+        <span>Não foi possível carregar o áudio.</span>
+      </div>
     );
   }
 
@@ -118,28 +188,35 @@ export function AudioPlayer({ src, mimeType, className }: AudioPlayerProps) {
       )}
     >
       {/* elemento de áudio invisível */}
-      <audio
-        ref={audioRef}
-        src={src}
-        preload="metadata"
-        onLoadedMetadata={onLoadedMetadata}
-        onTimeUpdate={onTimeUpdate}
-        onEnded={onEnded}
-        onError={() => setHasError(true)}
-      >
-        {/* fallback para browsers muito antigos */}
-        <source src={src} type={mimeType || 'audio/mpeg'} />
-      </audio>
+      {resolvedSrc ? (
+        <audio
+          ref={audioRef}
+          src={resolvedSrc}
+          preload="metadata"
+          onLoadedMetadata={onLoadedMetadata}
+          onTimeUpdate={onTimeUpdate}
+          onEnded={onEnded}
+          onError={() => setHasError(true)}
+          data-testid="audio-element"
+        />
+      ) : null}
 
       <Button
         type="button"
         onClick={togglePlay}
         size="icon"
         variant="default"
+        disabled={!resolvedSrc || isResolving}
         aria-label={isPlaying ? 'Pausar áudio' : 'Reproduzir áudio'}
         className="h-8 w-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
       >
-        {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
+        {isResolving ? (
+          <Loader2 className="w-4 h-4 animate-spin" />
+        ) : isPlaying ? (
+          <Pause className="w-4 h-4" />
+        ) : (
+          <Play className="w-4 h-4 ml-0.5" />
+        )}
       </Button>
 
       <div className="flex-1 min-w-0 flex flex-col gap-0.5">

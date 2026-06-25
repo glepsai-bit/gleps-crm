@@ -5,6 +5,8 @@ import { logger } from '../utils/logger';
 import { eventService } from './event.service';
 import { webhookOutboundService } from './webhook-outbound.service';
 import { emitMessageCreated } from '../socket';
+import { conversationCycleService } from './conversation-cycle.service';
+import { attachmentStorageService } from './attachment-storage.service';
 
 // ============================================
 // Types
@@ -34,6 +36,12 @@ export interface CreateAttachmentInput {
   mimeType?: string;
   thumbnailUrl?: string;
   duration?: number;
+  /**
+   * Bug A: URL original (ex.: Evolution media URL com apikey requerida).
+   * Quando omitido, o service usa fileUrl como sourceUrl. O webhook Evolution
+   * sempre passa esse campo explicitamente pra deixar o intent claro.
+   */
+  sourceUrl?: string;
 }
 
 export interface CreateMessageInput {
@@ -265,12 +273,19 @@ class MessageService {
             attachments: {
               create: (input.attachments as CreateAttachmentInput[]).map(att => ({
                 fileType: att.fileType,
+                // Bug A: fileUrl será sobrescrito por '/api/attachments/<id>'
+                // após o materialize ter sucesso. Até lá guardamos o original
+                // pra que listagens legacy continuem mostrando ALGO.
                 fileUrl: att.fileUrl,
                 fileSize: att.fileSize ?? null,
                 fileName: att.fileName ?? null,
                 mimeType: att.mimeType ?? null,
                 thumbnailUrl: att.thumbnailUrl ?? null,
                 duration: att.duration ?? null,
+                // Bug A: sourceUrl preserva URL Evolution (com apikey requerida)
+                // pra que o storage service consiga baixar depois.
+                sourceUrl: att.sourceUrl ?? att.fileUrl,
+                storageStatus: 'pending',
               })),
             },
           }),
@@ -295,6 +310,59 @@ class MessageService {
 
       return created;
     });
+
+    // CYCLE-WIRE: contadores e first-response no ConversationCycle aberto.
+    // - mensagens privadas (notas internas) NÃO contam pra ciclo nem FRT —
+    //   são comunicação entre agentes e não fazem parte do "atendimento ao cliente".
+    // - increment SEMPRE no sender_type (customer ou agent/integration/ai_bot).
+    // Best-effort: falha do cycle não deve abortar a mensagem.
+    if (!message.isPrivate) {
+      try {
+        if (input.senderType === 'customer') {
+          await conversationCycleService.incrementMessageCount(
+            conversation.id,
+            accountId,
+            'customer'
+          );
+        } else if (isFirstResponseSender) {
+          // agent | ai_bot | integration = lado da empresa
+          if (shouldSetFirstResponse) {
+            await conversationCycleService.recordFirstResponse(
+              conversation.id,
+              accountId,
+              input.senderId ?? null
+            );
+          }
+          await conversationCycleService.incrementMessageCount(
+            conversation.id,
+            accountId,
+            'agent'
+          );
+        }
+      } catch (err) {
+        logger.warn('[message] cycle wire falhou', {
+          messageId: message.id,
+          conversationId: conversation.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Bug A: dispara materialização em background (não bloqueia retorno do
+    // POST de mensagem). Cada attachment pending é baixado da Evolution e
+    // gravado em backend/uploads/<accountId>/. fileUrl passa a apontar pro
+    // proxy /api/attachments/<id> assim que o download concluir.
+    if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+      for (const att of message.attachments) {
+        if (att.storageStatus === 'downloaded') continue;
+        void attachmentStorageService.materialize(att.id).catch((err) => {
+          logger.warn('[message] falha materialize de attachment', {
+            attachmentId: att.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
+    }
 
     // Fire-and-forget side effects (audit + outbound webhook).
     void eventService.create({

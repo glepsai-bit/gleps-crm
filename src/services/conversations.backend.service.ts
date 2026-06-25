@@ -43,12 +43,19 @@ export interface Attachment {
   id: string;
   messageId: string;
   fileType: AttachmentFileType;
+  /**
+   * URL servível pelo frontend. Para mensagens novas (pós-Bug A), aponta para
+   * '/api/attachments/<id>' (proxy autenticado). Para legado/URL pública, é
+   * a URL absoluta original.
+   */
   fileUrl: string;
   fileSize?: number | null;
   fileName?: string | null;
   mimeType?: string | null;
   thumbnailUrl?: string | null;
   duration?: number | null;
+  /** Bug A: pending | downloaded | failed (debug-only no frontend). */
+  storageStatus?: 'pending' | 'downloaded' | 'failed' | null;
   createdAt: string;
 }
 
