@@ -21,4 +21,20 @@ router.get('/metrics/agent/:userId', (req, res, next) =>
   chatMetricsController.getAgentMetrics(req, res, next)
 );
 
+// T-022 — Cards do dashboard: leads que retornaram + atendimento ao vivo.
+// IMPORTANTE: a rota `/returning-leads/list` PRECISA vir antes de
+// `/returning-leads` se houvesse colisão; Express casa rotas estáticas
+// distintas então a ordem não importa aqui, mas mantemos juntas pra clareza.
+router.get('/returning-leads/list', (req, res, next) =>
+  chatMetricsController.getReturningLeadsList(req, res, next)
+);
+
+router.get('/returning-leads', (req, res, next) =>
+  chatMetricsController.getReturningLeads(req, res, next)
+);
+
+router.get('/live-attendance', (req, res, next) =>
+  chatMetricsController.getLiveAttendance(req, res, next)
+);
+
 export default router;

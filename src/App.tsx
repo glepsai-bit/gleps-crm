@@ -36,7 +36,6 @@ import SuperAdminSystemSettingsPage from "./pages/super-admin/SuperAdminSystemSe
 
 // Admin
 import AdminLayout from "./layouts/AdminLayout";
-import AdminDashboard from "./pages/admin/AdminDashboard";
 import AdminKanbanPage from "./pages/admin/AdminKanbanPage";
 import AdminLeadsPage from "./pages/admin/AdminLeadsPage";
 import AdminSalesPage from "./pages/admin/AdminSalesPage";
@@ -44,7 +43,6 @@ import AdminSalesPage from "./pages/admin/AdminSalesPage";
 import AdminFinancePage from "./pages/admin/AdminFinancePage";
 import AdminProductsPage from "./pages/admin/AdminProductsPage";
 import AdminAgendaPage from "./pages/admin/AdminAgendaPage";
-import AdminInsightsPage from "./pages/admin/AdminInsightsPage";
 import AdminExtracaoPage from "./pages/admin/AdminExtracaoPage";
 import AdminEmailsPage from "./pages/admin/AdminEmailsPage";
 import AdminWhatsappTemplatesPage from "./pages/admin/AdminWhatsappTemplatesPage";
@@ -103,7 +101,7 @@ const App = () => (
             <Route path="/super-admin/system-settings" element={<ProtectedRoute requireSuperAdmin><SuperAdminLayout><ErrorBoundary><SuperAdminSystemSettingsPage /></ErrorBoundary></SuperAdminLayout></ProtectedRoute>} />
 
             {/* Admin Routes */}
-            <Route path="/admin" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminDashboard /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            <Route path="/admin" element={<Navigate to="/admin/chat" replace />} />
             <Route path="/admin/kanban" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminKanbanPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/leads" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminLeadsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/sales" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminSalesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
@@ -111,7 +109,6 @@ const App = () => (
             <Route path="/admin/finance" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminFinancePage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/products" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminProductsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/agenda" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminAgendaPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
-            <Route path="/admin/insights" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminInsightsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/prospeccao" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminExtracaoPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/emails" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminEmailsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/whatsapp-templates" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminWhatsappTemplatesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />

@@ -109,6 +109,54 @@ export interface AgentMetricsResult {
 }
 
 // ============================================
+// T-022 — Retornos (returning leads) e atendimento ao vivo
+// ============================================
+
+export interface ReturningLeadsFilters {
+  fromDate?: Date;
+  toDate?: Date;
+  inboxId?: string;
+  teamId?: string;
+  agentId?: string;
+}
+
+export interface ReturningLeadsResult {
+  count: number;
+  /** contactIds (Contact.id) dos leads que retornaram no período */
+  leadIds: string[];
+}
+
+export interface LiveAttendanceBucket {
+  count: number;
+  conversationIds: string[];
+}
+
+export interface LiveAttendanceResult {
+  ia: LiveAttendanceBucket;
+  humano: LiveAttendanceBucket;
+  emAberto: LiveAttendanceBucket;
+  total: number;
+}
+
+export interface ReturningLeadListItem {
+  contactId: string;
+  contactName: string | null;
+  contactPhone: string | null;
+  cyclesCount: number;
+  lastReopenAt: Date;
+  lastConversationId: string;
+  inboxId: string | null;
+  inboxName: string | null;
+  assigneeId: string | null;
+  assigneeName: string | null;
+}
+
+export interface ReturningLeadsListResult {
+  data: ReturningLeadListItem[];
+  total: number;
+}
+
+// ============================================
 // Helpers
 // ============================================
 
@@ -578,6 +626,332 @@ class ChatMetricsService {
       avgResolutionMin: average(res),
       slaBreaches,
     };
+  }
+
+  // ==========================================================================
+  // T-022 — Leads que RETORNARAM (>=2 ciclos)
+  // ==========================================================================
+
+  /**
+   * Conta leads (contacts) que tiveram >=2 ciclos em ConversationCycle no período.
+   *
+   * Regra: um lead "retornou" quando a mesma conversa foi resolvida e depois
+   * reaberta (ou quando o contato gerou mais de uma conversa resolvida). O sinal
+   * é "este Contact tem >=2 ConversationCycle". Filtramos por openedAt do ciclo
+   * dentro da janela e excluímos contatos cujo único ciclo é o primeiro contato
+   * (>=2 ciclos garante que houve reabertura/retorno).
+   *
+   * Schema atual não tem `opened_reason` em ConversationCycle — então usamos o
+   * critério estrutural ">=2 ciclos para o mesmo contato" como proxy de retorno.
+   * Filtros inboxId/teamId/agentId viajam pela Conversation parent (estado atual,
+   * compatível com getMetrics).
+   *
+   * @returns count + array dos contactIds que retornaram
+   */
+  async getReturningLeadsCount(
+    accountId: string,
+    filters: ReturningLeadsFilters = {}
+  ): Promise<ReturningLeadsResult> {
+    const { fromDate, toDate, inboxId, teamId, agentId } = filters;
+    if (fromDate && toDate && fromDate > toDate) {
+      throw new Error('fromDate não pode ser maior que toDate');
+    }
+
+    logger.debug('[chat-metrics] getReturningLeadsCount', { accountId, filters });
+
+    // Busca ciclos no período, restrito aos filtros — depois agrupa em memória
+    // por contactId. Trazemos só o que precisa pra contar (não há JOIN pesado).
+    const cycles = await prisma.conversationCycle.findMany({
+      where: {
+        accountId,
+        ...(fromDate || toDate
+          ? {
+              openedAt: {
+                ...(fromDate ? { gte: fromDate } : {}),
+                ...(toDate ? { lte: toDate } : {}),
+              },
+            }
+          : {}),
+        conversation: {
+          accountId,
+          contactId: { not: null },
+          ...(inboxId ? { inboxId } : {}),
+          ...(teamId ? { teamId } : {}),
+          ...(agentId ? { assigneeId: agentId } : {}),
+        },
+      },
+      select: {
+        conversation: { select: { contactId: true } },
+      },
+    });
+
+    // Conta ciclos por contato dentro do período.
+    const cyclesPerContact = new Map<string, number>();
+    for (const cy of cycles) {
+      const cid = cy.conversation?.contactId;
+      if (!cid) continue;
+      cyclesPerContact.set(cid, (cyclesPerContact.get(cid) ?? 0) + 1);
+    }
+
+    // Considera "retornou" quem tem >=2 ciclos NO PERÍODO, OU tem ciclo no
+    // período mas já tinha ciclo resolvido antes (não é primeiro contato).
+    const candidatesNoPeriod = Array.from(cyclesPerContact.entries())
+      .filter(([, n]) => n >= 2)
+      .map(([cid]) => cid);
+
+    // Para os que têm só 1 ciclo no período, verifica se existe ciclo anterior
+    // resolvido fora da janela (sinal de retorno após hiato).
+    const singletons = Array.from(cyclesPerContact.entries())
+      .filter(([, n]) => n === 1)
+      .map(([cid]) => cid);
+
+    let withPriorResolved: string[] = [];
+    if (singletons.length > 0 && fromDate) {
+      const priorCycles = await prisma.conversationCycle.findMany({
+        where: {
+          accountId,
+          resolvedAt: { not: null, lt: fromDate },
+          conversation: {
+            accountId,
+            contactId: { in: singletons },
+          },
+        },
+        select: {
+          conversation: { select: { contactId: true } },
+        },
+        distinct: ['conversationId'],
+      });
+      const set = new Set<string>();
+      for (const c of priorCycles) {
+        if (c.conversation?.contactId) set.add(c.conversation.contactId);
+      }
+      withPriorResolved = Array.from(set);
+    }
+
+    const leadIds = Array.from(new Set([...candidatesNoPeriod, ...withPriorResolved]));
+    return { count: leadIds.length, leadIds };
+  }
+
+  // ==========================================================================
+  // T-022 — Atendimento ao vivo (IA / Humano / Em aberto)
+  // ==========================================================================
+
+  /**
+   * Snapshot do que está ATIVO agora: status='open' classificado em três baldes
+   * mutuamente exclusivos.
+   *
+   * Heurística (ordem de precedência):
+   *   1. Humano  — assigneeId IS NOT NULL OR customAttributes.human_active=true
+   *   2. IA      — customAttributes.handler_active=true OR última Message do
+   *                bot (senderType='ai_bot') E não está marcado como humano
+   *   3. EmAberto — restante: sem assignee, sem flag de humano, sem sinal de IA
+   *
+   * Heurística da última Message: como o senderType da última mensagem é o sinal
+   * mais robusto de quem está conduzindo, fazemos uma subquery do lado do Postgres
+   * com DISTINCT ON pra evitar N+1.
+   */
+  async getLiveAttendance(accountId: string): Promise<LiveAttendanceResult> {
+    logger.debug('[chat-metrics] getLiveAttendance', { accountId });
+
+    const conversations = await prisma.conversation.findMany({
+      where: { accountId, status: 'open' },
+      select: {
+        id: true,
+        assigneeId: true,
+        customAttributes: true,
+      },
+    });
+
+    if (conversations.length === 0) {
+      return {
+        ia: { count: 0, conversationIds: [] },
+        humano: { count: 0, conversationIds: [] },
+        emAberto: { count: 0, conversationIds: [] },
+        total: 0,
+      };
+    }
+
+    const ids = conversations.map((c) => c.id);
+
+    // Última Message NÃO-privada por conversa (system_note/private notas internas
+    // não devem influenciar quem está "conduzindo" o atendimento).
+    const lastSenders = await prisma.$queryRaw<
+      Array<{ conversation_id: string; sender_type: string }>
+    >`
+      SELECT DISTINCT ON (conversation_id) conversation_id, sender_type
+      FROM messages
+      WHERE conversation_id = ANY(${ids}::uuid[])
+        AND is_private = false
+      ORDER BY conversation_id, created_at DESC
+    `;
+    const lastSenderByConv = new Map<string, string>();
+    for (const r of lastSenders) {
+      lastSenderByConv.set(r.conversation_id, r.sender_type);
+    }
+
+    const ia: string[] = [];
+    const humano: string[] = [];
+    const emAberto: string[] = [];
+
+    for (const c of conversations) {
+      const attrs =
+        (c.customAttributes as Record<string, unknown> | null) ?? {};
+      const humanActive = attrs.human_active === true;
+      const handlerActive = attrs.handler_active === true;
+      const lastSender = lastSenderByConv.get(c.id);
+
+      // 1. Humano: assignee humano OU flag explícita.
+      if (c.assigneeId || humanActive) {
+        humano.push(c.id);
+        continue;
+      }
+
+      // 2. IA: flag de handler ativo OU última mensagem foi do bot e humano
+      // não tomou controle.
+      if (handlerActive || (lastSender === 'ai_bot' && !humanActive)) {
+        ia.push(c.id);
+        continue;
+      }
+
+      // 3. Em aberto: sem assignee, sem flag de humano e sem sinal de IA.
+      emAberto.push(c.id);
+    }
+
+    return {
+      ia: { count: ia.length, conversationIds: ia },
+      humano: { count: humano.length, conversationIds: humano },
+      emAberto: { count: emAberto.length, conversationIds: emAberto },
+      total: conversations.length,
+    };
+  }
+
+  // ==========================================================================
+  // T-022 — Drill-down: lista paginada de leads que retornaram
+  // ==========================================================================
+
+  /**
+   * Lista paginada dos leads que retornaram no período — usada pelo modal de
+   * drill-down do card "Retornos" no dashboard. Reaproveita a regra de
+   * `getReturningLeadsCount` e enriquece com nome/telefone do contato + última
+   * conversa (inbox/agente atual).
+   */
+  async getReturningLeadsList(
+    accountId: string,
+    filters: ReturningLeadsFilters = {},
+    page = 1,
+    perPage = 20
+  ): Promise<ReturningLeadsListResult> {
+    const safePage = Math.max(1, Math.floor(page));
+    const safePerPage = Math.min(100, Math.max(1, Math.floor(perPage)));
+
+    const { leadIds } = await this.getReturningLeadsCount(accountId, filters);
+    if (leadIds.length === 0) {
+      return { data: [], total: 0 };
+    }
+
+    // Conta ciclos por contato no período (pra exibir "X retornos" no item).
+    const cycleCountRows = await prisma.conversationCycle.groupBy({
+      by: ['conversationId'],
+      where: {
+        accountId,
+        ...(filters.fromDate || filters.toDate
+          ? {
+              openedAt: {
+                ...(filters.fromDate ? { gte: filters.fromDate } : {}),
+                ...(filters.toDate ? { lte: filters.toDate } : {}),
+              },
+            }
+          : {}),
+        conversation: { contactId: { in: leadIds } },
+      },
+      _count: { _all: true },
+      _max: { openedAt: true },
+    });
+
+    // Mapeia conversationId -> contactId pra agregar por contato.
+    const convs = await prisma.conversation.findMany({
+      where: { accountId, contactId: { in: leadIds } },
+      select: {
+        id: true,
+        contactId: true,
+        inboxId: true,
+        assigneeId: true,
+        inbox: { select: { id: true, name: true } },
+        assignee: { select: { id: true, nome: true } },
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const lastConvByContact = new Map<string, typeof convs[number]>();
+    for (const c of convs) {
+      if (!c.contactId) continue;
+      if (!lastConvByContact.has(c.contactId)) {
+        lastConvByContact.set(c.contactId, c);
+      }
+    }
+
+    // Agrega ciclos por contato (somando todos os ciclos das conversas do
+    // contato) e pega a data do ciclo mais recente como "lastReopenAt".
+    const contactByConv = new Map<string, string>();
+    for (const c of convs) {
+      if (c.contactId) contactByConv.set(c.id, c.contactId);
+    }
+    const cyclesByContact = new Map<
+      string,
+      { count: number; lastReopenAt: Date }
+    >();
+    for (const row of cycleCountRows) {
+      const cid = contactByConv.get(row.conversationId);
+      if (!cid) continue;
+      const cur = cyclesByContact.get(cid) ?? {
+        count: 0,
+        lastReopenAt: new Date(0),
+      };
+      cur.count += row._count._all;
+      if (row._max.openedAt && row._max.openedAt > cur.lastReopenAt) {
+        cur.lastReopenAt = row._max.openedAt;
+      }
+      cyclesByContact.set(cid, cur);
+    }
+
+    // Busca dados dos contatos.
+    const contacts = await prisma.contact.findMany({
+      where: { accountId, id: { in: leadIds } },
+      select: { id: true, nome: true, telefone: true },
+    });
+    const contactById = new Map(contacts.map((c) => [c.id, c]));
+
+    const allItems: ReturningLeadListItem[] = leadIds
+      .map((cid) => {
+        const contact = contactById.get(cid);
+        const lastConv = lastConvByContact.get(cid);
+        const agg = cyclesByContact.get(cid) ?? {
+          count: 0,
+          lastReopenAt: new Date(0),
+        };
+        if (!contact || !lastConv) return null;
+        return {
+          contactId: cid,
+          contactName: contact.nome ?? null,
+          contactPhone: contact.telefone ?? null,
+          cyclesCount: agg.count,
+          lastReopenAt: agg.lastReopenAt,
+          lastConversationId: lastConv.id,
+          inboxId: lastConv.inboxId ?? null,
+          inboxName: lastConv.inbox?.name ?? null,
+          assigneeId: lastConv.assigneeId ?? null,
+          assigneeName: lastConv.assignee?.nome ?? null,
+        } as ReturningLeadListItem;
+      })
+      .filter((x): x is ReturningLeadListItem => x !== null)
+      .sort((a, b) => b.lastReopenAt.getTime() - a.lastReopenAt.getTime());
+
+    const total = allItems.length;
+    const start = (safePage - 1) * safePerPage;
+    const data = allItems.slice(start, start + safePerPage);
+
+    return { data, total };
   }
 }
 

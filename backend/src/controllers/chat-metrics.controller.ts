@@ -9,6 +9,9 @@
  * Endpoints:
  *   - GET /chat/metrics?fromDate&toDate&inboxId&teamId&agentId
  *   - GET /chat/metrics/agent/:userId?fromDate&toDate
+ *   - GET /chat/metrics/returning-leads?fromDate&toDate&inboxId&teamId&agentId
+ *   - GET /chat/metrics/live-attendance
+ *   - GET /chat/metrics/returning-leads/list?fromDate&toDate&page&perPage&...
  *
  * Singleton: `chatMetricsController`.
  */
@@ -182,6 +185,132 @@ export class ChatMetricsController {
         req.user.accountId,
         userId,
         { fromDate, toDate }
+      );
+
+      res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /chat/metrics/returning-leads
+   *
+   * Query: fromDate?, toDate?, inboxId?, teamId?, agentId?
+   * Retorna count + leadIds de contatos que retornaram (>=2 ciclos / ciclo
+   * dentro do período após ciclo anterior).
+   */
+  async getReturningLeads(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user?.accountId) {
+        throw new ForbiddenError(ErrorCodes.PERMISSION_DENIED);
+      }
+
+      const parsed = filtersSchema.safeParse(req.query);
+      if (!parsed.success) {
+        throw new ValidationError('Parâmetros de filtro inválidos', {
+          issues: parsed.error.flatten(),
+        });
+      }
+
+      const { fromDate, toDate } = resolvePeriod(
+        parsed.data.fromDate,
+        parsed.data.toDate
+      );
+
+      const result = await chatMetricsService.getReturningLeadsCount(
+        req.user.accountId,
+        {
+          fromDate,
+          toDate,
+          inboxId: parsed.data.inboxId,
+          teamId: parsed.data.teamId,
+          agentId: parsed.data.agentId,
+        }
+      );
+
+      res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /chat/metrics/live-attendance
+   *
+   * Snapshot dos atendimentos ativos: IA / Humano / Em aberto (sempre da conta
+   * autenticada, sem filtros — é um snapshot do "agora").
+   */
+  async getLiveAttendance(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user?.accountId) {
+        throw new ForbiddenError(ErrorCodes.PERMISSION_DENIED);
+      }
+
+      const result = await chatMetricsService.getLiveAttendance(
+        req.user.accountId
+      );
+
+      res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /chat/metrics/returning-leads/list
+   *
+   * Query: fromDate?, toDate?, inboxId?, teamId?, agentId?, page?, perPage?
+   * Lista paginada para o modal de drill-down do card "Retornos".
+   */
+  async getReturningLeadsList(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user?.accountId) {
+        throw new ForbiddenError(ErrorCodes.PERMISSION_DENIED);
+      }
+
+      const querySchema = filtersSchema.and(
+        z.object({
+          page: z.coerce.number().int().positive().optional(),
+          perPage: z.coerce.number().int().positive().max(100).optional(),
+        })
+      );
+
+      const parsed = querySchema.safeParse(req.query);
+      if (!parsed.success) {
+        throw new ValidationError('Parâmetros de filtro inválidos', {
+          issues: parsed.error.flatten(),
+        });
+      }
+
+      const { fromDate, toDate } = resolvePeriod(
+        parsed.data.fromDate,
+        parsed.data.toDate
+      );
+
+      const result = await chatMetricsService.getReturningLeadsList(
+        req.user.accountId,
+        {
+          fromDate,
+          toDate,
+          inboxId: parsed.data.inboxId,
+          teamId: parsed.data.teamId,
+          agentId: parsed.data.agentId,
+        },
+        parsed.data.page ?? 1,
+        parsed.data.perPage ?? 20
       );
 
       res.json({ data: result });

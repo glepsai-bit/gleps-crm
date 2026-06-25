@@ -74,7 +74,6 @@ import {
   Package,
   Activity,
   RotateCcw,
-  Lightbulb,
   Loader2,
   Crosshair,
   Mail,
@@ -155,7 +154,6 @@ export default function SuperAdminUsersPage() {
     { id: 'finance', label: 'Financeiro', icon: Wallet },
     { id: 'products', label: 'Produtos', icon: Package },
     { id: 'events', label: 'Eventos', icon: Activity },
-    { id: 'insights', label: 'Insights', icon: Lightbulb },
     { id: 'extracao', label: 'Prospecção', icon: Crosshair },
     { id: 'emails', label: 'E-mails', icon: Mail },
   ];

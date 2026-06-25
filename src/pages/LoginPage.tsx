@@ -26,10 +26,9 @@ function getSmartDefaultRoute(user: { role: string; permissions?: string[] }): s
     'finance': '/admin/finance',
     'products': '/admin/products',
     'events': '/admin/events',
-    'insights': '/admin/insights',
   };
-  
-  const routeOrder = ['dashboard', 'kanban', 'leads', 'agenda', 'sales', 'finance', 'products', 'events', 'insights'];
+
+  const routeOrder = ['dashboard', 'kanban', 'leads', 'agenda', 'sales', 'finance', 'products', 'events'];
   
   for (const perm of routeOrder) {
     if (user.permissions?.includes(perm)) {

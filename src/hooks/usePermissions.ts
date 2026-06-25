@@ -1,15 +1,14 @@
 import { useAuth } from '@/contexts/AuthContext';
 
-export type AgentPermission = 
-  | 'dashboard' 
-  | 'kanban' 
-  | 'leads' 
+export type AgentPermission =
+  | 'dashboard'
+  | 'kanban'
+  | 'leads'
   | 'agenda'
-  | 'sales' 
+  | 'sales'
   | 'finance'
   | 'products'
-  | 'events' 
-  | 'insights'
+  | 'events'
   | 'extracao'
   | 'emails'
   | 'refunds';
@@ -24,7 +23,6 @@ const routePermissionMap: Record<string, AgentPermission> = {
   '/admin/finance': 'finance',
   '/admin/products': 'products',
   '/admin/events': 'events',
-  '/admin/insights': 'insights',
   '/admin/extracao': 'extracao',
   '/admin/prospeccao': 'extracao',
   '/admin/emails': 'emails',
@@ -97,7 +95,6 @@ export function usePermissions() {
       '/admin/finance',
       '/admin/products',
       '/admin/events',
-      '/admin/insights',
       '/admin/extracao',
       '/admin/prospeccao',
       '/admin/emails',

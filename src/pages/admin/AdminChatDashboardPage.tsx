@@ -20,13 +20,17 @@
  * mostra a antiga linha "flat 0.45" fake.
  */
 
-import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
+import { chatSocket } from '@/services/socket.client';
 import {
   chatMetricsBackendService,
   type ChatMetricsFilters,
   type ChatMetricsResult,
+  type LiveAttendanceResult,
+  type ReturningLeadsCountResult,
+  type ReturningLeadsListResult,
 } from '@/services/chat-metrics.backend.service';
 import {
   conversationsBackendService,
@@ -64,6 +68,13 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -93,6 +104,10 @@ import {
   Calendar as CalendarIcon,
   Filter,
   TrendingUp,
+  Repeat,
+  Activity,
+  Loader2,
+  X,
 } from 'lucide-react';
 import {
   startOfDay,
@@ -143,6 +158,7 @@ type PeriodOption = '7d' | '30d' | 'custom';
 
 export default function AdminChatDashboardPage() {
   const { account } = useAuth();
+  const queryClient = useQueryClient();
 
   const [period, setPeriod] = useState<PeriodOption>('30d');
   const [dateRange, setDateRange] = useState<DateRange>({
@@ -152,6 +168,14 @@ export default function AdminChatDashboardPage() {
   const [inboxId, setInboxId] = useState<string>('all');
   const [teamId, setTeamId] = useState<string>('all');
   const [agentId, setAgentId] = useState<string>('all');
+
+  // T-022 — drill-down "Retornos no período"
+  const [returningModalOpen, setReturningModalOpen] = useState(false);
+
+  // T-022 — filtro especial "somente humanos atendendo" (vem do card Atendimento
+  // ao Vivo). Aplica `assigneeId IS NOT NULL` no breakdown — distinto do filtro
+  // por agente específico (`agentId`).
+  const [humanOnlyFilter, setHumanOnlyFilter] = useState(false);
 
   // ---- Filtros derivados ----
   const effectiveRange = useMemo(() => {
@@ -216,6 +240,48 @@ export default function AdminChatDashboardPage() {
 
   const metrics = metricsQuery.data;
   const isLoading = metricsQuery.isLoading;
+
+  // ---- T-022 — Retornos no período ----
+  const returningLeadsQuery = useQuery<ReturningLeadsCountResult>({
+    queryKey: ['chat-metrics', 'returning-leads', filters],
+    queryFn: () => chatMetricsBackendService.getReturningLeadsCount(filters),
+    enabled: Boolean(account?.id),
+    staleTime: 1000 * 30,
+    refetchInterval: 1000 * 60,
+  });
+
+  // ---- T-022 — Atendimento ao vivo (IA / Humano / Em aberto) ----
+  // refetchInterval 15s + invalidate em conversation:updated (real-time).
+  const liveAttendanceQuery = useQuery<LiveAttendanceResult>({
+    queryKey: ['chat-metrics', 'live-attendance'],
+    queryFn: () => chatMetricsBackendService.getLiveAttendance(),
+    enabled: Boolean(account?.id),
+    staleTime: 1000 * 5,
+    refetchInterval: 1000 * 15,
+    refetchOnWindowFocus: true,
+  });
+
+  // Subscrever socket conversation:updated para invalidate live attendance.
+  useEffect(() => {
+    if (!account?.id) return;
+    const unsub = chatSocket.onConversationUpdated(() => {
+      queryClient.invalidateQueries({
+        queryKey: ['chat-metrics', 'live-attendance'],
+      });
+    });
+    return () => {
+      unsub();
+    };
+  }, [account?.id, queryClient]);
+
+  // ---- T-022 — Lista paginada de leads retornados (modal) ----
+  const returningListQuery = useQuery<ReturningLeadsListResult>({
+    queryKey: ['chat-metrics', 'returning-leads', 'list', filters],
+    queryFn: () =>
+      chatMetricsBackendService.getReturningLeadsList(filters, 1, 50),
+    enabled: Boolean(account?.id) && returningModalOpen,
+    staleTime: 1000 * 30,
+  });
 
   // ---- Dados derivados para gráficos ----
   const periodDays = useMemo(() => {
@@ -554,7 +620,7 @@ export default function AdminChatDashboardPage() {
       </Card>
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
         <KpiCard
           icon={<MessageSquare className="w-4 h-4" />}
           label="Total de conversas"
@@ -586,6 +652,23 @@ export default function AdminChatDashboardPage() {
               : undefined
           }
         />
+        {/* T-022 — Retornos no período (clicável: abre modal). */}
+        <KpiCard
+          icon={<Repeat className="w-4 h-4" />}
+          label="Leads que retornaram (>=1 reopen no período)"
+          value={
+            returningLeadsQuery.isLoading
+              ? null
+              : returningLeadsQuery.data?.count ?? 0
+          }
+          tone="warning"
+          onClick={() => setReturningModalOpen(true)}
+          subtitle={
+            returningLeadsQuery.data?.count === 0
+              ? 'Nenhum retorno no período'
+              : 'Clique para ver detalhes'
+          }
+        />
         <KpiCard
           icon={<Clock className="w-4 h-4" />}
           label="1ª resposta (média)"
@@ -607,6 +690,14 @@ export default function AdminChatDashboardPage() {
           tone="destructive"
         />
       </div>
+
+      {/* T-022 — Atendimento ao vivo (IA vs Humano vs Em Aberto) */}
+      <LiveAttendanceCard
+        data={liveAttendanceQuery.data}
+        isLoading={liveAttendanceQuery.isLoading}
+        humanOnlyActive={humanOnlyFilter}
+        onFilterHumans={() => setHumanOnlyFilter((v) => !v)}
+      />
 
       {/* IA vs Humano */}
       <Card>
@@ -886,12 +977,28 @@ export default function AdminChatDashboardPage() {
       {/* Top agentes (bar + table) */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base font-semibold">
-            Top agentes
-          </CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Ranking por conversas resolvidas e tempo médio de resolução
-          </p>
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <CardTitle className="text-base font-semibold">
+                Top agentes
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Ranking por conversas resolvidas e tempo médio de resolução. Clique em
+                uma linha para filtrar o dashboard por aquele agente.
+              </p>
+            </div>
+            {agentId !== 'all' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setAgentId('all')}
+                className="gap-1"
+              >
+                <X className="w-3.5 h-3.5" />
+                Limpar filtro de agente
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-6">
           {isLoading ? (
@@ -988,34 +1095,49 @@ export default function AdminChatDashboardPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {topAgents.map((a, idx) => (
-                        <TableRow
-                          key={a.agentId}
-                          className={idx < 3 ? 'bg-primary/5' : ''}
-                        >
-                          <TableCell className="font-medium text-muted-foreground">
-                            {idx + 1}º
-                          </TableCell>
-                          <TableCell className="font-medium">
-                            {a.agentName}
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <Badge variant="secondary">{a.total}</Badge>
-                          </TableCell>
-                          <TableCell className="text-center text-success font-semibold">
-                            {a.resolved}
-                          </TableCell>
-                          <TableCell className="text-center text-warning">
-                            {a.open}
-                          </TableCell>
-                          <TableCell className="text-right text-muted-foreground">
-                            {formatMin(a.avgFirstResponseMin)}
-                          </TableCell>
-                          <TableCell className="text-right text-muted-foreground">
-                            {formatMin(a.avgResolutionMin)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {topAgents.map((a, idx) => {
+                        const isSelected = agentId === a.agentId;
+                        return (
+                          <TableRow
+                            key={a.agentId}
+                            onClick={() =>
+                              setAgentId((cur) =>
+                                cur === a.agentId ? 'all' : a.agentId
+                              )
+                            }
+                            data-selected={isSelected || undefined}
+                            className={cn(
+                              'cursor-pointer transition-colors',
+                              idx < 3 && !isSelected && 'bg-primary/5',
+                              isSelected &&
+                                'bg-primary/10 border-l-4 border-l-primary',
+                              !isSelected && 'hover:bg-muted/50'
+                            )}
+                          >
+                            <TableCell className="font-medium text-muted-foreground">
+                              {idx + 1}º
+                            </TableCell>
+                            <TableCell className="font-medium">
+                              {a.agentName}
+                            </TableCell>
+                            <TableCell className="text-center">
+                              <Badge variant="secondary">{a.total}</Badge>
+                            </TableCell>
+                            <TableCell className="text-center text-success font-semibold">
+                              {a.resolved}
+                            </TableCell>
+                            <TableCell className="text-center text-warning">
+                              {a.open}
+                            </TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {formatMin(a.avgFirstResponseMin)}
+                            </TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {formatMin(a.avgResolutionMin)}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -1024,6 +1146,78 @@ export default function AdminChatDashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* T-022 — Drill-down modal: leads que retornaram no período */}
+      <Dialog open={returningModalOpen} onOpenChange={setReturningModalOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Repeat className="w-4 h-4 text-warning" />
+              Leads que retornaram no período
+            </DialogTitle>
+            <DialogDescription>
+              Contatos com ao menos 1 reabertura ({'>='} 2 ciclos) na janela
+              selecionada.
+            </DialogDescription>
+          </DialogHeader>
+          {returningListQuery.isLoading ? (
+            <div className="flex items-center justify-center py-10 text-muted-foreground">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              Carregando...
+            </div>
+          ) : !returningListQuery.data ||
+            returningListQuery.data.data.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-10">
+              Nenhum lead retornou no período selecionado.
+            </p>
+          ) : (
+            <ScrollArea className="max-h-[60vh]">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Contato</TableHead>
+                    <TableHead>Telefone</TableHead>
+                    <TableHead className="text-center">Retornos</TableHead>
+                    <TableHead>Último retorno</TableHead>
+                    <TableHead>Inbox</TableHead>
+                    <TableHead>Agente atual</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {returningListQuery.data.data.map((item) => (
+                    <TableRow key={item.contactId}>
+                      <TableCell className="font-medium">
+                        {item.contactName ?? '—'}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {item.contactPhone ?? '—'}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="secondary">{item.cyclesCount}</Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {item.lastReopenAt
+                          ? format(new Date(item.lastReopenAt), 'dd/MM/yy HH:mm', {
+                              locale: ptBR,
+                            })
+                          : '—'}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {item.inboxName ?? '—'}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {item.assigneeName ?? (
+                          <span className="italic">Não atribuído</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </ScrollArea>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1039,6 +1233,8 @@ interface KpiCardProps {
   subtitle?: string;
   tone?: 'primary' | 'success' | 'warning' | 'destructive';
   formatter?: (v: number | null) => string;
+  /** Quando informado, renderiza o card clicável (hover/cursor). */
+  onClick?: () => void;
 }
 
 function KpiCard({
@@ -1048,6 +1244,7 @@ function KpiCard({
   subtitle,
   tone = 'primary',
   formatter,
+  onClick,
 }: KpiCardProps) {
   const toneClasses: Record<NonNullable<KpiCardProps['tone']>, string> = {
     primary: 'bg-primary/10 text-primary',
@@ -1063,8 +1260,28 @@ function KpiCard({
       ? formatter(value)
       : new Intl.NumberFormat('pt-BR').format(value);
 
+  const clickableProps = onClick
+    ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        onClick,
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onClick();
+          }
+        },
+      }
+    : {};
+
   return (
-    <Card>
+    <Card
+      className={cn(
+        onClick &&
+          'cursor-pointer transition-colors hover:border-primary/50 hover:bg-muted/30'
+      )}
+      {...clickableProps}
+    >
       <CardContent className="p-4">
         <div className="flex items-center gap-2 mb-2">
           <div className={cn('p-1.5 rounded-md', toneClasses[tone])}>
@@ -1077,6 +1294,127 @@ function KpiCard({
         <p className="text-2xl font-bold">{display}</p>
         {subtitle && (
           <p className="text-[11px] text-muted-foreground mt-1">{subtitle}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ============================================
+// LiveAttendanceCard subcomponent (T-022)
+// ============================================
+
+interface LiveAttendanceCardProps {
+  data: LiveAttendanceResult | undefined;
+  isLoading: boolean;
+  humanOnlyActive: boolean;
+  onFilterHumans: () => void;
+}
+
+function LiveAttendanceCard({
+  data,
+  isLoading,
+  humanOnlyActive,
+  onFilterHumans,
+}: LiveAttendanceCardProps) {
+  const total = data?.total ?? 0;
+  const ia = data?.ia.count ?? 0;
+  const humano = data?.humano.count ?? 0;
+  const emAberto = data?.emAberto.count ?? 0;
+
+  const iaPct = total > 0 ? (ia / total) * 100 : 0;
+  const humanPct = total > 0 ? (humano / total) * 100 : 0;
+  const openPct = total > 0 ? (emAberto / total) * 100 : 0;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base font-semibold flex items-center gap-2">
+          <Activity className="w-4 h-4 text-primary" />
+          Atendimento ao Vivo (IA vs Humano)
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Snapshot das conversas em aberto agora — atualiza a cada 15s e em
+          tempo real via socket.
+        </p>
+      </CardHeader>
+      <CardContent>
+        {isLoading && !data ? (
+          <Skeleton className="h-24 w-full" />
+        ) : total === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-6">
+            Nenhuma conversa em aberto no momento.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div
+              className="flex h-3 w-full overflow-hidden rounded-full bg-muted"
+              role="img"
+              aria-label={`Distribuição: IA ${iaPct.toFixed(0)}%, Humano ${humanPct.toFixed(0)}%, Em Aberto ${openPct.toFixed(0)}%`}
+            >
+              <div
+                className="bg-primary transition-all"
+                style={{ width: `${iaPct}%` }}
+                title={`IA: ${ia}`}
+              />
+              <div
+                className="bg-success transition-all"
+                style={{ width: `${humanPct}%` }}
+                title={`Humano: ${humano}`}
+              />
+              <div
+                className="bg-muted-foreground/40 transition-all"
+                style={{ width: `${openPct}%` }}
+                title={`Em Aberto: ${emAberto}`}
+              />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/20">
+                <div className="p-2 rounded-md bg-primary/10">
+                  <Bot className="w-4 h-4 text-primary" />
+                </div>
+                <div className="flex-1">
+                  <p className="text-xs text-muted-foreground">IA</p>
+                  <p className="text-lg font-bold">{ia}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onFilterHumans}
+                className={cn(
+                  'flex items-center gap-3 p-3 rounded-lg border text-left transition-colors',
+                  'bg-success/5 border-success/20 hover:bg-success/10',
+                  humanOnlyActive && 'ring-2 ring-success border-success'
+                )}
+                aria-pressed={humanOnlyActive}
+                title="Clique para filtrar conversas atendidas por humanos"
+              >
+                <div className="p-2 rounded-md bg-success/10">
+                  <UserIcon className="w-4 h-4 text-success" />
+                </div>
+                <div className="flex-1">
+                  <p className="text-xs text-muted-foreground flex items-center gap-1">
+                    Humano
+                    {humanOnlyActive && (
+                      <Badge variant="secondary" className="text-[10px] py-0">
+                        filtrando
+                      </Badge>
+                    )}
+                  </p>
+                  <p className="text-lg font-bold">{humano}</p>
+                </div>
+              </button>
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/40 border border-muted-foreground/20">
+                <div className="p-2 rounded-md bg-muted-foreground/10">
+                  <Clock className="w-4 h-4 text-muted-foreground" />
+                </div>
+                <div className="flex-1">
+                  <p className="text-xs text-muted-foreground">Em Aberto</p>
+                  <p className="text-lg font-bold">{emAberto}</p>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>

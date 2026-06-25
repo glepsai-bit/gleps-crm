@@ -37,7 +37,6 @@ import {
   Wallet,
   Package,
   Calendar,
-  Lightbulb,
   Crosshair,
   Mail,
   MessageSquare,
@@ -59,14 +58,12 @@ interface AdminLayoutProps {
 }
 
 const adminNavItems = [
-  { title: 'Dashboard', href: '/admin', icon: LayoutDashboard },
   { title: 'Kanban', href: '/admin/kanban', icon: Kanban },
   { title: 'Leads', href: '/admin/leads', icon: Users },
   { title: 'Agenda', href: '/admin/agenda', icon: Calendar },
   { title: 'Vendas', href: '/admin/sales', icon: DollarSign },
   { title: 'Financeiro', href: '/admin/finance', icon: Wallet },
   { title: 'Produtos', href: '/admin/products', icon: Package },
-  { title: 'Insights', href: '/admin/insights', icon: Lightbulb },
   { title: 'Prospecção', href: '/admin/prospeccao', icon: Crosshair },
   { title: 'E-mails', href: '/admin/emails', icon: Mail },
   { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },

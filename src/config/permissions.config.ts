@@ -8,7 +8,6 @@
 export const PERMISSIONS = {
   // Dashboard & Reports
   DASHBOARD: 'dashboard',
-  INSIGHTS: 'insights',
   EVENTS: 'events',
   
   // CRM Features
@@ -58,7 +57,7 @@ export const PERMISSION_GROUPS = {
   },
   RELATORIOS: {
     label: 'Relatórios',
-    permissions: [PERMISSIONS.DASHBOARD, PERMISSIONS.INSIGHTS, PERMISSIONS.EVENTS],
+    permissions: [PERMISSIONS.DASHBOARD, PERMISSIONS.EVENTS],
   },
   AGENDA: {
     label: 'Agenda',
@@ -86,7 +85,6 @@ export const ACTION_PERMISSIONS = {
   manageUsers: [PERMISSIONS.USERS],
   manageFunnel: [PERMISSIONS.FUNNEL],
   viewDashboard: [PERMISSIONS.DASHBOARD],
-  viewInsights: [PERMISSIONS.INSIGHTS],
 } as const;
 
 export default PERMISSIONS;

@@ -378,6 +378,12 @@ export const API_ENDPOINTS = {
   CHAT_METRICS: {
     METRICS: '/api/chat/metrics',
     AGENT_METRICS: (userId: string) => `/api/chat/metrics/agent/${userId}`,
+    // Estas três rotas vivem em `/api/chat/<resource>` (não `/api/chat/metrics/<resource>`)
+    // — o router backend monta o grupo em `/chat` e cada handler usa caminhos
+    // próprios. Vide backend/src/routes/chat-metrics.routes.ts.
+    RETURNING_LEADS: '/api/chat/returning-leads',
+    RETURNING_LEADS_LIST: '/api/chat/returning-leads/list',
+    LIVE_ATTENDANCE: '/api/chat/live-attendance',
   },
 
   // ============= CONVERSATIONS (T-022 — Chat interno) =============

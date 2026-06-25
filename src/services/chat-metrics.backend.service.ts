@@ -96,6 +96,46 @@ export interface AgentMetricsResult {
 }
 
 // ============================================
+// T-022 — Retornos + atendimento ao vivo
+// ============================================
+
+export interface ReturningLeadsCountResult {
+  count: number;
+  /** contactIds (Contact.id) dos leads que retornaram no período. */
+  leadIds: string[];
+}
+
+export interface LiveAttendanceBucket {
+  count: number;
+  conversationIds: string[];
+}
+
+export interface LiveAttendanceResult {
+  ia: LiveAttendanceBucket;
+  humano: LiveAttendanceBucket;
+  emAberto: LiveAttendanceBucket;
+  total: number;
+}
+
+export interface ReturningLeadListItem {
+  contactId: string;
+  contactName: string | null;
+  contactPhone: string | null;
+  cyclesCount: number;
+  lastReopenAt: string;
+  lastConversationId: string;
+  inboxId: string | null;
+  inboxName: string | null;
+  assigneeId: string | null;
+  assigneeName: string | null;
+}
+
+export interface ReturningLeadsListResult {
+  data: ReturningLeadListItem[];
+  total: number;
+}
+
+// ============================================
 // Filtros
 // ============================================
 
@@ -177,6 +217,51 @@ export const chatMetricsBackendService = {
       }
     );
     return unwrap<AgentMetricsResult>(resp);
+  },
+
+  /**
+   * Conta leads que retornaram (>=1 reopen / >=2 ciclos) no período.
+   * Usado no card "Retornos no período" do dashboard de chat.
+   */
+  async getReturningLeadsCount(
+    filters: ChatMetricsFilters = {}
+  ): Promise<ReturningLeadsCountResult> {
+    const resp = await apiClient.get<any>(
+      API_ENDPOINTS.CHAT_METRICS.RETURNING_LEADS,
+      { params: buildParams(filters) }
+    );
+    return unwrap<ReturningLeadsCountResult>(resp);
+  },
+
+  /**
+   * Snapshot do atendimento ao vivo (IA / Humano / Em aberto). Endpoint
+   * deliberadamente sem filtros — é um snapshot do "agora" da conta.
+   */
+  async getLiveAttendance(): Promise<LiveAttendanceResult> {
+    const resp = await apiClient.get<any>(
+      API_ENDPOINTS.CHAT_METRICS.LIVE_ATTENDANCE
+    );
+    return unwrap<LiveAttendanceResult>(resp);
+  },
+
+  /**
+   * Lista paginada de leads que retornaram — drill-down do card "Retornos".
+   */
+  async getReturningLeadsList(
+    filters: ChatMetricsFilters = {},
+    page = 1,
+    perPage = 20
+  ): Promise<ReturningLeadsListResult> {
+    const params = {
+      ...(buildParams(filters) ?? {}),
+      page: String(page),
+      perPage: String(perPage),
+    };
+    const resp = await apiClient.get<any>(
+      API_ENDPOINTS.CHAT_METRICS.RETURNING_LEADS_LIST,
+      { params }
+    );
+    return unwrap<ReturningLeadsListResult>(resp);
   },
 };
 
