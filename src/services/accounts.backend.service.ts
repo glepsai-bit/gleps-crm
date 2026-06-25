@@ -23,9 +23,6 @@ function mapAccount(raw: any): Account {
     monthly_extraction_limit: raw.monthlyExtractionLimit ?? raw.monthly_extraction_limit ?? 500,
     monthly_email_limit: raw.monthlyEmailLimit ?? raw.monthly_email_limit ?? 3000,
     daily_email_limit: raw.dailyEmailLimit ?? raw.daily_email_limit ?? 100,
-    chatwoot_base_url: raw.chatwootBaseUrl ?? raw.chatwoot_base_url ?? null,
-    chatwoot_account_id: raw.chatwootAccountId ?? raw.chatwoot_account_id ?? null,
-    chatwoot_api_key: raw.chatwootApiKey ?? raw.chatwoot_api_key ?? null,
     google_client_id: raw.googleClientId ?? raw.google_client_id ?? null,
     google_client_secret: raw.googleClientSecret ?? raw.google_client_secret ?? null,
     google_redirect_uri: raw.googleRedirectUri ?? raw.google_redirect_uri ?? null,
@@ -56,9 +53,6 @@ export const accountsBackendService = {
     const response = await apiClient.post<any>(API_ENDPOINTS.ACCOUNTS.CREATE, {
       nome: input.nome,
       plano: input.plano,
-      chatwootBaseUrl: input.chatwoot_base_url,
-      chatwootAccountId: input.chatwoot_account_id,
-      chatwootApiKey: input.chatwoot_api_key,
       evolutionBaseUrl: input.evolution_base_url,
       evolutionApiKey: input.evolution_api_key,
       evolutionInstance: input.evolution_instance,
@@ -75,9 +69,6 @@ export const accountsBackendService = {
       nome: input.nome,
       status: input.status,
       plano: input.plano,
-      chatwootBaseUrl: input.chatwoot_base_url,
-      chatwootAccountId: input.chatwoot_account_id,
-      chatwootApiKey: input.chatwoot_api_key,
       monthlyExtractionLimit: input.monthly_extraction_limit,
       monthlyEmailLimit: input.monthly_email_limit,
       dailyEmailLimit: input.daily_email_limit,
@@ -109,39 +100,5 @@ export const accountsBackendService = {
 
   async getUsers(accountId: string) {
     return apiClient.get<any[]>(API_ENDPOINTS.USERS.BY_ACCOUNT(accountId));
-  },
-
-  async testChatwootConnection(
-    baseUrl: string,
-    accountId: string,
-    apiKey: string
-  ): Promise<{ success: boolean; message: string; agents?: any[]; inboxes?: any[]; labels?: any[] }> {
-    const result = await apiClient.post<any>('/api/chatwoot/test-connection', {
-      baseUrl,
-      accountId,
-      apiKey,
-    });
-    // Normalize: ensure agents/inboxes/labels are always arrays
-    return {
-      success: result.success,
-      message: result.message || (result.success ? 'Conexão estabelecida' : 'Falha na conexão'),
-      agents: Array.isArray(result.agents) ? result.agents : [],
-      inboxes: Array.isArray(result.inboxes) ? result.inboxes : [],
-      labels: Array.isArray(result.labels) ? result.labels : [],
-    };
-  },
-
-  async fetchChatwootAgents(baseUrl: string, accountId: string, apiKey: string) {
-    // Try test-connection first (returns agents in new backend)
-    try {
-      const result = await this.testChatwootConnection(baseUrl, accountId, apiKey);
-      if (result.agents && result.agents.length > 0) return result.agents;
-    } catch (_) { /* fallback below */ }
-    // Fallback: dedicated agents endpoint
-    try {
-      return await apiClient.post<any[]>('/api/chatwoot/agents/fetch', { baseUrl, accountId, apiKey });
-    } catch (_) {
-      return [];
-    }
   },
 };

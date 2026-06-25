@@ -180,7 +180,7 @@ export interface ReorderTagsRequest {
 
 export interface ApplyTagRequest {
   tagId: string;
-  source?: 'kanban' | 'chatwoot' | 'system';
+  source?: 'kanban' | 'system';
 }
 
 // ============= USER TYPES =============
@@ -198,7 +198,6 @@ export interface CreateUserRequest {
   role: 'admin' | 'agent';
   accountId: string;
   permissions?: string[];
-  chatwootAgentId?: number;
 }
 
 export interface UpdateUserRequest {
@@ -207,7 +206,6 @@ export interface UpdateUserRequest {
   role?: 'admin' | 'agent';
   status?: 'active' | 'inactive' | 'suspended';
   permissions?: string[];
-  chatwootAgentId?: number;
 }
 
 // ============= ACCOUNT TYPES =============
@@ -222,9 +220,6 @@ export interface CreateAccountRequest {
   plano?: string;
   limiteUsuarios?: number;
   timezone?: string;
-  chatwootAccountId?: string;
-  chatwootApiKey?: string;
-  chatwootBaseUrl?: string;
 }
 
 export interface UpdateAccountRequest {
@@ -233,9 +228,6 @@ export interface UpdateAccountRequest {
   status?: 'active' | 'paused' | 'cancelled';
   limiteUsuarios?: number;
   timezone?: string;
-  chatwootAccountId?: string;
-  chatwootApiKey?: string;
-  chatwootBaseUrl?: string;
 }
 
 // ============= CALENDAR TYPES =============

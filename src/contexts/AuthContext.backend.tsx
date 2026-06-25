@@ -28,7 +28,6 @@ function normalizeUser(raw: any): User {
     account_id: raw.account_id ?? raw.accountId,
     permissions: raw.permissions || ['dashboard'],
     status: raw.status || 'active',
-    chatwoot_agent_id: raw.chatwoot_agent_id ?? raw.chatwootAgentId,
   };
 }
 
@@ -38,9 +37,6 @@ function normalizeAccount(raw: any): Account | null {
     id: raw.id,
     nome: raw.nome,
     status: raw.status,
-    chatwoot_base_url: raw.chatwoot_base_url ?? raw.chatwootBaseUrl,
-    chatwoot_account_id: raw.chatwoot_account_id ?? raw.chatwootAccountId,
-    chatwoot_api_key: raw.chatwoot_api_key ?? raw.chatwootApiKey,
   };
 }
 
@@ -53,16 +49,12 @@ interface User {
   account_id?: string;
   permissions: string[];
   status: 'active' | 'inactive' | 'suspended';
-  chatwoot_agent_id?: number;
 }
 
 interface Account {
   id: string;
   nome: string;
   status: 'active' | 'paused' | 'cancelled';
-  chatwoot_base_url?: string;
-  chatwoot_account_id?: string;
-  chatwoot_api_key?: string;
 }
 
 interface AuthState {

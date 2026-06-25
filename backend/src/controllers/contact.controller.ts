@@ -22,7 +22,7 @@ const listContactsSchema = z.object({
 
 const applyTagSchema = z.object({
   tagId: z.string().uuid(),
-  source: z.enum(['kanban', 'chatwoot', 'system', 'api']).default('api'),
+  source: z.enum(['kanban', 'system', 'api']).default('api'),
 });
 
 const addNoteSchema = z.object({

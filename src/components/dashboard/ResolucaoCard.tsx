@@ -5,7 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import type { ResolucaoMetrics, TaxasMetrics } from '@/types/chatwoot-metrics';
+import type { ResolucaoMetrics, TaxasMetrics } from '@/types/chat-metrics';
 
 interface ResolucaoCardProps {
   resolucao: ResolucaoMetrics;

@@ -13,11 +13,9 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Checkbox } from '@/components/ui/checkbox';
 import {
   Form,
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -47,7 +45,6 @@ const formSchema = z.object({
   email: z.string().email('Email inválido').optional().or(z.literal('')),
   origem: z.enum(['whatsapp', 'instagram', 'site', 'indicacao', 'outro'] as const),
   initial_stage_id: z.string().optional(),
-  create_in_chatwoot: z.boolean(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -55,7 +52,6 @@ type FormValues = z.infer<typeof formSchema>;
 interface CreateLeadDialogProps {
   accountId: string;
   stages: CloudTag[];
-  hasChatwootConfig: boolean;
   trigger?: React.ReactNode;
   onLeadCreated?: () => void;
 }
@@ -63,7 +59,6 @@ interface CreateLeadDialogProps {
 export function CreateLeadDialog({
   accountId,
   stages,
-  hasChatwootConfig,
   trigger,
   onLeadCreated,
 }: CreateLeadDialogProps) {
@@ -81,7 +76,6 @@ export function CreateLeadDialog({
       email: '',
       origem: 'whatsapp',
       initial_stage_id: defaultStageId,
-      create_in_chatwoot: hasChatwootConfig,
     },
   });
 
@@ -94,37 +88,22 @@ export function CreateLeadDialog({
         email: '',
         origem: 'whatsapp',
         initial_stage_id: stages[0].id,
-        create_in_chatwoot: hasChatwootConfig,
       });
     }
-  }, [open, stages, hasChatwootConfig, form]);
+  }, [open, stages, form]);
 
   const onSubmit = async (values: FormValues) => {
     setIsSubmitting(true);
 
     try {
       const service = useBackend ? contactsBackendService : contactsCloudService;
-      let result;
-
-      if (values.create_in_chatwoot && hasChatwootConfig) {
-        result = await service.createContactWithChatwoot({
-          account_id: accountId,
-          nome: values.nome,
-          telefone: values.telefone,
-          email: values.email || undefined,
-          origem: values.origem as ContactOrigin,
-          create_conversation: true,
-          initial_stage_tag_id: values.initial_stage_id,
-        });
-      } else {
-        result = await service.createContact({
-          account_id: accountId,
-          nome: values.nome,
-          telefone: values.telefone,
-          email: values.email || undefined,
-          origem: values.origem as ContactOrigin,
-        });
-      }
+      const result = await service.createContact({
+        account_id: accountId,
+        nome: values.nome,
+        telefone: values.telefone,
+        email: values.email || undefined,
+        origem: values.origem as ContactOrigin,
+      });
 
       if (!result.success) {
         toast.error(result.error || 'Erro ao criar lead');
@@ -132,32 +111,15 @@ export function CreateLeadDialog({
       }
 
       // Apply initial stage tag if selected
-      console.log('[CreateLeadDialog] Checking stage tag application:', {
-        initial_stage_id: values.initial_stage_id,
-        contact_id: result.contact_id,
-      });
-      
       if (values.initial_stage_id && result.contact_id) {
-        console.log('[CreateLeadDialog] Applying stage tag...');
-        const tagResult = await service.applyStageTagToContact(
+        await service.applyStageTagToContact(
           result.contact_id,
           values.initial_stage_id,
           'kanban'
         );
-        console.log('[CreateLeadDialog] Stage tag result:', tagResult);
-      } else {
-        console.log('[CreateLeadDialog] Skipping stage tag - missing data');
       }
 
-      // Show success message
-      if (result.error) {
-        // Partial success (created locally but Chatwoot failed)
-        toast.warning(`Lead criado, mas: ${result.error}`);
-      } else if (result.chatwoot_contact_id) {
-        toast.success('Lead criado com sucesso no CRM e Chatwoot!');
-      } else {
-        toast.success('Lead criado com sucesso!');
-      }
+      toast.success('Lead criado com sucesso!');
 
       // Reset form and close
       form.reset();
@@ -185,7 +147,7 @@ export function CreateLeadDialog({
         <DialogHeader>
           <DialogTitle>Adicionar Novo Lead</DialogTitle>
           <DialogDescription>
-            Cadastre um novo lead no CRM{hasChatwootConfig ? ' e opcionalmente no Chatwoot' : ''}.
+            Cadastre um novo lead no CRM.
           </DialogDescription>
         </DialogHeader>
 
@@ -287,29 +249,6 @@ export function CreateLeadDialog({
                       </SelectContent>
                     </Select>
                     <FormMessage />
-                  </FormItem>
-                )}
-              />
-            )}
-
-            {hasChatwootConfig && (
-              <FormField
-                control={form.control}
-                name="create_in_chatwoot"
-                render={({ field }) => (
-                  <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
-                    <FormControl>
-                      <Checkbox
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                    <div className="space-y-1 leading-none">
-                      <FormLabel>Cadastrar no Chatwoot</FormLabel>
-                      <FormDescription>
-                        Cria o contato e uma conversa automaticamente no Chatwoot com a etapa selecionada
-                      </FormDescription>
-                    </div>
                   </FormItem>
                 )}
               />

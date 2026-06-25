@@ -1,8 +1,8 @@
 /**
  * CHAT METRICS SERVICE — T-022 Sprint 4 (Chat interno)
  *
- * Substitui parte do `chatwoot-metrics.service.ts` para o chat interno
- * próprio (models Conversation / Message / SLABreach / User / Team / Inbox).
+ * Métricas do chat interno próprio (models Conversation / Message /
+ * SLABreach / User / Team / Inbox). Não usa fontes externas.
  *
  * Fonte de verdade = banco local (Postgres via Prisma). Multi-tenant: toda
  * query escopada por accountId.

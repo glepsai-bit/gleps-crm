@@ -181,7 +181,7 @@ class WhatsappConsentService {
    *     - Com registro → true só se status='opted_in'.
    *
    * Justificativa do default: no fluxo atual a maior parte dos contatos vem de
-   * leads inbound (formulário, chatwoot, conversas WhatsApp já iniciadas pelo
+   * leads inbound (formulário, inbox, conversas WhatsApp já iniciadas pelo
    * cliente), onde o consent é considerado implícito pela própria iniciativa do
    * contato. O opt-out é registrado quando o usuário pede explicitamente
    * (palavra-chave ou ação manual no CRM) e bloqueia novos disparos.

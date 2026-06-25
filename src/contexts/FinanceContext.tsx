@@ -475,8 +475,6 @@ export function FinanceProvider({ children, accountId }: FinanceProviderProps) {
           telefone: data.telefone,
           email: data.email,
           origem: origemNormalizada,
-          chatwoot_contact_id: result.chatwoot_contact_id ?? null,
-          chatwoot_conversation_id: result.chatwoot_conversation_id ?? null,
           created_at: now,
           updated_at: now,
         };

@@ -28,9 +28,6 @@ export const mockAccounts: Account[] = [
     plano: 'pro',
     status: 'active',
     limite_usuarios: 10,
-    chatwoot_account_id: 'cw-123',
-    chatwoot_api_key: 'cw-key-xxx',
-    chatwoot_base_url: 'https://app.chatwoot.com',
     created_at: '2024-06-15T10:00:00Z',
     updated_at: '2025-01-10T08:30:00Z',
   },
@@ -41,9 +38,6 @@ export const mockAccounts: Account[] = [
     plano: 'enterprise',
     status: 'active',
     limite_usuarios: 25,
-    chatwoot_account_id: 'cw-456',
-    chatwoot_api_key: 'cw-key-yyy',
-    chatwoot_base_url: 'https://chatwoot.techsolutions.com.br',
     created_at: '2024-08-20T14:00:00Z',
     updated_at: '2025-01-15T16:45:00Z',
   },
@@ -54,9 +48,6 @@ export const mockAccounts: Account[] = [
     plano: 'starter',
     status: 'paused',
     limite_usuarios: 5,
-    chatwoot_account_id: null,
-    chatwoot_api_key: null,
-    chatwoot_base_url: null,
     created_at: '2024-10-01T09:00:00Z',
     updated_at: '2025-01-05T11:20:00Z',
   },
@@ -95,7 +86,6 @@ export const mockUsers: User[] = [
     email: 'ana@clinicavidaplena.com',
     role: 'agent',
     status: 'active',
-    chatwoot_agent_id: 101, // Vinculado ao agente do Chatwoot
     last_login_at: '2025-01-19T08:15:00Z',
     created_at: '2024-07-01T09:00:00Z',
     updated_at: '2025-01-19T08:15:00Z',
@@ -107,7 +97,6 @@ export const mockUsers: User[] = [
     email: 'pedro@clinicavidaplena.com',
     role: 'agent',
     status: 'active',
-    chatwoot_agent_id: 102,
     permissions: ['dashboard', 'kanban', 'leads', 'agenda'], // 4 permissões ativas
     last_login_at: '2025-01-18T17:00:00Z',
     created_at: '2024-07-15T11:00:00Z',
@@ -412,7 +401,7 @@ function generateAuthEvents(): CRMEvent[] {
 
 export const mockEvents: CRMEvent[] = generateAuthEvents();
 
-// ============= TAGS (CHATWOOT ↔ KANBAN) =============
+// ============= TAGS =============
 // Tags de Etapa = Etapas do Kanban (são a MESMA coisa)
 // Tags Operacionais = Complementares (urgente, lead-frio, etc)
 
@@ -444,18 +433,18 @@ export const mockTags: Tag[] = [
 export const mockLeadTags: LeadTag[] = [
   // Contact 1 - Qualificado + Urgente
   { id: 'lt-1', contact_id: 'contact-1', tag_id: 'tag-4', applied_by_type: 'user', applied_by_id: 'user-agent-1', source: 'kanban', created_at: '2025-01-19T08:00:00Z' },
-  { id: 'lt-2', contact_id: 'contact-1', tag_id: 'tag-op-1', applied_by_type: 'user', applied_by_id: 'user-agent-1', source: 'chatwoot', created_at: '2025-01-19T08:30:00Z' },
+  { id: 'lt-2', contact_id: 'contact-1', tag_id: 'tag-op-1', applied_by_type: 'user', applied_by_id: 'user-agent-1', source: 'system', created_at: '2025-01-19T08:30:00Z' },
   
   // Contact 2 - Interessado + Retorno Agendado
   { id: 'lt-3', contact_id: 'contact-2', tag_id: 'tag-3', applied_by_type: 'system', applied_by_id: null, source: 'kanban', created_at: '2025-01-18T16:00:00Z' },
-  { id: 'lt-4', contact_id: 'contact-2', tag_id: 'tag-op-3', applied_by_type: 'user', applied_by_id: 'user-agent-2', source: 'chatwoot', created_at: '2025-01-18T17:00:00Z' },
+  { id: 'lt-4', contact_id: 'contact-2', tag_id: 'tag-op-3', applied_by_type: 'user', applied_by_id: 'user-agent-2', source: 'system', created_at: '2025-01-18T17:00:00Z' },
   
   // Contact 3 - Contato
   { id: 'lt-5', contact_id: 'contact-3', tag_id: 'tag-2', applied_by_type: 'system', applied_by_id: null, source: 'kanban', created_at: '2025-01-19T07:30:00Z' },
   
   // Contact 4 - Novo + Sem Resposta
   { id: 'lt-6', contact_id: 'contact-4', tag_id: 'tag-1', applied_by_type: 'system', applied_by_id: null, source: 'system', created_at: '2025-01-19T09:00:00Z' },
-  { id: 'lt-7', contact_id: 'contact-4', tag_id: 'tag-op-2', applied_by_type: 'agent_bot', applied_by_id: 'bot-1', source: 'chatwoot', created_at: '2025-01-19T10:00:00Z' },
+  { id: 'lt-7', contact_id: 'contact-4', tag_id: 'tag-op-2', applied_by_type: 'agent_bot', applied_by_id: 'bot-1', source: 'system', created_at: '2025-01-19T10:00:00Z' },
   
   // Contact 5 - Novo
   { id: 'lt-8', contact_id: 'contact-5', tag_id: 'tag-1', applied_by_type: 'system', applied_by_id: null, source: 'kanban', created_at: '2025-01-17T08:00:00Z' },
@@ -466,7 +455,7 @@ export const mockLeadTags: LeadTag[] = [
   
   // Contact 7 - Contato + Lead Quente
   { id: 'lt-11', contact_id: 'contact-7', tag_id: 'tag-2', applied_by_type: 'system', applied_by_id: null, source: 'kanban', created_at: '2025-01-19T11:00:00Z' },
-  { id: 'lt-12', contact_id: 'contact-7', tag_id: 'tag-op-5', applied_by_type: 'user', applied_by_id: 'user-agent-2', source: 'chatwoot', created_at: '2025-01-19T11:30:00Z' },
+  { id: 'lt-12', contact_id: 'contact-7', tag_id: 'tag-op-5', applied_by_type: 'user', applied_by_id: 'user-agent-2', source: 'system', created_at: '2025-01-19T11:30:00Z' },
   
   // Contact 8 - Novo
   { id: 'lt-13', contact_id: 'contact-8', tag_id: 'tag-1', applied_by_type: 'system', applied_by_id: null, source: 'system', created_at: '2025-01-19T07:00:00Z' },
@@ -481,7 +470,7 @@ export const mockTagHistory: TagHistory[] = [
   { id: 'th-5', contact_id: 'contact-1', tag_id: 'tag-3', action: 'added', actor_type: 'user', actor_id: 'user-agent-1', source: 'kanban', reason: 'Movido para Interessado', created_at: '2025-01-17T14:00:00Z' },
   { id: 'th-6', contact_id: 'contact-1', tag_id: 'tag-3', action: 'removed', actor_type: 'user', actor_id: 'user-agent-1', source: 'kanban', reason: 'Movido para Qualificado', created_at: '2025-01-19T08:00:00Z' },
   { id: 'th-7', contact_id: 'contact-1', tag_id: 'tag-4', action: 'added', actor_type: 'user', actor_id: 'user-agent-1', source: 'kanban', reason: 'Movido para Qualificado', created_at: '2025-01-19T08:00:00Z' },
-  { id: 'th-8', contact_id: 'contact-1', tag_id: 'tag-op-1', action: 'added', actor_type: 'user', actor_id: 'user-agent-1', source: 'chatwoot', reason: 'Tag aplicada no Chatwoot', created_at: '2025-01-19T08:30:00Z' },
+  { id: 'th-8', contact_id: 'contact-1', tag_id: 'tag-op-1', action: 'added', actor_type: 'user', actor_id: 'user-agent-1', source: 'system', reason: 'Tag aplicada manualmente', created_at: '2025-01-19T08:30:00Z' },
 ];
 
 

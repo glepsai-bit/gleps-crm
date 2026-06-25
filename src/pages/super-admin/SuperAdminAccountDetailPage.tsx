@@ -52,8 +52,6 @@ import {
   Pause,
   RefreshCw,
   Loader2,
-  CheckCircle2,
-  XCircle,
   QrCode,
   Smartphone,
   Key,
@@ -72,10 +70,6 @@ interface EditFormData {
   nome: string;
   idioma: 'pt' | 'en';
   status: AccountStatus;
-  chatwootEnabled: boolean;
-  chatwootBaseUrl: string;
-  chatwootAccountId: string;
-  chatwootApiKey: string;
   googleEnabled: boolean;
   googleClientId: string;
   googleClientSecret: string;
@@ -87,8 +81,6 @@ interface EditFormData {
   sendgridFromEmail: string;
   sendgridFromName: string;
 }
-
-type ConnectionStatus = 'idle' | 'loading' | 'success' | 'error';
 
 // Password validation is now done server-side via the backend API
 
@@ -112,10 +104,6 @@ export default function SuperAdminAccountDetailPage() {
     nome: '',
     idioma: 'pt',
     status: 'active',
-    chatwootEnabled: false,
-    chatwootBaseUrl: '',
-    chatwootAccountId: '',
-    chatwootApiKey: '',
     googleEnabled: false,
     googleClientId: '',
     googleClientSecret: '',
@@ -127,7 +115,6 @@ export default function SuperAdminAccountDetailPage() {
     sendgridFromEmail: '',
     sendgridFromName: '',
   });
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
 
   // Evolution API (WhatsApp) states
   const [evolutionBaseUrl, setEvolutionBaseUrl] = useState('');
@@ -212,10 +199,6 @@ export default function SuperAdminAccountDetailPage() {
       nome: account.nome,
       idioma: (account as any).idioma || 'pt',
       status: account.status,
-      chatwootEnabled: !!(account.chatwoot_account_id || account.chatwoot_api_key || account.chatwoot_base_url),
-      chatwootBaseUrl: account.chatwoot_base_url || '',
-      chatwootAccountId: account.chatwoot_account_id || '',
-      chatwootApiKey: '', // masked
       googleEnabled: !!(account.google_client_id || account.google_client_secret || account.google_redirect_uri),
       googleClientId: account.google_client_id || '',
       googleClientSecret: '', // masked
@@ -227,44 +210,8 @@ export default function SuperAdminAccountDetailPage() {
       sendgridFromEmail: (account as any).sendgrid_from_email || '',
       sendgridFromName: (account as any).sendgrid_from_name || '',
     });
-    setConnectionStatus('idle');
     setIsControlOpen(true);
   };
-
-  const handleTestConnection = async () => {
-    setConnectionStatus('loading');
-
-    try {
-      // BUG-020: usa a chave existente do account quando o input está vazio (mascarado).
-      const apiKeyToTest =
-        editFormData.chatwootApiKey.trim() !== ''
-          ? editFormData.chatwootApiKey
-          : (account.chatwoot_api_key || '');
-      const result = await accountsCloudOrBackend.testChatwootConnection(
-        editFormData.chatwootBaseUrl,
-        editFormData.chatwootAccountId,
-        apiKeyToTest
-      );
-      
-      if (result.success) {
-        setConnectionStatus('success');
-        const agentCount = result.agents?.length || 0;
-        toast.success(`Conexão verificada! ${agentCount} agente(s) encontrado(s).`);
-      } else {
-        setConnectionStatus('error');
-        toast.error(result.message || 'Falha na conexão com Chatwoot');
-      }
-    } catch (e: any) {
-      setConnectionStatus('error');
-      toast.error(e?.message || 'Erro inesperado ao testar conexão');
-    }
-  };
-
-  // BUG-020: aceita usar a chave existente no account quando o input está mascarado (vazio).
-  const canTestConnection = editFormData.chatwootEnabled &&
-    editFormData.chatwootBaseUrl.trim() !== '' &&
-    editFormData.chatwootAccountId.trim() !== '' &&
-    (editFormData.chatwootApiKey.trim() !== '' || !!account.chatwoot_api_key);
 
   const handleToggleStatus = async () => {
     const newStatus = account.status === 'active' ? 'paused' : 'active';
@@ -298,9 +245,6 @@ export default function SuperAdminAccountDetailPage() {
       const payload: Record<string, any> = {
         nome: editFormData.nome,
         status: editFormData.status,
-        chatwoot_base_url: editFormData.chatwootEnabled ? editFormData.chatwootBaseUrl : undefined,
-        chatwoot_account_id: editFormData.chatwootEnabled ? editFormData.chatwootAccountId : undefined,
-        chatwoot_api_key: editFormData.chatwootEnabled ? keepOrSkip(editFormData.chatwootApiKey) : undefined,
         google_client_id: editFormData.googleEnabled ? editFormData.googleClientId : undefined,
         google_client_secret: editFormData.googleEnabled ? keepOrSkip(editFormData.googleClientSecret) : undefined,
         google_redirect_uri: editFormData.googleEnabled ? editFormData.googleRedirectUri : undefined,
@@ -323,11 +267,6 @@ export default function SuperAdminAccountDetailPage() {
         nome: editFormData.nome,
         status: editFormData.status,
         // Mantém valores existentes para campos secretos quando vazios no form
-        chatwoot_base_url: editFormData.chatwootEnabled ? editFormData.chatwootBaseUrl : undefined,
-        chatwoot_account_id: editFormData.chatwootEnabled ? editFormData.chatwootAccountId : undefined,
-        chatwoot_api_key: editFormData.chatwootEnabled
-          ? (keepOrSkip(editFormData.chatwootApiKey) ?? account.chatwoot_api_key)
-          : undefined,
         google_client_id: editFormData.googleEnabled ? editFormData.googleClientId : undefined,
         google_client_secret: editFormData.googleEnabled
           ? (keepOrSkip(editFormData.googleClientSecret) ?? account.google_client_secret)
@@ -719,33 +658,6 @@ export default function SuperAdminAccountDetailPage() {
         </Card>
       </div>
 
-      {/* Chatwoot Integration */}
-      <Card className="card-gradient border-border/50">
-        <CardHeader>
-          <CardTitle className="text-lg">Integração Chatwoot</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid md:grid-cols-2 gap-4">
-            <div className="flex items-center justify-between py-2 border-b border-border/50">
-              <span className="text-muted-foreground">Chatwoot Account ID</span>
-              {account.chatwoot_account_id ? (
-                <code className="text-sm font-mono bg-muted px-2 py-1 rounded">{account.chatwoot_account_id}</code>
-              ) : (
-                <Badge variant="outline" className="text-muted-foreground">Não configurado</Badge>
-              )}
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-border/50">
-              <span className="text-muted-foreground">Chatwoot API Key</span>
-              {account.chatwoot_api_key ? (
-                <code className="text-sm font-mono bg-muted px-2 py-1 rounded">••••••••</code>
-              ) : (
-                <Badge variant="outline" className="text-muted-foreground">Não configurado</Badge>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
       {/* API Keys */}
       <Card className="card-gradient border-border/50">
         <CardHeader>
@@ -1106,88 +1018,6 @@ export default function SuperAdminAccountDetailPage() {
                       placeholder="Minha Empresa"
                     />
                   </div>
-                </div>
-              )}
-            </div>
-
-            {/* Chatwoot Integration */}
-            <div className="space-y-4 pt-4 border-t border-border/50">
-              <div className="flex items-center justify-between">
-                <div>
-                  <Label htmlFor="edit-chatwoot">Integração Chatwoot</Label>
-                  <p className="text-xs text-muted-foreground">Habilitar para sincronizar agentes do Chatwoot</p>
-                </div>
-                <Switch
-                  id="edit-chatwoot"
-                  checked={editFormData.chatwootEnabled}
-                  onCheckedChange={(checked) => {
-                    setEditFormData({ ...editFormData, chatwootEnabled: checked });
-                    if (!checked) setConnectionStatus('idle');
-                  }}
-                />
-              </div>
-              
-              {editFormData.chatwootEnabled && (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-chatwoot-url">URL da Instância</Label>
-                    <Input
-                      id="edit-chatwoot-url"
-                      value={editFormData.chatwootBaseUrl}
-                      onChange={(e) => setEditFormData({ ...editFormData, chatwootBaseUrl: e.target.value })}
-                      placeholder="https://app.chatwoot.com"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      URL do Chatwoot Cloud ou da sua instância self-hosted
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-chatwoot-id">Account ID</Label>
-                    <Input
-                      id="edit-chatwoot-id"
-                      value={editFormData.chatwootAccountId}
-                      onChange={(e) => setEditFormData({ ...editFormData, chatwootAccountId: e.target.value })}
-                      placeholder="ID da conta no Chatwoot"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-chatwoot-key">API Key</Label>
-                    <Input
-                      id="edit-chatwoot-key"
-                      type="password"
-                      value={editFormData.chatwootApiKey}
-                      onChange={(e) => setEditFormData({ ...editFormData, chatwootApiKey: e.target.value })}
-                      placeholder={account.chatwoot_api_key ? '•••• configurado' : 'Access Token do usuário'}
-                    />
-                    {account.chatwoot_api_key && (
-                      <p className="text-xs text-muted-foreground">
-                        Deixe em branco para manter a chave atual.
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Test Connection Button */}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full gap-2"
-                    disabled={!canTestConnection || connectionStatus === 'loading'}
-                    onClick={handleTestConnection}
-                  >
-                    {connectionStatus === 'loading' && (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    )}
-                    {connectionStatus === 'success' && (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                    )}
-                    {connectionStatus === 'error' && (
-                      <XCircle className="w-4 h-4 text-destructive" />
-                    )}
-                    {connectionStatus === 'idle' && (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                    {connectionStatus === 'loading' ? 'Testando...' : 'Testar Conexão e Buscar Agentes'}
-                  </Button>
                 </div>
               )}
             </div>

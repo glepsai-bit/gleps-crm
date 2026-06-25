@@ -224,10 +224,10 @@ class DashboardService {
   }
 
   /**
-   * Get IA vs Human metrics (placeholder - would integrate with Chatwoot)
+   * Get IA vs Human metrics (placeholder — REMOVED legacy external provider integration)
    */
   async getIAvsHuman(accountId: string, filters: DateRangeFilter) {
-    // This would typically integrate with Chatwoot to get actual bot vs human metrics
+    // REMOVED: would previously integrate with external provider for bot vs human metrics.
     // For now, return placeholder data
     return {
       totalInteractions: 100,

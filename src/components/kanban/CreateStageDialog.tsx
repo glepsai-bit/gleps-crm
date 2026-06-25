@@ -31,7 +31,7 @@ const PRESET_COLORS = [
   '#14B8A6', // Teal
 ];
 
-// Convert name to Chatwoot-compatible slug (snake_case)
+// Convert name to slug (snake_case)
 const toSlug = (name: string): string => {
   return name
     .toLowerCase()
@@ -98,7 +98,7 @@ export function CreateStageDialog({ trigger, onStageCreated }: CreateStageDialog
         color,
       });
 
-      toast.success(`Etapa "${name}" criada! Ela também aparecerá no Chatwoot como etiqueta.`);
+      toast.success(`Etapa "${name}" criada com sucesso!`);
       setName('');
       setColor(PRESET_COLORS[0]);
       setOpen(false);
@@ -133,7 +133,7 @@ export function CreateStageDialog({ trigger, onStageCreated }: CreateStageDialog
         <DialogHeader>
           <DialogTitle>Criar Nova Etapa</DialogTitle>
           <DialogDescription>
-            A etapa será criada no Kanban e sincronizada automaticamente como etiqueta no Chatwoot.
+            A etapa será criada no Kanban e poderá ser aplicada aos leads.
           </DialogDescription>
         </DialogHeader>
 
@@ -154,7 +154,7 @@ export function CreateStageDialog({ trigger, onStageCreated }: CreateStageDialog
               <div className="flex items-start gap-2 p-2 rounded-md bg-muted/50 border">
                 <Info className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
                 <div className="text-xs text-muted-foreground">
-                  <span>Label no Chatwoot: </span>
+                  <span>Identificador: </span>
                   <code className={`px-1 py-0.5 rounded ${isValidSlug ? 'bg-primary/10 text-primary font-medium' : 'bg-destructive/10 text-destructive'}`}>
                     {slug || '(inválido)'}
                   </code>

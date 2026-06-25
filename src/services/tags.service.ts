@@ -2,7 +2,7 @@
  * Tags Service
  * 
  * Handles all tag/stage-related API calls.
- * Tags serve dual purpose: Chatwoot labels and Kanban stages.
+ * Tags serve as Kanban stages.
  */
 
 import { apiClient } from '@/api/client';

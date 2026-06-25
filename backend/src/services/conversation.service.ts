@@ -993,7 +993,7 @@ class ConversationService {
                   action: 'removed',
                   actorType: 'user',
                   actorId: userId,
-                  source: 'chatwoot',
+                  source: 'system',
                   tagName: existing.tag.name,
                   contactNome,
                 },
@@ -1009,7 +1009,7 @@ class ConversationService {
                 tagId,
                 appliedByType: 'user',
                 appliedById: userId,
-                source: 'chatwoot',
+                source: 'system',
               },
             });
             mirroredLeadTagId = created.id;
@@ -1022,7 +1022,7 @@ class ConversationService {
                   action: 'added',
                   actorType: 'user',
                   actorId: userId,
-                  source: 'chatwoot',
+                  source: 'system',
                   tagName: tag.name,
                   contactNome,
                 },
@@ -1071,7 +1071,7 @@ class ConversationService {
             tagId: removed.tagId,
             tagName: removed.tagName,
             action: 'removed',
-            source: 'chatwoot',
+            source: 'system',
           },
         });
       }
@@ -1082,7 +1082,7 @@ class ConversationService {
         actorId: userId,
         entityType: 'contact',
         entityId: conversation.contactId,
-        payload: { tagId, tagName: tag.name, source: 'chatwoot' },
+        payload: { tagId, tagName: tag.name, source: 'system' },
       });
     }
 
@@ -1279,8 +1279,8 @@ class ConversationService {
    * LIFECYCLE-BUG-4: aciona o circuit breaker do IA quando um agente humano
    * responde no fluxo nativo T-022 (POST /api/conversations/:id/messages).
    *
-   * Equivalente ao bloco "HumanIntervention" do chatwoot.controller (legado),
-   * porém para conversas servidas SEM Chatwoot — onde nada mais estava setando
+   * Equivalente ao bloco "HumanIntervention" do controller externo legado (REMOVED),
+   * porém para conversas servidas pelo fluxo nativo — onde nada mais estava setando
    * `customAttributes.human_active=true`. Sem este flag, /integrations/chat
    * (consumido pelo n8n) não respeita o `checkAiCircuitBreaker` e a IA continua
    * respondendo livremente em paralelo ao humano.
@@ -1622,7 +1622,7 @@ class ConversationService {
 
   /**
    * H3 helper: reabre conversa resolvida quando chega nova mensagem inbound,
-   * mantendo paridade com create-or-update-v2 do Chatwoot.
+   * mantendo paridade com a estratégia create-or-update-v2 do provider externo (REMOVED).
    */
   private async maybeReopen(
     conv: Conversation,

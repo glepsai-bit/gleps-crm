@@ -8,7 +8,6 @@ export interface Profile {
   email: string;
   status: 'active' | 'inactive' | 'suspended';
   permissions: string[];
-  chatwoot_agent_id: number | null;
   created_at: string;
   updated_at: string;
   role?: 'super_admin' | 'admin' | 'agent';
@@ -21,7 +20,6 @@ export interface CreateUserInput {
   role: 'super_admin' | 'admin' | 'agent';
   account_id?: string;
   permissions?: string[];
-  chatwoot_agent_id?: number;
 }
 
 export const usersCloudService = {
@@ -162,7 +160,6 @@ export const usersCloudService = {
         .from('profiles')
         .update({
           permissions: input.permissions,
-          chatwoot_agent_id: input.chatwoot_agent_id,
         })
         .eq('user_id', userId);
 
@@ -189,7 +186,6 @@ export const usersCloudService = {
     if (input.nome) updateData.nome = input.nome;
     if (input.status) updateData.status = input.status;
     if (input.permissions) updateData.permissions = input.permissions;
-    if (input.chatwoot_agent_id !== undefined) updateData.chatwoot_agent_id = input.chatwoot_agent_id;
 
     if (Object.keys(updateData).length > 0) {
       const { error } = await supabase

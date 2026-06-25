@@ -4,8 +4,6 @@ import { PaginationParams } from '../types';
 import { NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
 import { getPaginationMeta } from '../utils/helpers';
 import { eventService } from './event.service';
-import { chatwootService } from './chatwoot.service';
-import { logger } from '../utils/logger';
 
 export interface CreateContactInput {
   accountId: string;
@@ -13,8 +11,6 @@ export interface CreateContactInput {
   telefone?: string;
   email?: string;
   origem?: ContactOrigin;
-  chatwootContactId?: number;
-  chatwootConversationId?: number;
 }
 
 export interface UpdateContactInput {
@@ -152,8 +148,6 @@ class ContactService {
         telefone: input.telefone,
         email: input.email?.toLowerCase(),
         origem: input.origem,
-        chatwootContactId: input.chatwootContactId,
-        chatwootConversationId: input.chatwootConversationId,
       },
     });
 
@@ -316,7 +310,7 @@ class ContactService {
     id: string,
     accountId: string,
     tagId: string,
-    source: 'kanban' | 'chatwoot' | 'system' | 'api',
+    source: 'kanban' | 'system' | 'api',
     appliedById?: string
   ) {
     const contact = await this.getById(id, accountId);
@@ -406,15 +400,6 @@ class ContactService {
       payload: { tagId, tagName: tag.name, source },
     });
 
-    // Sync to Chatwoot if this is a stage change from Kanban
-    if (tag.type === 'stage' && source === 'kanban') {
-      try {
-        await chatwootService.syncLeadStageToConversation(id, tag.slug, accountId);
-      } catch (error) {
-        logger.warn('Failed to sync stage change to Chatwoot', { contactId: id, tagId, error });
-      }
-    }
-
     return this.getById(id, accountId);
   }
 
@@ -425,7 +410,7 @@ class ContactService {
     id: string,
     accountId: string,
     tagId: string,
-    source: 'kanban' | 'chatwoot' | 'system' | 'api',
+    source: 'kanban' | 'system' | 'api',
     removedById?: string
   ) {
     const contact = await this.getById(id, accountId);

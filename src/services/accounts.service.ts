@@ -89,9 +89,7 @@ export const accountsService = {
         plano: data.plano || null,
         status: 'active',
         limite_usuarios: data.limiteUsuarios || 5,
-        chatwoot_account_id: data.chatwootAccountId || null,
-        chatwoot_api_key: data.chatwootApiKey || null,
-        chatwoot_base_url: data.chatwootBaseUrl || null,
+        // REMOVED: campos de integracao externa de atendimento
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -122,9 +120,7 @@ export const accountsService = {
         ...(data.status && { status: data.status }),
         ...(data.limiteUsuarios !== undefined && { limite_usuarios: data.limiteUsuarios }),
         ...(data.timezone && { timezone: data.timezone }),
-        ...(data.chatwootAccountId !== undefined && { chatwoot_account_id: data.chatwootAccountId }),
-        ...(data.chatwootApiKey !== undefined && { chatwoot_api_key: data.chatwootApiKey }),
-        ...(data.chatwootBaseUrl !== undefined && { chatwoot_base_url: data.chatwootBaseUrl }),
+        // REMOVED: campos de integracao externa de atendimento
         updated_at: new Date().toISOString(),
       };
       

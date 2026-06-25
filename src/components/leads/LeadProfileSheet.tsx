@@ -32,7 +32,6 @@ import {
   XCircle,
   AlertCircle,
   Send,
-  ExternalLink,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -45,7 +44,7 @@ interface LeadProfileSheetProps {
 }
 
 export function LeadProfileSheet({ contact, open, onOpenChange }: LeadProfileSheetProps) {
-  const { user, account } = useAuth();
+  const { user } = useAuth();
   const { 
     getContactSales, 
     getContactNotes, 
@@ -117,25 +116,6 @@ export function LeadProfileSheet({ contact, open, onOpenChange }: LeadProfileShe
     );
     setNewNote('');
     toast.success('Anotação adicionada!');
-  };
-
-  const handleOpenChatwoot = () => {
-    const baseUrl = account?.chatwoot_base_url?.replace(/\/$/, '');
-    const accountId = account?.chatwoot_account_id;
-    const conversationId = contact.chatwoot_conversation_id;
-
-    if (!baseUrl || !accountId) {
-      toast.error('Chatwoot não configurado para esta conta');
-      return;
-    }
-
-    if (!conversationId) {
-      toast.warning('Este lead não possui conversa vinculada no Chatwoot');
-      return;
-    }
-
-    const url = `${baseUrl}/app/accounts/${accountId}/conversations/${conversationId}`;
-    window.open(url, '_blank');
   };
 
   const handleMarkAsPaid = (saleId: string) => {
@@ -213,25 +193,17 @@ export function LeadProfileSheet({ contact, open, onOpenChange }: LeadProfileShe
               </Card>
 
               {/* Actions */}
-              <div className="flex gap-2">
-                <Button 
-                  variant="outline" 
-                  className="flex-1 gap-2"
-                  onClick={handleOpenChatwoot}
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  Abrir Chatwoot
-                </Button>
-                {canSell && (
-                  <Button 
+              {canSell && (
+                <div className="flex gap-2">
+                  <Button
                     className="flex-1 gap-2"
                     onClick={() => setShowSaleDialog(true)}
                   >
                     <DollarSign className="w-4 h-4" />
                     Nova Venda
                   </Button>
-                )}
-              </div>
+                </div>
+              )}
 
               <Separator />
 

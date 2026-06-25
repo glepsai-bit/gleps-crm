@@ -21,9 +21,6 @@ const createAccountSchema = z.object({
   monthlyEmailLimit: z.number().int().min(0).max(10000000).optional(),
   dailyEmailLimit: z.number().int().min(0).max(10000000).optional(),
   timezone: z.string().optional(),
-  chatwootBaseUrl: optionalUrl(),
-  chatwootAccountId: z.string().optional(),
-  chatwootApiKey: z.string().optional(),
   evolutionBaseUrl: optionalUrl(),
   evolutionApiKey: z.string().optional(),
   evolutionInstance: z.string().optional(),
@@ -161,34 +158,6 @@ export class AccountController {
     try {
       const id = req.params.id as string;
       const result = await accountService.getStats(id);
-
-      res.json({ data: result });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * POST /accounts/:id/test-chatwoot
-   */
-  async testChatwoot(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const id = req.params.id as string;
-      const result = await accountService.testChatwootConnection(id);
-
-      res.json({ data: result });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * GET /accounts/:id/chatwoot-agents
-   */
-  async getChatwootAgents(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const id = req.params.id as string;
-      const result = await accountService.getChatwootAgents(id);
 
       res.json({ data: result });
     } catch (error) {

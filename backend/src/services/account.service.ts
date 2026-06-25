@@ -8,7 +8,6 @@ import { eventService } from './event.service';
 const SENSITIVE_KEYS = [
   'evolutionApiKey',
   'evolutionWebhookSecret',
-  'chatwootApiKey',
   'openaiApiKey',
   'sendgridApiKey',
   'googleClientSecret',
@@ -41,9 +40,6 @@ export interface CreateAccountInput {
   monthlyEmailLimit?: number;
   dailyEmailLimit?: number;
   timezone?: string;
-  chatwootBaseUrl?: string;
-  chatwootAccountId?: string;
-  chatwootApiKey?: string;
   evolutionBaseUrl?: string;
   evolutionApiKey?: string;
   evolutionInstance?: string;
@@ -160,9 +156,6 @@ class AccountService {
           monthlyEmailLimit: input.monthlyEmailLimit ?? 3000,
           dailyEmailLimit: input.dailyEmailLimit ?? 100,
           timezone: input.timezone ?? 'America/Sao_Paulo',
-          chatwootBaseUrl: input.chatwootBaseUrl,
-          chatwootAccountId: input.chatwootAccountId,
-          chatwootApiKey: input.chatwootApiKey,
           evolutionBaseUrl: input.evolutionBaseUrl,
           evolutionApiKey: input.evolutionApiKey,
           evolutionInstance: input.evolutionInstance,
@@ -216,9 +209,6 @@ class AccountService {
         dailyEmailLimit: input.dailyEmailLimit,
         timezone: input.timezone,
         status: input.status,
-        chatwootBaseUrl: input.chatwootBaseUrl,
-        chatwootAccountId: input.chatwootAccountId,
-        chatwootApiKey: input.chatwootApiKey,
         evolutionBaseUrl: input.evolutionBaseUrl,
         evolutionApiKey: input.evolutionApiKey,
         evolutionInstance: input.evolutionInstance,
@@ -353,66 +343,6 @@ class AccountService {
     };
   }
 
-  /**
-   * Test Chatwoot connection
-   */
-  async testChatwootConnection(id: string) {
-    const account = await this.getById(id);
-
-    if (!account.chatwootBaseUrl || !account.chatwootApiKey) {
-      return { connected: false, error: 'Configuração do Chatwoot incompleta' };
-    }
-
-    try {
-      // Test connection by fetching account info
-      const response = await fetch(
-        `${account.chatwootBaseUrl}/api/v1/accounts/${account.chatwootAccountId}/agents`,
-        {
-          headers: {
-            'api_access_token': account.chatwootApiKey,
-          },
-        }
-      );
-
-      if (response.ok) {
-        const data: any = await response.json();
-        return { connected: true, agentsCount: data.length };
-      } else {
-        return { connected: false, error: `HTTP ${response.status}` };
-      }
-    } catch (error: any) {
-      return { connected: false, error: error.message };
-    }
-  }
-
-  /**
-   * Get Chatwoot agents
-   */
-  async getChatwootAgents(id: string) {
-    const account = await this.getById(id);
-
-    if (!account.chatwootBaseUrl || !account.chatwootApiKey) {
-      return [];
-    }
-
-    try {
-      const response = await fetch(
-        `${account.chatwootBaseUrl}/api/v1/accounts/${account.chatwootAccountId}/agents`,
-        {
-          headers: {
-            'api_access_token': account.chatwootApiKey,
-          },
-        }
-      );
-
-      if (response.ok) {
-        return response.json();
-      }
-      return [];
-    } catch {
-      return [];
-    }
-  }
 }
 
 export const accountService = new AccountService();

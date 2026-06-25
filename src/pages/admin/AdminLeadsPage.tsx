@@ -54,13 +54,11 @@ import {
   Mail,
   DollarSign,
   Eye,
-  ExternalLink,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
-import { hasChatwootConfig as checkChatwootConfig } from '@/utils/chatwootConfig';
 import type { Tag as CloudTag } from '@/services/tags.cloud.service';
 import { tagsBackendService } from '@/services/tags.backend.service';
 import { contactsCloudService } from '@/services/contacts.cloud.service';
@@ -88,16 +86,12 @@ export default function AdminLeadsPage() {
   
   // Kanban stages for CreateLeadDialog
   const [stages, setStages] = useState<CloudTag[]>([]);
-  const [hasChatwootConfig, setHasChatwootConfig] = useState(false);
 
-  // Load stages and check Chatwoot config
+  // Load stages
   useEffect(() => {
     if (!accountId) return;
 
     const loadData = async () => {
-      // Check Chatwoot config (backend-aware)
-      setHasChatwootConfig(checkChatwootConfig(account));
-
       if (useBackend) {
         // Backend: fetch stage tags via backend service
         try {
@@ -228,32 +222,8 @@ export default function AdminLeadsPage() {
       return;
     }
 
-    if ('chatwoot_attempted' in result && result.chatwoot_attempted && result.chatwoot_deleted === false) {
-      toast.warning(`Lead removido do CRM, mas não consegui remover no Chatwoot: ${result.chatwoot_error || 'erro desconhecido'}`);
-    } else {
-      toast.success('Lead removido com sucesso!');
-    }
-
+    toast.success('Lead removido com sucesso!');
     await refetchContacts();
-  };
-
-  const handleOpenChatwoot = (contact: Contact) => {
-    const baseUrl = account?.chatwoot_base_url?.replace(/\/$/, '');
-    const accountIdChatwoot = account?.chatwoot_account_id;
-    const conversationId = contact.chatwoot_conversation_id;
-
-    if (!baseUrl || !accountIdChatwoot) {
-      toast.error('Chatwoot não configurado para esta conta');
-      return;
-    }
-
-    if (!conversationId) {
-      toast.warning('Este lead não possui conversa vinculada no Chatwoot');
-      return;
-    }
-
-    const url = `${baseUrl}/app/accounts/${accountIdChatwoot}/conversations/${conversationId}`;
-    window.open(url, '_blank');
   };
 
   return (
@@ -268,7 +238,6 @@ export default function AdminLeadsPage() {
           <CreateLeadDialog
             accountId={accountId}
             stages={stages}
-            hasChatwootConfig={hasChatwootConfig}
             onLeadCreated={handleLeadCreated}
             trigger={
               <Button className="bg-primary text-primary-foreground hover:bg-primary/90 gap-2 min-h-[40px] sm:min-h-0">
@@ -394,10 +363,6 @@ export default function AdminLeadsPage() {
                           <DropdownMenuItem onClick={() => setProfileContact(contact)}>
                             <Eye className="w-4 h-4 mr-2" />
                             Ver Ficha do Cliente
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleOpenChatwoot(contact)}>
-                            <ExternalLink className="w-4 h-4 mr-2" />
-                            Abrir Chatwoot
                           </DropdownMenuItem>
                           {canSell && (
                             <DropdownMenuItem onClick={() => setSaleContactId(contact.id)}>

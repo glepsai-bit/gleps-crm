@@ -29,7 +29,7 @@ interface KanbanLead extends Contact {
 
 interface LeadCardProps {
   lead: KanbanLead;
-  stage: Tag; // Tag de etapa (Chatwoot) = coluna do Kanban
+  stage: Tag; // Tag de etapa = coluna do Kanban
   isDragging?: boolean;
   isNew?: boolean; // Indicates if this is a newly added lead
   onClick: () => void;

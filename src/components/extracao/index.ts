@@ -7,4 +7,4 @@ export { SavedAudiencesTab } from './SavedAudiencesTab';
 export { CsvImportDialog } from './CsvImportDialog';
 export { CrmContactsPickerDialog } from './CrmContactsPickerDialog';
 export { ComplianceWarning } from './ComplianceWarning';
-export type { ExtractedLead, ChatwootInbox, DispatchConfig, ApiUsage } from './types';
+export type { ExtractedLead, Inbox, DispatchConfig, ApiUsage } from './types';

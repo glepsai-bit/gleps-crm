@@ -3,7 +3,6 @@ import { TagType } from '@prisma/client';
 import { NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
 import { slugify } from '../utils/helpers';
 import { eventService } from './event.service';
-import { chatwootService } from './chatwoot.service';
 import { logger } from '../utils/logger';
 
 export interface CreateTagInput {
@@ -134,32 +133,6 @@ class TagService {
       },
     });
 
-    // Sync stage tags with Chatwoot labels
-    if (input.type === 'stage') {
-      try {
-        const account = await prisma.account.findUnique({ where: { id: input.accountId } });
-        
-    if (account?.chatwootApiKey && account?.chatwootBaseUrl && account?.chatwootAccountId) {
-          const label = await chatwootService.createLabel(input.accountId, {
-            title: finalSlug,  // Use slug (e.g. "novo_lead"), not display name
-            description: `Etapa do Kanban: ${input.name}`,
-            color: input.color || '#6366F1',
-          });
-          
-          // Update tag with Chatwoot label ID
-          await prisma.tag.update({
-            where: { id: tag.id },
-            data: { chatwootLabelId: label.id },
-          });
-          
-          logger.info('Tag synced to Chatwoot label', { tagId: tag.id, labelId: label.id });
-        }
-      } catch (error) {
-        logger.warn('Failed to sync tag with Chatwoot', { tagId: tag.id, error });
-        // Don't fail the operation, just log the error
-      }
-    }
-
     // Record in tag history
     await prisma.tagHistory.create({
       data: {
@@ -198,20 +171,6 @@ class TagService {
         color: input.color,
       },
     });
-
-    // Sync with Chatwoot if tag has a linked label
-    if (existingTag.chatwootLabelId) {
-      try {
-        await chatwootService.updateLabel(accountId, existingTag.chatwootLabelId, {
-          title: existingTag.slug,
-          description: input.name ? `Etapa do Kanban: ${input.name}` : undefined,
-          color: input.color,
-        });
-        logger.info('Tag update synced to Chatwoot', { tagId: id, labelId: existingTag.chatwootLabelId });
-      } catch (error) {
-        logger.warn('Failed to sync tag update with Chatwoot', { tagId: id, error });
-      }
-    }
 
     await eventService.create({
       eventType: 'funnel.stage.updated',
@@ -254,16 +213,6 @@ class TagService {
       } else {
         await prisma.leadTag.deleteMany({ where: { tagId: id } });
         logger.info('Lead tags removed before tag deletion', { tagId: id, count: leadsCount });
-      }
-    }
-
-    // Delete Chatwoot label if linked
-    if (tag.chatwootLabelId) {
-      try {
-        await chatwootService.deleteLabel(accountId, tag.chatwootLabelId);
-        logger.info('Chatwoot label deleted', { tagId: id, labelId: tag.chatwootLabelId });
-      } catch (error) {
-        logger.warn('Failed to delete Chatwoot label', { tagId: id, error });
       }
     }
 
@@ -404,64 +353,15 @@ class TagService {
   }
 
   /**
-   * Reconcile all active stage tags with Chatwoot labels
-   * - garante título por slug
-   * - corrige vínculos quebrados (chatwootLabelId inválido)
-   * - cria labels faltantes
+   * @deprecated REMOVED — sync de labels externos foi removido na variante FitPark.
+   * Mantido como stub para não quebrar a rota POST /tags/sync-labels.
    */
-  async syncAllLabels(accountId: string) {
-    const account = await prisma.account.findUnique({ where: { id: accountId } });
-
-    if (!account?.chatwootApiKey || !account?.chatwootBaseUrl || !account?.chatwootAccountId) {
-      throw new ValidationError('Configuração do Chatwoot incompleta.');
-    }
-
-    const tags = await prisma.tag.findMany({
-      where: {
-        accountId,
-        type: 'stage',
-        ativo: true,
-      },
-      orderBy: { ordem: 'asc' },
-    });
-
-    const results: { tagId: string; tagName: string; slug: string; labelId?: number; error?: string }[] = [];
-
-    for (const tag of tags) {
-      try {
-        const labelId = await chatwootService.syncTagToLabel(tag.id, accountId);
-
-        if (!labelId) {
-          results.push({
-            tagId: tag.id,
-            tagName: tag.name,
-            slug: tag.slug,
-            error: 'Falha ao reconciliar etiqueta no Chatwoot',
-          });
-          continue;
-        }
-
-        results.push({
-          tagId: tag.id,
-          tagName: tag.name,
-          slug: tag.slug,
-          labelId,
-        });
-      } catch (error: any) {
-        results.push({
-          tagId: tag.id,
-          tagName: tag.name,
-          slug: tag.slug,
-          error: error?.message || 'Erro desconhecido',
-        });
-        logger.warn('Failed to reconcile tag label', { tagId: tag.id, error });
-      }
-    }
-
+  async syncAllLabels(_accountId: string) {
     return {
-      synced: results.filter(r => !r.error).length,
-      failed: results.filter(r => r.error).length,
-      details: results,
+      synced: 0,
+      failed: 0,
+      details: [] as Array<{ tagId: string; tagName: string; slug: string; labelId?: number; error?: string }>,
+      deprecated: 'REMOVED — sync de labels externos não está mais disponível nesta variante (FitPark).',
     };
   }
 }

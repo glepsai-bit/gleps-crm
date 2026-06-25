@@ -1,12 +1,16 @@
 /**
  * Tags Backend Service
- * 
- * Uses Express API via apiClient instead of Supabase.
+ *
+ * Uses Express API via apiClient.
+ *
+ * REMOVED (FitPark): sync para sistema externo de labels (legado) — todos os
+ * metodos *toExternal/*Labels/*Contacts foram removidos no escopo T-022.
+ * Tags agora vivem so no proprio CRM.
  */
 
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
-import type { Tag, LeadTag, ImportLabelsResult, SyncContactsResult } from './tags.cloud.service';
+import type { Tag, LeadTag } from './tags.cloud.service';
 
 function mapBackendTag(t: any): Tag {
   return {
@@ -19,7 +23,6 @@ function mapBackendTag(t: any): Tag {
     color: t.color,
     ordem: t.ordem ?? 0,
     ativo: t.ativo ?? true,
-    chatwoot_label_id: t.chatwoot_label_id ?? t.chatwootLabelId ?? null,
     created_at: t.created_at ?? t.createdAt,
   };
 }
@@ -90,62 +93,6 @@ export const tagsBackendService = {
     await apiClient.post(API_ENDPOINTS.TAGS.ADD_TO_CONTACT(contactId), {
       tagId,
       source,
-    });
-  },
-
-  async updateContactLabelsInChatwoot(
-    accountId: string,
-    contactId: string,
-    newStageTagId: string,
-    oldStageTagId?: string
-  ): Promise<{ success: boolean }> {
-    return apiClient.post<{ success: boolean }>(API_ENDPOINTS.CHATWOOT.SYNC, {
-      action: 'update-contact-labels',
-      accountId,
-      contactId,
-      newStageTagId,
-      oldStageTagId,
-    });
-  },
-
-  async pushLabelToChatwoot(
-    accountId: string,
-    action: 'create' | 'update' | 'delete',
-    label: { title: string; color: string; description?: string },
-    tagId?: string,
-    chatwootLabelId?: number
-  ): Promise<{ success: boolean; chatwoot_label_id?: number }> {
-    return apiClient.post<{ success: boolean; chatwoot_label_id?: number }>(
-      API_ENDPOINTS.CHATWOOT.SYNC,
-      { action: 'push-label', accountId, labelAction: action, label, tagId, chatwootLabelId }
-    );
-  },
-
-  async pushAllLabelsToChatwoot(accountId: string, resetIds = false) {
-    return apiClient.post<{
-      success: boolean;
-      pushed: number;
-      linked: number;
-      errors: string[];
-      details: Array<{ name: string; action: string; reason?: string }>;
-    }>(API_ENDPOINTS.CHATWOOT.SYNC, {
-      action: 'push-all-labels',
-      accountId,
-      resetIds,
-    });
-  },
-
-  async syncChatwootLabels(accountId: string): Promise<ImportLabelsResult> {
-    return apiClient.post<ImportLabelsResult>(API_ENDPOINTS.CHATWOOT.SYNC, {
-      action: 'sync-labels',
-      accountId,
-    });
-  },
-
-  async syncChatwootContacts(accountId: string): Promise<SyncContactsResult> {
-    return apiClient.post<SyncContactsResult>(API_ENDPOINTS.CHATWOOT.SYNC, {
-      action: 'sync-contacts',
-      accountId,
     });
   },
 

@@ -1,7 +1,7 @@
 /**
  * AdminChatPage — T-022 Sprint 4 (Fase Frontend)
  *
- * Página principal do chat interno (paridade Chatwoot). Layout 3 colunas:
+ * Página principal do chat interno. Layout 3 colunas:
  *   - Esquerda  (320px): filtros + lista (ConversationList)
  *   - Centro    (flex):  thread (ConversationThread)
  *   - Direita   (320px): detalhes do contato (ContactSidePanel)

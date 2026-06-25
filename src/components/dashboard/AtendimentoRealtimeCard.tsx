@@ -4,7 +4,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import type { AtendimentoMetrics } from '@/types/chatwoot-metrics';
+import type { AtendimentoMetrics } from '@/types/chat-metrics';
 
 interface AtendimentoRealtimeCardProps {
   data: AtendimentoMetrics;

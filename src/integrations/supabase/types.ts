@@ -16,9 +16,6 @@ export type Database = {
     Tables: {
       accounts: {
         Row: {
-          chatwoot_account_id: string | null
-          chatwoot_api_key: string | null
-          chatwoot_base_url: string | null
           created_at: string | null
           email_batch_size: number | null
           email_delay_ms: number | null
@@ -39,9 +36,6 @@ export type Database = {
           updated_at: string | null
         }
         Insert: {
-          chatwoot_account_id?: string | null
-          chatwoot_api_key?: string | null
-          chatwoot_base_url?: string | null
           created_at?: string | null
           email_batch_size?: number | null
           email_delay_ms?: number | null
@@ -62,9 +56,6 @@ export type Database = {
           updated_at?: string | null
         }
         Update: {
-          chatwoot_account_id?: string | null
-          chatwoot_api_key?: string | null
-          chatwoot_base_url?: string | null
           created_at?: string | null
           email_batch_size?: number | null
           email_delay_ms?: number | null
@@ -199,8 +190,6 @@ export type Database = {
       contacts: {
         Row: {
           account_id: string
-          chatwoot_contact_id: number | null
-          chatwoot_conversation_id: number | null
           created_at: string | null
           email: string | null
           first_resolved_at: string | null
@@ -214,8 +203,6 @@ export type Database = {
         }
         Insert: {
           account_id: string
-          chatwoot_contact_id?: number | null
-          chatwoot_conversation_id?: number | null
           created_at?: string | null
           email?: string | null
           first_resolved_at?: string | null
@@ -229,8 +216,6 @@ export type Database = {
         }
         Update: {
           account_id?: string
-          chatwoot_contact_id?: number | null
-          chatwoot_conversation_id?: number | null
           created_at?: string | null
           email?: string | null
           first_resolved_at?: string | null
@@ -1092,7 +1077,6 @@ export type Database = {
       profiles: {
         Row: {
           account_id: string | null
-          chatwoot_agent_id: number | null
           created_at: string | null
           email: string
           id: string
@@ -1105,7 +1089,6 @@ export type Database = {
         }
         Insert: {
           account_id?: string | null
-          chatwoot_agent_id?: number | null
           created_at?: string | null
           email: string
           id?: string
@@ -1118,7 +1101,6 @@ export type Database = {
         }
         Update: {
           account_id?: string | null
-          chatwoot_agent_id?: number | null
           created_at?: string | null
           email?: string
           id?: string
@@ -1449,7 +1431,6 @@ export type Database = {
         Row: {
           account_id: string
           ativo: boolean | null
-          chatwoot_label_id: number | null
           color: string | null
           created_at: string | null
           funnel_id: string
@@ -1462,7 +1443,6 @@ export type Database = {
         Insert: {
           account_id: string
           ativo?: boolean | null
-          chatwoot_label_id?: number | null
           color?: string | null
           created_at?: string | null
           funnel_id: string
@@ -1475,7 +1455,6 @@ export type Database = {
         Update: {
           account_id?: string
           ativo?: boolean | null
-          chatwoot_label_id?: number | null
           color?: string | null
           created_at?: string | null
           funnel_id?: string

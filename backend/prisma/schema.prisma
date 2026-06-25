@@ -1,5 +1,5 @@
 // GLEPS CRM Database Schema
-// Multi-tenant CRM with Chatwoot integration
+// Multi-tenant CRM
 
 generator client {
   provider = "prisma-client-js"
@@ -38,11 +38,6 @@ model Account {
   monthlyExtractionLimit Int?          @default(500) @map("monthly_extraction_limit")
   monthlyEmailLimit      Int?          @default(3000) @map("monthly_email_limit")
   dailyEmailLimit        Int?          @default(100) @map("daily_email_limit")
-
-  // Chatwoot Integration
-  chatwootBaseUrl   String? @map("chatwoot_base_url") @db.VarChar(500)
-  chatwootAccountId String? @map("chatwoot_account_id") @db.VarChar(100)
-  chatwootApiKey    String? @map("chatwoot_api_key") @db.VarChar(500)
 
   // Evolution API Integration (WhatsApp non-official) — T-022 FitPark
   // @deprecated Usar SystemSettings global. Estes campos permanecem como override
@@ -234,8 +229,7 @@ model User {
   // Granular permissions (for agents)
   permissions String[] @default(["dashboard"])
 
-  // Chatwoot Integration
-  chatwootAgentId Int? @map("chatwoot_agent_id")
+  // REMOVED: integration agent id (deprecated)
 
   lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
@@ -320,9 +314,7 @@ model Contact {
   pushNameUpdatedAt DateTime?     @map("push_name_updated_at") @db.Timestamptz
   pushNameChangeCount Int         @default(0) @map("push_name_change_count")
 
-  // Chatwoot Integration
-  chatwootContactId      Int? @map("chatwoot_contact_id")
-  chatwootConversationId Int? @map("chatwoot_conversation_id")
+  // REMOVED: external contact/conversation ids (deprecated integration)
 
   // Segmentation
   nicho  String? @db.VarChar(255)
@@ -420,8 +412,7 @@ model Tag {
   ordem     Int     @default(0)
   ativo     Boolean @default(true)
 
-  // Chatwoot Integration
-  chatwootLabelId Int? @map("chatwoot_label_id")
+  // REMOVED: external label id (deprecated integration)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
@@ -478,7 +469,6 @@ enum ActorType {
 
 enum LeadTagSource {
   kanban
-  chatwoot
   system
   api
 }
@@ -828,7 +818,7 @@ model DispatchBatch {
   triggerName String?   @map("trigger_name") @db.VarChar(120)
   metadata    Json?     @db.JsonB
   templateId  String?   @map("template_id") @db.Uuid
-  inboxId     Int?      @map("inbox_id") // pra suporte Chatwoot legacy
+  inboxId     Int?      @map("inbox_id") // REMOVED: legacy integration inbox id
 
   account  Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
   template WhatsappTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
@@ -1209,7 +1199,7 @@ model EmailAudienceContact {
 }
 
 // ============================================
-// CHAT INTERNO (T-022 Sprint 4) - Paridade Chatwoot
+// CHAT INTERNO (T-022 Sprint 4)
 // ============================================
 
 model Inbox {
@@ -1448,8 +1438,8 @@ model ConversationParticipant {
 // IMPORTANTE: ConversationNote eh EXCLUSIVO para "transfer notes"
 // (nota anexada quando um agente transfere a conversa pra outro agente/team via
 // conversation.service.ts -> transferConversation). Notas internas digitadas pelo
-// agente no chat (estilo Chatwoot "Private Note") NAO vivem aqui: elas sao gravadas
-// como Message com isPrivate=true (ver message.controller.ts / message.service.ts).
+// agente no chat (private notes) NAO vivem aqui: elas sao gravadas como Message
+// com isPrivate=true (ver message.controller.ts / message.service.ts).
 // Antes de usar este model para qualquer outro fluxo, considerar consolidar tudo em
 // Message (ex: contentType='transfer_note') e deletar este model, para reduzir
 // superficie de dados de "notas".

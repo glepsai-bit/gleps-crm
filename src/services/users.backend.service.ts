@@ -21,7 +21,6 @@ function mapProfile(raw: any): Profile {
     email: raw.email,
     status: raw.status || 'active',
     permissions: raw.permissions || ['dashboard'],
-    chatwoot_agent_id: raw.chatwootAgentId ?? raw.chatwoot_agent_id ?? null,
     created_at: raw.createdAt ?? raw.created_at ?? new Date().toISOString(),
     updated_at: raw.updatedAt ?? raw.updated_at ?? new Date().toISOString(),
     role: raw.role,
@@ -54,7 +53,6 @@ export const usersBackendService = {
       role: input.role,
       accountId: input.account_id,
       permissions: input.permissions,
-      chatwootAgentId: input.chatwoot_agent_id,
     });
     const raw = response?.data ?? response;
     return mapProfile(raw);
@@ -66,7 +64,6 @@ export const usersBackendService = {
       status: input.status,
       role: input.role,
       permissions: input.permissions,
-      chatwootAgentId: input.chatwoot_agent_id,
     });
     const raw = response?.data ?? response;
     return mapProfile(raw);

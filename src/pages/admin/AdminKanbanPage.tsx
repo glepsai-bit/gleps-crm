@@ -55,15 +55,12 @@ import {
   ChevronRight,
   Trash2,
   RefreshCw,
-  ExternalLink,
-  Upload,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
 import { toast } from 'sonner';
 import { tagsCloudService, type Tag as CloudTag, type LeadTag } from '@/services/tags.cloud.service';
 import { tagsBackendService } from '@/services/tags.backend.service';
 import { useBackend } from '@/config/backend.config';
-import { hasChatwootConfig as checkChatwootConfig } from '@/utils/chatwootConfig';
 import { supabase } from '@/integrations/supabase/client';
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
@@ -96,19 +93,12 @@ export default function AdminKanbanPage() {
   const [deleteHasLeads, setDeleteHasLeads] = useState(false);
   const [deleteMigrateToId, setDeleteMigrateToId] = useState<string>('');
   const [deleteForceMode, setDeleteForceMode] = useState<'migrate' | 'detach' | null>(null);
-  const [isSyncingChatwoot, setIsSyncingChatwoot] = useState(false);
-  const [isPushingLabels, setIsPushingLabels] = useState(false);
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
 
   const isFirstTagsLoad = useRef(true);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
-  const chatwootSyncRef = useRef<NodeJS.Timeout | null>(null);
-  const isChatwootSyncingRef = useRef(false);
 
   const accountId = user?.account_id || account?.id;
-  
-  // Check if Chatwoot is configured - backend-aware
-  const hasChatwootConfig = checkChatwootConfig(account);
 
   // Clear new lead tag animation after delay
   const clearNewLeadTagIds = useCallback((ids: string[]) => {
@@ -198,9 +188,8 @@ export default function AdminKanbanPage() {
   }, [fetchTagsData]);
 
   // Lightweight background refresh: only re-reads lead_tags + stage_tags from our
-  // own backend (NOT the heavy Chatwoot sync). Runs every 20s to pick up changes
-  // made by the AI / external workflows (e.g. n8n moving labels) without ever
-  // blocking the UI or hitting Chatwoot's rate limit.
+  // own backend. Runs every 20s to pick up changes
+  // made by automations (e.g. n8n moving labels) without blocking the UI.
   useEffect(() => {
     if (!accountId) return;
 
@@ -216,44 +205,6 @@ export default function AdminKanbanPage() {
       }
     };
   }, [accountId, fetchTagsData]);
-
-  // Heavy Chatwoot sync: pulls new contacts/conversations from Chatwoot every 5
-  // minutes. This is the slow call that previously froze the UI when running
-  // every 30s. By spacing it to 5min and running it silently in the background
-  // we still pick up new leads automatically without blocking interactions.
-  useEffect(() => {
-    if (!accountId || !hasChatwootConfig) return;
-
-    const runSilentChatwootSync = async () => {
-      if (isChatwootSyncingRef.current) return;
-      isChatwootSyncingRef.current = true;
-      try {
-        const result = await tagsService.syncChatwootContacts(accountId);
-        if (result?.success) {
-          const created = result.contacts_created || 0;
-          const updated = result.contacts_updated || 0;
-          const applied = result.lead_tags_applied || 0;
-          if (created > 0 || updated > 0 || applied > 0) {
-            // Silent refresh — no toasts, just update the board
-            await refetchContacts();
-            fetchTagsData(true);
-          }
-        }
-      } catch {
-        // Silent: background sync errors must never spam the UI
-      } finally {
-        isChatwootSyncingRef.current = false;
-      }
-    };
-
-    chatwootSyncRef.current = setInterval(runSilentChatwootSync, 5 * 60 * 1000);
-
-    return () => {
-      if (chatwootSyncRef.current) {
-        clearInterval(chatwootSyncRef.current);
-      }
-    };
-  }, [accountId, hasChatwootConfig, fetchTagsData, refetchContacts]);
 
   // Get stage tag for a lead
   const getLeadStageTag = useCallback((contactId: string): CloudTag | undefined => {
@@ -433,85 +384,6 @@ export default function AdminKanbanPage() {
     setSelectedLead(null);
   };
 
-  const handleOpenChatwoot = (lead: KanbanLead) => {
-    const baseUrl = account?.chatwoot_base_url?.replace(/\/$/, '');
-    const accountIdChatwoot = account?.chatwoot_account_id;
-    const conversationId = lead.chatwoot_conversation_id;
-
-    if (!baseUrl || !accountIdChatwoot) {
-      toast.error('Chatwoot não configurado para esta conta');
-      return;
-    }
-
-    if (!conversationId) {
-      toast.warning('Este lead não possui conversa vinculada no Chatwoot');
-      return;
-    }
-
-    const url = `${baseUrl}/app/accounts/${accountIdChatwoot}/conversations/${conversationId}`;
-    window.open(url, '_blank');
-  };
-
-  const handlePushLabelsToChatwoot = async () => {
-    if (!accountId || isPushingLabels) return;
-    
-    setIsPushingLabels(true);
-    try {
-      const result = await tagsService.pushAllLabelsToChatwoot(accountId);
-      
-      if (result.success) {
-        const total = result.pushed + result.linked;
-        if (result.pushed > 0) {
-          toast.success(`Etapas enviadas ao Chatwoot: ${result.pushed} criada(s), ${result.linked} vinculada(s).`);
-        } else {
-          toast.info(`Todas as ${result.linked} etapa(s) já existem no Chatwoot.`);
-        }
-        fetchTagsData(false);
-      } else {
-        toast.error(result.errors[0] || 'Erro ao enviar etapas');
-      }
-    } catch (error: any) {
-      toast.error(error.message || 'Erro ao enviar etapas ao Chatwoot');
-    } finally {
-      setIsPushingLabels(false);
-    }
-  };
-
-  const handleSyncChatwoot = async () => {
-    if (!accountId || isSyncingChatwoot) return;
-    
-    setIsSyncingChatwoot(true);
-    try {
-      const result = await tagsService.syncChatwootContacts(accountId);
-      
-      if (result.success) {
-        const total = result.contacts_created + result.contacts_updated;
-        const removedCount = result.lead_tags_removed || 0;
-        const deletedCount = result.contacts_deleted || 0;
-        if (total > 0 || result.lead_tags_applied > 0 || removedCount > 0 || deletedCount > 0) {
-          const parts = [];
-          if (result.contacts_created > 0) parts.push(`${result.contacts_created} criado(s)`);
-          if (result.contacts_updated > 0) parts.push(`${result.contacts_updated} atualizado(s)`);
-          if (deletedCount > 0) parts.push(`${deletedCount} excluído(s)`);
-          if (result.lead_tags_applied > 0) parts.push(`${result.lead_tags_applied} etapa(s) aplicada(s)`);
-          toast.success(`Sincronização concluída: ${parts.join(', ')}.`);
-          // Refresh contacts and lead tags
-          await refetchContacts();
-          fetchTagsData(false);
-        } else {
-          toast.info('Nenhuma alteração necessária - tudo sincronizado.');
-        }
-      } else {
-        toast.error(result.errors[0] || 'Erro ao sincronizar contatos');
-      }
-    } catch (error: any) {
-      toast.error(error.message || 'Erro ao sincronizar contatos');
-    } finally {
-      setIsSyncingChatwoot(false);
-    }
-  };
-
-
   // Check if initial loading (skeleton only on first load)
   const isInitialLoading = isLoadingTags && isLoadingContacts;
 
@@ -557,44 +429,9 @@ export default function AdminKanbanPage() {
           />
         </div>
         <div className="flex flex-col xs:flex-row items-stretch xs:items-center gap-2 sm:gap-3 w-full xs:w-auto">
-          {hasChatwootConfig && (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-2 min-h-[40px] sm:min-h-0"
-                onClick={handleSyncChatwoot}
-                disabled={isSyncingChatwoot}
-              >
-                {isSyncingChatwoot ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="w-4 h-4" />
-                )}
-                <span className="hidden xs:inline">Sincronizar</span>
-                <span className="xs:hidden">Sync</span>
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-2 min-h-[40px] sm:min-h-0"
-                onClick={handlePushLabelsToChatwoot}
-                disabled={isPushingLabels}
-              >
-                {isPushingLabels ? (
-                  <Upload className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Upload className="w-4 h-4" />
-                )}
-                <span className="hidden xs:inline">Enviar Etapas</span>
-                <span className="xs:hidden">Push</span>
-              </Button>
-            </>
-          )}
           <CreateLeadDialog
             accountId={accountId || ''}
             stages={stageTags}
-            hasChatwootConfig={hasChatwootConfig}
             trigger={
               <Button variant="default" size="sm" className="gap-2 min-h-[40px] sm:min-h-0">
                 <Plus className="w-4 h-4" />
@@ -744,9 +581,6 @@ export default function AdminKanbanPage() {
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: stage.color }} />
                         <CardTitle className="text-sm font-semibold truncate">{stage.name}</CardTitle>
-                        {stage.chatwoot_label_id && (
-                          <Badge variant="outline" className="text-xs">Chatwoot</Badge>
-                        )}
                       </div>
                       <div className="flex items-center gap-1">
                         <Badge variant="secondary" className="text-xs">{stageLeads.length}</Badge>
@@ -872,10 +706,6 @@ export default function AdminKanbanPage() {
               </div>
 
               <div className="pt-4 border-t space-y-2">
-                <Button className="w-full gap-2" variant="outline" onClick={() => handleOpenChatwoot(selectedLead)}>
-                  <ExternalLink className="w-4 h-4" />
-                  Abrir Conversa no Chatwoot
-                </Button>
                 <Button className="w-full gap-2" onClick={() => handleOpenSaleDialog(selectedLead.id)}>
                   <DollarSign className="w-4 h-4" />
                   Registrar Venda
@@ -903,9 +733,6 @@ export default function AdminKanbanPage() {
                 {!deleteHasLeads ? (
                   <>
                     <p>Tem certeza que deseja excluir a etapa "{deleteConfirmStage?.name}"?</p>
-                    {deleteConfirmStage?.chatwoot_label_id && (
-                      <p><strong>Nota:</strong> Esta etapa está sincronizada com o Chatwoot. A label será removida.</p>
-                    )}
                   </>
                 ) : (
                   <>

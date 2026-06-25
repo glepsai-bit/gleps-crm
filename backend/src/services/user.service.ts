@@ -13,7 +13,6 @@ export interface CreateUserInput {
   password: string;
   role: UserRole;
   permissions?: string[];
-  chatwootAgentId?: number;
 }
 
 export interface UpdateUserInput {
@@ -22,7 +21,6 @@ export interface UpdateUserInput {
   role?: UserRole;
   status?: UserStatus;
   permissions?: string[];
-  chatwootAgentId?: number;
 }
 
 export interface UserFilters {
@@ -72,7 +70,6 @@ class UserService {
           role: true,
           status: true,
           permissions: true,
-          chatwootAgentId: true,
           lastLoginAt: true,
           createdAt: true,
           updatedAt: true,
@@ -108,7 +105,6 @@ class UserService {
         role: true,
         status: true,
         permissions: true,
-        chatwootAgentId: true,
         lastLoginAt: true,
         createdAt: true,
         updatedAt: true,
@@ -176,7 +172,6 @@ class UserService {
         passwordHash,
         role: input.role,
         permissions,
-        chatwootAgentId: input.chatwootAgentId,
       },
       select: {
         id: true,
@@ -186,7 +181,6 @@ class UserService {
         role: true,
         status: true,
         permissions: true,
-        chatwootAgentId: true,
         createdAt: true,
       },
     });
@@ -237,7 +231,6 @@ class UserService {
         role: input.role,
         status: input.status,
         permissions,
-        chatwootAgentId: input.chatwootAgentId,
       },
       select: {
         id: true,
@@ -247,7 +240,6 @@ class UserService {
         role: true,
         status: true,
         permissions: true,
-        chatwootAgentId: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -377,16 +369,12 @@ class UserService {
         accountId: targetUser.accountId,
         permissions: targetUser.permissions,
         status: targetUser.status,
-        chatwootAgentId: targetUser.chatwootAgentId,
       },
       account: targetUser.account ? {
         id: targetUser.account.id,
         nome: targetUser.account.nome,
         status: targetUser.account.status,
         timezone: targetUser.account.timezone,
-        chatwootBaseUrl: targetUser.account.chatwootBaseUrl,
-        chatwootAccountId: targetUser.account.chatwootAccountId,
-        chatwootApiKey: targetUser.account.chatwootApiKey,
       } : null,
     };
   }
@@ -404,7 +392,6 @@ class UserService {
         role: true,
         status: true,
         permissions: true,
-        chatwootAgentId: true,
         lastLoginAt: true,
         createdAt: true,
       },

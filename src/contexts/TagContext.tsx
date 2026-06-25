@@ -10,7 +10,7 @@ import { apiClient } from '@/api/client';
 interface AddTagData {
   contactId: string;
   tagId: string;
-  source: 'kanban' | 'chatwoot' | 'system';
+  source: 'kanban' | 'system';
   actorType: ActorType;
   actorId: string | null;
 }
@@ -18,7 +18,7 @@ interface AddTagData {
 interface RemoveTagData {
   contactId: string;
   tagId: string;
-  source: 'kanban' | 'chatwoot' | 'system';
+  source: 'kanban' | 'system';
   actorType: ActorType;
   actorId: string | null;
   reason?: string;
@@ -27,7 +27,7 @@ interface RemoveTagData {
 interface ApplyStageTagData {
   contactId: string;
   tagId: string; // ID da tag de stage
-  source: 'kanban' | 'chatwoot' | 'system';
+  source: 'kanban' | 'system';
   actorType: ActorType;
   actorId: string | null;
 }
@@ -36,7 +36,7 @@ interface CreateStageTagData {
   name: string;
   slug: string;
   color: string;
-  source: 'kanban' | 'chatwoot' | 'system';
+  source: 'kanban' | 'system';
 }
 
 // Configuração de etapas para cada parte do funil
@@ -79,8 +79,8 @@ interface TagContextType {
   toggleFinalStage: (stageId: string) => void;
   updateFunnelStageConfig: (config: Partial<FunnelStageConfig>) => void;
   
-  // Chatwoot sync simulation
-  simulateChatwootTagApplied: (contactId: string, tagSlug: string) => void;
+  // External tag sync simulation (REMOVED integration)
+  simulateExternalTagApplied: (contactId: string, tagSlug: string) => void;
 }
 
 // ============= CONTEXT =============
@@ -229,7 +229,7 @@ export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId })
     action: 'added' | 'removed' | 'tag_created',
     actorType: ActorType,
     actorId: string | null,
-    source: 'kanban' | 'chatwoot' | 'system',
+    source: 'kanban' | 'system',
     reason: string | null
   ) => {
     const newEntry: TagHistory = {
@@ -486,19 +486,19 @@ export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId })
     return { success: true };
   }, [getTagById, leadTags]);
 
-  // ============= CHATWOOT SIMULATION =============
+  // ============= EXTERNAL SYNC SIMULATION (REMOVED) =============
 
-  const simulateChatwootTagApplied = useCallback((contactId: string, tagSlug: string) => {
-    // Simulates a tag being applied from Chatwoot
+  const simulateExternalTagApplied = useCallback((contactId: string, tagSlug: string) => {
+    // Simulates a tag being applied from an external source (REMOVED integration)
     let tag = getTagBySlug(tagSlug);
-    
+
     if (tag) {
       if (tag.type === 'stage') {
         // Stage tag: move lead in Kanban
         applyStageTag({
           contactId,
           tagId: tag.id,
-          source: 'chatwoot',
+          source: 'system',
           actorType: 'external',
           actorId: null,
         });
@@ -507,7 +507,7 @@ export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId })
         toggleOperationalTag({
           contactId,
           tagId: tag.id,
-          source: 'chatwoot',
+          source: 'system',
           actorType: 'external',
           actorId: null,
         });
@@ -518,7 +518,7 @@ export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId })
         name: tagSlug.charAt(0).toUpperCase() + tagSlug.slice(1).replace(/-/g, ' '),
         slug: tagSlug,
         color: '#6366F1', // Default color for auto-created tags
-        source: 'chatwoot',
+        source: 'system',
       });
 
       if (result.success && result.tagId) {
@@ -526,7 +526,7 @@ export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId })
         applyStageTag({
           contactId,
           tagId: result.tagId,
-          source: 'chatwoot',
+          source: 'system',
           actorType: 'external',
           actorId: null,
         });
@@ -561,7 +561,7 @@ export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId })
     deleteStageTag,
     toggleFinalStage,
     updateFunnelStageConfig,
-    simulateChatwootTagApplied,
+    simulateExternalTagApplied,
   }), [
     tags,
     stageTags,
@@ -587,7 +587,7 @@ export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId })
     deleteStageTag,
     toggleFinalStage,
     updateFunnelStageConfig,
-    simulateChatwootTagApplied,
+    simulateExternalTagApplied,
   ]);
 
   return <TagContext.Provider value={value}>{children}</TagContext.Provider>;

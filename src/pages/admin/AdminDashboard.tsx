@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useAuth, useRoleAccess } from '@/contexts/AuthContext';
 import { useCalendar } from '@/contexts/CalendarContext';
-import { useChatwootMetrics } from '@/hooks/useChatwootMetrics';
+import { useChatMetrics } from '@/hooks/useChatMetrics';
 import {
   Users,
   MessageSquare,
@@ -43,7 +43,7 @@ export default function AdminDashboard() {
   const [selectedAgent, setSelectedAgent] = useState('all');
   const [selectedAgentFromTable, setSelectedAgentFromTable] = useState<string | null>(null);
 
-  // Fetch real metrics from Chatwoot with auto-polling
+  // Fetch real metrics from chat-metrics (Postgres local)
   const {
     data: metricsData,
     isLoading,
@@ -53,23 +53,13 @@ export default function AdminDashboard() {
     error: metricsError,
     isConfigured,
     refetch,
-  } = useChatwootMetrics({
+  } = useChatMetrics({
     dateFrom: dateRange?.from || startOfDay(subDays(new Date(), 7)),
     dateTo: dateRange?.to || endOfDay(new Date()),
-    inboxId: channel !== 'all' ? getInboxIdFromChannel(channel) : undefined,
+    inboxId: channel !== 'all' ? channel : undefined,
     enablePolling: true,
     pollingInterval: 30000,
   });
-
-  // Helper to map channel name to inbox ID (will be dynamic when we have real inboxes)
-  function getInboxIdFromChannel(channelName: string): number | undefined {
-    const channelMap: Record<string, number> = {
-      whatsapp: 1,
-      instagram: 2,
-      webchat: 3,
-    };
-    return channelMap[channelName];
-  }
 
   // Handle period change from filters
   const handlePeriodChange = (newPeriod: string, range?: DateRange) => {
@@ -247,18 +237,6 @@ export default function AdminDashboard() {
           />
         )}
       </div>
-
-      {/* Chatwoot Not Configured Alert */}
-      {!isConfigured && (
-        <Alert variant="destructive" className="mb-6">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Chatwoot não configurado</AlertTitle>
-          <AlertDescription>
-            A integração com Chatwoot não está configurada para esta conta. 
-            Entre em contato com o administrador para configurar as credenciais.
-          </AlertDescription>
-        </Alert>
-      )}
 
       {/* Error Alert */}
       {metricsError && isConfigured && (

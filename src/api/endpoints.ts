@@ -130,17 +130,6 @@ export const API_ENDPOINTS = {
     STATS: '/api/events/stats',
   },
 
-  // ============= CHATWOOT INTEGRATION =============
-  CHATWOOT: {
-    AGENTS: '/api/chatwoot/agents',
-    IMPORT_AGENTS: '/api/chatwoot/agents/import',
-    CONVERSATIONS: '/api/chatwoot/conversations',
-    CONVERSATION: (id: string) => `/api/chatwoot/conversations/${id}`,
-    MESSAGES: (conversationId: string) => `/api/chatwoot/conversations/${conversationId}/messages`,
-    METRICS: '/api/chatwoot/metrics',
-    SYNC: '/api/chatwoot/sync',
-  },
-
   // ============= DASHBOARD/ANALYTICS =============
   DASHBOARD: {
     SUPER_ADMIN_KPIS: '/api/admin/kpis',

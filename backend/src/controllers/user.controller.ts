@@ -15,7 +15,6 @@ const createUserSchema = z.object({
   password: z.string().min(6, 'Senha deve ter pelo menos 6 caracteres'),
   role: z.enum(['super_admin', 'admin', 'agent']),
   permissions: z.array(z.string()).optional(),
-  chatwootAgentId: z.number().optional(),
 });
 
 const updateUserSchema = z.object({
@@ -24,7 +23,6 @@ const updateUserSchema = z.object({
   role: z.enum(['super_admin', 'admin', 'agent']).optional(),
   status: z.enum(['active', 'inactive', 'suspended']).optional(),
   permissions: z.array(z.string()).optional(),
-  chatwootAgentId: z.number().optional(),
 });
 
 const changePasswordSchema = z.object({

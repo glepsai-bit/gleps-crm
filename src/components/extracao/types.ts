@@ -16,14 +16,10 @@ export interface ExtractedLead {
 /**
  * Shape unificado de inbox usado pelo DispatchDialog.
  *
- * Originalmente refletia o payload da API legacy /api/prospecting/inboxes
- * (Chatwoot REST, `id: number`). T-022 migrou os canais para a tabela Prisma
- * `Inbox` (UUID string) e o dispatcher passou a consumir /api/inboxes
- * (envelope `{data: Inbox[]}`). Aceitamos `id: string | number` para manter
- * compat com possíveis consumidores legados, mas o caminho atual sempre
- * produz UUIDs.
+ * T-022 migrou os canais para a tabela Prisma `Inbox` (UUID string) e o
+ * dispatcher passou a consumir /api/inboxes (envelope `{data: Inbox[]}`).
  */
-export interface ChatwootInbox {
+export interface Inbox {
   id: string;
   name: string;
   channel_type?: string;

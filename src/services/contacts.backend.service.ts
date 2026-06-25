@@ -1,17 +1,16 @@
 /**
  * Contacts Backend Service
- * 
+ *
  * Uses Express API via apiClient instead of Supabase.
  * Returns normalized CreateContactResult to match cloud service interface.
  */
 
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
-import type { 
-  CreateContactInput, 
-  CreateContactWithChatwootInput, 
-  CreateContactResult, 
-  DeleteLeadResult 
+import type {
+  CreateContactInput,
+  CreateContactResult,
+  DeleteLeadResult
 } from './contacts.cloud.service';
 
 export const contactsBackendService = {
@@ -28,41 +27,18 @@ export const contactsBackendService = {
       return {
         success: true,
         contact_id: contact.id,
-        chatwoot_contact_id: contact.chatwootContactId || null,
-        chatwoot_conversation_id: contact.chatwootConversationId || null,
       };
     } catch (error: any) {
       return { success: false, error: error.message || 'Erro ao criar contato' };
     }
   },
 
-  async createContactWithChatwoot(input: CreateContactWithChatwootInput): Promise<CreateContactResult> {
-    try {
-      const res = await apiClient.post<any>(API_ENDPOINTS.CONTACTS.CREATE, {
-        nome: input.nome,
-        telefone: input.telefone,
-        email: input.email,
-        origem: input.origem,
-        accountId: input.account_id,
-        createConversation: input.create_conversation,
-        initialStageTagId: input.initial_stage_tag_id,
-      });
-      const contact = res.data || res;
-      return {
-        success: true,
-        contact_id: contact.id,
-        chatwoot_contact_id: contact.chatwootContactId || null,
-        chatwoot_conversation_id: contact.chatwootConversationId || null,
-      };
-    } catch (error: any) {
-      return { success: false, error: error.message || 'Erro ao criar contato no Chatwoot' };
-    }
-  },
+  // REMOVED: criacao integrada com plataforma externa de atendimento
 
   async applyStageTagToContact(
     contactId: string,
     tagId: string,
-    source: 'kanban' | 'chatwoot' | 'system' = 'kanban'
+    source: 'kanban' | 'system' = 'kanban'
   ): Promise<{ success: boolean; error?: string }> {
     return apiClient.post<{ success: boolean; error?: string }>(
       API_ENDPOINTS.TAGS.ADD_TO_CONTACT(contactId),

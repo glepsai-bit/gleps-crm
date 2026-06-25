@@ -96,7 +96,6 @@ export const usersService = {
         role: data.role,
         status: 'active',
         permissions: data.permissions || [],
-        chatwoot_agent_id: data.chatwootAgentId || null,
         last_login_at: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -135,7 +134,6 @@ export const usersService = {
         ...(data.role && { role: data.role }),
         ...(data.status && { status: data.status }),
         ...(data.permissions && { permissions: data.permissions }),
-        ...(data.chatwootAgentId !== undefined && { chatwoot_agent_id: data.chatwootAgentId }),
         updated_at: new Date().toISOString(),
       };
       

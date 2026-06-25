@@ -15,16 +15,12 @@ interface User {
   account_id?: string;
   permissions: string[];
   status: 'active' | 'inactive' | 'suspended';
-  chatwoot_agent_id?: number;
 }
 
 interface Account {
   id: string;
   nome: string;
   status: 'active' | 'paused' | 'cancelled';
-  chatwoot_base_url?: string;
-  chatwoot_account_id?: string;
-  chatwoot_api_key?: string;
 }
 
 interface AuthState {
@@ -93,7 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       
       const profilePromise = supabase
         .from('profiles')
-        .select('user_id, email, nome, status, permissions, account_id, chatwoot_agent_id')
+        .select('user_id, email, nome, status, permissions, account_id')
         .eq('user_id', supabaseUser.id)
         .maybeSingle();
         
@@ -140,7 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.log('[Auth] Fetching account...');
         const accountPromise = supabase
           .from('accounts')
-          .select('id, nome, status, chatwoot_base_url, chatwoot_account_id, chatwoot_api_key')
+          .select('id, nome, status')
           .eq('id', profile.account_id)
           .maybeSingle();
           
@@ -157,9 +153,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             id: accountData.id,
             nome: accountData.nome,
             status: accountData.status as 'active' | 'paused' | 'cancelled',
-            chatwoot_base_url: accountData.chatwoot_base_url || undefined,
-            chatwoot_account_id: accountData.chatwoot_account_id || undefined,
-            chatwoot_api_key: accountData.chatwoot_api_key || undefined,
           };
 
           if (accountData.status === 'paused') {
@@ -176,7 +169,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         account_id: profile.account_id || undefined,
         permissions: profile.permissions || ['dashboard'],
         status: profile.status as 'active' | 'inactive' | 'suspended',
-        chatwoot_agent_id: profile.chatwoot_agent_id || undefined,
       };
 
       console.log('[Auth] Hydration complete:', user.email, user.role);
@@ -413,7 +405,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const [profileResult, roleResult] = await Promise.all([
         supabase
           .from('profiles')
-          .select('user_id, email, nome, status, permissions, account_id, chatwoot_agent_id')
+          .select('user_id, email, nome, status, permissions, account_id')
           .eq('user_id', userId)
           .maybeSingle(),
         supabase
@@ -437,7 +429,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (profile.account_id) {
         const { data: accountData } = await supabase
           .from('accounts')
-          .select('id, nome, status, chatwoot_base_url, chatwoot_account_id')
+          .select('id, nome, status')
           .eq('id', profile.account_id)
           .maybeSingle();
 
@@ -446,8 +438,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             id: accountData.id,
             nome: accountData.nome,
             status: accountData.status as 'active' | 'paused' | 'cancelled',
-            chatwoot_base_url: accountData.chatwoot_base_url || undefined,
-            chatwoot_account_id: accountData.chatwoot_account_id || undefined,
           };
         }
       }
@@ -460,7 +450,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         account_id: profile.account_id || undefined,
         permissions: profile.permissions || ['dashboard'],
         status: profile.status as 'active' | 'inactive' | 'suspended',
-        chatwoot_agent_id: profile.chatwoot_agent_id || undefined,
       };
 
       setOriginalUser(authState.user);

@@ -5,20 +5,12 @@ import { whatsappConsentService } from './whatsapp-consent.service';
 import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
 import { ValidationError } from '../utils/errors';
 
-interface ChatwootDispatchConfig {
-  transport: 'chatwoot';
-  accountId: string;
-  baseUrl: string;
-  chatwootAccountId: string;
-  apiKey: string;
-}
-
 interface EvolutionDispatchConfig {
   transport: 'evolution';
   accountId: string;
 }
 
-type DispatchConfig = ChatwootDispatchConfig | EvolutionDispatchConfig;
+type DispatchConfig = EvolutionDispatchConfig;
 
 const RAPIDAPI_HOST = 'maps-data.p.rapidapi.com';
 
@@ -65,10 +57,9 @@ interface Contact {
 }
 
 interface InboxAssignment {
-  // T-022 — Inboxes do CRM (`prisma.inbox`) usam UUID string; Chatwoot legacy
-  // ainda envia number. DispatchLog.inboxId continua Int? para preservar o
-  // legado: UUIDs são gravados como null (Evolution não usa esse campo no
-  // envio — sendViaTransport ignora inboxId).
+  // T-022 — Inboxes do CRM (`prisma.inbox`) usam UUID string.
+  // DispatchLog.inboxId continua Int? por compatibilidade do schema legado:
+  // UUIDs são gravados como null (Evolution não consome inboxId no envio).
   inbox_id: string | number;
   inbox_name: string;
   contacts: Contact[];
@@ -254,43 +245,31 @@ class ProspectingService {
   }
 
   /**
-   * List Chatwoot inboxes for an account
+   * List inboxes para o account.
+   * FitPark — REMOVED legacy external provider. Inboxes vêm do CRM (prisma.inbox).
    */
   async listInboxes(accountId: string) {
-    const account = await prisma.account.findUnique({
-      where: { id: accountId },
-      select: { chatwootBaseUrl: true, chatwootAccountId: true, chatwootApiKey: true },
+    const inboxes = await prisma.inbox.findMany({
+      where: { accountId, active: true },
+      select: { id: true, name: true, channelType: true },
+      orderBy: { createdAt: 'asc' },
     });
-    if (!account?.chatwootBaseUrl || !account?.chatwootAccountId || !account?.chatwootApiKey) {
-      throw new Error('Chatwoot not configured');
-    }
-
-    const baseUrl = account.chatwootBaseUrl.replace(/\/$/, '');
-    const res = await fetch(`${baseUrl}/api/v1/accounts/${account.chatwootAccountId}/inboxes`, {
-      headers: { 'api_access_token': account.chatwootApiKey },
-    });
-    if (!res.ok) throw new Error('Failed to fetch inboxes');
-    const data = (await res.json()) as any;
-    return (data.payload || []).map((i: any) => ({
+    return inboxes.map((i) => ({
       id: i.id,
       name: i.name,
-      channel_type: i.channel_type,
-      phone_number: i.phone_number || null,
+      channel_type: i.channelType,
+      phone_number: null,
     }));
   }
 
   /**
-   * Detecta o transport (Chatwoot vs Evolution) baseado na configuração da conta.
-   * Prioridade: Evolution (se totalmente configurado) > Chatwoot (se configurado).
-   * Mantém Chatwoot como default para iGreen/Gleps360; FitPark usa Evolution.
+   * Resolve dispatch transport para o account.
+   * FitPark — somente Evolution. Se não configurada, exige setup global.
    */
   private async resolveDispatchConfig(accountId: string): Promise<DispatchConfig> {
     const account = await prisma.account.findUnique({
       where: { id: accountId },
       select: {
-        chatwootBaseUrl: true,
-        chatwootAccountId: true,
-        chatwootApiKey: true,
         evolutionBaseUrl: true,
         evolutionApiKey: true,
         evolutionInstance: true,
@@ -301,21 +280,11 @@ class ProspectingService {
       return { transport: 'evolution', accountId };
     }
 
-    if (account?.chatwootBaseUrl && account?.chatwootAccountId && account?.chatwootApiKey) {
-      return {
-        transport: 'chatwoot',
-        accountId,
-        baseUrl: account.chatwootBaseUrl.replace(/\/$/, ''),
-        chatwootAccountId: account.chatwootAccountId,
-        apiKey: account.chatwootApiKey,
-      };
-    }
-
-    throw new Error('Configure Chatwoot ou Evolution na conta');
+    throw new Error('Configure Evolution global em /super-admin/system-settings');
   }
 
   /**
-   * Dispatch messages via Chatwoot ou Evolution (detectado por conta).
+   * Dispatch messages via Evolution (FitPark — REMOVED legacy external provider).
    */
   async dispatch(
     accountId: string,
@@ -379,7 +348,7 @@ class ProspectingService {
         batchId: batch.id,
         contactName: c.nome,
         phone: c.telefone,
-        // DispatchLog.inboxId é Int? (legacy Chatwoot). Para UUIDs do CRM
+        // DispatchLog.inboxId é Int? (schema legado). Para UUIDs do CRM
         // (T-022), persistimos null — a identificação do canal fica no
         // inboxName e o envio Evolution não consome inboxId.
         inboxId: typeof assignment.inbox_id === 'number' ? assignment.inbox_id : null,
@@ -451,54 +420,49 @@ class ProspectingService {
         const msgTemplate = messages[Math.floor(Math.random() * messages.length)];
         const message = msgTemplate.replace(/\{nome\}/gi, task.contact.nome);
 
-        // T-022 Compliance — opt-out + rate limit (apenas evolution).
-        // Chatwoot é tratado como canal de atendimento humano e não passa por estes guardrails.
-        if (config.transport === 'evolution') {
-          const normalized = whatsappConsentService.normalizePhone(task.contact.telefone);
+        // T-022 Compliance — opt-out + rate limit Evolution.
+        const normalized = whatsappConsentService.normalizePhone(task.contact.telefone);
 
-          const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
-          if (!hasConsent) {
-            failedCount++;
-            await prisma.dispatchLog.update({
-              where: { id: task.logId },
-              data: {
-                status: 'blocked_optout',
-                errorMessage: 'Contato com opt-out',
-                sentAt: new Date(),
-              },
-            });
-            await prisma.dispatchBatch.update({
-              where: { id: batchId },
-              data: { sentCount, failedCount },
-            });
-            if (i < allTasks.length - 1) await this.sleep(delayMs);
-            continue;
-          }
-
-          const rl = await whatsappRateLimitService.check(config.accountId, normalized);
-          if (!rl.allowed) {
-            failedCount++;
-            await prisma.dispatchLog.update({
-              where: { id: task.logId },
-              data: {
-                status: 'rate_limited',
-                errorMessage: rl.reason ?? 'rate_limited',
-                sentAt: new Date(),
-              },
-            });
-            await prisma.dispatchBatch.update({
-              where: { id: batchId },
-              data: { sentCount, failedCount },
-            });
-            if (i < allTasks.length - 1) await this.sleep(delayMs);
-            continue;
-          }
-
-          await this.sendViaTransport(config, task.contact, task.inboxId, message);
-          whatsappRateLimitService.record(config.accountId, normalized);
-        } else {
-          await this.sendViaTransport(config, task.contact, task.inboxId, message);
+        const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
+        if (!hasConsent) {
+          failedCount++;
+          await prisma.dispatchLog.update({
+            where: { id: task.logId },
+            data: {
+              status: 'blocked_optout',
+              errorMessage: 'Contato com opt-out',
+              sentAt: new Date(),
+            },
+          });
+          await prisma.dispatchBatch.update({
+            where: { id: batchId },
+            data: { sentCount, failedCount },
+          });
+          if (i < allTasks.length - 1) await this.sleep(delayMs);
+          continue;
         }
+
+        const rl = await whatsappRateLimitService.check(config.accountId, normalized);
+        if (!rl.allowed) {
+          failedCount++;
+          await prisma.dispatchLog.update({
+            where: { id: task.logId },
+            data: {
+              status: 'rate_limited',
+              errorMessage: rl.reason ?? 'rate_limited',
+              sentAt: new Date(),
+            },
+          });
+          await prisma.dispatchBatch.update({
+            where: { id: batchId },
+            data: { sentCount, failedCount },
+          });
+          if (i < allTasks.length - 1) await this.sleep(delayMs);
+          continue;
+        }
+
+        await this.sendViaTransport(config, task.contact, task.inboxId, message);
+        whatsappRateLimitService.record(config.accountId, normalized);
 
         sentCount++;
         await prisma.dispatchLog.update({
@@ -616,53 +580,49 @@ class ProspectingService {
         const message = msgTemplate.replace(/\{nome\}/gi, log.contactName);
         const contact: Contact = { nome: log.contactName, telefone: log.phone };
 
-        // T-022 Compliance — opt-out + rate limit (apenas evolution).
-        if (config.transport === 'evolution') {
-          const normalized = whatsappConsentService.normalizePhone(contact.telefone);
+        // T-022 Compliance — opt-out + rate limit Evolution.
+        const normalized = whatsappConsentService.normalizePhone(contact.telefone);
 
-          const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
-          if (!hasConsent) {
-            failedCount++;
-            await prisma.dispatchLog.update({
-              where: { id: log.id },
-              data: {
-                status: 'blocked_optout',
-                errorMessage: 'Contato com opt-out',
-                sentAt: new Date(),
-              },
-            });
-            await prisma.dispatchBatch.update({
-              where: { id: batchId },
-              data: { sentCount, failedCount },
-            });
-            if (i < pendingLogs.length - 1) await this.sleep(delayMs);
-            continue;
-          }
-
-          const rl = await whatsappRateLimitService.check(config.accountId, normalized);
-          if (!rl.allowed) {
-            failedCount++;
-            await prisma.dispatchLog.update({
-              where: { id: log.id },
-              data: {
-                status: 'rate_limited',
-                errorMessage: rl.reason ?? 'rate_limited',
-                sentAt: new Date(),
-              },
-            });
-            await prisma.dispatchBatch.update({
-              where: { id: batchId },
-              data: { sentCount, failedCount },
-            });
-            if (i < pendingLogs.length - 1) await this.sleep(delayMs);
-            continue;
-          }
-
-          await this.sendViaTransport(config, contact, log.inboxId ?? '', message);
-          whatsappRateLimitService.record(config.accountId, normalized);
-        } else {
-          await this.sendViaTransport(config, contact, log.inboxId ?? '', message);
+        const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
+        if (!hasConsent) {
+          failedCount++;
+          await prisma.dispatchLog.update({
+            where: { id: log.id },
+            data: {
+              status: 'blocked_optout',
+              errorMessage: 'Contato com opt-out',
+              sentAt: new Date(),
+            },
+          });
+          await prisma.dispatchBatch.update({
+            where: { id: batchId },
+            data: { sentCount, failedCount },
+          });
+          if (i < pendingLogs.length - 1) await this.sleep(delayMs);
+          continue;
         }
+
+        const rl = await whatsappRateLimitService.check(config.accountId, normalized);
+        if (!rl.allowed) {
+          failedCount++;
+          await prisma.dispatchLog.update({
+            where: { id: log.id },
+            data: {
+              status: 'rate_limited',
+              errorMessage: rl.reason ?? 'rate_limited',
+              sentAt: new Date(),
+            },
+          });
+          await prisma.dispatchBatch.update({
+            where: { id: batchId },
+            data: { sentCount, failedCount },
+          });
+          if (i < pendingLogs.length - 1) await this.sleep(delayMs);
+          continue;
+        }
+
+        await this.sendViaTransport(config, contact, log.inboxId ?? '', message);
+        whatsappRateLimitService.record(config.accountId, normalized);
 
         sentCount++;
         await prisma.dispatchLog.update({
@@ -745,117 +705,19 @@ class ProspectingService {
   // --- Unified transport dispatch ---
 
   /**
-   * Envia uma mensagem para um contato via o transport configurado.
-   * Chatwoot: cria contato + conversa, depois envia mensagem.
-   * Evolution: envia texto direto via WhatsApp pelo número (inboxId é ignorado).
+   * Envia uma mensagem para um contato via Evolution.
+   * FitPark — REMOVED legacy external provider; inboxId é ignorado pelo Evolution.
    */
   private async sendViaTransport(
     config: DispatchConfig,
     contact: Contact,
-    inboxId: string | number,
+    _inboxId: string | number,
     message: string
   ) {
-    if (config.transport === 'evolution') {
-      await evolutionService.sendText(config.accountId, {
-        number: contact.telefone,
-        text: message,
-      });
-      return;
-    }
-
-    // Chatwoot (default — preserva o comportamento original; espera inbox_id
-    // numérico vindo da Chatwoot API). UUIDs/string vazia indicam que o
-    // dispatch foi disparado pelo caminho CRM (T-022) e não tem inbox
-    // Chatwoot equivalente — não há como criar a conversação.
-    const numericInboxId =
-      typeof inboxId === 'number'
-        ? inboxId
-        : typeof inboxId === 'string' && /^\d+$/.test(inboxId)
-          ? Number(inboxId)
-          : NaN;
-    if (!Number.isFinite(numericInboxId) || numericInboxId <= 0) {
-      throw new Error(`Chatwoot inbox_id inválido: ${inboxId}`);
-    }
-    const { conversationId } = await this.createContactAndConversation(config, contact, numericInboxId);
-    await this.sendMessage(config, conversationId, message);
-  }
-
-  // --- Chatwoot helpers ---
-
-  private async createContactAndConversation(
-    config: ChatwootDispatchConfig,
-    contact: Contact,
-    inboxId: number
-  ) {
-    const base = `${config.baseUrl}/api/v1/accounts/${config.chatwootAccountId}`;
-    const headers = { 'Content-Type': 'application/json', 'api_access_token': config.apiKey };
-
-    let phone = contact.telefone.replace(/[\s\-\(\)]/g, '');
-    if (!phone.startsWith('+')) phone = '+' + phone;
-
-    const contactRes = await fetch(`${base}/contacts`, {
-      method: 'POST', headers,
-      body: JSON.stringify({ name: contact.nome, phone_number: phone }),
+    await evolutionService.sendText(config.accountId, {
+      number: contact.telefone,
+      text: message,
     });
-
-    let contactId: number;
-    if (contactRes.ok) {
-      const cData = (await contactRes.json()) as any;
-      contactId = cData.payload?.contact?.id || cData.payload?.id || cData.id;
-    } else {
-      const searchRes = await fetch(
-        `${base}/contacts/search?q=${encodeURIComponent(phone)}&include_contacts=true`,
-        { headers: { 'api_access_token': config.apiKey } }
-      );
-      if (!searchRes.ok) throw new Error(`Cannot create or find contact: ${contact.nome}`);
-      const searchData = (await searchRes.json()) as any;
-      const found = (searchData.payload || []).find((c: any) =>
-        c.phone_number?.replace(/\D/g, '') === phone.replace(/\D/g, '')
-      );
-      if (!found) throw new Error(`Contact creation failed and not found: ${contact.nome}`);
-      contactId = found.id;
-    }
-
-    const convRes = await fetch(`${base}/conversations`, {
-      method: 'POST', headers,
-      body: JSON.stringify({ contact_id: contactId, inbox_id: inboxId, status: 'open' }),
-    });
-
-    let conversationId: number;
-    if (convRes.ok) {
-      const convData = (await convRes.json()) as any;
-      conversationId = convData.id;
-    } else {
-      const convSearchRes = await fetch(`${base}/contacts/${contactId}/conversations`, {
-        headers: { 'api_access_token': config.apiKey },
-      });
-      if (!convSearchRes.ok) throw new Error('Cannot create or find conversation');
-      const convSearchData = (await convSearchRes.json()) as any;
-      const existing = (convSearchData.payload || []).find((c: any) => c.inbox_id === inboxId);
-      if (!existing) throw new Error('Conversation creation failed');
-      conversationId = existing.id;
-    }
-
-    return { contactId, conversationId };
-  }
-
-  private async sendMessage(
-    config: ChatwootDispatchConfig,
-    conversationId: number,
-    message: string
-  ) {
-    const res = await fetch(
-      `${config.baseUrl}/api/v1/accounts/${config.chatwootAccountId}/conversations/${conversationId}/messages`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'api_access_token': config.apiKey },
-        body: JSON.stringify({ content: message, message_type: 'outgoing', private: false }),
-      }
-    );
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Failed to send message: ${err}`);
-    }
   }
 
   private sleep(ms: number) {

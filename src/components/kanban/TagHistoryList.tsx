@@ -4,7 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { Plus, Minus, Zap, User, Bot, Globe } from 'lucide-react';
+import { Plus, Minus, Zap, User, Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface TagHistoryListProps {
@@ -58,8 +58,6 @@ export function TagHistoryList({ contactId, maxItems = 10 }: TagHistoryListProps
     switch (source) {
       case 'kanban':
         return <User className="w-3 h-3" />;
-      case 'chatwoot':
-        return <Globe className="w-3 h-3" />;
       case 'system':
         return <Bot className="w-3 h-3" />;
       default:
@@ -71,8 +69,6 @@ export function TagHistoryList({ contactId, maxItems = 10 }: TagHistoryListProps
     switch (source) {
       case 'kanban':
         return 'Kanban';
-      case 'chatwoot':
-        return 'Chatwoot';
       case 'system':
         return 'Sistema';
       default:

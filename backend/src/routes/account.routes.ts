@@ -17,7 +17,4 @@ router.post('/:id/pause', (req, res, next) => accountController.pause(req, res, 
 router.post('/:id/activate', (req, res, next) => accountController.activate(req, res, next));
 router.get('/:id/stats', (req, res, next) => accountController.getStats(req, res, next));
 
-router.post('/:id/test-chatwoot', (req, res, next) => accountController.testChatwoot(req, res, next));
-router.get('/:id/chatwoot-agents', (req, res, next) => accountController.getChatwootAgents(req, res, next));
-
 export default router;

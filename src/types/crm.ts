@@ -22,9 +22,6 @@ export interface Account {
   plano: string | null;
   status: AccountStatus;
   limite_usuarios: number;
-  chatwoot_account_id: string | null;
-  chatwoot_api_key: string | null;
-  chatwoot_base_url: string | null; // Ex: https://app.chatwoot.com ou https://chatwoot.empresa.com
   created_at: string;
   updated_at: string;
 }
@@ -37,22 +34,12 @@ export interface User {
   role: UserRole;
   status: UserStatus;
   permissions?: string[]; // Agent-specific permissions: leads, conversations, sales, events, reports
-  chatwoot_agent_id?: number | null; // ID do agente vinculado no Chatwoot
   last_login_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
-// ============= CHATWOOT INTEGRATION =============
-
-export interface ChatwootAgent {
-  id: number;
-  name: string;
-  email: string;
-  role: 'agent' | 'administrator';
-  availability_status?: 'online' | 'busy' | 'offline';
-  thumbnail?: string;
-}
+// ============= AGENT BOT =============
 
 export interface AgentBot {
   id: string;
@@ -73,8 +60,6 @@ export interface Contact {
   telefone: string | null;
   email: string | null;
   origem: ContactOrigin | null;
-  chatwoot_contact_id?: number | null;
-  chatwoot_conversation_id?: number | null;
   followup_count?: number;
   last_followup_at?: string | null;
   created_at: string;
@@ -133,16 +118,14 @@ export interface LeadFunnelHistory {
   created_at: string;
 }
 
-// ============= TAGS / ETIQUETAS (CHATWOOT ↔ KANBAN) =============
-// CONCEITO: Tags DO Chatwoot = Etapas DO Kanban (são a MESMA entidade)
-// - Criar tag "gol" no Chatwoot → aparece etapa "gol" no Kanban
-// - Criar etapa "bola" no Kanban → aparece tag "bola" no Chatwoot
+// ============= TAGS / ETIQUETAS (KANBAN) =============
+// CONCEITO: Tags = Etapas DO Kanban (quando type === 'stage')
 // - Tags operacionais (urgente, lead-frio) são complementares e não movem etapa
 
 export type TagType = 'stage' | 'operational';
 
 /**
- * Tag = Etiqueta do Chatwoot que também representa uma Etapa do Kanban (se type === 'stage')
+ * Tag = Etapa do Kanban (se type === 'stage') ou tag operacional complementar.
  * A tag é a fonte única de verdade para a estrutura do funil.
  */
 export interface Tag {
@@ -150,7 +133,7 @@ export interface Tag {
   account_id: string;
   funnel_id: string; // Vinculada a um funil específico
   name: string;
-  slug: string; // slug único usado no Chatwoot (ex: "qualificado", "urgente")
+  slug: string; // slug único (ex: "qualificado", "urgente")
   type: TagType; // 'stage' = etapa do funil, 'operational' = tag complementar
   color: string;
   ordem: number; // Ordem no funil (apenas para type === 'stage')
@@ -168,7 +151,7 @@ export interface LeadTag {
   tag_id: string;
   applied_by_type: ActorType;
   applied_by_id: string | null;
-  source: 'kanban' | 'chatwoot' | 'system';
+  source: 'kanban' | 'system';
   created_at: string;
 }
 
@@ -182,7 +165,7 @@ export interface TagHistory {
   action: 'added' | 'removed' | 'tag_created';
   actor_type: ActorType;
   actor_id: string | null;
-  source: 'kanban' | 'chatwoot' | 'system';
+  source: 'kanban' | 'system';
   reason: string | null;
   created_at: string;
 }

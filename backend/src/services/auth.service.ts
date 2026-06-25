@@ -23,15 +23,12 @@ export interface LoginResult {
     permissions: string[];
     status: string;
     accountId: string | null;
-    chatwootAgentId: number | null;
   };
   account: {
     id: string;
     nome: string;
     status: string;
     timezone: string;
-    chatwootBaseUrl: string | null;
-    chatwootAccountId: string | null;
   } | null;
   token: string;
   refreshToken: string;
@@ -143,15 +140,12 @@ class AuthService {
         permissions: user.permissions,
         status: user.status,
         accountId: user.accountId,
-        chatwootAgentId: user.chatwootAgentId,
       },
       account: user.account ? {
         id: user.account.id,
         nome: user.account.nome,
         status: user.account.status,
         timezone: user.account.timezone,
-        chatwootBaseUrl: user.account.chatwootBaseUrl,
-        chatwootAccountId: user.account.chatwootAccountId,
       } : null,
       token,
       refreshToken,
@@ -281,7 +275,6 @@ class AuthService {
         lastLoginAt: user.lastLoginAt,
         createdAt: user.createdAt,
         accountId: user.accountId,
-        chatwootAgentId: user.chatwootAgentId,
       },
       account: user.account ? {
         id: user.account.id,
@@ -289,8 +282,6 @@ class AuthService {
         status: user.account.status,
         timezone: user.account.timezone,
         plano: user.account.plano,
-        chatwootBaseUrl: user.account.chatwootBaseUrl,
-        chatwootAccountId: user.account.chatwootAccountId,
       } : null,
     };
   }

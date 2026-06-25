@@ -248,7 +248,7 @@ class MessageService {
     const shouldIncrementUnread = input.senderType === 'customer';
     // LIFECYCLE-BUG-3: qualquer resposta não-cliente e não-privada conta como
     // "primeira resposta" para fins de FRT — inclui agent humano, ai_bot
-    // (resposta automatizada do CRM) e integration (provider externo/Chatwoot).
+    // (resposta automatizada do CRM) e integration (provider externo — REMOVED).
     const isFirstResponseSender =
       input.senderType === 'agent' ||
       input.senderType === 'ai_bot' ||

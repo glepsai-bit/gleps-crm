@@ -224,9 +224,9 @@ export class MessageController {
 
       const message = await messageService.create(accountId, input);
 
-      // LIFECYCLE-BUG-4: no fluxo nativo T-022 (sem Chatwoot), o circuit
-      // breaker do IA não tinha quem o acionasse — só o chatwoot.controller
-      // (legado) marcava `human_active=true`. Resultado: a IA via
+      // LIFECYCLE-BUG-4: no fluxo nativo T-022 (REMOVED legacy controller), o circuit
+      // breaker do IA não tinha quem o acionasse — só o controller externo
+      // legado marcava `human_active=true`. Resultado: a IA via
       // /integrations/chat seguia respondendo livremente mesmo depois do
       // humano assumir, porque `checkAiCircuitBreaker` lê esse mesmo flag.
       //

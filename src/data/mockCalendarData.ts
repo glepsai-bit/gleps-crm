@@ -228,17 +228,7 @@ export const mockIntegrations: Integration[] = [
     icon: 'video',
     status: 'disconnected',
   },
-  {
-    id: 'chatwoot',
-    name: 'Chatwoot',
-    description: 'Integração de atendimento multicanal',
-    icon: 'message-circle',
-    status: 'connected',
-    connectedInfo: {
-      identifier: 'Conta #12345',
-      connectedAt: '2025-01-10T10:00:00Z',
-    },
-  },
+  // REMOVED legacy integration entry
   {
     id: 'whatsapp',
     name: 'WhatsApp Business',

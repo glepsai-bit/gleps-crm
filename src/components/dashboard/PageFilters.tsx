@@ -11,7 +11,7 @@ interface PageFiltersProps {
 /**
  * Componente de filtros para páginas que suportam filtragem por agente.
  * O filtro de agente só aparece para usuários do tipo Admin.
- * Não deve ser usado no Dashboard de Atendimento (dados do Chatwoot são gerais).
+ * Não deve ser usado no Dashboard de Atendimento (dados sao gerais).
  */
 export function PageFilters({ onAgentChange, children }: PageFiltersProps) {
   const [selectedAgent, setSelectedAgent] = useState('all');

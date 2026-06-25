@@ -146,8 +146,7 @@ export const financeBackendService = {
       telefone: c.telefone,
       email: c.email,
       origem: c.origem,
-      chatwoot_contact_id: c.chatwootContactId ?? c.chatwoot_contact_id ?? null,
-      chatwoot_conversation_id: c.chatwootConversationId ?? c.chatwoot_conversation_id ?? null,
+      // REMOVED: campos de integracao externa de atendimento
       first_resolved_at: c.firstResolvedAt || c.first_resolved_at || null,
       created_at: c.createdAt || c.created_at,
       updated_at: c.updatedAt || c.updated_at,

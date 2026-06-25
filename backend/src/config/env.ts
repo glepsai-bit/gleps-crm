@@ -36,9 +36,6 @@ const envSchema = z.object({
   // CORS (optional - comma-separated origins)
   CORS_ORIGINS: z.string().optional(),
 
-  // Chatwoot (optional)
-  CHATWOOT_WEBHOOK_SECRET: z.string().optional(),
-
   // Evolution webhook hardening (optional)
   // EVOLUTION_ALLOWED_IPS: comma-separated allow-list (CIDR or exact IPv4/IPv6).
   //   Quando definido, requests vindas de IPs fora dessa lista são rejeitadas (401).

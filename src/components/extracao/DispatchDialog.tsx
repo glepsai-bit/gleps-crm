@@ -21,7 +21,7 @@ import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
 import { useToast } from '@/hooks/use-toast';
 import { ComplianceWarning } from './ComplianceWarning';
-import type { ExtractedLead, ChatwootInbox } from './types';
+import type { ExtractedLead, Inbox } from './types';
 
 // BUG-013: Radix Select não aceita value="" em SelectItem.
 // Usamos um sentinel literal "none" para representar "sem template".
@@ -37,7 +37,7 @@ interface Props {
 
 export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatchStarted }: Props) {
   const { toast } = useToast();
-  const [inboxes, setInboxes] = useState<ChatwootInbox[]>([]);
+  const [inboxes, setInboxes] = useState<Inbox[]>([]);
   const [selectedInboxIds, setSelectedInboxIds] = useState<Set<string>>(new Set());
   const [delay, setDelay] = useState('30');
   const [messages, setMessages] = useState<string[]>(['']);
@@ -64,14 +64,10 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
 
     const fetchInboxes = async () => {
       try {
-        let inboxData: ChatwootInbox[];
+        let inboxData: Inbox[];
         if (useBackend) {
-          // T-022 — DispatchDialog agora consome o endpoint canônico do CRM
-          // (/api/inboxes) em vez do legacy /api/prospecting/inboxes que
-          // proxiava a Chatwoot API. Contas que operam via Evolution
-          // (sem chatwootBaseUrl) recebiam 500 "Chatwoot not configured"
-          // e o UI exibia "Nenhuma inbox encontrada" mesmo com canais
-          // ativos na tabela `inboxes`. Filtramos só whatsapp/active.
+          // T-022 — DispatchDialog consome o endpoint canônico do CRM
+          // (/api/inboxes). Filtramos só whatsapp/active.
           const all = await inboxesBackendService.listInboxes();
           inboxData = all
             .filter(i => i.channelType === 'whatsapp' && i.active !== false)
@@ -136,7 +132,7 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
   // (legacy / não-whatsapp = assume conectado), ou (b) reporta `'open'`.
   // Qualquer outro valor (`connecting`/`close`/`unknown`/`null`) bloqueia
   // seleção e disparo, porque a Evolution rejeitaria 100% dos envios.
-  const isInboxConnected = useCallback((inbox: ChatwootInbox): boolean => {
+  const isInboxConnected = useCallback((inbox: Inbox): boolean => {
     if (inbox.connection_state === undefined) return true;
     return inbox.connection_state === 'open';
   }, []);

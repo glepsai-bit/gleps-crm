@@ -248,7 +248,7 @@ export const inboxService = {
 
 // ============================================
 // Inbox (canais — WhatsApp/Email/Facebook/Instagram)
-// Modelo Prisma `Inbox` — usado pelo motor de conversas estilo Chatwoot (T-022).
+// Modelo Prisma `Inbox` — usado pelo motor nativo de conversas (T-022).
 // ============================================
 
 export interface CreateInboxInput {
