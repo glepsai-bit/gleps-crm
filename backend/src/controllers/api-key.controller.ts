@@ -5,11 +5,11 @@ import { AuthenticatedRequest } from '../types';
 import { ValidationError, ForbiddenError, NotFoundError, ErrorCodes } from '../utils/errors';
 
 // Validation schemas
-// TODO(t022-future): scopes não implementado. Aceitamos o campo no body por
-// compat com clientes antigos, mas é ignorado no service (sempre []).
-// Ver comentário no apiKey.middleware.ts.
+// Scopes: opcional. Vazio/omisso = ['*'] (full access dentro da accountId).
+// Granular: ['messages:write', 'contacts:read', ...] — validado por requireScope().
 const generateApiKeySchema = z.object({
   name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
+  scopes: z.array(z.string().min(1).max(60)).max(40).optional(),
 });
 
 /**
@@ -69,12 +69,11 @@ export class ApiKeyController {
 
       const body = generateApiKeySchema.parse(req.body);
 
-      // TODO(t022-future): scopes ignorado por hora (god-mode na accountId).
       const result = await apiKeyService.generate(
         accountId,
         body.name,
         req.user!.id,
-        []
+        body.scopes ?? []
       );
 
       res.status(201).json({

@@ -1,0 +1,137 @@
+{
+  "name": "GLEPS CRM — WhatsApp Send (T-022 / Integrações)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## GLEPS CRM — WhatsApp Send Template\n\nFluxo genérico para integrações externas (IA, ERPs, parceiros) dispararem mensagens WhatsApp via API do GLEPS.\n\n### Variáveis obrigatórias (Settings → Variables)\n- `GLEPS_BASE_URL` — ex.: `https://gleps-crm-v1k.dqnaqh.easypanel.host/api`\n- `GLEPS_API_KEY` — chave `glk_...` com scope `messages:write`\n\n### Como usar\n1. Importe este workflow no n8n.\n2. Configure as variáveis acima.\n3. Ative o workflow — copie a URL do Webhook trigger.\n4. POST nesta URL com o payload da seção abaixo.\n\n### Payload aceito pelo webhook\n```\n{\n  \"phone\": \"5511999998888\",       // XOR com conversationId\n  \"conversationId\": null,            // XOR com phone\n  \"inboxId\": null,                   // opcional\n  \"contactName\": \"Maria Silva\",    // opcional\n  \"type\": \"text\",                   // text | image | audio | document\n  \"content\": \"Olá!\",                // obrig. p/ text; caption p/ image\n  \"mediaUrl\": null,                  // XOR mediaBase64\n  \"mediaBase64\": null,               // XOR mediaUrl\n  \"mimeType\": null,                  // opcional\n  \"filename\": null,                  // recomendado p/ document\n  \"sender_type\": \"integration\",     // ai_bot | integration\n  \"metadata\": {}                      // qualquer JSON p/ auditoria\n}\n```\n\n### Respostas\n- 200 `{ messageId, conversationId, status:'sent'|'failed', externalId, deliveredAt }`\n- 400/401/403/409/422 conforme docs/fitpark/API_INTEGRATIONS_WHATSAPP.md\n",
+        "height": 620,
+        "width": 540
+      },
+      "id": "note-overview",
+      "name": "README",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-200, -260]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gleps-whatsapp-send",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook (entrada)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [400, 0],
+      "webhookId": "gleps-whatsapp-send"
+    },
+    {
+      "parameters": {
+        "content": "### 1) Normalizar payload\n\nMapeia o payload recebido no webhook para o formato esperado pelo endpoint do GLEPS, removendo campos nulos/undefined (evita 400 do Zod por campo vazio).",
+        "height": 200,
+        "width": 320
+      },
+      "id": "note-normalize",
+      "name": "Note normalize",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [620, -260]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Monta o payload final pro endpoint /integrations/whatsapp/send.\n// Aceita campos diretos no body do webhook OU dentro de $json.body (n8n\n// embrulha em body quando responseMode='lastNode').\nconst raw = $input.item.json.body ?? $input.item.json;\n\nfunction pick(obj, keys) {\n  const out = {};\n  for (const k of keys) {\n    const v = obj[k];\n    if (v !== undefined && v !== null && v !== '') out[k] = v;\n  }\n  return out;\n}\n\nconst allowed = [\n  'conversationId',\n  'phone',\n  'inboxId',\n  'contactName',\n  'type',\n  'content',\n  'mediaUrl',\n  'mediaBase64',\n  'mimeType',\n  'filename',\n  'sender_type',\n  'metadata',\n];\n\nconst payload = pick(raw, allowed);\n\nif (!payload.type) {\n  throw new Error(\"Campo 'type' obrigatório (text|image|audio|document)\");\n}\nif (!payload.conversationId && !payload.phone) {\n  throw new Error(\"Informe 'conversationId' OU 'phone'\");\n}\n\nreturn [{ json: { payload } }];\n"
+      },
+      "id": "normalize-payload",
+      "name": "Normalize payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 0]
+    },
+    {
+      "parameters": {
+        "content": "### 2) POST /integrations/whatsapp/send\n\nDispara para o GLEPS CRM. Autentica com `Authorization: Bearer ${GLEPS_API_KEY}`.\n\nO node está configurado com:\n- `continueOnFail = true` (para o branch de erro abaixo capturar 4xx/5xx)\n- timeout 15s (chamadas Evolution podem demorar em rede ruim)",
+        "height": 220,
+        "width": 320
+      },
+      "id": "note-post",
+      "name": "Note POST",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [980, -260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.GLEPS_BASE_URL}}/integrations/whatsapp/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.GLEPS_API_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Accept", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 15000,
+          "response": { "response": { "responseFormat": "json", "fullResponse": true } }
+        }
+      },
+      "id": "http-send",
+      "name": "GLEPS: POST /integrations/whatsapp/send",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 0],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "content": "### 3) Resposta\n\nDevolve para o caller original a resposta do GLEPS (status + messageId + erro se houver). O n8n usa o último node como response do webhook.",
+        "height": 200,
+        "width": 320
+      },
+      "id": "note-response",
+      "name": "Note response",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1380, -260]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Repassa a resposta do GLEPS para quem chamou o webhook.\n// Se o HTTP node falhou (4xx/5xx ou network), $json.error existe; senão\n// vem $json.statusCode + $json.body com o payload de sucesso.\nconst item = $input.item.json;\n\nif (item.error) {\n  return [{\n    json: {\n      ok: false,\n      status: item.error.httpCode ?? 500,\n      error: item.error.message ?? 'Falha desconhecida',\n      details: item.error,\n    },\n  }];\n}\n\nconst status = item.statusCode ?? 200;\nconst body = item.body ?? item;\nreturn [{\n  json: {\n    ok: status >= 200 && status < 300,\n    status,\n    ...body,\n  },\n}];\n"
+      },
+      "id": "format-response",
+      "name": "Format response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 0]
+    }
+  ],
+  "connections": {
+    "Webhook (entrada)": {
+      "main": [[{ "node": "Normalize payload", "type": "main", "index": 0 }]]
+    },
+    "Normalize payload": {
+      "main": [[{ "node": "GLEPS: POST /integrations/whatsapp/send", "type": "main", "index": 0 }]]
+    },
+    "GLEPS: POST /integrations/whatsapp/send": {
+      "main": [[{ "node": "Format response", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "t022-whatsapp-send-v1",
+  "meta": {
+    "templateCreator": "GLEPS CRM — T-022 FitPark",
+    "description": "Template n8n para integrações externas dispararem WhatsApp via /api/integrations/whatsapp/send."
+  },
+  "tags": [
+    { "name": "gleps-crm" },
+    { "name": "whatsapp" },
+    { "name": "t022-fitpark" }
+  ]
+}

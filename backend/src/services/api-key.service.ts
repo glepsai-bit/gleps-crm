@@ -31,22 +31,24 @@ class ApiKeyService {
    * Generate a new API key for an account.
    * Returns the plaintext key ONLY ONCE — it is hashed before persistence.
    *
-   * TODO(t022-future): scopes não implementado. O parâmetro `_scopes` é
-   * intencionalmente ignorado e persistimos sempre [] no banco. Toda chave
-   * gerada hoje tem god-mode no escopo da accountId. Ver comentário no
-   * apiKey.middleware.ts para o plano de habilitar requireScope().
+   * Scopes opcionais (T-022 Missão 2): se vazio/omisso, key recebe ['*']
+   * (full access dentro da accountId) — comportamento backward compat.
+   * Quando fornecidos: persistidos como passados. Middleware requireScope()
+   * em apiKey.middleware.ts valida access por endpoint.
    */
   async generate(
     accountId: string,
     name: string,
     createdById?: string,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    _scopes: string[] = []
+    scopes: string[] = []
   ): Promise<GeneratedApiKey> {
     // Plaintext key format: glk_<40 hex chars>
     const plaintextKey = 'glk_' + crypto.randomBytes(20).toString('hex');
     const prefix = plaintextKey.substring(0, 12);
     const hashedKey = crypto.createHash('sha256').update(plaintextKey).digest('hex');
+
+    // Default scope: full access ['*'] dentro da accountId quando não especificado
+    const resolvedScopes = scopes.length > 0 ? scopes : ['*'];
 
     const record = await prisma.apiKey.create({
       data: {
@@ -54,8 +56,7 @@ class ApiKeyService {
         name,
         keyPrefix: prefix,
         hashedKey,
-        // TODO(t022-future): scopes não implementado — sempre [] por hora.
-        scopes: [],
+        scopes: resolvedScopes,
         createdById,
       },
     });
