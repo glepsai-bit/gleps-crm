@@ -42,6 +42,8 @@ export interface AgentMetricRow {
   open: number;
   avgFirstResponseMin: number | null;
   avgResolutionMin: number | null;
+  /** SLA breaches no período atribuídos a este agente */
+  slaBreaches: number;
 }
 
 export interface TeamMetricRow {
@@ -50,11 +52,24 @@ export interface TeamMetricRow {
   total: number;
   resolved: number;
   open: number;
+  slaBreaches: number;
 }
 
 export interface InboxMetricRow {
   inboxId: string;
   inboxName: string;
+  total: number;
+  resolved: number;
+  open: number;
+  slaBreaches: number;
+}
+
+/**
+ * Bucket diário do volume de conversas no período.
+ * Datas em ISO yyyy-mm-dd (UTC) — FE formata para exibição.
+ */
+export interface DailyVolumeBucket {
+  date: string; // yyyy-mm-dd
   total: number;
   resolved: number;
   open: number;
@@ -72,6 +87,8 @@ export interface ChatMetricsResult {
   byAgent: AgentMetricRow[];
   byTeam: TeamMetricRow[];
   byInbox: InboxMetricRow[];
+  /** Série temporal por dia (preenchida com zeros nos dias sem dados) */
+  dailyVolume: DailyVolumeBucket[];
 }
 
 export interface AgentPeriod {
@@ -105,6 +122,44 @@ function average(values: number[]): number | null {
   return Math.round((sum / values.length) * 100) / 100;
 }
 
+/**
+ * Retorna a representação UTC yyyy-mm-dd para usar como chave de bucket diário.
+ * Usar UTC garante chave estável independente do timezone do servidor (Docker
+ * pode estar em UTC enquanto o navegador está em America/Sao_Paulo). O FE
+ * formata para o fuso do usuário se precisar.
+ */
+function utcDayKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Gera lista de chaves yyyy-mm-dd entre `from` e `to` (inclusive), em UTC.
+ * Garante que dias sem dados apareçam como 0 no gráfico ao invés de sumir.
+ */
+function eachUtcDayKey(from: Date, to: Date): string[] {
+  const keys: string[] = [];
+  const start = new Date(Date.UTC(
+    from.getUTCFullYear(),
+    from.getUTCMonth(),
+    from.getUTCDate()
+  ));
+  const end = new Date(Date.UTC(
+    to.getUTCFullYear(),
+    to.getUTCMonth(),
+    to.getUTCDate()
+  ));
+  const cursor = new Date(start);
+  // hard-stop pra evitar loop infinito em entradas malucas (>10 anos)
+  const MAX_DAYS = 366 * 10;
+  let safety = 0;
+  while (cursor.getTime() <= end.getTime() && safety < MAX_DAYS) {
+    keys.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    safety += 1;
+  }
+  return keys;
+}
+
 class ChatMetricsService {
   /**
    * Métricas agregadas do chat interno para uma conta no período.
@@ -122,9 +177,16 @@ class ChatMetricsService {
       throw new Error('fromDate não pode ser maior que toDate');
     }
 
+    // FIX (review): inclui conversas resolvidas no período mesmo que tenham
+    // sido criadas antes. Ex: ticket criado há 60d e resolvido hoje precisa
+    // aparecer no dashboard "últimos 30d" para a taxa de resolução não vir
+    // artificialmente baixa.
     const where = {
       accountId,
-      createdAt: { gte: fromDate, lte: toDate },
+      OR: [
+        { createdAt: { gte: fromDate, lte: toDate } },
+        { resolvedAt: { gte: fromDate, lte: toDate } },
+      ],
       ...(inboxId ? { inboxId } : {}),
       ...(teamId ? { teamId } : {}),
       ...(agentId ? { assigneeId: agentId } : {}),
@@ -181,7 +243,9 @@ class ChatMetricsService {
 
     // SLA breaches no mesmo período (por breachedAt) — também filtrado por
     // accountId via Conversation, e respeitando filtros opcionais.
-    const slaBreaches = await prisma.sLABreach.count({
+    // Trazemos também conversationId pra atribuir o breach ao agente/time/inbox
+    // correto (review medium-finding).
+    const slaBreachRows = await prisma.sLABreach.findMany({
       where: {
         breachedAt: { gte: fromDate, lte: toDate },
         conversation: {
@@ -191,7 +255,36 @@ class ChatMetricsService {
           ...(agentId ? { assigneeId: agentId } : {}),
         },
       },
+      select: {
+        conversationId: true,
+        conversation: {
+          select: {
+            assigneeId: true,
+            teamId: true,
+            inboxId: true,
+          },
+        },
+      },
     });
+    const slaBreaches = slaBreachRows.length;
+
+    // Mapas auxiliares pra somar breaches por agente/time/inbox.
+    // Uma conversa pode ter múltiplos breaches (first_response + resolution)
+    // — contamos cada um individualmente, é o que o KPI total já reflete.
+    const slaByAgent = new Map<string, number>();
+    const slaByTeam = new Map<string, number>();
+    const slaByInbox = new Map<string, number>();
+    for (const row of slaBreachRows) {
+      const conv = row.conversation;
+      if (!conv) continue;
+      if (conv.assigneeId) {
+        slaByAgent.set(conv.assigneeId, (slaByAgent.get(conv.assigneeId) ?? 0) + 1);
+      }
+      const teamKey = conv.teamId ?? '__none__';
+      slaByTeam.set(teamKey, (slaByTeam.get(teamKey) ?? 0) + 1);
+      const inboxKey = conv.inboxId ?? '__none__';
+      slaByInbox.set(inboxKey, (slaByInbox.get(inboxKey) ?? 0) + 1);
+    }
 
     // ============================================
     // Breakdowns
@@ -230,10 +323,14 @@ class ChatMetricsService {
         byAgentMap.set(c.assigneeId, cur);
       }
 
-      // Por time
-      if (c.teamId && c.team) {
-        const cur = byTeamMap.get(c.teamId) ?? {
-          teamName: c.team.name,
+      // Por time — inclui bucket 'Sem time atribuído' quando teamId é null
+      // (FIX BUG-4: gráfico donut ficava vazio quando todas as conversas
+      // estavam sem time atribuído).
+      {
+        const teamKey = c.teamId ?? '__none__';
+        const teamName = c.team?.name ?? 'Sem time atribuído';
+        const cur = byTeamMap.get(teamKey) ?? {
+          teamName,
           total: 0,
           resolved: 0,
           open: 0,
@@ -241,13 +338,16 @@ class ChatMetricsService {
         cur.total += 1;
         if (isResolved) cur.resolved += 1;
         if (isOpen) cur.open += 1;
-        byTeamMap.set(c.teamId, cur);
+        byTeamMap.set(teamKey, cur);
       }
 
-      // Por inbox
-      if (c.inboxId && c.inbox) {
-        const cur = byInboxMap.get(c.inboxId) ?? {
-          inboxName: c.inbox.name,
+      // Por inbox — inclui bucket 'Canal desconhecido' quando inboxId é null
+      // (FIX BUG-4: conversas Evolution legadas sem inboxId não apareciam).
+      {
+        const inboxKey = c.inboxId ?? '__none__';
+        const inboxName = c.inbox?.name ?? 'Canal desconhecido';
+        const cur = byInboxMap.get(inboxKey) ?? {
+          inboxName,
           total: 0,
           resolved: 0,
           open: 0,
@@ -255,7 +355,7 @@ class ChatMetricsService {
         cur.total += 1;
         if (isResolved) cur.resolved += 1;
         if (isOpen) cur.open += 1;
-        byInboxMap.set(c.inboxId, cur);
+        byInboxMap.set(inboxKey, cur);
       }
     }
 
@@ -268,28 +368,69 @@ class ChatMetricsService {
         open: v.open,
         avgFirstResponseMin: average(v.frt),
         avgResolutionMin: average(v.res),
+        slaBreaches: slaByAgent.get(agentId) ?? 0,
       }))
       .sort((a, b) => b.total - a.total);
 
     const byTeam: TeamMetricRow[] = Array.from(byTeamMap.entries())
       .map(([teamId, v]) => ({
-        teamId,
+        // Mantém string vazia ao invés do sentinel interno '__none__' para
+        // não vazar implementação ao FE — bucket "Sem time" ainda diferenciável
+        // pelo teamName.
+        teamId: teamId === '__none__' ? '' : teamId,
         teamName: v.teamName,
         total: v.total,
         resolved: v.resolved,
         open: v.open,
+        slaBreaches: slaByTeam.get(teamId) ?? 0,
       }))
       .sort((a, b) => b.total - a.total);
 
     const byInbox: InboxMetricRow[] = Array.from(byInboxMap.entries())
       .map(([inboxId, v]) => ({
-        inboxId,
+        inboxId: inboxId === '__none__' ? '' : inboxId,
         inboxName: v.inboxName,
         total: v.total,
         resolved: v.resolved,
         open: v.open,
+        slaBreaches: slaByInbox.get(inboxId) ?? 0,
       }))
       .sort((a, b) => b.total - a.total);
+
+    // ============================================
+    // Série diária (FIX BUG-3: substitui placeholder do FE que dividia o
+    // total pelo nº de dias e gerava a linha laranja "flat 0.45")
+    // ============================================
+    const dayKeys = eachUtcDayKey(fromDate, toDate);
+    const dailyMap = new Map<string, { total: number; resolved: number; open: number }>();
+    for (const key of dayKeys) {
+      dailyMap.set(key, { total: 0, resolved: 0, open: 0 });
+    }
+    for (const c of conversations) {
+      // Usa createdAt pra bucket de "novas conversas" — alinhado ao gráfico
+      // existente. Conversas resolvidas no período mas criadas fora caem no
+      // bucket da data de criação se estiver dentro; caso contrário, criamos
+      // o bucket pela data de resolução pra elas aparecerem como "resolvidas".
+      const createdKey = utcDayKey(c.createdAt);
+      if (dailyMap.has(createdKey)) {
+        const bucket = dailyMap.get(createdKey)!;
+        bucket.total += 1;
+        if (c.status === 'resolved') bucket.resolved += 1;
+        if (['open', 'pending', 'snoozed'].includes(c.status)) bucket.open += 1;
+      } else if (c.resolvedAt) {
+        const resolvedKey = utcDayKey(c.resolvedAt);
+        if (dailyMap.has(resolvedKey)) {
+          const bucket = dailyMap.get(resolvedKey)!;
+          // Não conta como total (foi criada fora do período) — apenas
+          // contribui pra contagem de resolvidas naquele dia.
+          if (c.status === 'resolved') bucket.resolved += 1;
+        }
+      }
+    }
+    const dailyVolume: DailyVolumeBucket[] = dayKeys.map((date) => {
+      const v = dailyMap.get(date)!;
+      return { date, total: v.total, resolved: v.resolved, open: v.open };
+    });
 
     return {
       totalConversations,
@@ -303,6 +444,7 @@ class ChatMetricsService {
       byAgent,
       byTeam,
       byInbox,
+      dailyVolume,
     };
   }
 
@@ -327,7 +469,10 @@ class ChatMetricsService {
       where: {
         accountId,
         assigneeId: userId,
-        createdAt: { gte: fromDate, lte: toDate },
+        OR: [
+          { createdAt: { gte: fromDate, lte: toDate } },
+          { resolvedAt: { gte: fromDate, lte: toDate } },
+        ],
       },
       select: {
         status: true,

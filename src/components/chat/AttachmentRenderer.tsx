@@ -7,6 +7,7 @@
  */
 import { Download, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { AudioPlayer } from '@/components/chat/AudioPlayer';
 import type { Attachment } from '@/services/conversations.backend.service';
 
 interface AttachmentRendererProps {
@@ -62,12 +63,7 @@ export function AttachmentRenderer({ attachment }: AttachmentRendererProps) {
   }
 
   if (fileType === 'audio') {
-    return (
-      <audio controls preload="metadata" className="max-w-[260px]">
-        <source src={fileUrl} type={mimeType || 'audio/mpeg'} />
-        Seu navegador não suporta o player de áudio.
-      </audio>
-    );
+    return <AudioPlayer src={fileUrl} mimeType={mimeType} />;
   }
 
   // document e fallback

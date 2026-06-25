@@ -292,7 +292,7 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
               <div className="flex items-center gap-2">
                 <UserIcon className="w-3.5 h-3.5 text-muted-foreground" />
                 <p className="text-sm font-medium text-foreground truncate">
-                  {contact.nome || 'Sem nome'}
+                  {contact.nome || contact.telefone || contact.email || 'Contato sem identificação'}
                 </p>
               </div>
               {contact.telefone && (

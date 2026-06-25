@@ -55,6 +55,7 @@ import {
   type Conversation,
   type ConversationPriority,
   type ConversationStatus,
+  type Message,
 } from '@/services/conversations.backend.service';
 import { inboxesBackendService } from '@/services/inboxes.backend.service';
 import { teamsBackendService } from '@/services/teams.backend.service';
@@ -233,10 +234,49 @@ export function ConversationList({
     // connect() é idempotente — não derruba conexões existentes do mesmo token.
     chatSocket.connect(token);
 
+    // refetchType:'active' garante que a query atualmente montada (a lista
+    // visível) seja refetchada imediatamente — sem isso a invalidação pode
+    // só marcar como stale e o usuário fica olhando "Sem mensagens ainda"
+    // até o próximo tick de refetchInterval (30s) ou foco da janela.
     const invalidateList = () =>
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      queryClient.invalidateQueries({
+        queryKey: ['conversations'],
+        refetchType: 'active',
+      });
 
-    const offMessage = chatSocket.onMessageCreated(() => {
+    const offMessage = chatSocket.onMessageCreated((payload) => {
+      // Patch otimista: injeta a mensagem nova como `messages[0]` da conversa
+      // alvo em TODOS os caches ['conversations', ...] que contenham ela.
+      // Isso elimina o gap entre o evento socket e a chegada do refetch onde
+      // o card mostrava "Sem mensagens ainda" mesmo com o thread já populado.
+      // BUG-6: a invalidação a seguir continua sendo a fonte de verdade —
+      // o patch só evita a janela de inconsistência visual.
+      if (payload?.conversationId && payload?.message) {
+        const incoming = payload.message as Message;
+        const targetId = payload.conversationId;
+        queryClient.setQueriesData<{ data?: Conversation[] } | undefined>(
+          { queryKey: ['conversations'] },
+          (old) => {
+            if (!old?.data) return old;
+            let touched = false;
+            const nextData = old.data.map((conv) => {
+              if (conv.id !== targetId) return conv;
+              touched = true;
+              const existing = conv.messages ?? [];
+              // Evita duplicar se o refetch já injetou a mesma mensagem.
+              const dedup = existing.some((m) => m.id === incoming.id)
+                ? existing
+                : [incoming, ...existing].slice(0, 1);
+              return {
+                ...conv,
+                messages: dedup,
+                updatedAt: incoming.createdAt ?? conv.updatedAt,
+              };
+            });
+            return touched ? { ...old, data: nextData } : old;
+          }
+        );
+      }
       // Mensagem nova só altera snippet/unread/updatedAt da lista — não toca
       // o cache da conversa individual (isso é do ConversationThread).
       invalidateList();

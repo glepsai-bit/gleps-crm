@@ -23,10 +23,33 @@ import { ValidationError, ForbiddenError, ErrorCodes } from '../utils/errors';
 // Validação de querystring
 // ============================================
 
+// FIX (review low): aceita tanto ISO datetime com offset (`2026-05-25T00:00:00Z`)
+// quanto data pura (`2026-05-25`). Curl/dashboards simples conseguem chamar.
+// Validamos com regex e depois `new Date(v)` rejeita qualquer string que vire
+// `Invalid Date`.
+const dateStringSchema = z
+  .string()
+  .refine(
+    (v) => {
+      // yyyy-mm-dd
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        return !Number.isNaN(new Date(`${v}T00:00:00Z`).getTime());
+      }
+      // ISO 8601 com timezone (Z ou ±HH:MM)
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/.test(v)) {
+        return !Number.isNaN(new Date(v).getTime());
+      }
+      return false;
+    },
+    {
+      message: 'Data deve ser YYYY-MM-DD ou ISO 8601 com offset (ex: 2026-05-25T00:00:00Z)',
+    }
+  );
+
 const periodSchema = z
   .object({
-    fromDate: z.string().datetime({ offset: true }).optional(),
-    toDate: z.string().datetime({ offset: true }).optional(),
+    fromDate: dateStringSchema.optional(),
+    toDate: dateStringSchema.optional(),
   })
   .refine(
     (v) => {
@@ -50,13 +73,25 @@ const DEFAULT_WINDOW_DAYS = 30;
  * Resolve fromDate/toDate: aceita ISO da querystring; default = últimos 30 dias
  * até "agora". Garante objetos `Date` válidos.
  */
+function isPureDate(v: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(v);
+}
+
 function resolvePeriod(
   rawFrom: string | undefined,
   rawTo: string | undefined
 ): { fromDate: Date; toDate: Date } {
-  const toDate = rawTo ? new Date(rawTo) : new Date();
+  // Para datas puras YYYY-MM-DD: fromDate => 00:00:00Z, toDate => 23:59:59.999Z
+  // (intervalo inclusivo do dia inteiro).
+  const toDate = rawTo
+    ? isPureDate(rawTo)
+      ? new Date(`${rawTo}T23:59:59.999Z`)
+      : new Date(rawTo)
+    : new Date();
   const fromDate = rawFrom
-    ? new Date(rawFrom)
+    ? isPureDate(rawFrom)
+      ? new Date(`${rawFrom}T00:00:00.000Z`)
+      : new Date(rawFrom)
     : new Date(toDate.getTime() - DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
   if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {

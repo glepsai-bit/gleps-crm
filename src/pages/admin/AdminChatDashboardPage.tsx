@@ -13,13 +13,11 @@
  *  - Charts (recharts): volume por dia (composed), top agentes (bar),
  *          distribuição por time (pie), distribuição por inbox (pie)
  *
- * Observação sobre "volume por dia": o endpoint atual NÃO devolve série
- * temporal. Para evitar uma chamada extra (e respeitar o contrato existente
- * do `chat-metrics.backend.service`), reconstruímos uma série diária a partir
- * dos KPIs agregados — exibimos o total/aberto/resolvido normalizados ao longo
- * do período (linha estável). Quando o backend ganhar uma rota de série, é só
- * trocar este bloco para usar o novo retorno. O foco aqui é fechar a fatia
- * UI da Fase B mantendo o contrato existente.
+ * Volume por dia (FIX BUG-3): o endpoint /api/chat/metrics agora devolve
+ * `dailyVolume[]` (bucket por dia em UTC). Consumimos direto. Mantemos um
+ * fallback (pagina listConversations e agrupa client-side) só pra cobrir
+ * deploys antigos do backend que ainda não tenham o campo — assim a UI nunca
+ * mostra a antiga linha "flat 0.45" fake.
  */
 
 import { useMemo, useState } from 'react';
@@ -30,6 +28,11 @@ import {
   type ChatMetricsFilters,
   type ChatMetricsResult,
 } from '@/services/chat-metrics.backend.service';
+import {
+  conversationsBackendService,
+  type Conversation,
+  type ListConversationsFilters,
+} from '@/services/conversations.backend.service';
 import { inboxesBackendService } from '@/services/inboxes.backend.service';
 import { teamsBackendService } from '@/services/teams.backend.service';
 import { usersBackendService } from '@/services/users.backend.service';
@@ -199,11 +202,16 @@ export default function AdminChatDashboardPage() {
   });
 
   // ---- Query principal de métricas ----
+  // refetchInterval: 60s para manter o dashboard atualizado sem depender de
+  // socket events (review low-finding). staleTime menor que o intervalo pra
+  // garantir refetch real.
   const metricsQuery = useQuery<ChatMetricsResult>({
     queryKey: ['chat-metrics', filters],
     queryFn: () => chatMetricsBackendService.getChatMetrics(filters),
     enabled: Boolean(account?.id),
     staleTime: 1000 * 30,
+    refetchInterval: 1000 * 60,
+    refetchOnWindowFocus: true,
   });
 
   const metrics = metricsQuery.data;
@@ -215,26 +223,122 @@ export default function AdminChatDashboardPage() {
     return Math.max(diff, 1);
   }, [effectiveRange]);
 
-  // Série diária reconstruída a partir dos KPIs agregados. Distribuímos os
-  // totais uniformemente no período — placeholder visual estável enquanto
-  // o backend não expõe série temporal real.
+  // FIX BUG-3: priorizar `dailyVolume` retornado pelo backend (agregado em SQL
+  // — barato, não pagina conversations). Mantemos a query secundária só como
+  // fallback caso o backend ainda não tenha a versão nova deployada — assim a
+  // UI nunca regressa pra linha fake. A fallback query só dispara quando
+  // metrics chegou SEM dailyVolume.
+  const hasBackendDaily = Boolean(
+    metrics?.dailyVolume && metrics.dailyVolume.length > 0
+  );
+
+  const dailyConversationsQuery = useQuery<Conversation[]>({
+    queryKey: [
+      'chat-metrics',
+      'daily-conversations',
+      filters.inboxId ?? null,
+      filters.teamId ?? null,
+      filters.agentId ?? null,
+      filters.fromDate ?? null,
+      filters.toDate ?? null,
+    ],
+    queryFn: async () => {
+      const baseFilters: ListConversationsFilters = {
+        inboxId: filters.inboxId,
+        teamId: filters.teamId,
+        assigneeId: filters.agentId,
+      };
+      const PAGE = 200;
+      const MAX_PAGES = 5;
+      const collected: Conversation[] = [];
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const { data, total } = await conversationsBackendService.listConversations({
+          ...baseFilters,
+          limit: PAGE,
+          offset: page * PAGE,
+        });
+        collected.push(...data);
+        if (collected.length >= total || data.length < PAGE) break;
+      }
+      return collected;
+    },
+    // Só roda se o backend antigo não trouxe a série
+    enabled: Boolean(account?.id) && metricsQuery.isFetched && !hasBackendDaily,
+    staleTime: 1000 * 30,
+  });
+
   const dailyVolumeData = useMemo(() => {
-    if (!metrics) return [];
     const days = eachDayOfInterval({
       start: effectiveRange.from,
       end: effectiveRange.to,
     });
-    const dailyTotal = metrics.totalConversations / days.length;
-    const dailyResolved = metrics.resolvedConversations / days.length;
-    const dailyOpen = metrics.openConversations / days.length;
 
-    return days.map((d) => ({
-      date: format(d, 'dd/MM'),
-      total: Math.round(dailyTotal * 10) / 10,
-      resolvidas: Math.round(dailyResolved * 10) / 10,
-      abertas: Math.round(dailyOpen * 10) / 10,
-    }));
-  }, [metrics, effectiveRange]);
+    // Caminho preferido: backend já agregou.
+    if (hasBackendDaily && metrics?.dailyVolume) {
+      // Mapa por chave yyyy-mm-dd UTC pra alinhar com o que o BE devolve.
+      const byKey = new Map(metrics.dailyVolume.map((b) => [b.date, b]));
+      return days.map((d) => {
+        const key = format(d, 'yyyy-MM-dd');
+        const bucket = byKey.get(key);
+        return {
+          date: format(d, 'dd/MM'),
+          total: bucket?.total ?? 0,
+          resolvidas: bucket?.resolved ?? 0,
+          abertas: bucket?.open ?? 0,
+        };
+      });
+    }
+
+    // Fallback: agrupar conversations cliente-side (deploy antigo do BE).
+    const fromMs = startOfDay(effectiveRange.from).getTime();
+    const toMs = endOfDay(effectiveRange.to).getTime();
+    const buckets = new Map<
+      string,
+      { total: number; resolvidas: number; abertas: number }
+    >();
+    for (const d of days) {
+      buckets.set(format(d, 'yyyy-MM-dd'), {
+        total: 0,
+        resolvidas: 0,
+        abertas: 0,
+      });
+    }
+
+    const conversations = dailyConversationsQuery.data ?? [];
+    for (const c of conversations) {
+      const createdMs = new Date(c.createdAt).getTime();
+      if (createdMs < fromMs || createdMs > toMs) continue;
+      const key = format(new Date(c.createdAt), 'yyyy-MM-dd');
+      const bucket = buckets.get(key);
+      if (!bucket) continue;
+      bucket.total += 1;
+      if (c.status === 'resolved') {
+        bucket.resolvidas += 1;
+      } else if (['open', 'pending', 'snoozed'].includes(c.status)) {
+        bucket.abertas += 1;
+      }
+    }
+
+    return days.map((d) => {
+      const key = format(d, 'yyyy-MM-dd');
+      const bucket = buckets.get(key)!;
+      return {
+        date: format(d, 'dd/MM'),
+        total: bucket.total,
+        resolvidas: bucket.resolvidas,
+        abertas: bucket.abertas,
+      };
+    });
+  }, [
+    hasBackendDaily,
+    metrics?.dailyVolume,
+    dailyConversationsQuery.data,
+    effectiveRange,
+  ]);
+
+  const isDailyLoading =
+    metricsQuery.isLoading ||
+    (!hasBackendDaily && dailyConversationsQuery.isLoading);
 
   const topAgents = useMemo(() => {
     if (!metrics?.byAgent) return [];
@@ -584,7 +688,7 @@ export default function AdminChatDashboardPage() {
           </p>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {isDailyLoading ? (
             <Skeleton className="h-[280px] w-full" />
           ) : dailyVolumeData.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-12">

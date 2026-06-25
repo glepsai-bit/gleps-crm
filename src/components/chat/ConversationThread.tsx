@@ -162,6 +162,12 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
     // [] durante a transicao de fetch.
     placeholderData: keepPreviousData,
     staleTime: 30_000,
+    // BUG-2 (race residual): mantem o cache em memoria por toda a vida da
+    // pagina. Sem isso, o React Query pode descartar o cache durante
+    // remounts curtos (ex.: troca rapida de conversa e volta), forcando
+    // refetch a partir do zero — e nesse intervalo a thread piscaria
+    // "Nenhuma mensagem ainda" mesmo com o keepPreviousData.
+    gcTime: Number.POSITIVE_INFINITY,
   });
 
   const markAsReadMutation = useMutation({
@@ -368,24 +374,68 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
       }
     });
 
-    // Mudanças na conversa (assign, status, priority etc.) — invalida APENAS
-    // o 'thread-full' (este componente). O 'sidepanel-meta' é invalidado
-    // pelo ConversationList, que também ouve estes eventos — duplicar aqui
-    // causaria 2 refetches paralelos do mesmo cache (root cause do Bug 2:
-    // duas respostas com contact diferente em segundos consecutivos, a
-    // última a chegar "vence" e pisca o nome).
+    // BUG-2 (race residual): Mudancas na conversa (assign, status, priority,
+    // etc.) NAO devem invalidar a queryKey 'thread-full' — invalidate dispara
+    // um GET /conversations/:id?messages=true que demora 100-500ms e, nesse
+    // intervalo, mesmo com keepPreviousData, o `conversationQuery.isFetching`
+    // sobe e a thread pode oscilar. Em vez disso, fazemos um MERGE PARCIAL no
+    // cache aplicando SOMENTE os campos do payload (status/priority/assignee/
+    // etc), preservando `messages`, `labels`, `participants` que ja temos.
+    //
+    // Se o payload nao trouxer o objeto `conversation`/`assignee` valido
+    // (versoes antigas do backend), caimos no invalidateQueries como
+    // fallback — comportamento anterior.
+    const isPartialConversation = (
+      value: unknown
+    ): value is Partial<Conversation> =>
+      typeof value === 'object' && value !== null && !Array.isArray(value);
+
     const offConvUpdate = chatSocket.onConversationUpdated((payload) => {
       if (payload.conversationId !== conversationId) return;
-      queryClient.invalidateQueries({
-        queryKey: ['conversation', conversationId, 'thread-full'],
-      });
+      const partial = (payload as { conversation?: unknown }).conversation;
+      if (isPartialConversation(partial)) {
+        queryClient.setQueryData<Conversation | undefined>(
+          ['conversation', conversationId, 'thread-full'],
+          (old) => {
+            if (!old) return old;
+            // Preserva relacoes pesadas (messages/labels/participants) caso
+            // o payload nao as tenha — so sobrescreve se vierem definidas.
+            const next: Conversation = { ...old, ...partial };
+            if (partial.messages === undefined) next.messages = old.messages;
+            if (partial.labels === undefined) next.labels = old.labels;
+            if (partial.participants === undefined) next.participants = old.participants;
+            return next;
+          }
+        );
+      } else {
+        queryClient.invalidateQueries({
+          queryKey: ['conversation', conversationId, 'thread-full'],
+        });
+      }
     });
 
     const offAssigned = chatSocket.onAssigned((payload) => {
       if (payload.conversationId !== conversationId) return;
-      queryClient.invalidateQueries({
-        queryKey: ['conversation', conversationId, 'thread-full'],
-      });
+      const assignee = (payload as { assignee?: unknown }).assignee;
+      // Aceita tanto objeto (novo assignee) quanto null (desatribuir).
+      if (assignee === null || isPartialConversation(assignee)) {
+        queryClient.setQueryData<Conversation | undefined>(
+          ['conversation', conversationId, 'thread-full'],
+          (old) => {
+            if (!old) return old;
+            const typed = assignee as Conversation['assignee'] | null;
+            return {
+              ...old,
+              assignee: typed,
+              assigneeId: typed && 'id' in typed ? (typed.id as string) : null,
+            };
+          }
+        );
+      } else {
+        queryClient.invalidateQueries({
+          queryKey: ['conversation', conversationId, 'thread-full'],
+        });
+      }
     });
 
     // Typing de outros usuários (ignora o próprio)
@@ -525,11 +575,23 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
           }}
           className="p-4 space-y-4"
         >
-          {messages.length === 0 ? (
+          {messages.length === 0 && !conversationQuery.isFetching ? (
+            // BUG-2 (race residual): so mostramos o empty state quando a
+            // query NAO esta em refetch. Isso evita o flash de "Nenhuma
+            // mensagem ainda" durante o intervalo entre o invalidate (ou
+            // socket-driven refresh) e a chegada da resposta — caso em
+            // que `messages` cai para [] por um frame antes do
+            // keepPreviousData entrar em acao.
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <MessageSquare className="w-10 h-10 mb-2 opacity-30" />
               <p className="text-sm">Nenhuma mensagem ainda</p>
               <p className="text-xs mt-1">Envie a primeira mensagem para o cliente</p>
+            </div>
+          ) : messages.length === 0 ? (
+            // Refetch em andamento e sem dados ainda — placeholder discreto
+            // que NAO promete "nenhuma mensagem" (a query ainda esta voando).
+            <div className="flex items-center justify-center py-12 text-muted-foreground">
+              <Loader2 className="w-5 h-5 animate-spin opacity-50" />
             </div>
           ) : (
             grouped.map((group) => (

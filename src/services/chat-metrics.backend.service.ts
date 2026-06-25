@@ -32,6 +32,8 @@ export interface AgentMetricRow {
   open: number;
   avgFirstResponseMin: number | null;
   avgResolutionMin: number | null;
+  /** SLA breaches no período atribuídos a este agente */
+  slaBreaches: number;
 }
 
 export interface TeamMetricRow {
@@ -40,11 +42,23 @@ export interface TeamMetricRow {
   total: number;
   resolved: number;
   open: number;
+  slaBreaches: number;
 }
 
 export interface InboxMetricRow {
   inboxId: string;
   inboxName: string;
+  total: number;
+  resolved: number;
+  open: number;
+  slaBreaches: number;
+}
+
+/**
+ * Bucket diário do volume de conversas no período. `date` em ISO yyyy-mm-dd UTC.
+ */
+export interface DailyVolumeBucket {
+  date: string;
   total: number;
   resolved: number;
   open: number;
@@ -62,6 +76,11 @@ export interface ChatMetricsResult {
   byAgent: AgentMetricRow[];
   byTeam: TeamMetricRow[];
   byInbox: InboxMetricRow[];
+  /**
+   * Série temporal diária preenchida com zeros nos dias sem dados.
+   * Pode vir vazio em deploys antigos do backend — caller deve tolerar.
+   */
+  dailyVolume?: DailyVolumeBucket[];
 }
 
 export interface AgentMetricsResult {
