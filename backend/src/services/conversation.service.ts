@@ -10,10 +10,33 @@ import { conversationCycleService } from './conversation-cycle.service';
 /**
  * Wrapper defensivo: o Socket.IO pode não estar inicializado em testes
  * unitários que importam o service direto. Logamos em debug e seguimos.
+ *
+ * BUG-MSG-GHOST (3a reincidencia): TODAS as mutations da Conversation usam
+ * FULL_CONVERSATION_INCLUDE, que carrega `messages: { take: 1, orderBy desc }`.
+ * Esse objeto é repassado a este emit; no frontend, `ConversationThread.
+ * onConversationUpdated` faz spread `{ ...old, ...partial }` e qualquer
+ * `partial.messages` (mesmo length=1) SOBRESCREVE a lista completa cacheada
+ * (8+ mensagens viram 1, ate o proximo polling/F5 restaurar).
+ *
+ * Fix: REMOVER `messages` (e demais relacoes pesadas que nao mudam por
+ * conversation:updated) antes de emitir. O thread recebe mensagens novas via
+ * `message:created` (handler dedicado, com merge+dedup); este broadcast
+ * carrega APENAS campos escalares (status/priority/assignee/team/customAttrs).
  */
+function stripHeavyRelationsForBroadcast(conv: Conversation): Conversation {
+  // Cast intencional: conv vem com `messages?: Message[]` no shape do Prisma
+  // include, mas a interface base do Conversation nao expoe (so o include
+  // tipa via generics). Removemos a chave via destructuring + cast pra
+  // garantir que o JSON.stringify do socket nao carregue o array.
+  const { messages: _m, ...rest } = conv as Conversation & {
+    messages?: unknown;
+  };
+  return rest as Conversation;
+}
+
 function safeEmitUpdated(accountId: string, id: string, conv: Conversation): void {
   try {
-    emitConversationUpdated(accountId, id, conv);
+    emitConversationUpdated(accountId, id, stripHeavyRelationsForBroadcast(conv));
   } catch (err) {
     logger.debug('[conversation] socket emit conversation:updated falhou', {
       conversationId: id,
@@ -261,7 +284,23 @@ class ConversationService {
       await this.assertAgentCanAccess(conversation as Conversation, actor.userId);
     }
 
-    return conversation as Conversation;
+    // BUG-MSG-GHOST (fail-safe): shape invariante para o FE — sempre incluir
+    // as chaves `messages`, `labels`, `participants` como array (vazio quando
+    // nao pedido) ao inves de omitir. Isso elimina toda a classe de bug onde
+    // qualquer setQueryData/merge no React Query pode acabar comparando
+    // `partial.messages === undefined` (chave inexistente) vs
+    // `partial.messages === []` (vazio explicito) — comportamentos diferentes
+    // que produziam piscar e thread vazia.
+    const out = conversation as Conversation & {
+      messages?: unknown;
+      labels?: unknown;
+      participants?: unknown;
+    };
+    if (!include.messages) out.messages = [] as unknown as never;
+    if (!include.labels) out.labels = [] as unknown as never;
+    if (!include.participants) out.participants = [] as unknown as never;
+
+    return out as Conversation;
   }
 
   // ============================================

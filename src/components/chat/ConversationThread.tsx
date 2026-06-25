@@ -9,7 +9,6 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -151,6 +150,17 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
         participants: true,
       }),
     enabled: Boolean(conversationId),
+    // BUG-MSG-GHOST: fail-safe sobre o shape do backend. Mesmo com o backend
+    // garantindo `messages: []` quando nao incluido, blindamos aqui contra
+    // qualquer payload futuro que possa vir `messages: undefined` (versoes
+    // antigas de servidor, caches stale do CDN, etc). NUNCA renderizamos
+    // thread sem o campo messages como array.
+    select: (data) => ({
+      ...data,
+      messages: Array.isArray(data?.messages) ? data.messages : [],
+      labels: Array.isArray(data?.labels) ? data.labels : [],
+      participants: Array.isArray(data?.participants) ? data.participants : [],
+    }),
     // BUG-5: refetch a cada 60s (antes 15s). Socket.IO ja entrega novas
     // mensagens em tempo real, entao o polling so serve como fallback
     // defensivo em caso de desconexao do socket. Reduzir a frequencia
@@ -159,8 +169,10 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
     refetchInterval: 60_000,
     // BUG-5: mantem dados anteriores enquanto o refetch acontece, evitando
     // o flash de "Nenhuma mensagem ainda" e queda momentanea da lista para
-    // [] durante a transicao de fetch.
-    placeholderData: keepPreviousData,
+    // [] durante a transicao de fetch. Forma explicita (prev) => prev
+    // garante que TROCA de conversationId tambem mantenha o ultimo cache
+    // valido visivel ate o novo fetch resolver (em vez de empty state).
+    placeholderData: (prev) => prev,
     staleTime: 30_000,
     // BUG-2 (race residual): mantem o cache em memoria por toda a vida da
     // pagina. Sem isso, o React Query pode descartar o cache durante
@@ -294,8 +306,13 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
         queryClient.setQueryData<Conversation | undefined>(
           ['conversation', conversationId, 'thread-full'],
           (old) => {
+            // BUG-MSG-GHOST: guard contra cache inexistente/corrompido.
+            // Se old.messages nao for array (cache em estado quebrado), nao
+            // tentamos merge — deixa o React Query refazer fetch limpo na
+            // proxima vez. Pior caso: a mensagem nova so aparece no polling.
             if (!old) return old;
-            const existing = old.messages ?? [];
+            if (!Array.isArray(old.messages)) return old;
+            const existing = old.messages;
             const incomingMeta = (incoming.metadata ?? null) as
               | Record<string, unknown>
               | null;
@@ -397,20 +414,43 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
         queryClient.setQueryData<Conversation | undefined>(
           ['conversation', conversationId, 'thread-full'],
           (old) => {
+            // BUG-MSG-GHOST (fail-safe 1): se nao temos cache valido OU se o
+            // cache foi corrompido em algum merge anterior (messages nao-array),
+            // RECUSAMOS o merge — retorna `old` (talvez undefined) e deixamos
+            // o proximo refetch reidratar do zero. Melhor mostrar loading do
+            // que sobrescrever cache com payload incompleto.
             if (!old) return old;
-            // Preserva relacoes pesadas (messages/labels/participants) caso
-            // o payload nao as tenha — so sobrescreve se vierem definidas.
-            const next: Conversation = { ...old, ...partial };
-            if (partial.messages === undefined) next.messages = old.messages;
-            if (partial.labels === undefined) next.labels = old.labels;
-            if (partial.participants === undefined) next.participants = old.participants;
+            if (!Array.isArray(old.messages)) return old;
+            // BUG-MSG-GHOST (fail-safe 2): NUNCA aceitar `messages` do payload
+            // de conversation:updated. Eventos dessa categoria nao trazem
+            // mensagens novas — apenas mudancas de status/priority/assignee.
+            // Qualquer array vindo no partial (mesmo length=1 vindo do
+            // FULL_CONVERSATION_INCLUDE do backend, mesmo []) sobrescreveria
+            // a thread completa via spread. Mesmo padrao para labels e
+            // participants: so aceitamos se vierem como array; caso contrario
+            // preservamos o cache.
+            const partialAny = partial as Partial<Conversation> & {
+              messages?: unknown;
+              labels?: unknown;
+              participants?: unknown;
+            };
+            const { messages: _ignoredMsgs, ...partialSafe } = partialAny;
+            const next: Conversation = { ...old, ...partialSafe };
+            next.messages = old.messages; // forca preservar SEMPRE
+            next.labels = Array.isArray(partialAny.labels)
+              ? (partialAny.labels as Conversation['labels'])
+              : old.labels;
+            next.participants = Array.isArray(partialAny.participants)
+              ? (partialAny.participants as Conversation['participants'])
+              : old.participants;
             return next;
           }
         );
       } else {
-        queryClient.invalidateQueries({
-          queryKey: ['conversation', conversationId, 'thread-full'],
-        });
+        // Payload mal-formado: NAO invalidamos a queryKey thread-full (isso
+        // dispararia refetch que pode demorar 100-500ms e piscar a UI).
+        // Ignoramos silenciosamente — o polling de fallback (60s) e o
+        // proximo evento valido reidratam.
       }
     });
 
@@ -422,20 +462,35 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
         queryClient.setQueryData<Conversation | undefined>(
           ['conversation', conversationId, 'thread-full'],
           (old) => {
+            // BUG-MSG-GHOST: guard — nao mexer em cache vazio/corrompido.
             if (!old) return old;
+            if (!Array.isArray(old.messages)) return old;
             const typed = assignee as Conversation['assignee'] | null;
+            // BUG-MSG-GHOST: o payload de socket de assigned do backend hoje
+            // vem como { type: 'agent'|'team', assigneeId } ou similar — NAO
+            // tem `.id` nesse shape, e o codigo antigo zerava assigneeId.
+            // Mantemos o comportamento antigo apenas quando o payload eh
+            // null (desatribuir) ou contem `.id`. Para qualquer outro shape
+            // (objeto sem `.id`), ignoramos e deixamos o proximo
+            // conversation:updated (que vem logo depois) atualizar.
+            const hasValidId =
+              typed === null || (typed && typeof (typed as { id?: unknown }).id === 'string');
+            if (!hasValidId) return old;
             return {
               ...old,
               assignee: typed,
-              assigneeId: typed && 'id' in typed ? (typed.id as string) : null,
+              assigneeId: typed ? ((typed as { id: string }).id) : null,
+              // Preserva relacoes pesadas — defesa em profundidade.
+              messages: old.messages,
+              labels: old.labels,
+              participants: old.participants,
             };
           }
         );
-      } else {
-        queryClient.invalidateQueries({
-          queryKey: ['conversation', conversationId, 'thread-full'],
-        });
       }
+      // Payload mal-formado: ignora silenciosamente (sem invalidate que
+      // causaria refetch e piscar). O cache se mantem ate proximo evento
+      // ou polling.
     });
 
     // Typing de outros usuários (ignora o próprio)

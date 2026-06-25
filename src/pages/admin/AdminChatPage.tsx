@@ -77,6 +77,15 @@ export default function AdminChatPage() {
         participants: true,
       }),
     enabled: Boolean(selectedConversationId),
+    // BUG-MSG-GHOST: shape invariante mesmo no sidepanel — labels e
+    // participants sempre array. Backend ja garante (stripHeavyRelations
+    // + GET `out.messages/labels/participants = []` default), mas aqui é a
+    // ultima linha de defesa contra payload antigo / CDN cacheado.
+    select: (data) => ({
+      ...data,
+      labels: Array.isArray(data?.labels) ? data.labels : [],
+      participants: Array.isArray(data?.participants) ? data.participants : [],
+    }),
   });
 
   function handleSelectConversation(id: string) {

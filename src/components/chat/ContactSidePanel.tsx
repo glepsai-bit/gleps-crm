@@ -100,12 +100,17 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
     mutationFn: () =>
       conversationsBackendService.setCustomAttributes(conversation.id, values),
     onSuccess: () => {
-      // BUG-3: invalida AMBAS as variantes (thread-full + sidepanel-meta)
-      // via predicate, em vez de match por prefixo (que sob certas versoes
-      // do TanStack Query pode nao casar a entrada com sufixo extra).
+      // BUG-MSG-GHOST: invalida APENAS a query do sidepanel-meta (sem
+      // messages), NUNCA a thread-full. Custom attributes nao mudam o
+      // conjunto de mensagens — invalidar thread-full dispararia GET
+      // /conversations/:id?include=messages que demora 100-500ms e, durante
+      // esse intervalo, qualquer evento socket concorrente pode escrever um
+      // setQueryData que confunde o cache. A correcao do backend
+      // (stripHeavyRelations no broadcast) + o guard no FE
+      // (recusar merge sem messages array) ja blindam, mas evitar o
+      // refetch desnecessario reduz a janela de race a zero.
       queryClient.invalidateQueries({
-        predicate: (q) =>
-          q.queryKey[0] === 'conversation' && q.queryKey[1] === conversation.id,
+        queryKey: ['conversation', conversation.id, 'sidepanel-meta'],
       });
       toast({ title: 'Atributos salvos' });
       setDirty(false);

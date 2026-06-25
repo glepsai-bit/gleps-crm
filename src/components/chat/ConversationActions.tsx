@@ -125,11 +125,15 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    // BUG-3: invalida AMBAS as variantes da conversa (thread-full +
-    // sidepanel-meta) via predicate.
+    // BUG-MSG-GHOST: invalidar APENAS o sidepanel-meta. O thread-full nao
+    // precisa ser invalidado aqui — o backend emite conversation:updated
+    // (sem messages, ja stripado em conversation.service.ts) que o
+    // ConversationThread aplica via setQueryData incremental, preservando
+    // a lista de mensagens. Invalidate de thread-full causaria GET completo
+    // com include=messages que demora 100-500ms e abre janela de race onde
+    // a thread pisca "Nenhuma mensagem ainda".
     queryClient.invalidateQueries({
-      predicate: (q) =>
-        q.queryKey[0] === 'conversation' && q.queryKey[1] === conversationId,
+      queryKey: ['conversation', conversationId, 'sidepanel-meta'],
     });
     // CHAT-TAG-SYNC-2 (front): após aplicar/remover label numa conversa o
     // backend espelha LeadTag do contato (CHAT-TAG-SYNC-1 no
