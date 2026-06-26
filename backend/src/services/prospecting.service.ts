@@ -512,14 +512,29 @@ class ProspectingService {
    * Cancel a running batch
    */
   async cancelBatch(accountId: string, batchId: string) {
-    await prisma.dispatchBatch.updateMany({
+    const result = await prisma.dispatchBatch.updateMany({
       where: { id: batchId, accountId, status: 'running' },
       data: { status: 'cancelled', completedAt: new Date() },
     });
+
+    if (result.count === 0) {
+      // Pode ser que já está cancelled/completed/failed, ou não existe
+      const batch = await prisma.dispatchBatch.findFirst({
+        where: { id: batchId, accountId },
+        select: { status: true },
+      });
+      if (!batch) throw new NotFoundError('Disparo');
+      throw new ValidationError(
+        `Disparo não pode ser cancelado (status atual: ${batch.status})`
+      );
+    }
+
     await prisma.dispatchLog.updateMany({
       where: { batchId, status: 'pending' },
       data: { status: 'cancelled', errorMessage: 'Cancelado pelo usuário' },
     });
+
+    return { cancelled: true };
   }
 
   /**
@@ -531,15 +546,22 @@ class ProspectingService {
     }
 
     const batch = await prisma.dispatchBatch.findFirst({
-      where: { id: batchId, accountId, status: 'cancelled' },
+      where: { id: batchId, accountId },
     });
-    if (!batch) throw Object.assign(new Error('Batch not found or not cancelled'), { statusCode: 400 });
+    if (!batch) throw new NotFoundError('Disparo');
+    if (batch.status !== 'cancelled') {
+      throw new ValidationError(
+        `Disparo não pode ser retomado (status atual: ${batch.status})`
+      );
+    }
 
     const pendingLogs = await prisma.dispatchLog.findMany({
       where: { batchId, status: 'cancelled' },
       orderBy: { createdAt: 'asc' },
     });
-    if (!pendingLogs.length) throw Object.assign(new Error('No cancelled contacts to resume'), { statusCode: 400 });
+    if (!pendingLogs.length) {
+      throw new ValidationError('Nenhum contato cancelado para retomar');
+    }
 
     await prisma.dispatchBatch.update({
       where: { id: batchId },

@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Zap, CheckCircle2, XCircle, Clock, Download, ArrowLeft, Phone, StopCircle, Ban, Eye, PlayCircle } from 'lucide-react';
+import { Zap, CheckCircle2, XCircle, Clock, Download, ArrowLeft, Phone, StopCircle, Ban, Eye } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
@@ -80,7 +80,11 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
   const [logs, setLogs] = useState<DispatchLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
-  const [resuming, setResuming] = useState(false);
+  // NOTA: Retomar/pausar batches agora eh EXCLUSIVAMENTE pela aba "Agendadas"
+  // (AgendadasTab + novo state machine), que preserva a mensagem ORIGINAL da
+  // campanha. O handleResume legado daqui enviava texto hard-coded ('Ola {nome},
+  // tudo bem?'), trocando o conteudo da campanha por algo totalmente diferente
+  // — bug LGPD/marca (DM-9 / L3-001). Por isso o estado/botoes foram removidos.
 
   const fetchBatches = useCallback(async () => {
     if (!accountId) { setLoading(false); return; }
@@ -181,6 +185,25 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     fetchLogs(selectedBatch.id);
   }, [selectedBatch?.id, fetchLogs]);
 
+  // DM-1: Resync selectedBatch quando o polling atualiza batches[]. Sem isso,
+  // o usuario fica preso na detail view com contadores estaticos (0%/0 enviados)
+  // mesmo quando o batch ja avancou no backend — bug "barra nao mexe".
+  // Comparamos campos relevantes pra evitar setState desnecessario em ref nova.
+  useEffect(() => {
+    if (!selectedBatch) return;
+    const updated = batches.find(b => b.id === selectedBatch.id);
+    if (!updated) return;
+    if (
+      updated.status !== selectedBatch.status ||
+      updated.sent_count !== selectedBatch.sent_count ||
+      updated.failed_count !== selectedBatch.failed_count ||
+      updated.total_contacts !== selectedBatch.total_contacts ||
+      updated.completed_at !== selectedBatch.completed_at
+    ) {
+      setSelectedBatch(updated);
+    }
+  }, [batches, selectedBatch]);
+
   // Realtime log updates (Supabase only)
   useEffect(() => {
     if (!selectedBatch || useBackend) return;
@@ -218,7 +241,14 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
         if (!data?.success) throw new Error('Falha ao cancelar');
       }
       toast({ title: 'Disparo cancelado', description: 'Os envios pendentes foram cancelados.' });
-      fetchBatches();
+      await fetchBatches();
+      // DM-7: forcar selectedBatch pra 'cancelled' imediatamente. Sem isso, o
+      // status local segue 'running' ate o proximo polling (3s) e o botao "Parar
+      // disparo" continua visivel/clicavel — UX confusa e potencial double-cancel.
+      // O useEffect de resync (acima) tambem cobre, mas aqui garantimos o estado
+      // certo na hora pro caso de a request de cancel ainda nao ter refletido
+      // no GET de batches (race).
+      setSelectedBatch(prev => (prev && prev.id === batchId ? { ...prev, status: 'cancelled' } : prev));
     } catch (err: any) {
       toast({ title: 'Erro ao cancelar', description: err.message, variant: 'destructive' });
     } finally {
@@ -226,32 +256,7 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     }
   };
 
-  const handleResume = async (batchId: string) => {
-    setResuming(true);
-    try {
-      if (useBackend) {
-        const response = await apiClient.post<any>(API_ENDPOINTS.PROSPECTING.RESUME, {
-          batch_id: batchId,
-          messages: ['Olá {nome}, tudo bem?'],
-        });
-        const data = (response as any).data || response;
-        if (!data?.success) throw new Error(data?.error || 'Falha ao retomar');
-        toast({ title: 'Disparo retomado', description: `${data.remaining} contatos restantes serão processados.` });
-      } else {
-        const { data, error } = await supabase.functions.invoke('dispatch-messages', {
-          body: { action: 'resume', account_id: accountId, batch_id: batchId, messages: ['Olá {nome}, tudo bem?'] },
-        });
-        if (error) throw error;
-        if (!data?.success) throw new Error(data?.error || 'Falha ao retomar');
-        toast({ title: 'Disparo retomado', description: `${data.remaining} contatos restantes serão processados.` });
-      }
-      fetchBatches();
-    } catch (err: any) {
-      toast({ title: 'Erro ao retomar', description: err.message, variant: 'destructive' });
-    } finally {
-      setResuming(false);
-    }
-  };
+  // handleResume removido — ver nota no useState acima. Use a aba "Agendadas".
 
   const exportReport = () => {
     if (!selectedBatch || logs.length === 0) return;
@@ -274,8 +279,14 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     switch (status) {
       case 'completed': return 'Concluído';
       case 'running': return 'Em andamento';
+      case 'scheduled': return 'Agendado';
+      case 'paused': return 'Pausado';
       case 'cancelled': return 'Cancelado';
-      default: return 'Falhou';
+      case 'failed': return 'Falhou';
+      // Nao mascarar status novos como "Falhou" — antes o default mostrava
+      // badge destructive vermelho em qualquer status desconhecido (ex: scheduled
+      // aparecia como "Falhou" na aba Disparos).
+      default: return status;
     }
   };
 
@@ -283,8 +294,11 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     switch (status) {
       case 'completed': return 'default';
       case 'running': return 'secondary';
+      case 'scheduled': return 'outline';
+      case 'paused': return 'secondary';
       case 'cancelled': return 'outline';
-      default: return 'destructive';
+      case 'failed': return 'destructive';
+      default: return 'outline';
     }
   };
 
@@ -341,17 +355,9 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
                 {cancelling ? 'Cancelando...' : 'Parar disparo'}
               </Button>
             )}
-            {selectedBatch.status === 'cancelled' && (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => handleResume(selectedBatch.id)}
-                disabled={resuming}
-              >
-                <PlayCircle className="w-4 h-4 mr-1" />
-                {resuming ? 'Retomando...' : 'Retomar disparo'}
-              </Button>
-            )}
+            {/* Botao "Retomar disparo" removido — DM-9/L3-001: o handleResume
+                legado enviava mensagem hard-coded e quebrava a campanha original.
+                Use a aba "Agendadas" para retomar/pausar com mensagem preservada. */}
             <Button variant="outline" size="sm" onClick={exportReport}>
               <Download className="w-4 h-4 mr-1" />
               Exportar
@@ -543,7 +549,11 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
                         Iniciado {new Date(batch.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                       </p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div
+                      className="flex items-center gap-2"
+                      onClick={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
                       <Badge variant="secondary">Em andamento</Badge>
                       <Button
                         variant="destructive"
@@ -569,7 +579,10 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
         </div>
       )}
 
-      {batches.filter(b => b.status !== 'running').map(batch => (
+      {/* Esconder scheduled/paused — esses estados pertencem a aba "Agendadas".
+          Sem esse filtro, agendamentos futuros aparecem na aba "Disparos" e
+          (com o fix de label/variant acima) ainda ficam visualmente duplicados. */}
+      {batches.filter(b => !['running', 'scheduled', 'paused'].includes(b.status)).map(batch => (
         <Card
           key={batch.id}
           className="cursor-pointer hover:shadow-md transition-shadow"
@@ -586,21 +599,15 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
                   {new Date(batch.started_at).toLocaleDateString('pt-BR')} {new Date(batch.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div
+                className="flex items-center gap-2"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
                 <Badge variant={getStatusVariant(batch.status)}>
                   {getStatusLabel(batch.status)}
                 </Badge>
-                {batch.status === 'cancelled' && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={(e) => { e.stopPropagation(); handleResume(batch.id); }}
-                    disabled={resuming}
-                  >
-                    <PlayCircle className="w-3 h-3 mr-1" /> Retomar
-                  </Button>
-                )}
+                {/* Botao "Retomar" removido — ver nota em handleResume/useState. */}
               </div>
             </div>
             <div className="flex items-center gap-4 text-xs">

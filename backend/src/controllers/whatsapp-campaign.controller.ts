@@ -78,6 +78,8 @@ const listBatchesSchema = z.object({
   toDate: z.string().optional(),
 });
 
+const batchIdParamSchema = z.string().uuid('ID deve ser UUID valido');
+
 // ============================================
 // Helpers
 // ============================================
@@ -235,10 +237,7 @@ export class WhatsappCampaignController {
   async getBatch(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const accountId = getAccountId(req);
-      const id = req.params.id as string | undefined;
-      if (!id) {
-        throw new ValidationError('id do batch é obrigatório');
-      }
+      const id = batchIdParamSchema.parse(req.params.id);
 
       const result = await whatsappCampaignService.getBatch(id, accountId);
 
@@ -255,10 +254,7 @@ export class WhatsappCampaignController {
   async cancelScheduled(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const accountId = getAccountId(req);
-      const id = req.params.id as string | undefined;
-      if (!id) {
-        throw new ValidationError('id do batch é obrigatório');
-      }
+      const id = batchIdParamSchema.parse(req.params.id);
 
       await whatsappCampaignService.cancelScheduled(id, accountId);
 

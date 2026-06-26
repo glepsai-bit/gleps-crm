@@ -236,6 +236,32 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
       return;
     }
 
+    // LENS5-002: validação explícita dos campos de agendamento ANTES de
+    // chamar calcScheduledAt(). Antes, data/hora vazios faziam calcScheduledAt
+    // retornar `undefined`, e o disparo seguia como IMEDIATO sem aviso pro
+    // usuário — quem clicou em "Agendar" via mensagem enviada na hora.
+    if (tipoAgendamento === 'data_hora') {
+      if (!scheduledDate || !scheduledTime) {
+        toast({
+          title: 'Campos obrigatórios',
+          description: 'Selecione data E hora para o agendamento.',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+    if (tipoAgendamento === 'daqui_x') {
+      const qtd = Number(daquiQuantidade);
+      if (!Number.isFinite(qtd) || qtd <= 0) {
+        toast({
+          title: 'Valor inválido',
+          description: 'Informe quantos(as) horas/dias para agendar.',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
     // BUG-FE-005: valida que scheduledAt é estritamente futuro antes de
     // chamar a API (calcScheduledAt aceitava data passada e o backend
     // criava um batch "agendado" que disparava de imediato).
@@ -268,6 +294,15 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
           // BUG-009 FE — disparos agendados precisam ir para o whatsappCampaignController
           // (/api/dispatch/send-batch), porque /api/prospecting/dispatch dispara
           // imediatamente e não aceita scheduledAt.
+          //
+          // LENS5-001: o payload anterior enviava apenas { phones, scheduledAt,
+          // source, templateId|content } e PERDIA silenciosamente delaySeconds,
+          // as variantes A/B/C e as inbox_assignments — três campos que o
+          // disparo imediato respeita. Agora padronizamos: usamos o mesmo
+          // objeto-base, anexando `scheduledAt` + `source='manual_scheduled'`.
+          // Variantes e assignments seguem no `metadata` (o backend canonical
+          // só consome `content` hoje, mas pelo menos os dados ficam
+          // persistidos no batch pra auditoria e uso futuro).
           const phones = leads.map(l => ({ phone: l.telefone, name: l.nome }));
           const selectedTmpl =
             selectedTemplateId !== NO_TEMPLATE_VALUE
@@ -277,6 +312,11 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
             phones,
             scheduledAt,
             source: 'manual_scheduled',
+            delaySeconds: Number(delay) || 30,
+            metadata: {
+              messages: validMessages,
+              inbox_assignments: assignments,
+            },
           };
           if (selectedTmpl) {
             payload.templateId = selectedTmpl.id;

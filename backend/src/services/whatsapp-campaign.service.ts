@@ -543,18 +543,44 @@ class WhatsappCampaignService {
   // ============================================
 
   async processBatchInBackground(batchId: string): Promise<void> {
-    const batch = await prisma.dispatchBatch.findUnique({ where: { id: batchId } });
-    if (!batch) {
-      logger.error('[whatsapp-campaign] batch não encontrado', { batchId });
+    // Pre-check: aborta se batch ja terminal. Promove scheduled/paused -> running
+    // sem rejeitar status='running' (sendBatch e processScheduledQueue ja criam/
+    // promovem antes de chamar este metodo — guard estrito quebrava ambos).
+    //
+    // Atomicidade contra double-runner real eh garantida por:
+    //  (a) updateMany WHERE status='paused' em resumeBatchFromPause (prospecting)
+    //  (b) updateMany WHERE status='scheduled' em processScheduledQueue
+    //  (c) sendBatch cria batch UMA unica vez, sem retry
+    //  (d) counters de sentCount/failedCount usam { increment: 1 } atomico
+    //  (e) finalCheck usa updateMany WHERE status='running' (LENS1-005)
+    const pre = await prisma.dispatchBatch.findUnique({
+      where: { id: batchId },
+      select: { status: true },
+    });
+    if (!pre) {
+      logger.error('[whatsapp-campaign] batch nao encontrado', { batchId });
       return;
     }
-
-    if (batch.status !== 'running') {
-      // Marca como running se foi disparado a partir da fila agendada
-      await prisma.dispatchBatch.update({
-        where: { id: batchId },
-        data: { status: 'running' },
+    if (['completed', 'failed', 'cancelled'].includes(pre.status)) {
+      logger.info('[whatsapp-campaign] batch ja finalizado, ignorando', {
+        batchId,
+        status: pre.status,
       });
+      return;
+    }
+    if (pre.status === 'scheduled' || pre.status === 'paused') {
+      // Promove atomicamente. Se outro caller ja promoveu (claim.count=0),
+      // seguimos mesmo assim — counters sao increment atomicos.
+      await prisma.dispatchBatch.updateMany({
+        where: { id: batchId, status: { in: ['scheduled', 'paused'] } },
+        data: { status: 'running', startedAt: new Date() },
+      });
+    }
+
+    const batch = await prisma.dispatchBatch.findUnique({ where: { id: batchId } });
+    if (!batch) {
+      logger.error('[whatsapp-campaign] batch não encontrado após claim', { batchId });
+      return;
     }
 
     // BUG-061: inboxName usa o slug da instância Evolution da conta
@@ -642,10 +668,12 @@ class WhatsappCampaignService {
     // Resume-safe: evita reenviar pra contatos que ja foram processados num run
     // anterior (pause -> resume). Lemos os logs nao-pending desse batch e
     // pulamos os phones que ja receberam dispatch (sent/failed/blocked_optout/
-    // rate_limited/cancelled). Sem isso, resume duplicava mensagens nos
-    // primeiros recipients toda vez que o batch retomava.
+    // cancelled). Sem isso, resume duplicava mensagens nos primeiros recipients
+    // toda vez que o batch retomava.
+    // LENS1-002: rate_limited eh transiente (janela de rate-limit expira); deve
+    // ser retentavel num resume. opt-out/sent/failed/cancelled mantem skip.
     const processedLogs = await prisma.dispatchLog.findMany({
-      where: { batchId, status: { notIn: ['pending'] } },
+      where: { batchId, status: { notIn: ['pending', 'rate_limited'] } },
       select: { phone: true },
     });
     const alreadyProcessed = new Set(processedLogs.map(l => l.phone));
@@ -709,9 +737,10 @@ class WhatsappCampaignService {
               sentAt: new Date(),
             },
           });
+          // LENS1-003: increment atomico (SET nao-atomico causava last-writer-wins)
           await prisma.dispatchBatch.update({
             where: { id: batchId },
-            data: { sentCount, failedCount },
+            data: { failedCount: { increment: 1 } },
           });
           // BUG-017: opt-out não consome envio real — pular delay
           continue;
@@ -733,9 +762,10 @@ class WhatsappCampaignService {
               sentAt: new Date(),
             },
           });
+          // LENS1-003: increment atomico
           await prisma.dispatchBatch.update({
             where: { id: batchId },
-            data: { sentCount, failedCount },
+            data: { failedCount: { increment: 1 } },
           });
           // BUG-017: rate-limited não consome envio real — pular delay
           continue;
@@ -759,6 +789,11 @@ class WhatsappCampaignService {
             sentAt: new Date(),
           },
         });
+        // LENS1-003: increment atomico (substitui SET com last-writer-wins)
+        await prisma.dispatchBatch.update({
+          where: { id: batchId },
+          data: { sentCount: { increment: 1 } },
+        });
       } catch (err: any) {
         failedCount++;
         const errorMessage = err?.message ?? String(err);
@@ -779,12 +814,12 @@ class WhatsappCampaignService {
             sentAt: new Date(),
           },
         });
+        // LENS1-003: increment atomico
+        await prisma.dispatchBatch.update({
+          where: { id: batchId },
+          data: { failedCount: { increment: 1 } },
+        });
       }
-
-      await prisma.dispatchBatch.update({
-        where: { id: batchId },
-        data: { sentCount, failedCount },
-      });
 
       if (i < recipients.length - 1) {
         await this.sleep(delayMs);
@@ -797,14 +832,23 @@ class WhatsappCampaignService {
     });
     if (finalCheck?.status === 'cancelled' || finalCheck?.status === 'paused') return;
 
-    // failedCount inclui skippedPhones do sendBatch; usar sentCount como sinal de sucesso
-    const finalStatus = sentCount === 0 ? 'failed' : 'completed';
-    await prisma.dispatchBatch.update({
+    // LENS1-003: le o estado atualizado (counters foram incrementados atomicamente
+    // ao longo do loop, nao podem ser sobrescritos com variaveis locais).
+    const finalState = await prisma.dispatchBatch.findUnique({
       where: { id: batchId },
+      select: { sentCount: true, failedCount: true },
+    });
+    const finalSent = finalState?.sentCount ?? 0;
+    const finalFailed = finalState?.failedCount ?? 0;
+
+    // failedCount inclui skippedPhones do sendBatch; usar sentCount como sinal de sucesso
+    const finalStatus = finalSent === 0 ? 'failed' : 'completed';
+    // LENS1-005: updateMany com WHERE status='running' (nao update direto) — evita
+    // sobrescrever status se outro fluxo (pause/cancel) chegou primeiro.
+    await prisma.dispatchBatch.updateMany({
+      where: { id: batchId, status: 'running' },
       data: {
         status: finalStatus,
-        sentCount,
-        failedCount,
         completedAt: new Date(),
       },
     });
@@ -812,8 +856,8 @@ class WhatsappCampaignService {
     logger.info('[whatsapp-campaign] batch finalizado', {
       batchId,
       status: finalStatus,
-      sentCount,
-      failedCount,
+      sentCount: finalSent,
+      failedCount: finalFailed,
       total: recipients.length,
     });
 
@@ -822,8 +866,8 @@ class WhatsappCampaignService {
       .emit(batch.accountId, 'campaign.completed', {
         batchId,
         totalContacts: batch.totalContacts,
-        sentCount,
-        failedCount,
+        sentCount: finalSent,
+        failedCount: finalFailed,
         status: finalStatus,
       })
       .catch(err =>
