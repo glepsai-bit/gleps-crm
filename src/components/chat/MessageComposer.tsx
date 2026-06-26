@@ -491,13 +491,23 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Ignora envios durante composicao IME (ex.: digitacao de acentos PT-BR,
+    // teclados japoneses/chineses, mobile). Caso contrario, o Enter de
+    // confirmacao do IME dispara send acidental.
+    if (e.nativeEvent.isComposing) return;
+
+    // Ctrl+Enter / Cmd+Enter: envia (atalho redundante, mantido por compat
+    // com usuarios acostumados ao padrao antigo).
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       triggerSend();
       return;
     }
+    // Enter sozinho: envia (padrao WhatsApp/Slack/Chatwoot).
+    // Shift+Enter: quebra linha (deixa o comportamento nativo).
+    // Nao envia quando o picker de canned-responses esta aberto — Enter
+    // deveria selecionar a resposta (futuro), ou pelo menos nao enviar lixo.
     if (e.key === 'Enter' && !e.shiftKey && !cannedOpen) {
-      // Enter simples envia também (padrão chat). Shift+Enter quebra linha.
       e.preventDefault();
       triggerSend();
     }
@@ -731,9 +741,6 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         </Button>
       </div>
 
-      <p className="text-[10px] text-muted-foreground">
-        Ctrl+Enter envia. Use <kbd className="px-1 rounded bg-muted">/</kbd> para abrir respostas prontas.
-      </p>
     </div>
   );
 }

@@ -223,9 +223,15 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
     onSuccess: () => {
       invalidate();
       toast({ title: 'Conversa resolvida' });
-      setResolveConfirm(null);
     },
     onError: (err) => handleMutationError(err, 'Erro ao resolver'),
+    // BUG-B3 (ajuste): fechar o AlertDialog em AMBOS os cenários (success/error)
+    // evita o estado "dialog preso" quando a mutation falha. Antes só fechávamos
+    // em onSuccess; se a request quebrasse o usuário precisava clicar Cancel
+    // manualmente. onSettled roda depois de onSuccess/onError.
+    onSettled: () => {
+      setResolveConfirm(null);
+    },
   });
 
   const reopenMutation = useMutation({
@@ -277,16 +283,39 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           <DropdownMenuLabel>Atribuir a</DropdownMenuLabel>
           <DropdownMenuSeparator />
           {user?.id && (
-            <DropdownMenuItem onClick={() => assignMutation.mutate(user.id)}>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                // BUG-B1: usar onSelect + preventDefault evita que o
+                // DropdownMenu feche durante a transicao de assign. Sem isso, o
+                // pointerup pos-close pode atravessar portais Radix e a
+                // conversa selecionada parece "deselecionar" — quando na verdade
+                // a lista refiltrou (filtro \"Atribuídas a mim\" deixou de
+                // bater) e o highlight do card sumiu. Manter o menu aberto +
+                // chamar a mutation explicitamente preserva o contexto visual.
+                e.preventDefault();
+                assignMutation.mutate(user.id);
+              }}
+            >
               Para mim
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onClick={() => assignMutation.mutate(null)}>
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.preventDefault();
+              assignMutation.mutate(null);
+            }}
+          >
             Não atribuído
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           {agents.map((a) => (
-            <DropdownMenuItem key={a.id} onClick={() => assignMutation.mutate(a.id)}>
+            <DropdownMenuItem
+              key={a.id}
+              onSelect={(e) => {
+                e.preventDefault();
+                assignMutation.mutate(a.id);
+              }}
+            >
               {a.nome || a.email}
             </DropdownMenuItem>
           ))}
@@ -358,7 +387,16 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           {(['urgent', 'high', 'medium', 'low'] as const).map((p) => (
             <DropdownMenuItem
               key={p}
-              onClick={() => priorityMutation.mutate(p)}
+              onSelect={(event) => {
+                // BUG-B2: usar onSelect (API canonica do Radix) + preventDefault
+                // impede que o pointerup pos-close do DropdownMenu atravesse o
+                // portal recem desmontado e atinja items do dropdown "Mais
+                // acoes" (sibling com align="end" na mesma regiao), o que
+                // abria o AlertDialog "Resolver" de forma inesperada em
+                // cliques rapidos.
+                event.preventDefault();
+                priorityMutation.mutate(p);
+              }}
               className={conversation.priority === p ? 'font-semibold text-primary' : ''}
             >
               {PRIORITY_LABEL[p]}
@@ -375,12 +413,19 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">
-          <DropdownMenuItem onClick={() => setTransferOpen(true)}>
+          {/*
+            BUG-B2/B3: itens que abrem Dialog/AlertDialog DEVEM usar onSelect
+            com preventDefault. Sem isso, o Radix fecha o menu e dispara focus
+            restoration no mesmo ciclo de eventos do React em que o setState
+            abre o modal — combinacao que cria phantom click no
+            AlertDialogAction "Resolver" (resolvendo a conversa sem confirmacao).
+          */}
+          <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setTransferOpen(true); }}>
             <ArrowRightLeft className="w-3.5 h-3.5 mr-2" />
             Transferir
           </DropdownMenuItem>
           <DropdownMenuItem
-            onClick={() => setSnoozeOpen(true)}
+            onSelect={(e) => { e.preventDefault(); setSnoozeOpen(true); }}
             disabled={isResolved}
           >
             <Clock className="w-3.5 h-3.5 mr-2" />
@@ -389,7 +434,7 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           <DropdownMenuSeparator />
           {isResolved ? (
             <DropdownMenuItem
-              onClick={() => reopenMutation.mutate()}
+              onSelect={(e) => { e.preventDefault(); reopenMutation.mutate(); }}
               disabled={reopenMutation.isPending}
             >
               <RotateCcw className="w-3.5 h-3.5 mr-2" />
@@ -397,11 +442,25 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
             </DropdownMenuItem>
           ) : (
             <>
-              <DropdownMenuItem onClick={() => setResolveConfirm('human')}>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  // BUG-B3 (ajuste): onSelect + preventDefault sozinhos já
+                  // bastam segundo a Radix docs — o setTimeout era band-aid
+                  // empírico que mascarava outro problema (auto-close do
+                  // AlertDialog short-circuitado por preventDefault no Action).
+                  e.preventDefault();
+                  setResolveConfirm('human');
+                }}
+              >
                 <CheckCircle2 className="w-3.5 h-3.5 mr-2" />
                 Resolver (humano)
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setResolveConfirm('ai')}>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setResolveConfirm('ai');
+                }}
+              >
                 <CheckCircle2 className="w-3.5 h-3.5 mr-2" />
                 Resolver (IA)
               </DropdownMenuItem>
@@ -532,10 +591,14 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
         </DialogContent>
       </Dialog>
 
-      {/* AlertDialog Resolver */}
+      {/* AlertDialog Resolver — controlled via open prop (sempre montado).
+          BUG-B3 (ajuste): o render condicional anterior quebrava as animações
+          de entrada/saída do Radix (o portal era desmontado antes do exit
+          terminar). Voltamos ao padrão controlado: sempre montado, com `open`
+          derivado de `resolveConfirm`. */}
       <AlertDialog
         open={resolveConfirm !== null}
-        onOpenChange={(open) => !open && setResolveConfirm(null)}
+        onOpenChange={(open) => { if (!open) setResolveConfirm(null); }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -548,8 +611,16 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            {/* BUG-B3 (ajuste): SEM e.preventDefault(). O preventDefault
+                short-circuita o composeEventHandlers interno do Radix, que é
+                exatamente o handler responsável pelo auto-close ao confirmar.
+                Sem auto-close, se a mutation falhasse o dialog ficava preso.
+                Agora o Radix fecha normalmente e onSettled da mutation limpa
+                o resolveConfirm de qualquer forma. */}
             <AlertDialogAction
-              onClick={() => resolveConfirm && resolveMutation.mutate(resolveConfirm)}
+              onClick={() => {
+                resolveMutation.mutate(resolveConfirm ?? 'human');
+              }}
               disabled={resolveMutation.isPending}
             >
               {resolveMutation.isPending ? 'Resolvendo...' : 'Resolver'}

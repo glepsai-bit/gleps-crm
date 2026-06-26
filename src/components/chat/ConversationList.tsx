@@ -375,6 +375,22 @@ export function ConversationList({
   const conversations = listQuery.data?.data ?? [];
   const total = listQuery.data?.total ?? 0;
 
+  // Sticky selection: garante que a conversa selecionada permaneça visível
+  // na lista mesmo que ela não bata com os filtros atuais (ex.: usuário
+  // resolveu a conversa e o filtro padrão é "open"). Lê do cache leve
+  // 'sidepanel-meta' que já é mantido pelo ConversationThread.
+  const visibleConversations = useMemo(() => {
+    if (!selectedConversationId) return conversations;
+    if (conversations.some((c) => c.id === selectedConversationId)) return conversations;
+    const cached = queryClient.getQueryData<Conversation | undefined>([
+      'conversation',
+      selectedConversationId,
+      'sidepanel-meta',
+    ]);
+    if (!cached) return conversations;
+    return [{ ...cached, __outOfFilter: true } as Conversation, ...conversations];
+  }, [conversations, selectedConversationId, queryClient]);
+
   const activeFiltersCount = useMemo(() => {
     let c = 0;
     if (filters.status !== 'open') c += 1;
@@ -621,7 +637,7 @@ export function ConversationList({
               Tentar novamente
             </Button>
           </div>
-        ) : conversations.length === 0 ? (
+        ) : visibleConversations.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 px-4 text-center text-muted-foreground">
             <InboxIcon className="w-10 h-10 mb-2 opacity-30" />
             <p className="text-sm font-medium">Nenhuma conversa encontrada</p>
@@ -629,8 +645,9 @@ export function ConversationList({
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {conversations.map((conv) => {
+            {visibleConversations.map((conv) => {
               const isSelected = conv.id === selectedConversationId;
+              const isOutOfFilter = Boolean((conv as Conversation & { __outOfFilter?: boolean }).__outOfFilter);
               const contactName = conv.contact?.nome || conv.contact?.telefone || 'Sem nome';
               const snippet = lastMessageSnippet(conv);
               const lastUpdate = relativeTime(conv.updatedAt);
@@ -687,6 +704,15 @@ export function ConversationList({
                           className="text-[9px] py-0 px-1 h-4 capitalize"
                         >
                           {conv.inbox.channelType}
+                        </Badge>
+                      )}
+                      {isOutOfFilter && (
+                        <Badge
+                          variant="outline"
+                          className="text-[9px] py-0 px-1 h-4 border-dashed text-muted-foreground"
+                          title="Conversa selecionada mas fora dos filtros atuais"
+                        >
+                          Fora do filtro
                         </Badge>
                       )}
                       {conv.unreadCount > 0 && (
