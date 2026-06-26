@@ -1,15 +1,33 @@
 import { prisma } from '../config/database';
+import { PaymentMethod } from '@prisma/client';
 import { DateRangeFilter } from '../types';
 import { startOfDay, endOfDay, eachDayOfInterval, eachWeekOfInterval, eachMonthOfInterval, subDays, format } from 'date-fns';
 
 type Granularity = 'day' | 'week' | 'month';
 
+export interface FinanceKpiExtraFilters {
+  responsavelId?: string;
+  metodoPagamento?: PaymentMethod;
+}
+
 class FinanceService {
   /**
    * Get finance KPIs
    */
-  async getKPIs(accountId: string, filters: DateRangeFilter) {
+  async getKPIs(
+    accountId: string,
+    filters: DateRangeFilter,
+    extraFilters: FinanceKpiExtraFilters = {}
+  ) {
     const where: any = { accountId };
+
+    if (extraFilters.responsavelId) {
+      where.responsavelId = extraFilters.responsavelId;
+    }
+
+    if (extraFilters.metodoPagamento) {
+      where.metodoPagamento = extraFilters.metodoPagamento;
+    }
 
     if (filters.startDate || filters.endDate) {
       where.createdAt = {};

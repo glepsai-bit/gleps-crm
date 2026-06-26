@@ -14,21 +14,38 @@ import {
 // Validation schemas
 // ============================================
 
-const createPolicySchema = z.object({
-  name: z
-    .string()
-    .min(1, 'name e obrigatorio')
-    .max(120, 'name deve ter no maximo 120 caracteres'),
-  firstResponseMin: z
-    .number({ invalid_type_error: 'firstResponseMin deve ser numerico' })
-    .int('firstResponseMin deve ser inteiro')
-    .positive('firstResponseMin deve ser positivo'),
-  resolutionMin: z
-    .number({ invalid_type_error: 'resolutionMin deve ser numerico' })
-    .int('resolutionMin deve ser inteiro')
-    .positive('resolutionMin deve ser positivo'),
-  businessHoursOnly: z.boolean().optional(),
-});
+// T1-SLA-COERENCIA: garantir resolutionMin >= firstResponseMin.
+// Sem esse check, o cron de SLA pode disparar resolution breach antes do
+// first_response breach (tempos invertidos), o que e logicamente incoerente.
+const createPolicySchema = z
+  .object({
+    name: z
+      .string()
+      .min(1, 'name e obrigatorio')
+      .max(120, 'name deve ter no maximo 120 caracteres'),
+    firstResponseMin: z
+      .number({ invalid_type_error: 'firstResponseMin deve ser numerico' })
+      .int('firstResponseMin deve ser inteiro')
+      .positive('firstResponseMin deve ser positivo'),
+    resolutionMin: z
+      .number({ invalid_type_error: 'resolutionMin deve ser numerico' })
+      .int('resolutionMin deve ser inteiro')
+      .positive('resolutionMin deve ser positivo'),
+    businessHoursOnly: z.boolean().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.resolutionMin != null &&
+      data.firstResponseMin != null &&
+      data.resolutionMin < data.firstResponseMin
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'resolutionMin deve ser >= firstResponseMin',
+        path: ['resolutionMin'],
+      });
+    }
+  });
 
 const updatePolicySchema = z
   .object({
@@ -52,6 +69,22 @@ const updatePolicySchema = z
   })
   .refine(data => Object.keys(data).length > 0, {
     message: 'Nada para atualizar',
+  })
+  .superRefine((data, ctx) => {
+    // T1-SLA-COERENCIA: idem para updates parciais quando AMBOS vierem juntos.
+    // Se so um for atualizado, validacao adicional contra o valor persistido
+    // deveria acontecer no service layer (fora do escopo deste fix).
+    if (
+      data.resolutionMin != null &&
+      data.firstResponseMin != null &&
+      data.resolutionMin < data.firstResponseMin
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'resolutionMin deve ser >= firstResponseMin',
+        path: ['resolutionMin'],
+      });
+    }
   });
 
 const applyPolicySchema = z.object({

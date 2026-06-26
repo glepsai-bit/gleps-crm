@@ -1,6 +1,7 @@
 import type { Conversation, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
+import { escapeLike } from '../utils/helpers';
 import { eventService } from './event.service';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
@@ -187,7 +188,8 @@ class ConversationService {
     }
 
     if (filters.search && filters.search.trim().length > 0) {
-      const term = filters.search.trim();
+      // T1-ILIKE-WILDCARD: escapa `%` e `_` no termo para evitar wildcards SQL.
+      const term = escapeLike(filters.search.trim());
       where.OR = [
         { externalId: { contains: term, mode: 'insensitive' } },
         { contact: { nome: { contains: term, mode: 'insensitive' } } },
@@ -265,7 +267,8 @@ class ConversationService {
         team: { select: { id: true, name: true } },
         messages: include.messages
           ? {
-              orderBy: { createdAt: 'asc' },
+              // T2-MSG-ORDER: tiebreaker por id quando createdAt colide (ms).
+              orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
               include: { attachments: true },
             }
           : false,

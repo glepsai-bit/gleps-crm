@@ -1,6 +1,7 @@
 import type { Message, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { NotFoundError, ValidationError } from '../utils/errors';
+import { escapeLike } from '../utils/helpers';
 import { logger } from '../utils/logger';
 import { eventService } from './event.service';
 import { webhookOutboundService } from './webhook-outbound.service';
@@ -154,9 +155,14 @@ class MessageService {
       }
     }
 
+    // T2-MSG-ORDER: tiebreaker por id quando createdAt colide (mesmo ms).
+    // Postgres só armazena timestamptz com precisão de microssegundos, mas a
+    // Evolution+webhook+backend roda em ms — mensagens criadas no mesmo tick
+    // (typical em respostas IA com múltiplas partes) ficavam fora de ordem.
+    // Ordenar id ASC como segundo critério garante determinismo no FE.
     return prisma.message.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit,
       include: {
         attachments: true,
@@ -682,7 +688,8 @@ class MessageService {
       where: {
         conversation: conversationFilter,
         isPrivate: false,
-        content: { contains: term, mode: 'insensitive' },
+        // T1-ILIKE-WILDCARD: escapa `%` e `_` para evitar wildcards SQL.
+        content: { contains: escapeLike(term), mode: 'insensitive' },
       },
       orderBy: { createdAt: 'desc' },
       take: limit,

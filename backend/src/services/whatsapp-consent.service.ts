@@ -3,6 +3,7 @@ import { prisma } from '../config/database';
 import { eventService } from './event.service';
 import { webhookOutboundService } from './webhook-outbound.service';
 import { ValidationError } from '../utils/errors';
+import { escapeLike } from '../utils/helpers';
 import { logger } from '../utils/logger';
 
 // ============================================
@@ -135,10 +136,20 @@ class WhatsappConsentService {
   /**
    * Remove qualquer caractere não numérico do telefone.
    * Ex: "+55 (11) 98765-4321" → "5511987654321"
+   *
+   * T1-PHONE-LEN: limita tamanho de entrada e do resultado para evitar
+   * que strings absurdas (ex.: 1000 digitos) propaguem por todo o stack
+   * (DB upsert, webhook outbound, logger payload, etc.).
    */
   normalizePhone(phone: string): string {
-    if (!phone) return '';
-    return String(phone).replace(/\D+/g, '');
+    if (typeof phone !== 'string' || phone.length > 30) {
+      throw new ValidationError('Telefone invalido');
+    }
+    const cleaned = phone.replace(/\D+/g, '');
+    if (cleaned.length < 10 || cleaned.length > 15) {
+      throw new ValidationError('Telefone deve ter 10-15 digitos');
+    }
+    return cleaned;
   }
 
   // ============================================
@@ -463,9 +474,10 @@ class WhatsappConsentService {
     if (filters.search && filters.search.trim()) {
       const normalizedSearch = this.normalizePhone(filters.search);
       // Se a busca for puramente texto (não vira número), busca em phone como contém
+      // T1-ILIKE-WILDCARD: escapa `%` e `_` para evitar wildcards SQL.
       where.phone = normalizedSearch
-        ? { contains: normalizedSearch }
-        : { contains: filters.search.trim() };
+        ? { contains: escapeLike(normalizedSearch) }
+        : { contains: escapeLike(filters.search.trim()) };
     }
 
     const limit = Math.min(filters.limit ?? DEFAULT_LIMIT, MAX_LIMIT);

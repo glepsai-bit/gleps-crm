@@ -29,7 +29,10 @@ export const PERMISSIONS = {
   
   // Email
   EMAILS: 'emails',
-  
+
+  // WhatsApp
+  WHATSAPP_TEMPLATES: 'whatsapp_templates',
+
   // Administration
   USERS: 'users',
   SETTINGS: 'settings',
@@ -70,6 +73,10 @@ export const PERMISSION_GROUPS = {
   EMAILS: {
     label: 'E-mails',
     permissions: [PERMISSIONS.EMAILS],
+  },
+  WHATSAPP: {
+    label: 'WhatsApp',
+    permissions: [PERMISSIONS.WHATSAPP_TEMPLATES],
   },
   ADMIN: {
     label: 'Administração',

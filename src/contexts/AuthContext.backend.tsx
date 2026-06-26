@@ -315,14 +315,47 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // T1-IMPERSONATION-LS (security fix):
+  // O original_token de impersonation antes ficava em localStorage como texto
+  // plano, vivendo entre abas/sessoes e ficando exposto a exfiltracao via XSS.
+  // Solucao pragmatica de baixo impacto: trocar por sessionStorage — perde-se
+  // ao fechar a aba, drasticamente reduzindo a janela de exposicao. O nome da
+  // chave eh constante para evitar typos.
+  const ORIGINAL_TOKEN_KEY = 'original_token';
+
+  const readOriginalToken = (): string | null => {
+    try {
+      return sessionStorage.getItem(ORIGINAL_TOKEN_KEY);
+    } catch {
+      return null;
+    }
+  };
+  const writeOriginalToken = (token: string): void => {
+    try {
+      sessionStorage.setItem(ORIGINAL_TOKEN_KEY, token);
+    } catch {
+      // sessionStorage pode estar bloqueado — silencioso.
+    }
+  };
+  const clearOriginalToken = (): void => {
+    try {
+      sessionStorage.removeItem(ORIGINAL_TOKEN_KEY);
+      // Cleanup defensivo: remove residuos de versoes anteriores que escreviam
+      // a chave em localStorage. Idempotente.
+      localStorage.removeItem(ORIGINAL_TOKEN_KEY);
+    } catch {
+      // silencioso
+    }
+  };
+
   const impersonate = useCallback(async (userId: string) => {
     if (authState.user?.role !== 'super_admin') return;
 
     try {
-      // Save original token before swapping
+      // Save original token before swapping (sessionStorage — mais efemero)
       const originalToken = tokenManager.getToken();
       if (originalToken) {
-        localStorage.setItem('original_token', originalToken);
+        writeOriginalToken(originalToken);
       }
 
       const raw = await apiClient.post<any>(
@@ -346,10 +379,10 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
       toast.success(`Assumindo identidade de ${targetUser.nome}`);
     } catch {
       // Restore original token on failure
-      const originalToken = localStorage.getItem('original_token');
+      const originalToken = readOriginalToken();
       if (originalToken) {
         tokenManager.setToken(originalToken);
-        localStorage.removeItem('original_token');
+        clearOriginalToken();
       }
       toast.error('Erro ao assumir identidade');
     }
@@ -358,10 +391,10 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
   const exitImpersonation = useCallback(() => {
     if (!originalUser) return;
     // Restore original super admin token
-    const originalToken = localStorage.getItem('original_token');
+    const originalToken = readOriginalToken();
     if (originalToken) {
       tokenManager.setToken(originalToken);
-      localStorage.removeItem('original_token');
+      clearOriginalToken();
     }
     writeAuthCache(originalUser, null);
     setAuthState(prev => ({ ...prev, user: originalUser, account: null }));

@@ -4,9 +4,14 @@ import { authService } from '../services/auth.service';
 import { AuthenticatedRequest } from '../types';
 
 // Validation schemas
+// T1-LOGIN-MAX: limite explicito de tamanho para evitar payload abusivo
+// (ex.: email de 1MB passando pelo z.string().email() sem .max()).
 const loginSchema = z.object({
-  email: z.string().email('Email inválido'),
-  password: z.string().min(6, 'Senha deve ter pelo menos 6 caracteres'),
+  email: z.string().email('Email inválido').max(254, 'Email muito longo'),
+  password: z
+    .string()
+    .min(6, 'Senha deve ter pelo menos 6 caracteres')
+    .max(128, 'Senha muito longa'),
 });
 
 const refreshSchema = z.object({
@@ -14,7 +19,10 @@ const refreshSchema = z.object({
 });
 
 const verifyPasswordSchema = z.object({
-  password: z.string().min(1, 'Senha é obrigatória'),
+  password: z
+    .string()
+    .min(1, 'Senha é obrigatória')
+    .max(128, 'Senha muito longa'),
 });
 
 export class AuthController {

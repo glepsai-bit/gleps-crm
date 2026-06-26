@@ -1,7 +1,6 @@
-import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
-
-const prisma = new PrismaClient();
+// T2-PRISMA-CLIENT-LEAK: usar singleton de prisma para evitar vazar pool de conexoes.
+import { prisma } from '../config/database';
 
 // Lazy import to avoid circular dependency
 let _emailService: any = null;

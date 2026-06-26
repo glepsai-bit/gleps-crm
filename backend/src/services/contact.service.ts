@@ -1,8 +1,8 @@
 import { prisma } from '../config/database';
 import { ContactOrigin } from '@prisma/client';
 import { PaginationParams } from '../types';
-import { NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
-import { getPaginationMeta } from '../utils/helpers';
+import { ConflictError, NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
+import { getPaginationMeta, escapeLike } from '../utils/helpers';
 import { eventService } from './event.service';
 
 export interface CreateContactInput {
@@ -37,10 +37,13 @@ class ContactService {
     };
 
     if (filters.search) {
+      // T1-ILIKE-WILDCARD: escapa `%` e `_` para evitar que um termo de busca
+      // como `%` retorne TODOS os registros via wildcard SQL não-intencional.
+      const safeSearch = escapeLike(filters.search);
       where.OR = [
-        { nome: { contains: filters.search, mode: 'insensitive' } },
-        { email: { contains: filters.search, mode: 'insensitive' } },
-        { telefone: { contains: filters.search } },
+        { nome: { contains: safeSearch, mode: 'insensitive' } },
+        { email: { contains: safeSearch, mode: 'insensitive' } },
+        { telefone: { contains: safeSearch } },
       ];
     }
 
@@ -305,6 +308,14 @@ class ContactService {
 
   /**
    * Apply tag to contact
+   *
+   * T1-APPLYTAG-RACE: as 4 escritas (delete stage tags antigas, create leadTag novo,
+   * tagHistory para cada delete e tagHistory do create) precisam ser atômicas.
+   * Antes ficavam fora de transação — 5 POSTs paralelos batiam o unique
+   * `(contactId, tagId)` do LeadTag entre o findUnique e o create, retornando
+   * 500 (P2002). Agora a janela é estreita pra dentro da $transaction; em
+   * caso de corrida residual, o P2002 vira ConflictError (HTTP 409) — o
+   * caller (Kanban) recebe um erro semântico em vez de 500.
    */
   async applyTag(
     id: string,
@@ -315,7 +326,7 @@ class ContactService {
   ) {
     const contact = await this.getById(id, accountId);
 
-    // Get the tag
+    // Get the tag (read fora da transação — é imutável dentro do tempo de vida da operação)
     const tag = await prisma.tag.findUnique({
       where: { id: tagId },
     });
@@ -324,71 +335,89 @@ class ContactService {
       throw new NotFoundError('Tag');
     }
 
-    // If it's a stage tag, remove other stage tags first
-    if (tag.type === 'stage') {
-      const existingStageTags = await prisma.leadTag.findMany({
-        where: {
-          contactId: id,
-          tag: { type: 'stage' },
-        },
-        include: { tag: true },
-      });
+    try {
+      await prisma.$transaction(async (tx) => {
+        // If it's a stage tag, remove other stage tags first (mesma transação).
+        if (tag.type === 'stage') {
+          const existingStageTags = await tx.leadTag.findMany({
+            where: {
+              contactId: id,
+              tag: { type: 'stage' },
+              NOT: { tagId },
+            },
+            include: { tag: true },
+          });
 
-      for (const existing of existingStageTags) {
-        await prisma.leadTag.delete({
-          where: { id: existing.id },
+          for (const existing of existingStageTags) {
+            await tx.leadTag.delete({
+              where: { id: existing.id },
+            });
+
+            await tx.tagHistory.create({
+              data: {
+                contactId: id,
+                tagId: existing.tagId,
+                action: 'removed',
+                actorType: appliedById ? 'user' : 'system',
+                actorId: appliedById,
+                source,
+                tagName: existing.tag.name,
+                contactNome: contact.nome,
+              },
+            });
+          }
+        }
+
+        // Check if tag is already applied
+        const existingLeadTag = await tx.leadTag.findUnique({
+          where: {
+            contactId_tagId: { contactId: id, tagId },
+          },
         });
 
-        await prisma.tagHistory.create({
+        if (existingLeadTag) {
+          return; // Tag already applied — idempotente
+        }
+
+        // Apply the tag
+        await tx.leadTag.create({
           data: {
             contactId: id,
-            tagId: existing.tagId,
-            action: 'removed',
+            tagId,
+            appliedByType: appliedById ? 'user' : 'system',
+            appliedById,
+            source,
+          },
+        });
+
+        // Record history
+        await tx.tagHistory.create({
+          data: {
+            contactId: id,
+            tagId,
+            action: 'added',
             actorType: appliedById ? 'user' : 'system',
             actorId: appliedById,
             source,
-            tagName: existing.tag.name,
+            tagName: tag.name,
             contactNome: contact.nome,
           },
         });
+      });
+    } catch (err: any) {
+      // T1-APPLYTAG-RACE: corrida residual entre transações concorrentes que
+      // criem a MESMA (contactId, tagId) — Postgres rejeita a segunda com
+      // P2002 (unique violation). Em vez de devolver 500, traduzimos pra 409:
+      // a tag já foi aplicada por outra request paralela, então o efeito
+      // semântico está garantido.
+      if (err?.code === 'P2002') {
+        throw new ConflictError(
+          'Tag já aplicada nesta requisição concorrente',
+          { contactId: id, tagId }
+        );
       }
+      throw err;
     }
-
-    // Check if tag is already applied
-    const existingLeadTag = await prisma.leadTag.findUnique({
-      where: {
-        contactId_tagId: { contactId: id, tagId },
-      },
-    });
-
-    if (existingLeadTag) {
-      return contact; // Tag already applied
-    }
-
-    // Apply the tag
-    await prisma.leadTag.create({
-      data: {
-        contactId: id,
-        tagId,
-        appliedByType: appliedById ? 'user' : 'system',
-        appliedById,
-        source,
-      },
-    });
-
-    // Record history
-    await prisma.tagHistory.create({
-      data: {
-        contactId: id,
-        tagId,
-        action: 'added',
-        actorType: appliedById ? 'user' : 'system',
-        actorId: appliedById,
-        source,
-        tagName: tag.name,
-        contactNome: contact.nome,
-      },
-    });
 
     await eventService.create({
       eventType: tag.type === 'stage' ? 'lead.stage.changed' : 'lead.tag.added',

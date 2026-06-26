@@ -1,7 +1,7 @@
 import { prisma } from '../config/database';
 import { PaginationParams } from '../types';
 import { NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
-import { getPaginationMeta } from '../utils/helpers';
+import { getPaginationMeta, escapeLike } from '../utils/helpers';
 import { eventService } from './event.service';
 
 export interface CreateProductInput {
@@ -36,7 +36,8 @@ class ProductService {
     };
 
     if (filters.search) {
-      where.nome = { contains: filters.search, mode: 'insensitive' };
+      // T1-ILIKE-WILDCARD: escapa `%` e `_` para evitar wildcards SQL.
+      where.nome = { contains: escapeLike(filters.search), mode: 'insensitive' };
     }
 
     if (filters.ativo !== undefined) {

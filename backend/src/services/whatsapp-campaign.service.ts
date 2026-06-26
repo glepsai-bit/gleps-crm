@@ -593,6 +593,15 @@ class WhatsappCampaignService {
     const defaultVariables: Record<string, string> =
       (metadata.defaultVariables as Record<string, string>) ?? {};
     const directContent: string | null = metadata.content ?? null;
+    // T2-VARIANTES-SCHEDULED: quando o batch foi criado com multiplas variantes
+    // de mensagem (A/B/C), o path imediato (prospecting.service.processDispatch)
+    // ja sorteia uma por recipient via Math.random. O path scheduled
+    // anteriormente lia apenas metadata.content (string unica), ignorando o array.
+    // Agora respeitamos metadata.messages: se for array com >1 item, escolhemos
+    // uma variante por recipient dentro do loop abaixo.
+    const variantMessages: string[] = Array.isArray(metadata.messages)
+      ? metadata.messages.filter((m: unknown): m is string => typeof m === 'string' && m.length > 0)
+      : [];
 
     if (recipients.length === 0) {
       logger.warn('[whatsapp-campaign] batch sem destinatários', { batchId });
@@ -707,7 +716,17 @@ class WhatsappCampaignService {
         ...(recipient.variables ?? {}),
       };
 
-      const rawContent = templateContent ?? directContent ?? '';
+      // T2-VARIANTES-SCHEDULED: replica a mesma logica de random pick por
+      // recipient usada no path imediato (prospecting.service.processDispatch).
+      // Precedencia: template > variantes (messages[]) > content unico.
+      let rawContent: string;
+      if (templateContent !== null) {
+        rawContent = templateContent;
+      } else if (variantMessages.length > 0) {
+        rawContent = variantMessages[Math.floor(Math.random() * variantMessages.length)];
+      } else {
+        rawContent = directContent ?? '';
+      }
       const message = renderTemplate(rawContent, variables);
 
       try {
@@ -1015,28 +1034,44 @@ class WhatsappCampaignService {
   // ============================================
 
   async cancelScheduled(id: string, accountId: string): Promise<void> {
-    const batch = await prisma.dispatchBatch.findFirst({
-      where: { id, accountId },
-      select: { id: true, status: true },
-    });
-
-    if (!batch) throw new NotFoundError('Disparo');
-
-    if (batch.status !== 'scheduled') {
-      throw new ValidationError(
-        `Apenas disparos agendados podem ser cancelados (status atual: ${batch.status})`
-      );
-    }
-
-    await prisma.dispatchBatch.update({
-      where: { id },
+    // T2-CANCEL-3-SEMANTICAS: consolidar com a semantica de
+    // prospectingService.cancelScheduledBatch (DELETE /api/prospecting/batches/:id),
+    // que aceita qualquer batch em estado nao-final: scheduled | paused | running.
+    // Antes, este endpoint (DELETE /api/dispatch/batches/:id) so aceitava
+    // scheduled, divergindo da rota usada pela UI. updateMany atomico evita
+    // TOCTOU igual ao pattern do prospecting.
+    const result = await prisma.dispatchBatch.updateMany({
+      where: {
+        id,
+        accountId,
+        status: { in: ['scheduled', 'paused', 'running'] },
+      },
       data: {
         status: 'cancelled',
         completedAt: new Date(),
       },
     });
 
-    logger.info('[whatsapp-campaign] disparo agendado cancelado', { batchId: id });
+    if (result.count === 0) {
+      const batch = await prisma.dispatchBatch.findFirst({
+        where: { id, accountId },
+        select: { status: true },
+      });
+      if (!batch) throw new NotFoundError('Disparo');
+      throw new ValidationError(
+        `Nao e possivel cancelar um disparo ja finalizado (status atual: ${batch.status})`
+      );
+    }
+
+    // Marca logs pendentes como cancelled — mantem paridade com prospecting e
+    // evita que o loop processBatchInBackground (caso ainda esteja rodando para
+    // status='running') deixe logs orfaos em 'pending'.
+    await prisma.dispatchLog.updateMany({
+      where: { batchId: id, status: 'pending' },
+      data: { status: 'cancelled', errorMessage: 'Cancelado pelo usuario' },
+    });
+
+    logger.info('[whatsapp-campaign] disparo cancelado', { batchId: id });
 
     // T-022 Sprint 3 — evento de cancelamento
     webhookOutboundService

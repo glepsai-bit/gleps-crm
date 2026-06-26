@@ -152,3 +152,24 @@ export function formatCurrency(value: number): string {
     currency: 'BRL',
   }).format(value);
 }
+
+/**
+ * Escapa wildcards do LIKE/ILIKE (`%`, `_`) e o caractere de escape (`\`)
+ * para uso seguro em filtros `contains`/`startsWith`/`endsWith` do Prisma.
+ *
+ * Sem essa proteção, um termo de busca como `%` (ou `_`) viraria coringa
+ * SQL — retornando TODOS os registros. Isto é uma vulnerabilidade que
+ * permite enumeração não-intencional via campo de busca.
+ *
+ * Uso:
+ *   { contains: escapeLike(search), mode: 'insensitive' }
+ *
+ * NOTA: O Prisma 5 já lida com escape em algumas situações, mas o
+ * comportamento varia por driver/versão; aplicamos defesa em profundidade.
+ */
+export function escapeLike(input: string): string {
+  return input
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_');
+}

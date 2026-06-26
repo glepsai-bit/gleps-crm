@@ -1,6 +1,7 @@
 import { CannedResponse, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
+import { escapeLike } from '../utils/helpers';
 
 export interface CreateCannedResponseInput {
   shortCode: string;
@@ -33,7 +34,8 @@ class CannedResponseService {
     const where: Prisma.CannedResponseWhereInput = { accountId };
 
     if (search && search.trim().length > 0) {
-      const term = search.trim();
+      // T1-ILIKE-WILDCARD: escapa `%` e `_` para evitar wildcards SQL.
+      const term = escapeLike(search.trim());
       where.OR = [
         { shortCode: { contains: term, mode: 'insensitive' } },
         { content: { contains: term, mode: 'insensitive' } },

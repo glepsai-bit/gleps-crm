@@ -11,25 +11,62 @@ const createSaleItemSchema = z.object({
   valorUnitario: z.number().positive(),
 });
 
-const createSaleSchema = z.object({
-  contactId: z.string().uuid(),
-  metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio']),
-  convenioNome: z.string().optional(),
-  items: z.array(createSaleItemSchema).min(1, 'Pelo menos um item é obrigatório'),
-});
+const createSaleSchema = z
+  .object({
+    contactId: z.string().uuid(),
+    metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio']),
+    convenioNome: z.string().optional(),
+    items: z.array(createSaleItemSchema).min(1, 'Pelo menos um item é obrigatório'),
+  })
+  .superRefine((data, ctx) => {
+    if (data.metodoPagamento === 'convenio' && !data.convenioNome) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'convenioNome obrigatorio quando metodoPagamento=convenio',
+        path: ['convenioNome'],
+      });
+    }
+  });
 
 const refundSchema = z.object({
   reason: z.string().min(3, 'Justificativa deve ter pelo menos 3 caracteres'),
 });
 
-const listSalesSchema = z.object({
-  contactId: z.string().uuid().optional(),
-  status: z.enum(['pending', 'paid', 'refunded', 'partial_refund']).optional(),
-  responsavelId: z.string().uuid().optional(),
-  metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio']).optional(),
-  startDate: z.string().datetime().optional(),
-  endDate: z.string().datetime().optional(),
-});
+const listSalesSchema = z
+  .object({
+    contactId: z.string().uuid().optional(),
+    status: z.enum(['pending', 'paid', 'refunded', 'partial_refund']).optional(),
+    responsavelId: z.string().uuid().optional(),
+    metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio']).optional(),
+    startDate: z.string().datetime().optional(),
+    endDate: z.string().datetime().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.startDate && data.endDate && data.startDate > data.endDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'endDate deve ser >= startDate',
+        path: ['endDate'],
+      });
+    }
+  });
+
+const salesKpisQuerySchema = z
+  .object({
+    startDate: z.string().datetime().optional(),
+    endDate: z.string().datetime().optional(),
+    responsavelId: z.string().uuid().optional(),
+    metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio']).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.startDate && data.endDate && data.startDate > data.endDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'endDate deve ser >= startDate',
+        path: ['endDate'],
+      });
+    }
+  });
 
 export class SaleController {
   /**
@@ -163,12 +200,23 @@ export class SaleController {
    */
   async getKPIs(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const dateRange = getDateRangeFilter(req);
+      const query = salesKpisQuerySchema.parse(req.query);
 
-      // Agents see only their own KPIs
-      const responsavelId = req.user!.role === 'agent' ? req.user!.id : undefined;
+      const dateRange = {
+        startDate: query.startDate ? new Date(query.startDate) : undefined,
+        endDate: query.endDate ? new Date(query.endDate) : undefined,
+      };
 
-      const result = await saleService.getKPIs(req.user!.accountId!, dateRange, responsavelId);
+      // Agents see only their own KPIs — overrides any filter
+      let responsavelId = query.responsavelId;
+      if (req.user!.role === 'agent') {
+        responsavelId = req.user!.id;
+      }
+
+      const result = await saleService.getKPIs(req.user!.accountId!, dateRange, {
+        responsavelId,
+        metodoPagamento: query.metodoPagamento,
+      });
 
       res.json({ data: result });
     } catch (error) {

@@ -172,20 +172,30 @@ class SaleService {
       }
     }
 
-    // Check for recurring sale (scoped to account)
-    const existingSale = await prisma.sale.findFirst({
-      where: {
-        accountId: input.accountId,
-        contactId: input.contactId,
-        items: {
-          some: {
-            productId: { in: input.items.map(i => i.productId) },
+    // Check for recurring sale (scoped to account).
+    // T2-RECURRING-SOMEEVERY: marcamos como recorrente apenas quando TODOS os
+    // produtos da venda atual já foram comprados antes pelo mesmo contato
+    // (vendas mistas com pelo menos 1 produto novo NÃO devem ser recorrentes).
+    const productIds = input.items.map(i => i.productId);
+
+    let isRecurring = false;
+
+    if (productIds.length > 0) {
+      const previouslyPurchased = await prisma.saleItem.findMany({
+        where: {
+          productId: { in: productIds },
+          sale: {
+            accountId: input.accountId,
+            contactId: input.contactId,
           },
         },
-      },
-    });
+        select: { productId: true },
+        distinct: ['productId'],
+      });
 
-    const isRecurring = !!existingSale;
+      const purchasedSet = new Set(previouslyPurchased.map(p => p.productId));
+      isRecurring = productIds.every(pid => purchasedSet.has(pid));
+    }
 
     // Calculate total value
     const totalValue = input.items.reduce(
@@ -394,11 +404,25 @@ class SaleService {
   /**
    * Get sales KPIs
    */
-  async getKPIs(accountId: string, filters: DateRangeFilter, responsavelId?: string) {
+  async getKPIs(
+    accountId: string,
+    filters: DateRangeFilter,
+    extraFilters: { responsavelId?: string; metodoPagamento?: PaymentMethod } | string = {}
+  ) {
+    // Backwards-compat: o controller antigo passava `responsavelId` direto como string.
+    const normalized: { responsavelId?: string; metodoPagamento?: PaymentMethod } =
+      typeof extraFilters === 'string'
+        ? { responsavelId: extraFilters }
+        : extraFilters || {};
+
     const where: any = { accountId };
 
-    if (responsavelId) {
-      where.responsavelId = responsavelId;
+    if (normalized.responsavelId) {
+      where.responsavelId = normalized.responsavelId;
+    }
+
+    if (normalized.metodoPagamento) {
+      where.metodoPagamento = normalized.metodoPagamento;
     }
 
     if (filters.startDate || filters.endDate) {

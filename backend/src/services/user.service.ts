@@ -2,7 +2,7 @@ import { prisma } from '../config/database';
 import { UserRole, UserStatus } from '@prisma/client';
 import { PaginationParams } from '../types';
 import { NotFoundError, ConflictError, ValidationError, ErrorCodes } from '../utils/errors';
-import { getPaginationMeta } from '../utils/helpers';
+import { getPaginationMeta, escapeLike } from '../utils/helpers';
 import { authService } from './auth.service';
 import { eventService } from './event.service';
 
@@ -50,9 +50,11 @@ class UserService {
     }
 
     if (filters.search) {
+      // T1-ILIKE-WILDCARD: escapa `%` e `_` para evitar wildcards SQL.
+      const safeSearch = escapeLike(filters.search);
       where.OR = [
-        { nome: { contains: filters.search, mode: 'insensitive' } },
-        { email: { contains: filters.search, mode: 'insensitive' } },
+        { nome: { contains: safeSearch, mode: 'insensitive' } },
+        { email: { contains: safeSearch, mode: 'insensitive' } },
       ];
     }
 

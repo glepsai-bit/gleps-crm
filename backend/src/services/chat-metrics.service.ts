@@ -21,6 +21,16 @@
 
 import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
+import { ValidationError } from '../utils/errors';
+
+/**
+ * Range máximo permitido para consultas de métricas (em dias).
+ * Acima disso o payload explode (>3000 buckets diários inflam recharts/JSON)
+ * e nenhum dashboard útil precisa de janela maior que 1 ano.
+ * Aplicado em getMetrics e nas variantes que aceitam fromDate/toDate.
+ */
+const MAX_RANGE_DAYS = 365;
+const MS_PER_DAY = 86400000;
 
 // ============================================
 // Types
@@ -223,6 +233,16 @@ class ChatMetricsService {
     }
     if (fromDate > toDate) {
       throw new Error('fromDate não pode ser maior que toDate');
+    }
+
+    // FIX (T2-METRICS-RANGE): cap em 365 dias. Sem isso, um range de "30 anos"
+    // gera 3660 buckets diários (~198KB de JSON) e trava o recharts no FE.
+    // Erro semântico (ValidationError) pra o controller responder 400.
+    const diffDays = (toDate.getTime() - fromDate.getTime()) / MS_PER_DAY;
+    if (diffDays > MAX_RANGE_DAYS) {
+      throw new ValidationError(
+        `Range máximo permitido é ${MAX_RANGE_DAYS} dias`
+      );
     }
 
     // FIX (review): inclui conversas resolvidas no período mesmo que tenham
@@ -869,8 +889,18 @@ class ChatMetricsService {
     });
 
     // Mapeia conversationId -> contactId pra agregar por contato.
+    // FIX (T2-RETURNING-FILTERS-PARTIAL): reaplica os mesmos filtros (inbox/
+    // team/agent) usados no getReturningLeadsCount. Sem isso, lastConversationId
+    // podia apontar pra uma conversa de outro team/agent — drill-down mostrava
+    // dados de fora do filtro.
     const convs = await prisma.conversation.findMany({
-      where: { accountId, contactId: { in: leadIds } },
+      where: {
+        accountId,
+        contactId: { in: leadIds },
+        ...(filters.inboxId ? { inboxId: filters.inboxId } : {}),
+        ...(filters.teamId ? { teamId: filters.teamId } : {}),
+        ...(filters.agentId ? { assigneeId: filters.agentId } : {}),
+      },
       select: {
         id: true,
         contactId: true,

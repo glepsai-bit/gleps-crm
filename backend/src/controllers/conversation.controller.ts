@@ -76,9 +76,19 @@ const participantSchema = z.object({
   userId: z.string().min(1, 'userId é obrigatório'),
 });
 
-const customAttrsSchema = z.object({
-  attrs: z.record(z.unknown()),
-});
+// T2-CONV-ATTRS: aceita ambos `attrs` (legado) e `customAttributes` (camelCase
+// como a UI envia). Normaliza pra `attrs` internamente. Antes a UI mandava
+// `customAttributes:{}` e o schema rejeitava (400 — sem efeito). Agora os dois
+// shapes funcionam; pelo menos um precisa estar presente.
+const customAttrsSchema = z
+  .object({
+    attrs: z.record(z.unknown()).optional(),
+    customAttributes: z.record(z.unknown()).optional(),
+  })
+  .refine((d) => d.attrs !== undefined || d.customAttributes !== undefined, {
+    message: 'Informe attrs ou customAttributes',
+  })
+  .transform((d) => ({ attrs: (d.attrs ?? d.customAttributes) as Record<string, unknown> }));
 
 // ============================================
 // Helpers

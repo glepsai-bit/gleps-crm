@@ -38,8 +38,12 @@ const sendSingleSchema = z
     path: ['templateId'],
   });
 
+// T2-PHONE-LETRAS: phone deve conter apenas dígitos (10-15) para evitar que
+// strings com letras (ex.: 'ABC123') passem o batch validator e quebrem o
+// envio na Evolution. O service ainda normaliza/valida na borda, mas aqui
+// pegamos cedo com 400 + mensagem clara.
 const phoneRecipientSchema = z.object({
-  phone: z.string().min(1, 'phone é obrigatório'),
+  phone: z.string().regex(/^\d{10,15}$/, 'Telefone deve ter 10-15 digitos numericos'),
   name: z.string().optional(),
   variables: recordOfStringsSchema.optional(),
 });
@@ -264,7 +268,11 @@ export class WhatsappCampaignController {
 
   /**
    * DELETE /batches/:id
-   * Cancela um batch agendado (apenas status='scheduled').
+   * T2-CANCEL-3-SEMANTICAS: cancela um batch em qualquer estado nao-final
+   * (scheduled | paused | running). Alinhado com DELETE /api/prospecting/batches/:id
+   * para que o frontend tenha comportamento consistente entre os dois aliases.
+   * Soft-deprecado: POST /api/prospecting/cancel (so running) continua existindo
+   * por compatibilidade, mas novos consumers devem usar este endpoint REST.
    */
   async cancelScheduled(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {

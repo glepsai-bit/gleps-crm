@@ -19,11 +19,21 @@ const listQuerySchema = z.object({
   search: z.string().optional(),
 });
 
+// T1-CANNED-SPACE: shortCode é o gatilho do composer (`/atalho`). O composer
+// dá split por whitespace, então um shortCode com espaço (ex.: `hello world`)
+// nunca casaria — só `hello` seria considerado. Forçamos um charset seguro
+// (letras/dígitos/`_`/`-`) para evitar entradas que silenciosamente não
+// funcionam e também caracteres exóticos que confundem o autocomplete.
+const SHORT_CODE_REGEX = /^[a-zA-Z0-9_-]+$/;
+const SHORT_CODE_ERROR =
+  'shortCode deve conter apenas letras, números, "_" e "-" (sem espaços)';
+
 const createSchema = z.object({
   shortCode: z
     .string()
     .min(1, 'shortCode é obrigatório')
-    .max(80, 'shortCode deve ter no máximo 80 caracteres'),
+    .max(80, 'shortCode deve ter no máximo 80 caracteres')
+    .regex(SHORT_CODE_REGEX, SHORT_CODE_ERROR),
   content: z.string().min(1, 'content é obrigatório'),
   description: z.string().nullable().optional(),
 });
@@ -33,6 +43,7 @@ const updateSchema = z.object({
     .string()
     .min(1, 'shortCode é obrigatório')
     .max(80, 'shortCode deve ter no máximo 80 caracteres')
+    .regex(SHORT_CODE_REGEX, SHORT_CODE_ERROR)
     .optional(),
   content: z.string().min(1, 'content é obrigatório').optional(),
   description: z.string().nullable().optional(),

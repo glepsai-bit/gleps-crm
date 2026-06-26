@@ -1,9 +1,9 @@
-import { PrismaClient, EmailSendStatus } from '@prisma/client';
+import { EmailSendStatus } from '@prisma/client';
 import { sendgridService } from './sendgrid.service';
 import { logger } from '../utils/logger';
 import { NotFoundError } from '../utils/errors';
-
-const prisma = new PrismaClient();
+// T2-PRISMA-CLIENT-LEAK: usar singleton de prisma para evitar vazar pool de conexoes.
+import { prisma } from '../config/database';
 
 // Utility: delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -215,6 +215,8 @@ export const emailService = {
     createdBy?: string;
     sendAtTime?: string;
     startDate?: string;
+    // T2-CADENCE-CAMPAIGNID: aceitar campaignId opcional vindo do cliente.
+    campaignId?: string | null;
   }) {
     return prisma.emailCadence.create({
       data: {
@@ -225,6 +227,8 @@ export const emailService = {
         createdBy: data.createdBy,
         sendAtTime: data.sendAtTime || '09:00',
         startDate: data.startDate ? new Date(data.startDate) : new Date(),
+        // T2-CADENCE-CAMPAIGNID: persistir associacao com EmailCampaign quando informada.
+        campaignId: data.campaignId ?? null,
       },
       include: { steps: true },
     });
@@ -237,6 +241,8 @@ export const emailService = {
     active?: boolean;
     sendAtTime?: string;
     startDate?: string;
+    // T2-CADENCE-CAMPAIGNID: permitir trocar/limpar associacao com campanha.
+    campaignId?: string | null;
   }) {
     const updateData: any = { ...data };
     if (data.startDate) {

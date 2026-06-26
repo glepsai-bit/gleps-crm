@@ -3,11 +3,24 @@ import { z } from 'zod';
 import { whatsappTemplateService } from '../services/whatsapp-template.service';
 import { AuthenticatedRequest } from '../types';
 
+// T1-XSS-TEMPLATE: rejeita qualquer tag HTML no conteúdo do template.
+// Templates de WhatsApp usam apenas texto puro + variáveis (`{nome}`), nunca
+// rich text/HTML. Permitir tags abriria espaço para XSS na UI de preview e
+// para payloads inesperados no destino (Evolution API/WhatsApp).
+const HTML_TAG_REGEX = /<[^>]+>/;
+
 // Validation schemas
 const createWhatsappTemplateSchema = z.object({
-  name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
-  content: z.string().min(1, 'Conteúdo do template é obrigatório'),
-  category: z.string().optional(),
+  name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres').max(120),
+  content: z
+    .string()
+    .min(1, 'Conteúdo do template é obrigatório')
+    .max(4096, 'Conteúdo do template excede 4096 caracteres')
+    .refine(
+      (v) => !HTML_TAG_REGEX.test(v),
+      'Conteúdo não pode conter HTML (use texto puro + variáveis, ex.: {nome})'
+    ),
+  category: z.string().max(60).optional(),
 });
 
 const updateWhatsappTemplateSchema = createWhatsappTemplateSchema.partial();

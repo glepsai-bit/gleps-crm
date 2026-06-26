@@ -14,19 +14,19 @@ router.use(authenticate);
 router.use(requireRole('super_admin', 'admin'));
 router.use(requireAccountId);
 
-router.get('/', requirePermission('emails'), (req, res, next) =>
+router.get('/', requirePermission('whatsapp_templates'), (req, res, next) =>
   whatsappTemplateController.list(req, res, next)
 );
-router.post('/', requirePermission('emails'), (req, res, next) =>
+router.post('/', requirePermission('whatsapp_templates'), (req, res, next) =>
   whatsappTemplateController.create(req, res, next)
 );
-router.get('/:id', requirePermission('emails'), (req, res, next) =>
+router.get('/:id', requirePermission('whatsapp_templates'), (req, res, next) =>
   whatsappTemplateController.get(req, res, next)
 );
-router.patch('/:id', requirePermission('emails'), (req, res, next) =>
+router.patch('/:id', requirePermission('whatsapp_templates'), (req, res, next) =>
   whatsappTemplateController.update(req, res, next)
 );
-router.delete('/:id', requirePermission('emails'), (req, res, next) =>
+router.delete('/:id', requirePermission('whatsapp_templates'), (req, res, next) =>
   whatsappTemplateController.delete(req, res, next)
 );
 

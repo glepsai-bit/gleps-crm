@@ -1,11 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { emailService } from '../services/email.service';
 import { emailAiService } from '../services/email-ai.service';
 import { sendgridService } from '../services/sendgrid.service';
 import { logger } from '../utils/logger';
-
-const prisma = new PrismaClient();
+// T2-PRISMA-CLIENT-LEAK: usar singleton de prisma para evitar vazar pool de conexoes.
+import { prisma } from '../config/database';
 
 // Helper to extract accountId/userId from authenticated request
 function getAccountId(req: Request): string {

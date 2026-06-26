@@ -368,8 +368,16 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
               // mensagens fora de ordem em retries; o backend ordena por
               // createdAt na hidratação inicial, então precisamos respeitar
               // o mesmo critério aqui).
+              // T2-MSG-ORDER: tiebreaker por id quando createdAt colide
+              // (mesmo ms — comum em respostas IA multi-parte ou cargas com
+              // bursts paralelos). Sem o tiebreaker, mensagens com timestamp
+              // idêntico ficavam fora de ordem entre F5/realtime.
               merged.push(incoming);
-              merged.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+              merged.sort((a, b) => {
+                const cmp = a.createdAt.localeCompare(b.createdAt);
+                if (cmp !== 0) return cmp;
+                return a.id.localeCompare(b.id);
+              });
             }
             return { ...old, messages: merged };
           }
