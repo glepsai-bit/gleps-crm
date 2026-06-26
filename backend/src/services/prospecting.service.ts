@@ -3,7 +3,7 @@ import { env } from '../config/env';
 import { evolutionService } from './evolution.service';
 import { whatsappConsentService } from './whatsapp-consent.service';
 import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
-import { ValidationError } from '../utils/errors';
+import { NotFoundError, ValidationError } from '../utils/errors';
 
 interface EvolutionDispatchConfig {
   transport: 'evolution';
@@ -411,9 +411,17 @@ class ProspectingService {
     let failedCount = 0;
 
     for (let i = 0; i < allTasks.length; i++) {
-      // Check cancellation
+      // Check cancellation / pause (T-022: aba Agendadas)
       const batchCheck = await prisma.dispatchBatch.findUnique({ where: { id: batchId }, select: { status: true } });
-      if (batchCheck?.status === 'cancelled') return;
+      if (batchCheck?.status === 'cancelled' || batchCheck?.status === 'paused') {
+        // Persiste o sentCount/failedCount mais recente sem mexer em completedAt
+        // quando 'paused' — assim o resume pode continuar de onde parou.
+        await prisma.dispatchBatch.update({
+          where: { id: batchId },
+          data: { sentCount, failedCount },
+        });
+        return;
+      }
 
       const task = allTasks[i];
       try {
@@ -486,7 +494,7 @@ class ProspectingService {
     }
 
     const finalCheck = await prisma.dispatchBatch.findUnique({ where: { id: batchId }, select: { status: true } });
-    if (finalCheck?.status !== 'cancelled') {
+    if (finalCheck?.status !== 'cancelled' && finalCheck?.status !== 'paused') {
       await prisma.dispatchBatch.update({
         where: { id: batchId },
         data: {
@@ -572,7 +580,13 @@ class ProspectingService {
 
     for (let i = 0; i < pendingLogs.length; i++) {
       const batchCheck = await prisma.dispatchBatch.findUnique({ where: { id: batchId }, select: { status: true } });
-      if (batchCheck?.status === 'cancelled') return;
+      if (batchCheck?.status === 'cancelled' || batchCheck?.status === 'paused') {
+        await prisma.dispatchBatch.update({
+          where: { id: batchId },
+          data: { sentCount, failedCount },
+        });
+        return;
+      }
 
       const log = pendingLogs[i];
       try {
@@ -646,7 +660,7 @@ class ProspectingService {
     }
 
     const finalCheck = await prisma.dispatchBatch.findUnique({ where: { id: batchId }, select: { status: true } });
-    if (finalCheck?.status !== 'cancelled') {
+    if (finalCheck?.status !== 'cancelled' && finalCheck?.status !== 'paused') {
       await prisma.dispatchBatch.update({
         where: { id: batchId },
         data: {
@@ -668,6 +682,116 @@ class ProspectingService {
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
+  }
+
+  /**
+   * T-022 — Aba "Agendadas": lista batches que ainda nao terminaram.
+   * Status nao-finais ativos (scheduled|paused|running). Excluimos cancelled/
+   * completed/failed explicitamente pra evitar mostrar batch cancelado com
+   * scheduledAt futuro (UX: row some assim que cancela).
+   */
+  async getScheduledBatches(accountId: string) {
+    return prisma.dispatchBatch.findMany({
+      where: {
+        accountId,
+        status: { in: ['scheduled', 'paused', 'running'] },
+      },
+      orderBy: [{ scheduledAt: 'asc' }, { createdAt: 'desc' }],
+      take: 100,
+    });
+  }
+
+  /**
+   * T-022 — Pausa um batch agendado/em execução.
+   * - 'scheduled' -> 'paused' (cron de scheduling pula 'paused')
+   * - 'running'   -> 'paused' (loop processBatch detecta e aborta sem completar)
+   */
+  async pauseBatch(accountId: string, batchId: string) {
+    const batch = await prisma.dispatchBatch.findFirst({
+      where: { id: batchId, accountId },
+      select: { id: true, status: true },
+    });
+    if (!batch) throw new NotFoundError('Disparo');
+
+    if (batch.status !== 'scheduled' && batch.status !== 'running') {
+      throw new ValidationError(
+        `Apenas disparos agendados ou em execução podem ser pausados (status atual: ${batch.status})`
+      );
+    }
+
+    await prisma.dispatchBatch.update({
+      where: { id: batchId },
+      data: { status: 'paused' },
+    });
+
+    return { id: batchId, status: 'paused' };
+  }
+
+  /**
+   * T-022 — Retoma um batch pausado.
+   * - Volta para 'scheduled' (se ainda tem scheduledAt no futuro → cron pega na próxima tick).
+   * - Se scheduledAt já passou (ou é null) → volta direto para 'scheduled' com scheduledAt=now()
+   *   para o cron processar imediatamente no próximo tick.
+   */
+  async resumeBatchFromPause(accountId: string, batchId: string) {
+    const batch = await prisma.dispatchBatch.findFirst({
+      where: { id: batchId, accountId },
+      select: { id: true, status: true, scheduledAt: true },
+    });
+    if (!batch) throw new NotFoundError('Disparo');
+
+    if (batch.status !== 'paused') {
+      throw new ValidationError(
+        `Apenas disparos pausados podem ser retomados (status atual: ${batch.status})`
+      );
+    }
+
+    const now = new Date();
+    const data: { status: string; scheduledAt?: Date } = { status: 'scheduled' };
+    if (!batch.scheduledAt || batch.scheduledAt <= now) {
+      data.scheduledAt = now;
+    }
+
+    await prisma.dispatchBatch.update({
+      where: { id: batchId },
+      data,
+    });
+
+    return { id: batchId, status: 'scheduled' };
+  }
+
+  /**
+   * T-022 — Cancela definitivamente (REST DELETE).
+   * Aceita qualquer batch em estado não-final: 'scheduled' | 'paused' | 'running'.
+   * Marca logs 'pending' como 'cancelled'.
+   */
+  async cancelScheduledBatch(accountId: string, batchId: string) {
+    const batch = await prisma.dispatchBatch.findFirst({
+      where: { id: batchId, accountId },
+      select: { id: true, status: true },
+    });
+    if (!batch) throw new NotFoundError('Disparo');
+
+    if (
+      batch.status !== 'scheduled' &&
+      batch.status !== 'paused' &&
+      batch.status !== 'running'
+    ) {
+      throw new ValidationError(
+        `Não é possível cancelar um disparo já finalizado (status atual: ${batch.status})`
+      );
+    }
+
+    await prisma.dispatchBatch.update({
+      where: { id: batchId },
+      data: { status: 'cancelled', completedAt: new Date() },
+    });
+    await prisma.dispatchLog.updateMany({
+      where: { batchId, status: 'pending' },
+      data: { status: 'cancelled', errorMessage: 'Cancelado pelo usuário' },
+    });
+
+    return { id: batchId, status: 'cancelled' };
   }
 
   /**

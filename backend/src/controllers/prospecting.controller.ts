@@ -110,6 +110,73 @@ export class ProspectingController {
     }
   }
 
+  /**
+   * T-022 — GET /api/prospecting/batches/scheduled
+   * Lista batches em estados não-finais (scheduled | paused | running) para a aba Agendadas.
+   */
+  async listScheduled(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const batches = await prospectingService.getScheduledBatches(req.user!.accountId!);
+      res.json({ data: batches });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * T-022 — POST /api/prospecting/batches/:id/pause
+   */
+  async pauseScheduled(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const batchId = req.params.id as string;
+      const result = await prospectingService.pauseBatch(req.user!.accountId!, batchId);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      if (error.statusCode) {
+        res.status(error.statusCode).json({ success: false, error: error.message });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  /**
+   * T-022 — POST /api/prospecting/batches/:id/resume
+   * (NÃO confundir com resumeBatch existente, que reprocessa logs de batch CANCELADO via body.messages.
+   * Este aqui é o "retomar pausa", sem body.)
+   */
+  async resumeScheduled(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const batchId = req.params.id as string;
+      const result = await prospectingService.resumeBatchFromPause(req.user!.accountId!, batchId);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      if (error.statusCode) {
+        res.status(error.statusCode).json({ success: false, error: error.message });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  /**
+   * T-022 — DELETE /api/prospecting/batches/:id
+   * Cancela definitivamente (qualquer estado não-final).
+   */
+  async cancelScheduled(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const batchId = req.params.id as string;
+      const result = await prospectingService.cancelScheduledBatch(req.user!.accountId!, batchId);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      if (error.statusCode) {
+        res.status(error.statusCode).json({ success: false, error: error.message });
+        return;
+      }
+      next(error);
+    }
+  }
+
   async getBatchLogs(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const batchId = req.params.batchId as string;

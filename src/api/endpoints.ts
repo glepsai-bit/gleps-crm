@@ -154,9 +154,11 @@ export const API_ENDPOINTS = {
     BATCH_LOGS: (batchId: string) => `/api/prospecting/batches/${batchId}/logs`,
     AUDIENCES: '/api/prospecting/audiences',
     AUDIENCE: (id: string) => `/api/prospecting/audiences/${id}`,
-    BATCHES_SCHEDULED: '/api/dispatch/batches',
+    BATCHES_SCHEDULED: '/api/prospecting/batches/scheduled',
     DISPATCH_START: '/api/dispatch/send-batch',
-    BATCH_CANCEL: (id: string) => `/api/dispatch/batches/${id}`,
+    BATCH_CANCEL: (id: string) => `/api/prospecting/batches/${id}`,
+    BATCH_PAUSE: (id: string) => `/api/prospecting/batches/${id}/pause`,
+    BATCH_RESUME: (id: string) => `/api/prospecting/batches/${id}/resume`,
   },
 
   // ============= WHATSAPP TEMPLATES =============

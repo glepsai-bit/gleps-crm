@@ -36,53 +36,166 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Download, Send, Search, Zap, Save, Users, Calendar, BarChart2, X as XIcon } from 'lucide-react';
+import { Download, Send, Search, Zap, Save, Users, Calendar, BarChart2, X as XIcon, Pause, Play, Eye } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { ExtractedLead, ApiUsage } from '@/components/extracao/types';
+
+type BatchStatus = 'scheduled' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+
+interface BatchRow {
+  id: string;
+  status: BatchStatus | string;
+  keyword?: string | null;
+  triggerName?: string | null;
+  trigger_name?: string | null;
+  template_name?: string | null;
+  templateName?: string | null;
+  total_contacts?: number | null;
+  totalContacts?: number | null;
+  sent_count?: number | null;
+  sentCount?: number | null;
+  failed_count?: number | null;
+  failedCount?: number | null;
+  scheduled_at?: string | null;
+  scheduledAt?: string | null;
+}
+
+function getNum(b: BatchRow, snake: 'total_contacts' | 'sent_count' | 'failed_count', camel: 'totalContacts' | 'sentCount' | 'failedCount'): number {
+  const v = (b as Record<string, unknown>)[snake] ?? (b as Record<string, unknown>)[camel];
+  return typeof v === 'number' ? v : 0;
+}
+
+function getScheduledAt(b: BatchRow): string | null {
+  return (b.scheduled_at ?? b.scheduledAt) ?? null;
+}
+
+function getBatchName(b: BatchRow): string {
+  return b.keyword ?? b.triggerName ?? b.trigger_name ?? 'Disparo manual';
+}
+
+function getTemplateName(b: BatchRow): string {
+  return b.template_name ?? b.templateName ?? '—';
+}
+
+function statusBadgeVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (status) {
+    case 'running':
+      return 'default';
+    case 'scheduled':
+      return 'secondary';
+    case 'paused':
+      return 'outline';
+    case 'completed':
+      return 'default';
+    case 'cancelled':
+    case 'failed':
+      return 'destructive';
+    default:
+      return 'outline';
+  }
+}
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case 'running':
+      return 'Rodando';
+    case 'scheduled':
+      return 'Agendado';
+    case 'paused':
+      return 'Pausado';
+    case 'completed':
+      return 'Concluído';
+    case 'cancelled':
+      return 'Cancelado';
+    case 'failed':
+      return 'Falhou';
+    default:
+      return status;
+  }
+}
 
 function AgendadasTab({ accountId }: { accountId: string }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [cancelingId, setCancelingId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
 
-  // TODO: backend pendente — endpoint GET /api/dispatch/batches?status=scheduled
-  const { data: agendadas = [], isLoading } = useQuery<any[]>({
+  const { data: agendadas = [], isLoading, isError, error, refetch } = useQuery<BatchRow[]>({
     queryKey: ['batches-agendadas', accountId],
     queryFn: async () => {
-      try {
-        const res = await apiClient.get<any>(API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED, {
-          params: { status: 'scheduled' }
-        });
-        const data = (res as any).data ?? res;
-        return Array.isArray(data) ? data : [];
-      } catch {
-        return [];
-      }
+      const res = await apiClient.get<unknown>(API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED);
+      const payload = (res as { data?: unknown })?.data ?? res;
+      const list = Array.isArray(payload) ? payload : [];
+      return list as BatchRow[];
     },
     retry: false,
-    refetchInterval: 30000,
+    refetchInterval: 5000,
+    enabled: !!accountId,
   });
 
   const mutateCancelar = useMutation({
     mutationFn: async (batchId: string) => {
-      // Backend: DELETE /api/dispatch/batches/:id — cancela batch agendado (status='scheduled')
       await apiClient.delete(API_ENDPOINTS.PROSPECTING.BATCH_CANCEL(batchId));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['batches-agendadas'] });
-      toast({ title: 'Agendamento cancelado.' });
+      toast({ title: 'Disparo cancelado.' });
       setCancelingId(null);
     },
-    onError: (err: any) => {
+    onError: (err: Error) => {
       toast({ title: 'Erro ao cancelar', description: err.message, variant: 'destructive' });
     },
   });
+
+  const mutatePausar = useMutation({
+    mutationFn: async (batchId: string) => {
+      await apiClient.post(API_ENDPOINTS.PROSPECTING.BATCH_PAUSE(batchId), {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['batches-agendadas'] });
+      toast({ title: 'Disparo pausado.' });
+    },
+    onError: (err: Error) => {
+      toast({ title: 'Erro ao pausar', description: err.message, variant: 'destructive' });
+    },
+  });
+
+  const mutateRetomar = useMutation({
+    mutationFn: async (batchId: string) => {
+      await apiClient.post(API_ENDPOINTS.PROSPECTING.BATCH_RESUME(batchId), {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['batches-agendadas'] });
+      toast({ title: 'Disparo retomado.' });
+    },
+    onError: (err: Error) => {
+      toast({ title: 'Erro ao retomar', description: err.message, variant: 'destructive' });
+    },
+  });
+
+  const detailBatch = detailId ? agendadas.find((b) => b.id === detailId) ?? null : null;
 
   if (isLoading) {
     return (
       <Card>
         <CardContent className="py-8 space-y-3">
-          {[1, 2, 3].map(i => <Skeleton key={i} className="h-10 w-full" />)}
+          {[1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Card>
+        <CardContent className="py-8 flex flex-col items-center justify-center text-muted-foreground gap-2">
+          <p className="text-sm font-medium text-destructive">Erro ao carregar disparos agendados</p>
+          <p className="text-xs">{(error as Error)?.message ?? 'Tente novamente em instantes.'}</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>
+            Recarregar
+          </Button>
         </CardContent>
       </Card>
     );
@@ -91,14 +204,17 @@ function AgendadasTab({ accountId }: { accountId: string }) {
   return (
     <>
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Disparos agendados</CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Disparos em andamento e agendados</CardTitle>
+          <Badge variant="outline" className="text-xs">
+            {agendadas.length} disparo{agendadas.length === 1 ? '' : 's'}
+          </Badge>
         </CardHeader>
         <CardContent>
           {agendadas.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <Calendar className="w-10 h-10 mb-3 opacity-30" />
-              <p className="text-sm font-medium">Nenhum disparo agendado</p>
+              <p className="text-sm font-medium">Nenhum disparo agendado ou em andamento</p>
               <p className="text-xs mt-1">Configure um agendamento ao criar um disparo</p>
             </div>
           ) : (
@@ -114,44 +230,120 @@ function AgendadasTab({ accountId }: { accountId: string }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {agendadas.map((b: any) => (
-                  <TableRow key={b.id}>
-                    <TableCell className="font-medium">{b.keyword ?? b.triggerName ?? 'Disparo manual'}</TableCell>
-                    <TableCell>{b.total_contacts ?? b.totalContacts ?? '—'}</TableCell>
-                    <TableCell className="text-muted-foreground text-xs">{b.template_name ?? b.templateName ?? '—'}</TableCell>
-                    <TableCell className="text-xs">
-                      {b.scheduled_at ?? b.scheduledAt
-                        ? new Date(b.scheduled_at ?? b.scheduledAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
-                        : '—'}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="text-xs">Agendado</Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive hover:text-destructive h-7 text-xs"
-                        onClick={() => setCancelingId(b.id)}
-                      >
-                        <XIcon className="w-3 h-3 mr-1" />
-                        Cancelar
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {agendadas.map((b) => {
+                  const status = String(b.status ?? 'scheduled');
+                  const total = getNum(b, 'total_contacts', 'totalContacts');
+                  const sent = getNum(b, 'sent_count', 'sentCount');
+                  const failed = getNum(b, 'failed_count', 'failedCount');
+                  const progress = total > 0 ? Math.min(((sent + failed) / total) * 100, 100) : 0;
+                  const scheduledAt = getScheduledAt(b);
+                  const canPause = status === 'scheduled' || status === 'running';
+                  const canResume = status === 'paused';
+                  const canCancel = status === 'scheduled' || status === 'running' || status === 'paused';
+                  const onRowClick = () => setDetailId(b.id);
+                  return (
+                    <TableRow
+                      key={b.id}
+                      className="cursor-pointer hover:bg-muted/40"
+                      onClick={onRowClick}
+                    >
+                      <TableCell className="font-medium">{getBatchName(b)}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col gap-1">
+                          <span>{total || '—'}</span>
+                          {(status === 'running' || status === 'paused') && total > 0 && (
+                            <div className="w-24">
+                              <Progress value={progress} className="h-1" />
+                              <span className="text-[10px] text-muted-foreground">
+                                {sent + failed}/{total}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-xs">{getTemplateName(b)}</TableCell>
+                      <TableCell className="text-xs">
+                        {scheduledAt
+                          ? new Date(scheduledAt).toLocaleString('pt-BR', {
+                              dateStyle: 'short',
+                              timeStyle: 'short',
+                            })
+                          : '—'}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={statusBadgeVariant(status)} className="text-xs">
+                          {statusLabel(status)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1">
+                          {canPause && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs"
+                              onClick={() => mutatePausar.mutate(b.id)}
+                              disabled={mutatePausar.isPending}
+                              title="Pausar"
+                            >
+                              <Pause className="w-3 h-3 mr-1" />
+                              Pausar
+                            </Button>
+                          )}
+                          {canResume && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs"
+                              onClick={() => mutateRetomar.mutate(b.id)}
+                              disabled={mutateRetomar.isPending}
+                              title="Retomar"
+                            >
+                              <Play className="w-3 h-3 mr-1" />
+                              Retomar
+                            </Button>
+                          )}
+                          {canCancel && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive h-7 text-xs"
+                              onClick={() => setCancelingId(b.id)}
+                              title="Cancelar"
+                            >
+                              <XIcon className="w-3 h-3 mr-1" />
+                              Cancelar
+                            </Button>
+                          )}
+                          {!canCancel && !canPause && !canResume && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs"
+                              onClick={onRowClick}
+                              title="Ver detalhes"
+                            >
+                              <Eye className="w-3 h-3 mr-1" />
+                              Detalhes
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}
         </CardContent>
       </Card>
 
-      <AlertDialog open={!!cancelingId} onOpenChange={open => { if (!open) setCancelingId(null); }}>
+      <AlertDialog open={!!cancelingId} onOpenChange={(open) => { if (!open) setCancelingId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancelar agendamento?</AlertDialogTitle>
+            <AlertDialogTitle>Cancelar disparo?</AlertDialogTitle>
             <AlertDialogDescription>
-              O disparo agendado será cancelado e não será mais executado.
+              O disparo será cancelado e não será mais executado. Esta ação não pode ser desfeita.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -161,8 +353,71 @@ function AgendadasTab({ accountId }: { accountId: string }) {
               onClick={() => cancelingId && mutateCancelar.mutate(cancelingId)}
               disabled={mutateCancelar.isPending}
             >
-              {mutateCancelar.isPending ? 'Cancelando...' : 'Cancelar agendamento'}
+              {mutateCancelar.isPending ? 'Cancelando...' : 'Cancelar disparo'}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!detailBatch} onOpenChange={(open) => { if (!open) setDetailId(null); }}>
+        <AlertDialogContent className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{detailBatch ? getBatchName(detailBatch) : 'Detalhes'}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {detailBatch ? `Status: ${statusLabel(String(detailBatch.status))}` : ''}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {detailBatch && (
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-muted-foreground">Total de contatos</p>
+                  <p className="font-medium">{getNum(detailBatch, 'total_contacts', 'totalContacts') || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Enviados</p>
+                  <p className="font-medium">{getNum(detailBatch, 'sent_count', 'sentCount')}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Falhas</p>
+                  <p className="font-medium">{getNum(detailBatch, 'failed_count', 'failedCount')}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Template</p>
+                  <p className="font-medium truncate">{getTemplateName(detailBatch)}</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-xs text-muted-foreground">Agendado para</p>
+                  <p className="font-medium">
+                    {getScheduledAt(detailBatch)
+                      ? new Date(getScheduledAt(detailBatch) as string).toLocaleString('pt-BR', {
+                          dateStyle: 'short',
+                          timeStyle: 'short',
+                        })
+                      : '—'}
+                  </p>
+                </div>
+              </div>
+              {(() => {
+                const t = getNum(detailBatch, 'total_contacts', 'totalContacts');
+                const s = getNum(detailBatch, 'sent_count', 'sentCount');
+                const f = getNum(detailBatch, 'failed_count', 'failedCount');
+                if (t === 0) return null;
+                const p = Math.min(((s + f) / t) * 100, 100);
+                return (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Progresso</span>
+                      <span>{Math.round(p)}%</span>
+                    </div>
+                    <Progress value={p} className="h-2" />
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Fechar</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

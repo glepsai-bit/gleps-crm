@@ -15,6 +15,12 @@ router.post('/dispatch', (req, res, next) => prospectingController.dispatch(req,
 router.post('/cancel', (req, res, next) => prospectingController.cancelBatch(req, res, next));
 router.post('/resume', (req, res, next) => prospectingController.resumeBatch(req, res, next));
 router.get('/batches', (req, res, next) => prospectingController.getBatches(req, res, next));
+// T-022 — Aba Agendadas: lista + pausa + retoma + cancela (DELETE REST-compliant).
+// `/batches/scheduled` precisa vir ANTES de `/batches/:batchId/logs` para não conflitar.
+router.get('/batches/scheduled', (req, res, next) => prospectingController.listScheduled(req, res, next));
+router.post('/batches/:id/pause', (req, res, next) => prospectingController.pauseScheduled(req, res, next));
+router.post('/batches/:id/resume', (req, res, next) => prospectingController.resumeScheduled(req, res, next));
+router.delete('/batches/:id', (req, res, next) => prospectingController.cancelScheduled(req, res, next));
 router.get('/batches/:batchId/logs', (req, res, next) => prospectingController.getBatchLogs(req, res, next));
 
 // Saved audiences (públicos salvos)
