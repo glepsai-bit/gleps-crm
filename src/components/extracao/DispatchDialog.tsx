@@ -236,6 +236,19 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
       return;
     }
 
+    // BUG-FE-005: valida que scheduledAt é estritamente futuro antes de
+    // chamar a API (calcScheduledAt aceitava data passada e o backend
+    // criava um batch "agendado" que disparava de imediato).
+    const scheduledAt = calcScheduledAt();
+    if (scheduledAt && new Date(scheduledAt) <= new Date()) {
+      toast({
+        title: 'Data inválida',
+        description: 'O agendamento deve ser futuro.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setIsSending(true);
     try {
       const assignments = selectedInboxes.map(inbox => ({
@@ -248,8 +261,6 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
         const assignIdx = idx % assignments.length;
         assignments[assignIdx].contacts.push({ nome: lead.nome, telefone: lead.telefone });
       });
-
-      const scheduledAt = calcScheduledAt();
 
       let data: any;
       if (useBackend) {

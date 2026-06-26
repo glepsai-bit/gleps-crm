@@ -639,20 +639,39 @@ class WhatsappCampaignService {
 
     const delayMs = Math.max((batch.delaySeconds || DEFAULT_DELAY_SECONDS) * 1000, MIN_DELAY_MS);
 
-    let sentCount = 0;
+    // Resume-safe: evita reenviar pra contatos que ja foram processados num run
+    // anterior (pause -> resume). Lemos os logs nao-pending desse batch e
+    // pulamos os phones que ja receberam dispatch (sent/failed/blocked_optout/
+    // rate_limited/cancelled). Sem isso, resume duplicava mensagens nos
+    // primeiros recipients toda vez que o batch retomava.
+    const processedLogs = await prisma.dispatchLog.findMany({
+      where: { batchId, status: { notIn: ['pending'] } },
+      select: { phone: true },
+    });
+    const alreadyProcessed = new Set(processedLogs.map(l => l.phone));
+
+    let sentCount = batch.sentCount || 0;
     // Preserva failedCount inicial do batch (ex.: skippedPhones registrados em sendBatch).
     // O acumulador local representa o total (skipped + falhas durante o loop).
     let failedCount = batch.failedCount || 0;
 
     for (let i = 0; i < recipients.length; i++) {
+      // Resume-skip: pula recipient ja processado em run anterior
+      if (alreadyProcessed.has(recipients[i].phone)) continue;
+
       // Cancellation check
       const fresh = await prisma.dispatchBatch.findUnique({
         where: { id: batchId },
         select: { status: true },
       });
-      if (fresh?.status === 'cancelled') {
-        logger.info('[whatsapp-campaign] batch cancelado, abortando', { batchId });
-        return;
+      if (fresh?.status === 'cancelled' || fresh?.status === 'paused') {
+        logger.info('[whatsapp-campaign] Batch interrompido', {
+          batchId,
+          status: fresh.status,
+          sentCount,
+          failedCount,
+        });
+        return; // NAO mexer em completedAt — preserva snapshot pra resume
       }
 
       const recipient = recipients[i];
@@ -776,7 +795,7 @@ class WhatsappCampaignService {
       where: { id: batchId },
       select: { status: true },
     });
-    if (finalCheck?.status === 'cancelled') return;
+    if (finalCheck?.status === 'cancelled' || finalCheck?.status === 'paused') return;
 
     // failedCount inclui skippedPhones do sendBatch; usar sentCount como sinal de sucesso
     const finalStatus = sentCount === 0 ? 'failed' : 'completed';

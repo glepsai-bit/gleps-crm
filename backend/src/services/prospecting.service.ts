@@ -4,6 +4,7 @@ import { evolutionService } from './evolution.service';
 import { whatsappConsentService } from './whatsapp-consent.service';
 import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
 import { NotFoundError, ValidationError } from '../utils/errors';
+import { logger } from '../utils/logger';
 
 interface EvolutionDispatchConfig {
   transport: 'evolution';
@@ -695,6 +696,10 @@ class ProspectingService {
       where: {
         accountId,
         status: { in: ['scheduled', 'paused', 'running'] },
+        OR: [
+          { scheduledAt: { not: null } },
+          { source: { in: ['manual_scheduled', 'n8n', 'api'] } },
+        ],
       },
       orderBy: [{ scheduledAt: 'asc' }, { createdAt: 'desc' }],
       take: 100,
@@ -707,22 +712,24 @@ class ProspectingService {
    * - 'running'   -> 'paused' (loop processBatch detecta e aborta sem completar)
    */
   async pauseBatch(accountId: string, batchId: string) {
-    const batch = await prisma.dispatchBatch.findFirst({
-      where: { id: batchId, accountId },
-      select: { id: true, status: true },
+    // BUG-QA1-002 — TOCTOU fix: update atomico com WHERE status esperado.
+    // Evita race entre findFirst + update quando dois requests concorrentes
+    // (ou cron + usuario) tentam mudar o status simultaneamente.
+    const result = await prisma.dispatchBatch.updateMany({
+      where: { id: batchId, accountId, status: { in: ['scheduled', 'running'] } },
+      data: { status: 'paused' },
     });
-    if (!batch) throw new NotFoundError('Disparo');
 
-    if (batch.status !== 'scheduled' && batch.status !== 'running') {
+    if (result.count === 0) {
+      const batch = await prisma.dispatchBatch.findFirst({
+        where: { id: batchId, accountId },
+        select: { status: true },
+      });
+      if (!batch) throw new NotFoundError('Disparo');
       throw new ValidationError(
         `Apenas disparos agendados ou em execução podem ser pausados (status atual: ${batch.status})`
       );
     }
-
-    await prisma.dispatchBatch.update({
-      where: { id: batchId },
-      data: { status: 'paused' },
-    });
 
     return { id: batchId, status: 'paused' };
   }
@@ -734,17 +741,14 @@ class ProspectingService {
    *   para o cron processar imediatamente no próximo tick.
    */
   async resumeBatchFromPause(accountId: string, batchId: string) {
+    // BUG-QA1-002 — TOCTOU fix: precisa ler scheduledAt p/ decidir se ajusta
+    // para now(), mas o update final usa updateMany com WHERE status='paused'
+    // pra evitar race entre check e write.
     const batch = await prisma.dispatchBatch.findFirst({
       where: { id: batchId, accountId },
       select: { id: true, status: true, scheduledAt: true },
     });
     if (!batch) throw new NotFoundError('Disparo');
-
-    if (batch.status !== 'paused') {
-      throw new ValidationError(
-        `Apenas disparos pausados podem ser retomados (status atual: ${batch.status})`
-      );
-    }
 
     const now = new Date();
     const data: { status: string; scheduledAt?: Date } = { status: 'scheduled' };
@@ -752,10 +756,33 @@ class ProspectingService {
       data.scheduledAt = now;
     }
 
-    await prisma.dispatchBatch.update({
-      where: { id: batchId },
+    const result = await prisma.dispatchBatch.updateMany({
+      where: { id: batchId, accountId, status: 'paused' },
       data,
     });
+
+    if (result.count === 0) {
+      // Re-le pra dar erro com status atual (pode ter mudado entre o findFirst e o updateMany).
+      const current = await prisma.dispatchBatch.findFirst({
+        where: { id: batchId, accountId },
+        select: { status: true },
+      });
+      if (!current) throw new NotFoundError('Disparo');
+      throw new ValidationError(
+        `Apenas disparos pausados podem ser retomados (status atual: ${current.status})`
+      );
+    }
+
+    // BUG-QA1-005 — re-enfileira imediatamente sem esperar o cron de 5min.
+    // Fire-and-forget; dynamic import evita risco de circular dep com
+    // whatsapp-campaign.service (que historicamente importa varios services).
+    void import('./whatsapp-campaign.service')
+      .then(({ whatsappCampaignService }) =>
+        whatsappCampaignService.processBatchInBackground(batchId)
+      )
+      .catch((err: any) =>
+        logger.error('Erro retomando batch', err, { batchId })
+      );
 
     return { id: batchId, status: 'scheduled' };
   }
@@ -766,26 +793,27 @@ class ProspectingService {
    * Marca logs 'pending' como 'cancelled'.
    */
   async cancelScheduledBatch(accountId: string, batchId: string) {
-    const batch = await prisma.dispatchBatch.findFirst({
-      where: { id: batchId, accountId },
-      select: { id: true, status: true },
+    // BUG-QA1-002 — TOCTOU fix: update atomico com WHERE status nao-final.
+    const result = await prisma.dispatchBatch.updateMany({
+      where: {
+        id: batchId,
+        accountId,
+        status: { in: ['scheduled', 'paused', 'running'] },
+      },
+      data: { status: 'cancelled', completedAt: new Date() },
     });
-    if (!batch) throw new NotFoundError('Disparo');
 
-    if (
-      batch.status !== 'scheduled' &&
-      batch.status !== 'paused' &&
-      batch.status !== 'running'
-    ) {
+    if (result.count === 0) {
+      const batch = await prisma.dispatchBatch.findFirst({
+        where: { id: batchId, accountId },
+        select: { status: true },
+      });
+      if (!batch) throw new NotFoundError('Disparo');
       throw new ValidationError(
         `Não é possível cancelar um disparo já finalizado (status atual: ${batch.status})`
       );
     }
 
-    await prisma.dispatchBatch.update({
-      where: { id: batchId },
-      data: { status: 'cancelled', completedAt: new Date() },
-    });
     await prisma.dispatchLog.updateMany({
       where: { batchId, status: 'pending' },
       data: { status: 'cancelled', errorMessage: 'Cancelado pelo usuário' },

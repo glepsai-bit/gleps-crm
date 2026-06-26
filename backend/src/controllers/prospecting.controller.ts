@@ -34,6 +34,10 @@ const resumeSchema = z.object({
   delay_seconds: z.number().min(5).max(300).optional(),
 });
 
+// QA2-BUG-001 — valida req.params.id como UUID antes de chamar o service.
+// ZodError eh capturado pelo error.middleware e devolve 400 (nao 500).
+const batchIdParamSchema = z.string().uuid('ID deve ser UUID valido');
+
 export class ProspectingController {
   async extractLeads(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -128,14 +132,12 @@ export class ProspectingController {
    */
   async pauseScheduled(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const batchId = req.params.id as string;
+      // QA2-BUG-001 — valida UUID antes de chamar Prisma (evita 500 por P2023).
+      // ZodError eh tratado pelo error.middleware -> HTTP 400.
+      const batchId = batchIdParamSchema.parse(req.params.id);
       const result = await prospectingService.pauseBatch(req.user!.accountId!, batchId);
       res.json({ success: true, ...result });
-    } catch (error: any) {
-      if (error.statusCode) {
-        res.status(error.statusCode).json({ success: false, error: error.message });
-        return;
-      }
+    } catch (error) {
       next(error);
     }
   }
@@ -147,14 +149,11 @@ export class ProspectingController {
    */
   async resumeScheduled(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const batchId = req.params.id as string;
+      // QA2-BUG-001 — valida UUID antes de chamar Prisma (evita 500 por P2023).
+      const batchId = batchIdParamSchema.parse(req.params.id);
       const result = await prospectingService.resumeBatchFromPause(req.user!.accountId!, batchId);
       res.json({ success: true, ...result });
-    } catch (error: any) {
-      if (error.statusCode) {
-        res.status(error.statusCode).json({ success: false, error: error.message });
-        return;
-      }
+    } catch (error) {
       next(error);
     }
   }
@@ -165,14 +164,11 @@ export class ProspectingController {
    */
   async cancelScheduled(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const batchId = req.params.id as string;
+      // QA2-BUG-001 — valida UUID antes de chamar Prisma (evita 500 por P2023).
+      const batchId = batchIdParamSchema.parse(req.params.id);
       const result = await prospectingService.cancelScheduledBatch(req.user!.accountId!, batchId);
       res.json({ success: true, ...result });
-    } catch (error: any) {
-      if (error.statusCode) {
-        res.status(error.statusCode).json({ success: false, error: error.message });
-        return;
-      }
+    } catch (error) {
       next(error);
     }
   }

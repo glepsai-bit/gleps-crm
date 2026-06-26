@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
@@ -120,27 +121,18 @@ function AgendadasTab({ accountId }: { accountId: string }) {
   const [cancelingId, setCancelingId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
 
-  const { data: agendadas = [], isLoading, isError, error, refetch } = useQuery<BatchRow[]>({
-    queryKey: ['batches-agendadas', accountId],
-    queryFn: async () => {
-      const res = await apiClient.get<unknown>(API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED);
-      const payload = (res as { data?: unknown })?.data ?? res;
-      const list = Array.isArray(payload) ? payload : [];
-      return list as BatchRow[];
-    },
-    retry: false,
-    refetchInterval: 5000,
-    enabled: !!accountId,
-  });
-
   const mutateCancelar = useMutation({
     mutationFn: async (batchId: string) => {
       await apiClient.delete(API_ENDPOINTS.PROSPECTING.BATCH_CANCEL(batchId));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['batches-agendadas'] });
-      toast({ title: 'Disparo cancelado.' });
+    // BUG-FE-001: onSettled garante que o AlertDialog feche em sucesso E erro
+    // (antes onSuccess fechava e onError deixava o dialog travado preso ao id).
+    onSettled: () => {
       setCancelingId(null);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['batches-agendadas', accountId] });
+      toast({ title: 'Disparo cancelado.' });
     },
     onError: (err: Error) => {
       toast({ title: 'Erro ao cancelar', description: err.message, variant: 'destructive' });
@@ -152,7 +144,7 @@ function AgendadasTab({ accountId }: { accountId: string }) {
       await apiClient.post(API_ENDPOINTS.PROSPECTING.BATCH_PAUSE(batchId), {});
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['batches-agendadas'] });
+      queryClient.invalidateQueries({ queryKey: ['batches-agendadas', accountId] });
       toast({ title: 'Disparo pausado.' });
     },
     onError: (err: Error) => {
@@ -165,12 +157,33 @@ function AgendadasTab({ accountId }: { accountId: string }) {
       await apiClient.post(API_ENDPOINTS.PROSPECTING.BATCH_RESUME(batchId), {});
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['batches-agendadas'] });
+      queryClient.invalidateQueries({ queryKey: ['batches-agendadas', accountId] });
       toast({ title: 'Disparo retomado.' });
     },
     onError: (err: Error) => {
       toast({ title: 'Erro ao retomar', description: err.message, variant: 'destructive' });
     },
+  });
+
+  const { data: agendadas = [], isLoading, isError, error, refetch } = useQuery<BatchRow[]>({
+    queryKey: ['batches-agendadas', accountId],
+    queryFn: async () => {
+      const res = await apiClient.get<unknown>(API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED);
+      const payload = (res as { data?: unknown })?.data ?? res;
+      const list = Array.isArray(payload) ? payload : [];
+      return list as BatchRow[];
+    },
+    retry: false,
+    // BUG-FE-002: pausa polling de 5s quando dialog detalhe está aberto
+    // (evita re-render durante leitura do usuário) ou quando uma mutation
+    // está em vôo (evita race entre invalidate manual e refetch automático).
+    refetchInterval: () => {
+      if (detailId) return false;
+      if (mutatePausar.isPending || mutateRetomar.isPending || mutateCancelar.isPending) return false;
+      return 5000;
+    },
+    refetchIntervalInBackground: false,
+    enabled: !!accountId,
   });
 
   const detailBatch = detailId ? agendadas.find((b) => b.id === detailId) ?? null : null;
@@ -473,9 +486,30 @@ export default function AdminExtracaoPage() {
    useEffect(() => {
      fetchUsage();
    }, [fetchUsage]);
-  const [activeTab, setActiveTab] = useState('extracao');
+  // BUG-FE Regressão E2E-1: Tabs precisa ser controlado + sincronizado com a
+  // URL via ?tab=... pra evitar reset da aba durante invalidate de queries
+  // (Pausar/Retomar/Cancelar na aba Agendadas estava jogando o usuário de
+  // volta pra Disparos porque a aba não persistia entre remounts).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab') ?? 'extracao';
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [extractionMeta, setExtractionMeta] = useState<{ keyword: string; location: string }>({ keyword: '', location: '' });
+
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t && t !== activeTab) setActiveTab(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const handleTabChange = useCallback((value: string) => {
+    setActiveTab(value);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', value);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
    const handleSearchResults = useCallback(
      (results: ExtractedLead[], apiUsage?: ApiUsage, meta?: { keyword: string; location: string }) => {
@@ -535,8 +569,8 @@ export default function AdminExtracaoPage() {
 
   const handleDispatchStarted = useCallback((batchId: string) => {
     setActiveBatchId(batchId);
-    setActiveTab('disparos');
-  }, []);
+    handleTabChange('disparos');
+  }, [handleTabChange]);
 
    const selectedLeads = leads.filter((l) => selectedIds.has(l.id));
    const usagePercent = usage ? Math.min((usage.used / usage.limit) * 100, 100) : 0;
@@ -564,7 +598,7 @@ export default function AdminExtracaoPage() {
         )}
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
         <TabsList className="grid w-full grid-cols-5 max-w-2xl">
           <TabsTrigger value="extracao" className="gap-1 text-xs sm:text-sm">
             <Search className="w-4 h-4" /> Extração
