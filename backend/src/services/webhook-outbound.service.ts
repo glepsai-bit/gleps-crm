@@ -3,6 +3,7 @@ import type { WebhookSubscription, WebhookDelivery } from '@prisma/client';
 import { prisma } from '../config/database';
 import { NotFoundError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { safeFetch } from '../utils/ssrf-guard';
 
 // ============================================
 // Types
@@ -212,7 +213,8 @@ class WebhookOutboundService {
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const response = await fetch(subscription.url, {
+      // safeFetch valida URL + cada redirect contra SSRF.
+      const response = await safeFetch(subscription.url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -398,7 +400,9 @@ class WebhookOutboundService {
     let errorMessage: string | null = null;
 
     try {
-      const response = await fetch(subscription.url, {
+      // safeFetch valida URL + cada redirect contra SSRF (defesa em
+      // profundidade: dados legados / mudancas de DNS / open redirects).
+      const response = await safeFetch(subscription.url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

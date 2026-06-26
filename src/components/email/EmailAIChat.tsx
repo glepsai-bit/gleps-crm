@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import DOMPurify from 'dompurify';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -188,7 +189,15 @@ export default function EmailAIChat({ onApply, onClose, context }: EmailAIChatPr
                       </div>
                       <div
                         className="prose prose-sm max-w-none text-xs max-h-[150px] overflow-y-auto"
-                        dangerouslySetInnerHTML={{ __html: msg.email.bodyHtml }}
+                        dangerouslySetInnerHTML={{
+                          __html: DOMPurify.sanitize(msg.email.bodyHtml, {
+                            ALLOWED_TAGS: ['p','br','strong','em','u','a','ul','ol','li','blockquote','img','div','span','table','thead','tbody','tr','td','th','h1','h2','h3','h4','h5','h6','pre','code'],
+                            ALLOWED_ATTR: ['href','src','alt','title','style','class','target','rel','width','height'],
+                            FORBID_TAGS: ['script','style','iframe','object','embed','form','input','button'],
+                            FORBID_ATTR: ['onerror','onload','onclick','onmouseover','onfocus','onblur','onchange','onsubmit'],
+                            ALLOW_DATA_ATTR: false,
+                          }),
+                        }}
                       />
                     </div>
                     <Button

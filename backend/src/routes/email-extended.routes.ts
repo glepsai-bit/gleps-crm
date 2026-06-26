@@ -3,10 +3,15 @@ import { campaignController } from '../controllers/campaign.controller';
 import { inboxController } from '../controllers/inbox.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
 
-const router = Router();
+// ==================== PUBLIC WEBHOOK ROUTER (no auth) ====================
+// CRITICAL #6 fix: rota pública precisa ficar em um router separado,
+// montado ANTES dos routers privados em index.ts. Caso contrário, o
+// `router.use(authenticate)` global de email.routes.ts (mesmo mount '/email')
+// intercepta a requisição e retorna 401 antes do handler público rodar.
+export const inboundWebhookRouter = Router();
+inboundWebhookRouter.post('/webhook', (req, res, next) => inboxController.handleInboundWebhook(req, res, next));
 
-// ==================== PUBLIC WEBHOOK (no auth) ====================
-router.post('/inbound/webhook', (req, res, next) => inboxController.handleInboundWebhook(req, res, next));
+const router = Router();
 
 // ==================== AUTHENTICATED ROUTES ====================
 router.use(authenticate);

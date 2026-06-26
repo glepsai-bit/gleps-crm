@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { NotFoundError } from '../utils/errors';
 
 const prisma = new PrismaClient();
 
@@ -39,20 +40,24 @@ export const audienceService = {
   },
 
   async update(id: string, accountId: string, data: { name?: string; description?: string }) {
-    return prisma.emailAudience.update({
-      where: { id },
+    // Multi-tenant safety: updateMany permite filtrar por accountId no WHERE
+    const r = await prisma.emailAudience.updateMany({
+      where: { id, accountId },
       data: {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.description !== undefined && { description: data.description }),
       },
     });
+    if (r.count === 0) throw new NotFoundError('Público');
+    return prisma.emailAudience.findFirst({ where: { id, accountId } });
   },
 
   async delete(id: string, accountId: string) {
-    // Verify ownership
-    const audience = await prisma.emailAudience.findFirst({ where: { id, accountId } });
-    if (!audience) throw new Error('Público não encontrado');
-    await prisma.emailAudience.delete({ where: { id } });
+    // Multi-tenant safety: deleteMany aceita filtro composto
+    const r = await prisma.emailAudience.deleteMany({
+      where: { id, accountId },
+    });
+    if (r.count === 0) throw new NotFoundError('Público');
   },
 
   async listContacts(audienceId: string, accountId: string) {

@@ -199,6 +199,27 @@ async function bootstrap() {
       },
     },
   });
+
+  // CRITICAL #8 — rate-limit dedicado para endpoints de autenticação.
+  // O limiter global (1000/15min) é generoso demais para login: permitia brute
+  // force virtualmente livre (60 tentativas em segundos sem 429). Este limiter
+  // dedicado bloqueia após 10 tentativas falhas em 15min por IP. Logins
+  // bem-sucedidos não consomem cota (skipSuccessfulRequests), então usuários
+  // legítimos que erram a senha algumas vezes não ficam presos.
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 min
+    max: 10,                  // 10 tentativas por janela
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    message: {
+      error: 'TOO_MANY_LOGIN_ATTEMPTS',
+      message: 'Muitas tentativas. Tente novamente em 15 minutos.',
+    },
+  });
+  app.use('/api/auth/login', authLimiter);
+  app.use('/api/auth/forgot-password', authLimiter);
+
   app.use('/api', limiter);
 
   // Body parsing

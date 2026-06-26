@@ -1,6 +1,7 @@
 import { PrismaClient, EmailSendStatus } from '@prisma/client';
 import { sendgridService } from './sendgrid.service';
 import { logger } from '../utils/logger';
+import { NotFoundError } from '../utils/errors';
 
 const prisma = new PrismaClient();
 
@@ -241,20 +242,37 @@ export const emailService = {
     if (data.startDate) {
       updateData.startDate = new Date(data.startDate);
     }
-    return prisma.emailCadence.update({
-      where: { id },
+    // Multi-tenant safety: updateMany permite filtrar por accountId no WHERE
+    // (update direto so aceita unique whereInput, e id é unico globalmente).
+    const r = await prisma.emailCadence.updateMany({
+      where: { id, accountId },
       data: updateData,
+    });
+    if (r.count === 0) throw new NotFoundError('Cadência');
+    return prisma.emailCadence.findFirst({
+      where: { id, accountId },
       include: { steps: { orderBy: { ordem: 'asc' } } },
     });
   },
 
   async deleteCadence(id: string, accountId: string) {
-    return prisma.emailCadence.delete({ where: { id } });
+    // Multi-tenant safety: deleteMany aceita filtro composto.
+    const r = await prisma.emailCadence.deleteMany({
+      where: { id, accountId },
+    });
+    if (r.count === 0) throw new NotFoundError('Cadência');
+    return { id };
   },
 
   // ==================== CADENCE RULES ====================
 
-  async listRules(cadenceId: string) {
+  async listRules(cadenceId: string, accountId: string) {
+    // Garante que a cadência pai pertence à conta
+    const cadence = await prisma.emailCadence.findFirst({
+      where: { id: cadenceId, accountId },
+      select: { id: true },
+    });
+    if (!cadence) throw new NotFoundError('Cadência');
     return prisma.emailCadenceRule.findMany({
       where: { cadenceId },
       include: { targetCadence: { select: { id: true, name: true } } },
@@ -264,11 +282,19 @@ export const emailService = {
 
   async createRule(data: {
     cadenceId: string;
+    accountId: string;
     triggerEvent: string;
     targetCadenceId: string;
     delayHours?: number;
     timeoutHours?: number;
   }) {
+    // Valida que tanto a cadência origem quanto destino pertencem à conta
+    const [src, tgt] = await Promise.all([
+      prisma.emailCadence.findFirst({ where: { id: data.cadenceId, accountId: data.accountId }, select: { id: true } }),
+      prisma.emailCadence.findFirst({ where: { id: data.targetCadenceId, accountId: data.accountId }, select: { id: true } }),
+    ]);
+    if (!src) throw new NotFoundError('Cadência');
+    if (!tgt) throw new NotFoundError('Cadência destino');
     return prisma.emailCadenceRule.create({
       data: {
         cadenceId: data.cadenceId,
@@ -281,27 +307,44 @@ export const emailService = {
     });
   },
 
-  async updateRule(id: string, data: {
+  async updateRule(id: string, accountId: string, data: {
     triggerEvent?: string;
     targetCadenceId?: string;
     delayHours?: number;
     timeoutHours?: number;
     active?: boolean;
   }) {
-    return prisma.emailCadenceRule.update({
-      where: { id },
+    // Se for trocar targetCadenceId, valida pertencimento à conta
+    if (data.targetCadenceId) {
+      const tgt = await prisma.emailCadence.findFirst({
+        where: { id: data.targetCadenceId, accountId },
+        select: { id: true },
+      });
+      if (!tgt) throw new NotFoundError('Cadência destino');
+    }
+    // Multi-tenant safety: filtra via cadência pai (rule não tem accountId direto)
+    const r = await prisma.emailCadenceRule.updateMany({
+      where: { id, cadence: { accountId } },
       data,
+    });
+    if (r.count === 0) throw new NotFoundError('Regra');
+    return prisma.emailCadenceRule.findFirst({
+      where: { id },
       include: { targetCadence: { select: { id: true, name: true } } },
     });
   },
 
-  async deleteRule(id: string) {
-    return prisma.emailCadenceRule.delete({ where: { id } });
+  async deleteRule(id: string, accountId: string) {
+    const r = await prisma.emailCadenceRule.deleteMany({
+      where: { id, cadence: { accountId } },
+    });
+    if (r.count === 0) throw new NotFoundError('Regra');
+    return { id };
   },
 
   // ==================== STEPS ====================
 
-  async createStep(cadenceId: string, data: {
+  async createStep(cadenceId: string, accountId: string, data: {
     dayNumber: number;
     subject: string;
     bodyHtml: string;
@@ -309,17 +352,25 @@ export const emailService = {
     ordem?: number;
     templateId?: string | null;
   }) {
+    // Valida que a cadência pai pertence à conta
+    const cadence = await prisma.emailCadence.findFirst({
+      where: { id: cadenceId, accountId },
+      select: { id: true },
+    });
+    if (!cadence) throw new NotFoundError('Cadência');
     // If a template is selected, snapshot subject/body from it as a starting point
     let subject = data.subject;
     let bodyHtml = data.bodyHtml;
     let bodyText = data.bodyText;
     if (data.templateId) {
-      const tpl = await prisma.emailTemplate.findUnique({ where: { id: data.templateId } });
-      if (tpl) {
-        subject = subject || tpl.subject;
-        bodyHtml = bodyHtml || tpl.bodyHtml;
-        bodyText = bodyText ?? tpl.bodyText ?? undefined;
-      }
+      // Template também precisa ser da mesma conta
+      const tpl = await prisma.emailTemplate.findFirst({
+        where: { id: data.templateId, accountId },
+      });
+      if (!tpl) throw new NotFoundError('Template');
+      subject = subject || tpl.subject;
+      bodyHtml = bodyHtml || tpl.bodyHtml;
+      bodyText = bodyText ?? tpl.bodyText ?? undefined;
     }
     return prisma.emailCadenceStep.create({
       data: {
@@ -334,7 +385,7 @@ export const emailService = {
     });
   },
 
-  async updateStep(id: string, data: {
+  async updateStep(id: string, accountId: string, data: {
     dayNumber?: number;
     subject?: string;
     bodyHtml?: string;
@@ -343,11 +394,29 @@ export const emailService = {
     ordem?: number;
     templateId?: string | null;
   }) {
-    return prisma.emailCadenceStep.update({ where: { id }, data });
+    // Se trocar templateId, valida pertencimento à conta
+    if (data.templateId) {
+      const tpl = await prisma.emailTemplate.findFirst({
+        where: { id: data.templateId, accountId },
+        select: { id: true },
+      });
+      if (!tpl) throw new NotFoundError('Template');
+    }
+    // Multi-tenant safety: filtra via cadência pai (step não tem accountId direto)
+    const r = await prisma.emailCadenceStep.updateMany({
+      where: { id, cadence: { accountId } },
+      data,
+    });
+    if (r.count === 0) throw new NotFoundError('Step');
+    return prisma.emailCadenceStep.findFirst({ where: { id } });
   },
 
-  async deleteStep(id: string) {
-    return prisma.emailCadenceStep.delete({ where: { id } });
+  async deleteStep(id: string, accountId: string) {
+    const r = await prisma.emailCadenceStep.deleteMany({
+      where: { id, cadence: { accountId } },
+    });
+    if (r.count === 0) throw new NotFoundError('Step');
+    return { id };
   },
 
   // ==================== TEMPLATES ====================
@@ -371,18 +440,27 @@ export const emailService = {
     return prisma.emailTemplate.create({ data });
   },
 
-  async updateTemplate(id: string, data: {
+  async updateTemplate(id: string, accountId: string, data: {
     name?: string;
     subject?: string;
     bodyHtml?: string;
     bodyText?: string;
     category?: string;
   }) {
-    return prisma.emailTemplate.update({ where: { id }, data });
+    const r = await prisma.emailTemplate.updateMany({
+      where: { id, accountId },
+      data,
+    });
+    if (r.count === 0) throw new NotFoundError('Template');
+    return prisma.emailTemplate.findFirst({ where: { id, accountId } });
   },
 
-  async deleteTemplate(id: string) {
-    return prisma.emailTemplate.delete({ where: { id } });
+  async deleteTemplate(id: string, accountId: string) {
+    const r = await prisma.emailTemplate.deleteMany({
+      where: { id, accountId },
+    });
+    if (r.count === 0) throw new NotFoundError('Template');
+    return { id };
   },
 
   // ==================== ENROLLMENTS ====================
@@ -392,12 +470,13 @@ export const emailService = {
     cadenceId: string;
     contactIds: string[];
   }) {
-    const cadence = await prisma.emailCadence.findUnique({
-      where: { id: data.cadenceId },
+    // Multi-tenant safety: cadência precisa pertencer à conta
+    const cadence = await prisma.emailCadence.findFirst({
+      where: { id: data.cadenceId, accountId: data.accountId },
       include: { steps: { orderBy: { ordem: 'asc' }, take: 1 }, account: { select: { timezone: true } } },
     });
 
-    if (!cadence) throw new Error('Cadência não encontrada');
+    if (!cadence) throw new NotFoundError('Cadência');
 
     const firstStep = cadence.steps[0];
     const timezone = cadence.account?.timezone || 'America/Sao_Paulo';
@@ -430,12 +509,14 @@ export const emailService = {
     return enrollments;
   },
 
-  async unenrollContacts(cadenceId: string, contactIds: string[]) {
+  async unenrollContacts(cadenceId: string, contactIds: string[], accountId: string) {
+    // Multi-tenant safety: garante que o enrollment é da conta antes de pausar
     return prisma.emailEnrollment.updateMany({
       where: {
         cadenceId,
         contactId: { in: contactIds },
         status: 'active',
+        accountId,
       },
       data: { status: 'paused' },
     });

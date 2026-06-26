@@ -3,14 +3,34 @@ import { z } from 'zod';
 import { webhookOutboundService } from '../services/webhook-outbound.service';
 import { AuthenticatedRequest } from '../types';
 import { ValidationError, ForbiddenError, ErrorCodes } from '../utils/errors';
+import { isSafeOutboundUrl } from '../utils/ssrf-guard';
 
 // ============================================
 // Validation schemas
 // ============================================
 
+/**
+ * URL externa para webhook outbound. Bloqueia loopback, IPs privados
+ * (RFC1918), link-local/metadata (169.254.x.x — AWS IMDS), schemes
+ * file://, javascript:, etc. e hosts internos (*.internal, *.local).
+ * Ver utils/ssrf-guard.ts.
+ */
+const safeWebhookUrl = z
+  .string()
+  .url('URL inválida')
+  .superRefine((value, ctx) => {
+    const check = isSafeOutboundUrl(value);
+    if (!check.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `URL não permitida: ${check.reason}`,
+      });
+    }
+  });
+
 const createSubscriptionSchema = z.object({
   name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
-  url: z.string().url('URL inválida'),
+  url: safeWebhookUrl,
   events: z
     .array(z.string().min(1, 'eventType inválido'))
     .min(1, 'Informe ao menos um evento'),
@@ -20,7 +40,7 @@ const createSubscriptionSchema = z.object({
 const updateSubscriptionSchema = z
   .object({
     name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres').optional(),
-    url: z.string().url('URL inválida').optional(),
+    url: safeWebhookUrl.optional(),
     events: z
       .array(z.string().min(1, 'eventType inválido'))
       .min(1, 'Informe ao menos um evento')

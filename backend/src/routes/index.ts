@@ -13,7 +13,7 @@ import calendarRoutes from './calendar.routes';
 import eventRoutes from './event.routes';
 import prospectingRoutes from './prospecting.routes';
 import emailRoutes from './email.routes';
-import emailExtendedRoutes from './email-extended.routes';
+import emailExtendedRoutes, { inboundWebhookRouter as emailInboundWebhookRouter } from './email-extended.routes';
 import audienceRoutes from './audience.routes';
 import evolutionRoutes from './evolution.routes';
 import apiKeyRoutes from './api-key.routes';
@@ -79,6 +79,12 @@ router.use('/insights', insightsRoutes);
 router.use('/calendar', calendarRoutes);
 router.use('/events', eventRoutes);
 router.use('/prospecting', prospectingRoutes);
+// CRITICAL #6 fix: webhook público do SendGrid Inbound Parse precisa ser
+// montado ANTES dos routers privados de /email. Caso contrário o
+// `router.use(authenticate)` global de email.routes.ts intercepta TODA
+// requisição que entra em /email/* e devolve 401 antes do handler público
+// rodar (rota POST /email/inbound/webhook estava sempre dando 401).
+router.use('/email/inbound', emailInboundWebhookRouter);
 router.use('/email', emailRoutes);
 router.use('/email', emailExtendedRoutes);
 router.use('/email/audiences', audienceRoutes);

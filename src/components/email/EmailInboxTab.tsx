@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import DOMPurify from 'dompurify';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -38,6 +39,19 @@ export default function EmailInboxTab() {
   const [diagnostics, setDiagnostics] = useState<InboxDiagnostics | null>(null);
   const [showDiag, setShowDiag] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
+
+  // Sanitiza HTML do e-mail recebido (proteção contra Stored XSS).
+  // E-mails externos podem conter <script>, onerror, onload, etc.
+  const sanitizedBodyHtml = useMemo(() => {
+    if (!selectedMessage?.body_html) return '';
+    return DOMPurify.sanitize(selectedMessage.body_html, {
+      ALLOWED_TAGS: ['p','br','strong','em','u','a','ul','ol','li','blockquote','img','div','span','table','thead','tbody','tr','td','th','h1','h2','h3','h4','h5','h6','pre','code'],
+      ALLOWED_ATTR: ['href','src','alt','title','style','class','target','rel','width','height'],
+      FORBID_TAGS: ['script','style','iframe','object','embed','form','input','button'],
+      FORBID_ATTR: ['onerror','onload','onclick','onmouseover','onfocus','onblur','onchange','onsubmit'],
+      ALLOW_DATA_ATTR: false,
+    });
+  }, [selectedMessage?.body_html]);
   const [confirmAction, setConfirmAction] = useState<null | { type: 'pause' | 'unenroll' | 'replied'; messageId: string }>(null);
 
   const loadMessages = useCallback(async () => {
@@ -309,7 +323,7 @@ export default function EmailInboxTab() {
               {selectedMessage.body_html ? (
                 <div
                   className="prose prose-sm max-w-none text-foreground"
-                  dangerouslySetInnerHTML={{ __html: selectedMessage.body_html }}
+                  dangerouslySetInnerHTML={{ __html: sanitizedBodyHtml }}
                 />
               ) : (
                 <pre className="whitespace-pre-wrap text-sm text-foreground font-sans">

@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { NotFoundError } from '../utils/errors';
 
 const prisma = new PrismaClient();
 
@@ -11,7 +12,7 @@ async function ensureAudienceBelongsToAccount(audienceId: string | null | undefi
   });
 
   if (!audience) {
-    throw new Error('Público não encontrado para esta conta');
+    throw new NotFoundError('Público não encontrado para esta conta');
   }
 }
 
@@ -22,7 +23,7 @@ async function ensureCampaignBelongsToAccount(id: string, accountId: string) {
   });
 
   if (!campaign) {
-    throw new Error('Campanha não encontrada');
+    throw new NotFoundError('Campanha');
   }
 }
 
@@ -74,17 +75,21 @@ export const campaignService = {
   },
 
   async update(id: string, accountId: string, data: { name?: string; description?: string; active?: boolean; audienceId?: string | null }) {
-    await ensureCampaignBelongsToAccount(id, accountId);
     await ensureAudienceBelongsToAccount(data.audienceId, accountId);
 
-    return prisma.emailCampaign.update({
-      where: { id },
+    // Multi-tenant safety: updateMany com filtro composto evita cross-tenant
+    const r = await prisma.emailCampaign.updateMany({
+      where: { id, accountId },
       data: {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.description !== undefined && { description: data.description }),
         ...(data.active !== undefined && { active: data.active }),
         ...(data.audienceId !== undefined && { audienceId: data.audienceId }),
       },
+    });
+    if (r.count === 0) throw new NotFoundError('Campanha');
+    return prisma.emailCampaign.findFirst({
+      where: { id, accountId },
       include: {
         audience: { select: { id: true, name: true } },
         cadences: { include: { steps: { orderBy: { ordem: 'asc' } } } },
@@ -93,51 +98,41 @@ export const campaignService = {
   },
 
   async delete(id: string, accountId: string) {
-    await ensureCampaignBelongsToAccount(id, accountId);
-
-    // Unlink cadences first
+    // Unlink cadences first (já filtrado por accountId)
     await prisma.emailCadence.updateMany({
       where: { campaignId: id, accountId },
       data: { campaignId: null },
     });
 
-    return prisma.emailCampaign.delete({ where: { id } });
+    // Multi-tenant safety: deleteMany com filtro composto
+    const r = await prisma.emailCampaign.deleteMany({
+      where: { id, accountId },
+    });
+    if (r.count === 0) throw new NotFoundError('Campanha');
+    return { id };
   },
 
   async addCadence(campaignId: string, cadenceId: string, accountId: string) {
     await ensureCampaignBelongsToAccount(campaignId, accountId);
 
-    const cadence = await prisma.emailCadence.findFirst({
+    // Multi-tenant safety: updateMany filtra accountId direto no WHERE
+    const r = await prisma.emailCadence.updateMany({
       where: { id: cadenceId, accountId },
-      select: { id: true },
-    });
-
-    if (!cadence) {
-      throw new Error('Cadência não encontrada');
-    }
-
-    return prisma.emailCadence.update({
-      where: { id: cadenceId },
       data: { campaignId },
     });
+    if (r.count === 0) throw new NotFoundError('Cadência');
+    return prisma.emailCadence.findFirst({ where: { id: cadenceId, accountId } });
   },
 
   async removeCadence(campaignId: string, cadenceId: string, accountId: string) {
     await ensureCampaignBelongsToAccount(campaignId, accountId);
 
-    const cadence = await prisma.emailCadence.findFirst({
+    const r = await prisma.emailCadence.updateMany({
       where: { id: cadenceId, accountId, campaignId },
-      select: { id: true },
-    });
-
-    if (!cadence) {
-      throw new Error('Cadência não encontrada');
-    }
-
-    return prisma.emailCadence.update({
-      where: { id: cadenceId },
       data: { campaignId: null },
     });
+    if (r.count === 0) throw new NotFoundError('Cadência');
+    return prisma.emailCadence.findFirst({ where: { id: cadenceId, accountId } });
   },
 
   async getStats(campaignId: string, accountId: string) {

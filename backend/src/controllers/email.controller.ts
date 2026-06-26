@@ -115,21 +115,24 @@ export const emailController = {
 
   async createStep(req: Request, res: Response, next: NextFunction) {
     try {
-      const step = await emailService.createStep(req.params.id as string, req.body);
+      const accountId = getAccountId(req);
+      const step = await emailService.createStep(req.params.id as string, accountId, req.body);
       res.status(201).json(step);
     } catch (error) { next(error); }
   },
 
   async updateStep(req: Request, res: Response, next: NextFunction) {
     try {
-      const step = await emailService.updateStep(req.params.id as string, req.body);
+      const accountId = getAccountId(req);
+      const step = await emailService.updateStep(req.params.id as string, accountId, req.body);
       res.json(step);
     } catch (error) { next(error); }
   },
 
   async deleteStep(req: Request, res: Response, next: NextFunction) {
     try {
-      await emailService.deleteStep(req.params.id as string);
+      const accountId = getAccountId(req);
+      await emailService.deleteStep(req.params.id as string, accountId);
       res.json({ success: true });
     } catch (error) { next(error); }
   },
@@ -159,14 +162,16 @@ export const emailController = {
 
   async updateTemplate(req: Request, res: Response, next: NextFunction) {
     try {
-      const template = await emailService.updateTemplate(req.params.id as string, req.body);
+      const accountId = getAccountId(req);
+      const template = await emailService.updateTemplate(req.params.id as string, accountId, req.body);
       res.json(template);
     } catch (error) { next(error); }
   },
 
   async deleteTemplate(req: Request, res: Response, next: NextFunction) {
     try {
-      await emailService.deleteTemplate(req.params.id as string);
+      const accountId = getAccountId(req);
+      await emailService.deleteTemplate(req.params.id as string, accountId);
       res.json({ success: true });
     } catch (error) { next(error); }
   },
@@ -187,7 +192,8 @@ export const emailController = {
 
   async unenroll(req: Request, res: Response, next: NextFunction) {
     try {
-      await emailService.unenrollContacts(req.body.cadenceId, req.body.contactIds);
+      const accountId = getAccountId(req);
+      await emailService.unenrollContacts(req.body.cadenceId, req.body.contactIds, accountId);
       res.json({ success: true });
     } catch (error) { next(error); }
   },
@@ -311,15 +317,18 @@ export const emailController = {
 
   async listRules(req: Request, res: Response, next: NextFunction) {
     try {
-      const rules = await emailService.listRules(req.params.id as string);
+      const accountId = getAccountId(req);
+      const rules = await emailService.listRules(req.params.id as string, accountId);
       res.json(rules);
     } catch (error) { next(error); }
   },
 
   async createRule(req: Request, res: Response, next: NextFunction) {
     try {
+      const accountId = getAccountId(req);
       const rule = await emailService.createRule({
         cadenceId: req.params.id as string,
+        accountId,
         ...req.body,
       });
       res.status(201).json(rule);
@@ -328,14 +337,16 @@ export const emailController = {
 
   async updateRule(req: Request, res: Response, next: NextFunction) {
     try {
-      const rule = await emailService.updateRule(req.params.id as string, req.body);
+      const accountId = getAccountId(req);
+      const rule = await emailService.updateRule(req.params.id as string, accountId, req.body);
       res.json(rule);
     } catch (error) { next(error); }
   },
 
   async deleteRule(req: Request, res: Response, next: NextFunction) {
     try {
-      await emailService.deleteRule(req.params.id as string);
+      const accountId = getAccountId(req);
+      await emailService.deleteRule(req.params.id as string, accountId);
       res.json({ success: true });
     } catch (error) { next(error); }
   },

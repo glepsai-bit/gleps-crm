@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { CalendarView, GoogleConnectModal } from '@/components/calendar';
+import { CalendarView, GoogleConnectModal, EventDialog } from '@/components/calendar';
 import { useCalendar } from '@/contexts/CalendarContext';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
@@ -29,7 +29,9 @@ export default function AdminAgendaPage() {
   } = useCalendar();
   
   const [showConnectModal, setShowConnectModal] = useState(false);
-  
+  const [eventDialogOpen, setEventDialogOpen] = useState(false);
+  const handleNewEvent = () => setEventDialogOpen(true);
+
   // Ref to track if we've already attempted sync for this callback
   const syncAttemptedRef = useRef(false);
 
@@ -201,13 +203,19 @@ export default function AdminAgendaPage() {
         </div>
       </div>
 
-      <CalendarView />
+      <CalendarView onNewEvent={handleNewEvent} />
 
       {/* Google Connect Modal */}
       <GoogleConnectModal
         open={showConnectModal}
         onOpenChange={setShowConnectModal}
         onConnect={handleConnect}
+      />
+
+      {/* Novo Evento Dialog */}
+      <EventDialog
+        open={eventDialogOpen}
+        onOpenChange={setEventDialogOpen}
       />
 
       {/* Event Details Sheet */}

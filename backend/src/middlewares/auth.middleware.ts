@@ -1,5 +1,6 @@
 import { Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import { prisma } from '../config/database';
 import { env } from '../config/env';
 import { AuthenticatedRequest, JwtPayload } from '../types';
@@ -185,8 +186,6 @@ export async function verifyPassword(
       });
       return;
     }
-
-    const bcrypt = await import('bcryptjs');
 
     const user = await prisma.user.findUnique({
       where: { id: req.user!.id },
