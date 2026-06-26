@@ -26,6 +26,14 @@ router.get('/:id', (req, res, next) =>
   inboxChannelController.getById(req, res, next)
 );
 
+// H-CONFIG-1: contagens de cascade pra UI exibir antes do DELETE.
+// Restrita a admin/super_admin — só quem pode deletar precisa saber.
+router.get(
+  '/:id/dependencies',
+  requireRole('super_admin', 'admin'),
+  (req, res, next) => inboxChannelController.getDependencies(req, res, next)
+);
+
 // Mutação — restrita a super_admin/admin
 router.post('/', requireRole('super_admin', 'admin'), (req, res, next) =>
   inboxChannelController.create(req, res, next)

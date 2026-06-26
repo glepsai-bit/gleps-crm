@@ -25,9 +25,17 @@ import { cn } from '@/lib/utils';
 
 interface CalendarViewProps {
   onNewEvent?: () => void;
+  /** Hora inicial do grid (Day/Week). Default: 6 (academia abre 06:00). */
+  startHour?: number;
+  /** Hora final do grid (Day/Week, exclusiva). Default: 22 (academia fecha 22:00). */
+  endHour?: number;
 }
 
-export function CalendarView({ onNewEvent }: CalendarViewProps) {
+export function CalendarView({
+  onNewEvent,
+  startHour = 6,
+  endHour = 22,
+}: CalendarViewProps) {
   const {
     events,
     currentDate,
@@ -70,7 +78,15 @@ export function CalendarView({ onNewEvent }: CalendarViewProps) {
     return 'bg-success/20 border-success text-success';
   };
 
-  const hours = Array.from({ length: 12 }, (_, i) => i + 7); // 7:00 - 18:00
+  // H-AGENDA-1: range configuravel (default 06:00-22:00 cobre horario de academia)
+  const hours = useMemo(
+    () =>
+      Array.from(
+        { length: Math.max(0, endHour - startHour) },
+        (_, i) => i + startHour,
+      ),
+    [startHour, endHour],
+  );
 
   const weekDays = useMemo(() => {
     const start = startOfWeek(currentDate, { weekStartsOn: 1 });
@@ -93,10 +109,11 @@ export function CalendarView({ onNewEvent }: CalendarViewProps) {
     const start = parseISO(event.start);
     const end = parseISO(event.end);
     const dayStart = startOfDay(start);
-    
-    const topMinutes = differenceInMinutes(start, dayStart) - 7 * 60; // Offset from 7:00
+
+    // Offset relativo ao startHour configurado
+    const topMinutes = differenceInMinutes(start, dayStart) - startHour * 60;
     const durationMinutes = differenceInMinutes(end, start);
-    
+
     return {
       top: Math.max(0, (topMinutes / 60) * 60), // 60px per hour
       height: Math.max(30, (durationMinutes / 60) * 60),

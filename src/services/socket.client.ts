@@ -116,6 +116,24 @@ export class ChatSocket {
   private currentToken: string | null = null;
 
   /**
+   * H-DASH-3: buffer de listeners que tentaram se registrar ANTES do
+   * connect(). Em React, é comum que uma página filha do AdminLayout monte
+   * e dispare seu useEffect (subscribe) antes do useEffect do layout pai
+   * chegar a chamar connect(). Sem o buffer o subscribe virava no-op e a
+   * UI nunca recebia eventos realtime (live-attendance ficava "congelado"
+   * dependendo só do refetchInterval).
+   *
+   * Quando connect() roda, os pendentes são "flushados" no socket recém
+   * criado. Cleanup retornado pelo subscribe() continua funcionando tanto
+   * pra listener buffered quanto pra listener já anexado.
+   */
+  private pendingSubscriptions: Array<{
+    event: string;
+    cb: (...args: unknown[]) => void;
+    attached: boolean;
+  }> = [];
+
+  /**
    * Conecta no namespace `/chat` com o JWT. Idempotente: se já estiver
    * conectado com o mesmo token, retorna o socket existente; se mudar o
    * token (refresh / re-login), reconecta.
@@ -135,6 +153,10 @@ export class ChatSocket {
       this.socket.removeAllListeners();
       this.socket.disconnect();
       this.socket = null;
+      // Listeners anexados ao socket antigo precisam ser re-anexados ao novo.
+      for (const sub of this.pendingSubscriptions) {
+        sub.attached = false;
+      }
     }
 
     const baseUrl = resolveSocketBaseUrl();
@@ -152,7 +174,21 @@ export class ChatSocket {
       withCredentials: true,
     });
 
+    // Flush dos listeners que tentaram subscribe antes do connect.
+    this.flushPendingSubscriptions();
+
     return this.socket;
+  }
+
+  /** Anexa todos os pendentes ao socket atual. */
+  private flushPendingSubscriptions(): void {
+    if (!this.socket) return;
+    for (const sub of this.pendingSubscriptions) {
+      if (!sub.attached) {
+        this.socket.on(sub.event, sub.cb);
+        sub.attached = true;
+      }
+    }
   }
 
   /** Encerra a conexão e limpa listeners. */
@@ -162,6 +198,12 @@ export class ChatSocket {
     this.socket.disconnect();
     this.socket = null;
     this.currentToken = null;
+    // Mantém pendingSubscriptions como "desconectadas" — se connect() for
+    // chamado de novo (re-login), reanexamos. O caller é quem decide se
+    // limpa via cleanup retornado pelo subscribe().
+    for (const sub of this.pendingSubscriptions) {
+      sub.attached = false;
+    }
   }
 
   /** Indica se a conexão está aberta. */

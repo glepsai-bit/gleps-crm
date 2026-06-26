@@ -47,7 +47,10 @@ const phoneRecipientSchema = z.object({
 const sendBatchSchema = z
   .object({
     contactIds: z.array(z.string().min(1)).optional(),
-    phones: z.array(phoneRecipientSchema).optional(),
+    // H-DISP-C: limite operacional de 1000 destinatarios por batch.
+    // Campanhas maiores precisam ser fragmentadas em multiplos batches
+    // para evitar OOM no metadata JSON + tempo de loop inviavel.
+    phones: z.array(phoneRecipientSchema).min(1).max(1000).optional(),
     templateId: z.string().min(1).optional(),
     content: z.string().optional(),
     defaultVariables: recordOfStringsSchema.optional(),
@@ -68,7 +71,19 @@ const sendBatchSchema = z
   .refine(data => !!(data.templateId || data.content), {
     message: 'Informe templateId ou content',
     path: ['templateId'],
-  });
+  })
+  // H-DISP-A: scheduledAt deve ser futuro. Falha na borda (zod) antes mesmo
+  // do service, devolvendo 400 com mensagem clara para n8n / integracoes.
+  // O service ainda valida (defesa em profundidade), mas aqui pegamos cedo.
+  .refine(
+    data => {
+      if (!data.scheduledAt) return true;
+      const d = data.scheduledAt instanceof Date ? data.scheduledAt : new Date(data.scheduledAt);
+      if (Number.isNaN(d.getTime())) return true; // parseDate trata
+      return d.getTime() > Date.now();
+    },
+    { message: 'scheduledAt deve ser futuro', path: ['scheduledAt'] }
+  );
 
 const listBatchesSchema = z.object({
   status: z.string().optional(),

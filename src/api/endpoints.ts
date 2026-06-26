@@ -308,6 +308,8 @@ export const API_ENDPOINTS = {
     CREATE: '/api/inboxes',
     UPDATE: (id: string) => `/api/inboxes/${id}`,
     DELETE: (id: string) => `/api/inboxes/${id}`,
+    // H-CONFIG-1: contagens de cascade exibidas antes do DELETE.
+    DEPENDENCIES: (id: string) => `/api/inboxes/${id}/dependencies`,
     WHATSAPP_CONNECT: (id: string) => `/api/inboxes/${id}/whatsapp/connect`,
     WHATSAPP_STATUS: (id: string) => `/api/inboxes/${id}/whatsapp/status`,
     WHATSAPP_DISCONNECT: (id: string) =>

@@ -52,8 +52,11 @@ class FinanceService {
         where: { ...where, status: 'paid' },
         _avg: { valor: true },
       }),
-      prisma.sale.count({ where: { ...where, isRecurring: true } }),
+      prisma.sale.count({ where: { ...where, status: 'paid', isRecurring: true } }),
     ]);
+
+    const recurringRateRaw = paidSales > 0 ? (recurringSales / paidSales) * 100 : 0;
+    const recurringRate = Math.min(100, Math.round(recurringRateRaw * 100) / 100);
 
     return {
       totalSales,
@@ -66,7 +69,7 @@ class FinanceService {
       refundedRevenue: Number(refundedRevenue._sum.valor || 0),
       avgTicket: Number(avgTicket._avg.valor || 0),
       conversionRate: totalSales > 0 ? Math.round((paidSales / totalSales) * 100) : 0,
-      recurringRate: paidSales > 0 ? Math.round((recurringSales / paidSales) * 100) : 0,
+      recurringRate,
     };
   }
 

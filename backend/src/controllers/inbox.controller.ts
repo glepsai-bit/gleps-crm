@@ -373,6 +373,11 @@ export class InboxChannelController {
 
   /**
    * DELETE /inboxes/:id
+   *
+   * H-CONFIG-1: DELETE em cascade — conversations + messages + attachments
+   * + resolution_logs. IRREVERSÍVEL. A UI exibe AlertDialog com contagens
+   * (vide /dependencies) e exige que o operador digite o nome do inbox
+   * pra habilitar o botão de confirmação.
    */
   async delete(
     req: AuthenticatedRequest,
@@ -383,6 +388,33 @@ export class InboxChannelController {
       const id = req.params.id as string;
       await inboxChannelService.delete(id, req.user!.accountId!);
       res.json({ data: { success: true } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /inboxes/:id/dependencies
+   *
+   * H-CONFIG-1: devolve contagens de tudo que será apagado em cascade
+   * quando o operador deletar o inbox. Usado pela UI pra montar o aviso
+   * "vai apagar X conversas, Y mensagens..." ANTES da confirmação.
+   *
+   * Apenas leitura — não faz mutação. Retorno:
+   *   { data: { conversations, messages, attachments, resolutionLogs } }
+   */
+  async getDependencies(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const result = await inboxChannelService.getDependencies(
+        id,
+        req.user!.accountId!
+      );
+      res.json({ data: result });
     } catch (error) {
       next(error);
     }

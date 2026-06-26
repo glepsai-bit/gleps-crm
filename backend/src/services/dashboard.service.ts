@@ -2,6 +2,7 @@ import { prisma } from '../config/database';
 import { DateRangeFilter } from '../types';
 import { subDays } from 'date-fns';
 import { metricsCollector } from './metrics-collector';
+import { chatMetricsService } from './chat-metrics.service';
 
 class DashboardService {
   /**
@@ -224,17 +225,46 @@ class DashboardService {
   }
 
   /**
-   * Get IA vs Human metrics (placeholder — REMOVED legacy external provider integration)
+   * Get IA vs Human metrics — H-DASH-4
+   *
+   * Lê dados REAIS de ConversationCycle via chatMetricsService (mesma fonte
+   * usada pelo Dashboard de Chat) ao invés do placeholder hardcoded antigo.
+   *
+   * Numerador (resolvedByAi/Human) e denominador (soma dos dois) ficam no
+   * mesmo domínio (ciclos resolvidos) — evita o bug "800%" causado por
+   * misturar contagem de ciclos com count de Conversation.
+   *
+   * Filtros: respeita janela [startDate, endDate] do request. Sem datas
+   * informadas, usa últimos 30 dias como default razoável p/ widget.
    */
   async getIAvsHuman(accountId: string, filters: DateRangeFilter) {
-    // REMOVED: would previously integrate with external provider for bot vs human metrics.
-    // For now, return placeholder data
+    const toDate = filters.endDate ?? new Date();
+    const fromDate = filters.startDate ?? subDays(toDate, 30);
+
+    const metrics = await chatMetricsService.getMetrics(accountId, {
+      fromDate,
+      toDate,
+    });
+
+    const iaInteractions = metrics.resolvedByAi;
+    const humanInteractions = metrics.resolvedByHuman;
+    const totalInteractions = iaInteractions + humanInteractions;
+
+    const iaPercentage =
+      totalInteractions > 0
+        ? Math.round((iaInteractions / totalInteractions) * 1000) / 10
+        : 0;
+    const humanPercentage =
+      totalInteractions > 0
+        ? Math.round((humanInteractions / totalInteractions) * 1000) / 10
+        : 0;
+
     return {
-      totalInteractions: 100,
-      iaInteractions: 40,
-      humanInteractions: 60,
-      iaPercentage: 40,
-      humanPercentage: 60,
+      totalInteractions,
+      iaInteractions,
+      humanInteractions,
+      iaPercentage,
+      humanPercentage,
     };
   }
 

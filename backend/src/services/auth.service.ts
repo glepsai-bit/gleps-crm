@@ -8,6 +8,7 @@ import { getExpirationDate } from '../utils/helpers';
 import { eventService } from './event.service';
 import { v4 as uuidv4 } from 'uuid';
 import { disconnectUserSockets } from '../socket';
+import { logger } from '../utils/logger';
 
 export interface LoginInput {
   email: string;
@@ -38,6 +39,7 @@ export interface LoginResult {
 export interface RefreshResult {
   token: string;
   expiresAt: string;
+  refreshToken: string;
 }
 
 class AuthService {
@@ -53,6 +55,17 @@ class AuthService {
       include: { account: true },
     });
 
+    // H-AUTH-1: timing attack mitigation.
+    // Antes: se o e-mail nao existia, retornavamos imediato (~3ms) sem rodar bcrypt;
+    // se existia mas a senha estava errada, rodavamos bcrypt (~280ms). Essa diferenca
+    // permitia enumerar e-mails validos por timing. Agora sempre executamos bcrypt
+    // contra um hash dummy quando o usuario nao existe, normalizando o tempo de
+    // resposta entre os dois casos. A mensagem de erro tambem ja era generica
+    // (INVALID_CREDENTIALS) para nao distinguir "usuario inexistente" vs "senha errada".
+    const DUMMY_HASH = '$2a$10$CwTycUXWue0Thq9StjUM0uJ8R7yK6jyG7OQ1ezKZ4jKxLp9w2WJfO';
+    const passwordHash = user?.passwordHash ?? DUMMY_HASH;
+    const isPasswordValid = await bcrypt.compare(password, passwordHash);
+
     if (!user) {
       await eventService.create({
         eventType: 'auth.login.failed',
@@ -60,9 +73,6 @@ class AuthService {
       });
       throw new UnauthorizedError(ErrorCodes.INVALID_CREDENTIALS);
     }
-
-    // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
 
     if (!isPasswordValid) {
       await eventService.create({
@@ -180,6 +190,29 @@ class AuthService {
     // Generate new access token
     const { token, expiresAt } = this.generateAccessToken(refreshToken.user);
 
+    // H-AUTH-3: refresh token rotation.
+    // Antes, o mesmo refresh token podia ser usado N vezes durante 7 dias —
+    // se vazasse (xss, log, proxy), o atacante teria janela igual a vida
+    // util restante. Agora cada uso ROTACIONA: emitimos um novo refresh
+    // token e revogamos o antigo na mesma transaction (atomico). Se o
+    // antigo for reusado depois, cai no branch revogado e devolve 401,
+    // o que tambem permite detectar reuse no futuro.
+    const newToken = uuidv4();
+    const newExpiresAt = getExpirationDate(env.REFRESH_TOKEN_EXPIRES_IN);
+    await prisma.$transaction([
+      prisma.refreshToken.update({
+        where: { id: refreshToken.id },
+        data: { revokedAt: new Date() },
+      }),
+      prisma.refreshToken.create({
+        data: {
+          userId: refreshToken.userId,
+          token: newToken,
+          expiresAt: newExpiresAt,
+        },
+      }),
+    ]);
+
     // Log event
     await eventService.create({
       eventType: 'auth.token.refresh',
@@ -188,7 +221,7 @@ class AuthService {
       accountId: refreshToken.user.accountId,
     });
 
-    return { token, expiresAt };
+    return { token, expiresAt, refreshToken: newToken };
   }
 
   /**
@@ -207,11 +240,14 @@ class AuthService {
         data: { revokedAt: new Date() },
       });
     } else {
-      // Revoke all refresh tokens
-      await prisma.refreshToken.updateMany({
-        where: { userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
+      // H-AUTH-2: antes, um logout sem refreshToken executava updateMany em
+      // TODOS os refresh tokens ativos do usuario — derrubando qualquer outra
+      // sessao em outro device/aba simultaneamente. Como nao conseguimos
+      // identificar com seguranca "a sessao atual" sem o refresh, o
+      // comportamento correto eh NAO revogar nada nesse caso e apenas logar
+      // um warning para o cliente corrigir a chamada. O socket dessa sessao
+      // ainda eh derrubado abaixo via disconnectUserSockets (best-effort).
+      logger.warn('[auth] logout chamado sem refreshToken — nenhuma sessao revogada', { userId });
     }
 
     const user = await prisma.user.findUnique({

@@ -370,15 +370,13 @@ class WhatsappCampaignService {
       throw new ValidationError('Informe templateId ou content para o disparo em massa');
     }
 
-    // BUG-029: agendamento no passado vira envio imediato (com warn)
-    let effectiveScheduledAt: Date | undefined = params.scheduledAt ?? undefined;
+    // H-DISP-A: scheduledAt no passado deve falhar explicitamente.
+    // Antes (BUG-029): convertia para envio imediato com warn, o que fazia
+    // n8n/integracoes externas dispararem sem aviso quando enviavam timestamps
+    // antigos por bug de clock skew ou retry. Agora bloqueia com 400.
+    const effectiveScheduledAt: Date | undefined = params.scheduledAt ?? undefined;
     if (effectiveScheduledAt && effectiveScheduledAt.getTime() < Date.now()) {
-      logger.warn('[whatsapp-campaign] scheduledAt no passado — convertendo para envio imediato', {
-        accountId,
-        scheduledAt: effectiveScheduledAt.toISOString(),
-        now: new Date().toISOString(),
-      });
-      effectiveScheduledAt = undefined;
+      throw new ValidationError('scheduledAt deve ser futuro');
     }
 
     // BUG-061: inboxName usa o slug da instância Evolution da conta
@@ -876,6 +874,30 @@ class WhatsappCampaignService {
           error: err?.message ?? String(err),
         })
       );
+  }
+
+  // ============================================
+  // recoverOrphanRunningBatches
+  // ============================================
+
+  /**
+   * H-DISP-B: batches em status 'running' por mais de 30 minutos sao
+   * provavelmente orfaos de um restart do backend (processBatchInBackground
+   * roda em memoria e nao sobrevive a reboot). Voltamos para 'scheduled'
+   * para o cron retomar via processScheduledQueue.
+   *
+   * Chamado uma vez no bootstrap, antes do cron WhatsApp subir.
+   */
+  async recoverOrphanRunningBatches(): Promise<{ count: number }> {
+    const cutoff = new Date(Date.now() - 30 * 60 * 1000);
+    const r = await prisma.dispatchBatch.updateMany({
+      where: { status: 'running', startedAt: { lt: cutoff } },
+      data: { status: 'scheduled' },
+    });
+    if (r.count > 0) {
+      logger.info('[wa-campaign] recovered orphan running batches', { count: r.count });
+    }
+    return { count: r.count };
   }
 
   // ============================================

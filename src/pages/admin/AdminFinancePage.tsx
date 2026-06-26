@@ -1,6 +1,5 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DashboardFilters } from '@/components/dashboard/DashboardFilters';
-import { EmptyState } from '@/components/dashboard/EmptyState';
 import {
   FinanceKPICards,
   RevenueChart,
@@ -9,6 +8,7 @@ import {
   SalesTable,
   CreateSaleDialog,
 } from '@/components/finance';
+import type { FinanceFilters } from '@/hooks/useFilteredFinanceKPIs';
 
 export default function AdminFinancePage() {
   const [period, setPeriod] = useState('7d');
@@ -17,6 +17,14 @@ export default function AdminFinancePage() {
   const [selectedAgent, setSelectedAgent] = useState('all');
 
   const isLoading = false;
+
+  // H-DASH-2: agora os filtros chegam de fato aos KPI cards / charts.
+  // Antes do fix os setters existiam mas o state não era consumido — filtros
+  // eram puramente cosméticos.
+  const filters: FinanceFilters = useMemo(
+    () => ({ period, channel, type, agent: selectedAgent }),
+    [period, channel, type, selectedAgent]
+  );
 
   return (
     <div className="page-container">
@@ -42,12 +50,12 @@ export default function AdminFinancePage() {
       />
 
       {/* KPI Cards */}
-      <FinanceKPICards isLoading={isLoading} />
+      <FinanceKPICards isLoading={isLoading} filters={filters} />
 
       {/* Charts Section */}
       <div className="chart-grid">
-        <RevenueChart isLoading={isLoading} />
-        <PaymentMethodChart isLoading={isLoading} />
+        <RevenueChart isLoading={isLoading} filters={filters} />
+        <PaymentMethodChart isLoading={isLoading} filters={filters} />
       </div>
 
       {/* Funnel Conversion */}

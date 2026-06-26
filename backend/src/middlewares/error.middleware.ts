@@ -5,6 +5,34 @@ import { AppError } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { isProduction } from '../config/env';
 
+/**
+ * H-CROSS-1c: remove paths absolutos (qualquer caminho POSIX/Win)
+ * das mensagens/stacks que sao serializadas pro cliente em dev.
+ * Mesmo em dev os erros vazavam o layout de pastas do dev — `/Users/…`,
+ * `/home/…`, `/private/tmp/crm-fitpark/backend/…` —, o que e' info de
+ * recon util. Substitui por marcadores genericos preservando o
+ * nome do arquivo final pra ainda servir de pista de debug.
+ */
+const ABSOLUTE_PATH_REGEXES: Array<[RegExp, string]> = [
+  // /private/tmp/.../crm-fitpark[/qualquer-coisa] -> <repo>
+  [/(\/private)?\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*?\/crm-fitpark(?=\/|$)/g, '<repo>'],
+  // /Users/<user>/...  -> /Users/<redacted>
+  [/\/Users\/[A-Za-z0-9._-]+/g, '/Users/<redacted>'],
+  // /home/<user>/...   -> /home/<redacted>
+  [/\/home\/[A-Za-z0-9._-]+/g, '/home/<redacted>'],
+  // C:\Users\<user>\...
+  [/[A-Z]:\\Users\\[A-Za-z0-9._-]+/g, 'C:\\Users\\<redacted>'],
+];
+
+function sanitizePaths(input: string | undefined): string | undefined {
+  if (!input) return input;
+  let out = input;
+  for (const [re, repl] of ABSOLUTE_PATH_REGEXES) {
+    out = out.replace(re, repl);
+  }
+  return out;
+}
+
 export function errorHandler(
   error: Error,
   req: Request,
@@ -120,12 +148,26 @@ export function errorHandler(
     return;
   }
 
-  // Default error response
+  // Default error response.
+  // H-CROSS-1c: em producao NUNCA inclui message original nem stack — so
+  // mensagem generica + code. Em dev incluimos message+stack pra debug,
+  // mas sanitizamos paths absolutos (regex acima) pra nao vazar layout
+  // de pastas do dev nas respostas HTTP.
+  if (isProduction) {
+    res.status(500).json({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Erro interno do servidor',
+      },
+    });
+    return;
+  }
+
   res.status(500).json({
     error: {
       code: 'INTERNAL_ERROR',
-      message: isProduction ? 'Erro interno do servidor' : error.message,
-      ...(isProduction ? {} : { stack: error.stack }),
+      message: sanitizePaths(error.message) || 'Erro interno do servidor',
+      stack: sanitizePaths(error.stack),
     },
   });
 }

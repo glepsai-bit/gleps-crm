@@ -1,21 +1,34 @@
-import { 
-  DollarSign, 
-  TrendingUp, 
-  ShoppingCart, 
-  CheckCircle, 
-  Clock, 
+import {
+  DollarSign,
+  TrendingUp,
+  ShoppingCart,
+  CheckCircle,
+  Clock,
   XCircle,
   RotateCcw
 } from 'lucide-react';
 import { KPICard } from '@/components/dashboard/KPICard';
 import { useFinance } from '@/contexts/FinanceContext';
+import {
+  useFilteredFinanceKPIs,
+  type FinanceFilters,
+} from '@/hooks/useFilteredFinanceKPIs';
 
 interface FinanceKPICardsProps {
   isLoading?: boolean;
+  /**
+   * Filtros do DashboardFilters (H-DASH-2). Quando omitido, cai no
+   * comportamento antigo (KPIs globais via FinanceContext).
+   */
+  filters?: FinanceFilters;
 }
 
-export function FinanceKPICards({ isLoading = false }: FinanceKPICardsProps) {
-  const { kpis } = useFinance();
+export function FinanceKPICards({ isLoading = false, filters }: FinanceKPICardsProps) {
+  const finance = useFinance();
+  const filteredKpis = useFilteredFinanceKPIs(
+    filters ?? { period: 'all', channel: 'all', type: 'all', agent: 'all' }
+  );
+  const kpis = filters ? filteredKpis : finance.kpis;
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('pt-BR', {

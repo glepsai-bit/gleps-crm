@@ -5,14 +5,47 @@ import { AuthenticatedRequest } from '../types';
 import { getPaginationParams } from '../utils/helpers';
 
 // Validation schemas
+// H-LEADS-1: nome é obrigatório na criação para evitar registros "zumbi" com tudo null.
+// telefone/email continuam opcionais individualmente, mas o schema rejeita strings vazias
+// (ex.: "") quando informadas, para não burlar a validação enviando campos em branco.
 const createContactSchema = z.object({
-  nome: z.string().optional(),
-  telefone: z.string().optional(),
-  email: z.string().email().optional(),
+  nome: z.string().trim().min(1, 'Nome obrigatório').max(120, 'Nome deve ter no máximo 120 caracteres'),
+  telefone: z
+    .string()
+    .trim()
+    .min(1, 'Telefone não pode ser vazio')
+    .optional(),
+  email: z
+    .string()
+    .trim()
+    .min(1, 'Email não pode ser vazio')
+    .email('Email inválido')
+    .optional(),
   origem: z.enum(['whatsapp', 'instagram', 'site', 'indicacao', 'outro']).optional(),
 });
 
-const updateContactSchema = createContactSchema;
+// Update permite payload parcial: todos os campos opcionais (incluindo nome),
+// mas se nome for informado não pode ser string vazia.
+const updateContactSchema = z.object({
+  nome: z
+    .string()
+    .trim()
+    .min(1, 'Nome não pode ser vazio')
+    .max(120, 'Nome deve ter no máximo 120 caracteres')
+    .optional(),
+  telefone: z
+    .string()
+    .trim()
+    .min(1, 'Telefone não pode ser vazio')
+    .optional(),
+  email: z
+    .string()
+    .trim()
+    .min(1, 'Email não pode ser vazio')
+    .email('Email inválido')
+    .optional(),
+  origem: z.enum(['whatsapp', 'instagram', 'site', 'indicacao', 'outro']).optional(),
+});
 
 const listContactsSchema = z.object({
   search: z.string().optional(),

@@ -434,11 +434,21 @@ export default function AdminChatDashboardPage() {
   }, [metrics]);
 
   // KPIs derivados
-  const aiResolvedPct = metrics
-    ? pct(metrics.resolvedByAi, metrics.resolvedConversations)
+  //
+  // H-DASH-1 FIX: numerador (resolvedByAi/Human) vem de ConversationCycle e
+  // denominador era resolvedConversations (count em Conversation). Quando uma
+  // conversa é reaberta e reconcluída, ela gera múltiplos ciclos resolvidos
+  // mas continua contando como 1 só no count de Conversation — o que produzia
+  // valores absurdos como 800%. Alinhamos numerador e denominador no mesmo
+  // domínio (total de ciclos resolvidos = IA + Humano).
+  const totalResolvedCycles = metrics
+    ? metrics.resolvedByAi + metrics.resolvedByHuman
     : 0;
-  const humanResolvedPct = metrics
-    ? pct(metrics.resolvedByHuman, metrics.resolvedConversations)
+  const aiResolvedPct = totalResolvedCycles > 0 && metrics
+    ? pct(metrics.resolvedByAi, totalResolvedCycles)
+    : 0;
+  const humanResolvedPct = totalResolvedCycles > 0 && metrics
+    ? pct(metrics.resolvedByHuman, totalResolvedCycles)
     : 0;
   const resolutionRate = metrics
     ? pct(metrics.resolvedConversations, metrics.totalConversations)
@@ -713,7 +723,7 @@ export default function AdminChatDashboardPage() {
         <CardContent>
           {isLoading ? (
             <Skeleton className="h-20 w-full" />
-          ) : metrics && metrics.resolvedConversations > 0 ? (
+          ) : metrics && totalResolvedCycles > 0 ? (
             <div className="space-y-4">
               <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
                 <div

@@ -26,13 +26,17 @@ import { logger } from '../utils/logger';
 // Validation schemas
 // ============================================
 
+// H-CHAT-1: cap em todos os campos string para impedir payloads gigantes
+// (ex.: 1MB de content) que persistem no banco mas são cortados pela
+// Evolution em ~4096 chars. URLs/file names também recebem cap defensivo
+// pra evitar abuso (preencher disco / quebrar logs / DoS de I/O).
 const attachmentSchema = z.object({
   fileType: z.enum(['image', 'video', 'audio', 'document']),
-  fileUrl: z.string().min(1),
+  fileUrl: z.string().min(1).max(2048, 'fileUrl muito longa (max 2048 caracteres)'),
   fileSize: z.number().int().nonnegative().optional(),
-  fileName: z.string().optional(),
-  mimeType: z.string().optional(),
-  thumbnailUrl: z.string().optional(),
+  fileName: z.string().max(512, 'fileName muito longo (max 512 caracteres)').optional(),
+  mimeType: z.string().max(128, 'mimeType muito longo (max 128 caracteres)').optional(),
+  thumbnailUrl: z.string().max(2048, 'thumbnailUrl muito longa (max 2048 caracteres)').optional(),
   duration: z.number().int().nonnegative().optional(),
 });
 
@@ -52,9 +56,17 @@ const listMessagesQuerySchema = z.object({
   after: z.string().datetime({ offset: true }).or(z.string().datetime()).optional(),
 });
 
+// H-CHAT-1: WhatsApp/Evolution corta em ~4096 chars. Sem .max() aqui
+// um POST de 1MB de content persistia no banco mas saía truncado no
+// WhatsApp — silenciosamente. Rejeitar no parse evita o lixo no DB.
+const MAX_MESSAGE_CONTENT_LEN = 4096;
+
 const createMessageBodySchema = z
   .object({
-    content: z.string().optional(),
+    content: z
+      .string()
+      .max(MAX_MESSAGE_CONTENT_LEN, 'Mensagem muito longa (max 4096 caracteres)')
+      .optional(),
     contentType: agentContentTypeEnum.optional(),
     isPrivate: z.boolean().optional(),
     replyToId: z.string().uuid().optional(),
@@ -85,9 +97,14 @@ const integrationContentTypeEnum = z.enum([
   'document',
 ]);
 
+// H-CHAT-1: mesmo cap da rota JWT — bots/n8n também não podem injetar
+// content gigante (provider corta no envio, mas o registro fica gordo).
 const integrationCreateBodySchema = z
   .object({
-    content: z.string().optional(),
+    content: z
+      .string()
+      .max(MAX_MESSAGE_CONTENT_LEN, 'Mensagem muito longa (max 4096 caracteres)')
+      .optional(),
     contentType: integrationContentTypeEnum.optional(),
     sender_type: integrationSenderTypeEnum,
     metadata: z.record(z.unknown()).optional(),

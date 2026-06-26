@@ -4,7 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { env, isDevelopment } from './config/env';
-import { connectDatabase } from './config/database';
+import { connectDatabase, prisma } from './config/database';
 import { metricsCollector } from './services/metrics-collector';
 import { emailService } from './services/email.service';
 import { whatsappCampaignService } from './services/whatsapp-campaign.service';
@@ -20,6 +20,16 @@ import { initSocket } from './socket';
 async function bootstrap() {
   // Connect to database
   await connectDatabase();
+
+  // H-DISP-B: recupera batches WhatsApp em 'running' orfaos de restart anterior
+  // (processBatchInBackground vive em memoria, nao sobrevive a reboot). Volta
+  // para 'scheduled' para o cron de WhatsApp reprocessar. Roda ANTES do cron
+  // subir para evitar race com novos ticks.
+  try {
+    await whatsappCampaignService.recoverOrphanRunningBatches();
+  } catch (err) {
+    logger.error('[wa-campaign] recoverOrphanRunningBatches failed at bootstrap', err);
+  }
 
   // Start metrics collector
   metricsCollector.start();
@@ -124,14 +134,74 @@ async function bootstrap() {
     logger.info(`👤 Agent offline timeout cron started (interval: ${AGENT_OFFLINE_INTERVAL_MS / 1000}s, idle threshold: ${AGENT_IDLE_THRESHOLD_MS / 1000}s)`);
   }
 
+  // H-AUTH-4: cleanup diario de refresh tokens orfaos.
+  // Sem isso a tabela refresh_tokens cresce indefinidamente — em prod ja
+  // tinhamos 154 tokens revogados/expirados acumulados so para o admin
+  // do FitPark. Removemos:
+  //   - tokens revogados ha mais de 7 dias (mantemos janela curta de
+  //     auditoria para detectar reuse de token rotacionado);
+  //   - tokens com expiresAt no passado (sao 401 garantidos, nao servem
+  //     mais nem para validacao).
+  // Executa 1x no bootstrap para limpar o backlog historico e depois
+  // a cada 24h. Roda em background — falha nao impede o servidor de subir.
+  {
+    const REFRESH_TOKEN_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+    const REFRESH_TOKEN_REVOKED_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+    const cleanupRefreshTokens = async () => {
+      try {
+        const result = await prisma.refreshToken.deleteMany({
+          where: {
+            OR: [
+              { revokedAt: { not: null, lt: new Date(Date.now() - REFRESH_TOKEN_REVOKED_GRACE_MS) } },
+              { expiresAt: { lt: new Date() } },
+            ],
+          },
+        });
+        if (result.count > 0) {
+          logger.info(`🧹 [auth] removidos ${result.count} refresh tokens revogados/expirados`);
+        }
+      } catch (err) {
+        logger.error('Refresh token cleanup cron error:', err);
+      }
+    };
+    // backlog cleanup no boot (nao bloqueia subida do servidor)
+    void cleanupRefreshTokens();
+    setInterval(cleanupRefreshTokens, REFRESH_TOKEN_CLEANUP_INTERVAL_MS);
+    logger.info(`🧹 Refresh token cleanup cron started (interval: ${REFRESH_TOKEN_CLEANUP_INTERVAL_MS / 1000}s)`);
+  }
+
   const app = express();
 
   // Trust proxy (for rate limiting behind reverse proxy)
   app.set('trust proxy', 1);
 
   // Security middlewares
+  // H-CROSS-1b: CSP restritiva + headers de seguranca padrao do helmet
+  // (X-Frame-Options, X-Content-Type-Options, Referrer-Policy etc.).
+  // O nginx atras nao adicionava nada disso, deixando o app vulneravel
+  // a clickjacking e injecao de scripts inline. Politicas:
+  //   - scriptSrc 'self': sem inline JS (eval/onclick bloqueados).
+  //   - styleSrc 'unsafe-inline': necessario pra Tailwind/Vite em dev
+  //     e pros estilos inline injetados pelo shadcn em tempo de render.
+  //   - connectSrc inclui WS/WSS pra Socket.IO + dominio de prod.
+  //   - imgSrc 'data:' pra avatares base64 e 'https:' pra anexos externos.
+  //   - crossOriginEmbedderPolicy desligado: evita quebrar recursos
+  //     cross-origin (Chatwoot iframe, ASN etc.) que nao mandam CORP.
   app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'", 'https://autevo.gleps.com.br', 'wss:', 'ws:'],
+        fontSrc: ["'self'", 'data:'],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
     crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginEmbedderPolicy: false,
   }));
 
   // CORS

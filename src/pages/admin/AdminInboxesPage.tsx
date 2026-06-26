@@ -34,6 +34,7 @@ import inboxesBackendService, {
   InboxChannelType,
   CreateInboxInput,
   UpdateInboxInput,
+  InboxDependencies,
 } from '@/services/inboxes.backend.service';
 import inboxesWhatsappBackendService, {
   WhatsappConnectionStatus,
@@ -299,7 +300,9 @@ export default function AdminInboxesPage() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingInbox, setEditingInbox] = useState<Inbox | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // H-CONFIG-1: guardamos o inbox inteiro (não só id) pra exibir o nome
+  // no aviso e validar a digitação de confirmação.
+  const [deletingInbox, setDeletingInbox] = useState<Inbox | null>(null);
   const [businessHoursOpen, setBusinessHoursOpen] = useState(false);
   // Modal "Conectar WhatsApp" — guardamos só o id do inbox alvo. null = fechada.
   const [whatsappInboxId, setWhatsappInboxId] = useState<string | null>(null);
@@ -397,7 +400,7 @@ export default function AdminInboxesPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inboxes'] });
       toast({ title: 'Canal excluído.' });
-      setDeletingId(null);
+      setDeletingInbox(null);
     },
     onError: (err: Error) => {
       toast({
@@ -654,7 +657,7 @@ export default function AdminInboxesPage() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => setDeletingId(inbox.id)}
+                            onClick={() => setDeletingInbox(inbox)}
                             className="text-destructive hover:text-destructive"
                             title="Excluir"
                             aria-label={`Excluir canal ${inbox.name}`}
@@ -913,33 +916,14 @@ export default function AdminInboxesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* AlertDialog excluir */}
-      <AlertDialog
-        open={!!deletingId}
-        onOpenChange={(open) => {
-          if (!open) setDeletingId(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Excluir canal?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Esta ação não pode ser desfeita. O canal será removido permanentemente.
-              Conversas vinculadas a ele podem ficar sem inbox de origem.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => deletingId && mutateExcluir.mutate(deletingId)}
-              disabled={mutateExcluir.isPending}
-            >
-              {mutateExcluir.isPending ? 'Excluindo...' : 'Excluir'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* H-CONFIG-1: AlertDialog excluir com contagens de cascade
+          + confirmação por digitação do nome (irreversível). */}
+      <DeleteInboxDialog
+        inbox={deletingInbox}
+        isDeleting={mutateExcluir.isPending}
+        onCancel={() => setDeletingInbox(null)}
+        onConfirm={(id) => mutateExcluir.mutate(id)}
+      />
 
       {/* Modal Conectar WhatsApp (QR Code + polling) */}
       <WhatsappQrModal
@@ -949,6 +933,144 @@ export default function AdminInboxesPage() {
         }}
       />
     </div>
+  );
+}
+
+// ============================================
+// DeleteInboxDialog (H-CONFIG-1)
+//
+// AlertDialog de exclusão IRREVERSÍVEL com:
+//   1. Busca de contagens via /api/inboxes/:id/dependencies ao abrir.
+//   2. Lista do que será apagado: conversas, mensagens, anexos,
+//      resolution_logs.
+//   3. Input de confirmação por digitação do nome do inbox — o botão
+//      "Excluir" só habilita quando o texto bate exatamente.
+//
+// O dialog abre quando `inbox` é não-nulo. Ao fechar (cancelar / sucesso /
+// click fora), o pai zera `deletingInbox`.
+// ============================================
+
+function DeleteInboxDialog({
+  inbox,
+  isDeleting,
+  onCancel,
+  onConfirm,
+}: {
+  inbox: Inbox | null;
+  isDeleting: boolean;
+  onCancel: () => void;
+  onConfirm: (id: string) => void;
+}) {
+  const isOpen = !!inbox;
+  const [typedName, setTypedName] = useState('');
+
+  // Reset do input toda vez que abre pra um inbox diferente — evita
+  // que o operador "herde" texto de uma tentativa anterior.
+  useEffect(() => {
+    if (isOpen) setTypedName('');
+  }, [isOpen, inbox?.id]);
+
+  const { data: deps, isLoading: isLoadingDeps } = useQuery<InboxDependencies>({
+    queryKey: ['inboxes', inbox?.id, 'dependencies'],
+    queryFn: () => inboxesBackendService.getInboxDependencies(inbox!.id),
+    enabled: isOpen,
+    // Cascade counts são "live" — não cache; cada abertura busca de novo
+    // pra refletir mensagens que entraram entre o último fetch e agora.
+    staleTime: 0,
+  });
+
+  const nameMatches = !!inbox && typedName === inbox.name;
+  const canConfirm = nameMatches && !isLoadingDeps && !isDeleting;
+
+  return (
+    <AlertDialog
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isDeleting) onCancel();
+      }}
+    >
+      <AlertDialogContent className="sm:max-w-md">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-destructive">
+            Excluir inbox VAI APAGAR:
+          </AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div className="space-y-3 pt-2">
+              {isLoadingDeps ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Calculando o impacto...
+                </div>
+              ) : (
+                <ul className="text-sm space-y-1 list-disc pl-5">
+                  <li>
+                    <strong>{deps?.conversations ?? 0}</strong> conversa
+                    {(deps?.conversations ?? 0) === 1 ? '' : 's'}
+                  </li>
+                  <li>
+                    <strong>{deps?.messages ?? 0}</strong> mensage
+                    {(deps?.messages ?? 0) === 1 ? 'm' : 'ns'}
+                  </li>
+                  <li>
+                    <strong>{deps?.attachments ?? 0}</strong> anexo
+                    {(deps?.attachments ?? 0) === 1 ? '' : 's'}
+                  </li>
+                  <li>
+                    <strong>{deps?.resolutionLogs ?? 0}</strong> log
+                    {(deps?.resolutionLogs ?? 0) === 1 ? '' : 's'} de
+                    resolução
+                  </li>
+                </ul>
+              )}
+              <p className="text-sm font-semibold text-destructive">
+                Esta ação eh IRREVERSÍVEL.
+              </p>
+              <div className="space-y-1.5">
+                <Label
+                  htmlFor="delete-confirm-name"
+                  className="text-sm font-medium"
+                >
+                  Digite o nome do inbox para confirmar:{' '}
+                  <span className="font-mono text-foreground">
+                    {inbox?.name}
+                  </span>
+                </Label>
+                <Input
+                  id="delete-confirm-name"
+                  autoComplete="off"
+                  autoFocus
+                  value={typedName}
+                  onChange={(e) => setTypedName(e.target.value)}
+                  placeholder={inbox?.name ?? ''}
+                  disabled={isDeleting}
+                  aria-label="Confirmar nome do inbox para exclusão"
+                />
+              </div>
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={isDeleting}>
+            Cancelar
+          </AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+            disabled={!canConfirm}
+            onClick={(e) => {
+              // Sem confirmação digitada não dispara, mesmo se algum
+              // browser respeitar o disabled de forma estranha.
+              if (!canConfirm || !inbox) {
+                e.preventDefault();
+                return;
+              }
+              onConfirm(inbox.id);
+            }}
+          >
+            {isDeleting ? 'Excluindo...' : 'Excluir'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

@@ -113,6 +113,29 @@ function unwrap<T = any>(response: any): T {
   return (response?.data ?? response) as T;
 }
 
+/**
+ * H-CONFIG-1: contagens de tudo que será apagado em cascade quando o
+ * inbox for deletado. A UI exibe esse payload no AlertDialog antes da
+ * confirmação por digitação do nome.
+ */
+export interface InboxDependencies {
+  conversations: number;
+  messages: number;
+  attachments: number;
+  resolutionLogs: number;
+}
+
+function mapDependencies(raw: any): InboxDependencies {
+  return {
+    conversations: Number(raw?.conversations ?? 0),
+    messages: Number(raw?.messages ?? 0),
+    attachments: Number(raw?.attachments ?? 0),
+    resolutionLogs: Number(
+      raw?.resolutionLogs ?? raw?.resolution_logs ?? 0
+    ),
+  };
+}
+
 export const inboxesBackendService = {
   async listInboxes(): Promise<Inbox[]> {
     const response = await apiClient.get<any>(API_ENDPOINTS.INBOXES.LIST);
@@ -138,6 +161,18 @@ export const inboxesBackendService = {
 
   async deleteInbox(id: string): Promise<void> {
     await apiClient.delete(API_ENDPOINTS.INBOXES.DELETE(id));
+  },
+
+  /**
+   * H-CONFIG-1: busca contagens das entidades que sumirão em cascade
+   * ao deletar o inbox (conversations, messages, attachments, resolution_logs).
+   * Usado pela UI pra montar o aviso ANTES da confirmação irreversível.
+   */
+  async getInboxDependencies(id: string): Promise<InboxDependencies> {
+    const response = await apiClient.get<any>(
+      API_ENDPOINTS.INBOXES.DEPENDENCIES(id)
+    );
+    return mapDependencies(unwrap(response));
   },
 };
 

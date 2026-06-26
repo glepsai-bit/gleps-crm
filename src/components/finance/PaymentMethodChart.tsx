@@ -7,11 +7,17 @@ import {
 } from '@/components/ui/chart';
 import { PieChart, Pie, Cell } from 'recharts';
 import { useFinance } from '@/contexts/FinanceContext';
+import {
+  useFilteredFinanceKPIs,
+  type FinanceFilters,
+} from '@/hooks/useFilteredFinanceKPIs';
 import { CreditCard } from 'lucide-react';
 import { PaymentMethod } from '@/types/crm';
 
 interface PaymentMethodChartProps {
   isLoading?: boolean;
+  /** H-DASH-2: filtros do DashboardFilters (período/canal/agente). */
+  filters?: FinanceFilters;
 }
 
 // Chart colors from design system - fixed palette
@@ -45,8 +51,12 @@ const chartConfig = {
   none: { label: 'Não informado', color: COLORS.none },
 } satisfies ChartConfig;
 
-export function PaymentMethodChart({ isLoading = false }: PaymentMethodChartProps) {
-  const { kpis } = useFinance();
+export function PaymentMethodChart({ isLoading = false, filters }: PaymentMethodChartProps) {
+  const finance = useFinance();
+  const filteredKpis = useFilteredFinanceKPIs(
+    filters ?? { period: 'all', channel: 'all', type: 'all', agent: 'all' }
+  );
+  const kpis = filters ? filteredKpis : finance.kpis;
 
   if (isLoading) {
     return (

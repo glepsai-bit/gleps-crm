@@ -8,10 +8,16 @@ import {
 } from '@/components/ui/chart';
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts';
 import { useFinance } from '@/contexts/FinanceContext';
+import {
+  useFilteredFinanceKPIs,
+  type FinanceFilters,
+} from '@/hooks/useFilteredFinanceKPIs';
 import { TrendingUp } from 'lucide-react';
 
 interface RevenueChartProps {
   isLoading?: boolean;
+  /** H-DASH-2: filtros do DashboardFilters (período/canal/agente). */
+  filters?: FinanceFilters;
 }
 
 // Chart colors from design system (token para adaptar ao tema)
@@ -24,8 +30,12 @@ const chartConfig = {
   },
 } satisfies ChartConfig;
 
-export function RevenueChart({ isLoading = false }: RevenueChartProps) {
-  const { kpis } = useFinance();
+export function RevenueChart({ isLoading = false, filters }: RevenueChartProps) {
+  const finance = useFinance();
+  const filteredKpis = useFilteredFinanceKPIs(
+    filters ?? { period: 'all', channel: 'all', type: 'all', agent: 'all' }
+  );
+  const kpis = filters ? filteredKpis : finance.kpis;
 
   if (isLoading) {
     return (

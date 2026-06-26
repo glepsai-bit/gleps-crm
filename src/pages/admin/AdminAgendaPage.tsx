@@ -7,7 +7,8 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { Calendar, Clock, MapPin, Link2, User, Trash2, Copy, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
+import { Calendar, Clock, MapPin, Link2, User, Trash2, Copy, ExternalLink, RefreshCw, AlertCircle, Info } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 
 export default function AdminAgendaPage() {
@@ -178,6 +179,27 @@ export default function AdminAgendaPage() {
               <Badge variant="outline" className="text-success border-success text-xs shrink-0">
                 ✓ {connection.email}
               </Badge>
+              {/* H-AGENDA-2: avisar usuario que sync e uni-direcional */}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="outline"
+                      className="text-xs shrink-0 cursor-help text-muted-foreground border-muted-foreground/40"
+                    >
+                      <Info className="w-3 h-3 mr-1" />
+                      Sincronização em apenas uma via (Google → CRM)
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p className="text-xs">
+                      Eventos criados, editados ou excluídos no CRM <strong>não</strong> são
+                      propagados para o Google Calendar. Apenas alterações no Google são
+                      refletidas aqui após o próximo sync.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               <div className="flex items-center gap-2">
                 <Button 
                   variant="outline" 

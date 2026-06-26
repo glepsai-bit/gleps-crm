@@ -136,6 +136,12 @@ async function tryRefreshToken(): Promise<boolean> {
       const data = result?.data ?? result;
       if (data?.token) {
         tokenManager.setToken(data.token);
+        // H-AUTH-3: backend agora ROTACIONA o refresh token a cada uso.
+        // Precisamos persistir o novo refresh token, senao a proxima
+        // chamada usaria o antigo (ja revogado) e cairia em 401.
+        if (data.refreshToken) {
+          tokenManager.setRefreshToken(data.refreshToken);
+        }
         return true;
       }
       return false;

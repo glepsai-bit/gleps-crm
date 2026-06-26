@@ -67,6 +67,47 @@ interface AuthState {
 
 const AUTH_CACHE_KEY = 'backend_auth_cache';
 
+// H-CROSS-1a: padronizacao das chaves de token no localStorage.
+// Estas constantes precisam bater EXATAMENTE com as usadas em
+// src/api/client.ts (tokenManager). Qualquer leitura/escrita feita
+// fora do tokenManager DEVE referenciar estas constantes — nunca
+// strings cruas como 'accessToken' / 'refreshToken'.
+const ACCESS_TOKEN_KEY = 'auth_token';
+const REFRESH_TOKEN_KEY = 'refresh_token';
+const LEGACY_ACCESS_TOKEN_KEY = 'accessToken';
+const LEGACY_REFRESH_TOKEN_KEY = 'refreshToken';
+
+/**
+ * H-CROSS-1a: Migracao one-shot de chaves de token legadas para as
+ * canonicas. Antes coexistiam duas grafias com valores diferentes
+ * (`accessToken` + `auth_token`, `refreshToken` + `refresh_token`),
+ * o que deixava a UI em estado inconsistente (chamadas usando token
+ * antigo nunca refreshado). Esta funcao roda no boot do provider e
+ * eh idempotente — se nao houver chave legada, nao faz nada.
+ */
+function migrateLegacyTokenKeys(): void {
+  try {
+    const legacyAccess = localStorage.getItem(LEGACY_ACCESS_TOKEN_KEY);
+    if (legacyAccess) {
+      // So sobrescreve o novo se ele estiver vazio — evita pisar
+      // um token mais recente com um legado obsoleto.
+      if (!localStorage.getItem(ACCESS_TOKEN_KEY)) {
+        localStorage.setItem(ACCESS_TOKEN_KEY, legacyAccess);
+      }
+      localStorage.removeItem(LEGACY_ACCESS_TOKEN_KEY);
+    }
+    const legacyRefresh = localStorage.getItem(LEGACY_REFRESH_TOKEN_KEY);
+    if (legacyRefresh) {
+      if (!localStorage.getItem(REFRESH_TOKEN_KEY)) {
+        localStorage.setItem(REFRESH_TOKEN_KEY, legacyRefresh);
+      }
+      localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
+    }
+  } catch {
+    // localStorage pode estar bloqueado (Safari private mode etc.) — silencioso.
+  }
+}
+
 function readAuthCache(): { user: User; account: Account | null } | null {
   try {
     const raw = localStorage.getItem(AUTH_CACHE_KEY);
@@ -184,6 +225,9 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     mountedRef.current = true;
+
+    // H-CROSS-1a: migra chaves legadas ANTES de qualquer leitura de token.
+    migrateLegacyTokenKeys();
 
     const token = tokenManager.getToken();
     const cached = token ? readAuthCache() : null;
