@@ -58,25 +58,29 @@ interface AdminLayoutProps {
 }
 
 const adminNavItems = [
+  // Atendimento (operação diária — topo)
+  { title: 'Chat', href: '/admin/chat', icon: MessageCircle },
+  { title: 'Dashboard Chat', href: '/admin/chat/dashboard', icon: BarChart3 },
+  // Funil comercial
   { title: 'Kanban', href: '/admin/kanban', icon: Kanban },
   { title: 'Leads', href: '/admin/leads', icon: Users },
   { title: 'Agenda', href: '/admin/agenda', icon: Calendar },
+  // Negócio
   { title: 'Vendas', href: '/admin/sales', icon: DollarSign },
   { title: 'Financeiro', href: '/admin/finance', icon: Wallet },
   { title: 'Produtos', href: '/admin/products', icon: Package },
+  // Captação / marketing
   { title: 'Prospecção', href: '/admin/prospeccao', icon: Crosshair },
   { title: 'E-mails', href: '/admin/emails', icon: Mail },
   { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },
-  { title: 'Integrações', href: '/admin/integracoes', icon: Webhook },
-  { title: 'Opt-outs WA', href: '/admin/opt-outs', icon: Ban },
-  // Atendimento (T-022)
-  { title: 'Chat', href: '/admin/chat', icon: MessageCircle },
-  { title: 'Dashboard Chat', href: '/admin/chat/dashboard', icon: BarChart3 },
+  // Config do Chat (uso ocasional)
   { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox },
   { title: 'Times', href: '/admin/teams', icon: Users },
   { title: 'Respostas Rápidas', href: '/admin/canned-responses', icon: Zap },
   { title: 'SLA', href: '/admin/sla-policies', icon: Clock },
   { title: 'Atributos Custom', href: '/admin/custom-attributes', icon: Settings2 },
+  { title: 'Opt-outs WA', href: '/admin/opt-outs', icon: Ban },
+  { title: 'Integrações', href: '/admin/integracoes', icon: Webhook },
 ];
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
