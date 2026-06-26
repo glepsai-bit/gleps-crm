@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -73,6 +73,10 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
   const { toast } = useToast();
   const [batches, setBatches] = useState<DispatchBatch[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<DispatchBatch | null>(null);
+  // Auto-select roda APENAS uma vez por activeBatchId. Sem essa ref, o polling
+  // de 3s re-disparava o auto-select e jogava o usuario de volta pro detalhe
+  // mesmo depois dele clicar "Voltar" — bug visual "tela troca sozinha".
+  const autoSelectedFor = useRef<string | null>(null);
   const [logs, setLogs] = useState<DispatchLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
@@ -126,11 +130,16 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     fetchBatches();
   }, [fetchBatches]);
 
-  // Auto-select active batch
+  // Auto-select active batch — APENAS uma vez por activeBatchId.
+  // Sem o guard de ref, o polling de 3s re-disparava esse effect e forcava
+  // a navegacao pra tela de detalhe mesmo depois do usuario voltar pra lista.
   useEffect(() => {
-    if (activeBatchId && batches.length > 0) {
-      const found = batches.find(b => b.id === activeBatchId);
-      if (found) setSelectedBatch(found);
+    if (!activeBatchId || batches.length === 0) return;
+    if (autoSelectedFor.current === activeBatchId) return;
+    const found = batches.find(b => b.id === activeBatchId);
+    if (found) {
+      setSelectedBatch(found);
+      autoSelectedFor.current = activeBatchId;
     }
   }, [activeBatchId, batches]);
 
