@@ -6,13 +6,12 @@
 
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
-import type { 
-  ContactListParams, 
-  CreateContactRequest, 
+import type {
+  ContactListParams,
+  CreateContactRequest,
   UpdateContactRequest,
-  MoveContactRequest,
   AddNoteRequest,
-  PaginatedResponse 
+  PaginatedResponse
 } from '@/api/types';
 import type { Contact, LeadNote } from '@/types/crm';
 import { apiFeatures } from '@/config/api.config';
@@ -167,18 +166,10 @@ export const contactsService = {
     });
   },
 
-  /**
-   * Move contact to a different stage
-   */
-  moveToStage: async (id: string, data: MoveContactRequest): Promise<void> => {
-    if (apiFeatures.useMocks) {
-      await new Promise(resolve => setTimeout(resolve, 300));
-      // In mock mode, stage management is handled by TagContext
-      return;
-    }
-    
-    return apiClient.post(API_ENDPOINTS.CONTACTS.MOVE_STAGE(id), data);
-  },
+  // L-LEAD-1: método `moveToStage` removido — apontava para endpoint inexistente
+  // (`POST /api/contacts/:id/move`, 404 no backend). No fluxo real, a mudança
+  // de estágio é feita pela aplicação de uma tag de estágio via
+  // `POST /api/contacts/:id/tags` (vide contact.routes.ts → applyTag).
 
   /**
    * Get notes for a contact

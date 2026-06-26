@@ -127,7 +127,10 @@ export function useFinance() {
 
 interface FinanceProviderProps {
   children: ReactNode;
-  accountId: string;
+  // L-CROSS-2: aceita null durante hidratação do AuthContext. Quando null,
+  // todos os useEffect já têm guard `if (!accountId) return` e nenhuma
+  // query/mutação é disparada com accountId inválido.
+  accountId: string | null;
 }
 
 export function FinanceProvider({ children, accountId }: FinanceProviderProps) {
@@ -441,6 +444,12 @@ export function FinanceProvider({ children, accountId }: FinanceProviderProps) {
   // Create contact
   const createContact = useCallback(
     async (data: CreateContactData): Promise<{ success: boolean; error?: string; contactId?: string }> => {
+      // L-CROSS-2: bloqueia mutação enquanto accountId não está resolvido
+      // (hidratação do AuthContext). Sem isso, contato seria persistido com
+      // account_id=null e ficaria órfão (ou bateria em FK error no backend).
+      if (!accountId) {
+        return { success: false, error: 'Conta não disponível' };
+      }
       try {
         const origemNormalizada: ContactOrigin =
           data.origem === 'whatsapp' ||
@@ -556,6 +565,10 @@ export function FinanceProvider({ children, accountId }: FinanceProviderProps) {
   // Actions
   const createSale = useCallback(
     async (data: CreateSaleData): Promise<{ success: boolean; error?: string }> => {
+      // L-CROSS-2: bloqueia mutação enquanto accountId não está resolvido.
+      if (!accountId) {
+        return { success: false, error: 'Conta não disponível' };
+      }
       if (!data.skipValidation) {
         const validation = canCreateSale(data.contactId);
         if (!validation.allowed) {

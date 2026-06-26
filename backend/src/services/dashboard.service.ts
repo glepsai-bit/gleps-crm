@@ -25,13 +25,19 @@ class DashboardService {
       }
     }
 
+    // L-VEN-1: SOURCE OF TRUTH — `totalSales` em todos os KPIs de venda
+    // (dashboard.getAdminKPIs e finance.getKPIs) conta apenas vendas com
+    // status='paid'. Vendas em `pending` / `refunded` / `partial_refund` NÃO
+    // entram em totalSales para evitar divergência entre widgets do dashboard
+    // e do financeiro (ex.: dashboard.totalSales=13 vs finance.totalSales=11).
+    // Quem precisar do total bruto (todas as vendas independente de status)
+    // deve usar `allSales` (vide abaixo) ou contagens dedicadas.
     const [
       totalLeads,
       newLeads,
-      totalSales,
+      allSales,
       paidSales,
       totalRevenue,
-      conversionRate,
     ] = await Promise.all([
       prisma.contact.count({ where: { accountId } }),
       prisma.contact.count({ where: { accountId, createdAt: where.createdAt } }),
@@ -41,16 +47,20 @@ class DashboardService {
         where: { ...where, status: 'paid' },
         _sum: { valor: true },
       }),
-      Promise.resolve(null), // Will calculate below
     ]);
+
+    // totalSales == paidSales (source of truth). allSales fica disponível para
+    // o frontend que quiser exibir o universo completo (paid + pending + refunds).
+    const totalSales = paidSales;
 
     return {
       totalLeads,
       newLeads,
       totalSales,
+      allSales,
       paidSales,
       totalRevenue: Number(totalRevenue._sum.valor || 0),
-      conversionRate: totalSales > 0 ? Math.round((paidSales / totalSales) * 100) : 0,
+      conversionRate: allSales > 0 ? Math.round((paidSales / allSales) * 100) : 0,
     };
   }
 

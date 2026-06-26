@@ -120,9 +120,11 @@ class WhatsappConsentsBackendService {
         ? normalizePhone(contactIdOrPhone)
         : contactIdOrPhone
     );
+    // L-CFG-2: o backend espera `reason` (zod strict) — sem mapeamento o body
+    // era recusado e o motivo nunca chegava à auditoria.
     await apiClient.post(
       `/api/whatsapp-consents/${id}/opt-in`,
-      motivo ? { motivo } : undefined
+      motivo ? { reason: motivo } : undefined
     );
   }
 
@@ -133,9 +135,10 @@ class WhatsappConsentsBackendService {
         ? normalizePhone(contactIdOrPhone)
         : contactIdOrPhone
     );
+    // L-CFG-2: idem optIn — o body precisa usar `reason` para passar pelo zod.
     await apiClient.post(
       `/api/whatsapp-consents/${id}/opt-out`,
-      motivo ? { motivo } : undefined
+      motivo ? { reason: motivo } : undefined
     );
   }
 

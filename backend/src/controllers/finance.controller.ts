@@ -122,6 +122,26 @@ export class FinanceController {
       next(error);
     }
   }
+
+  /**
+   * POST /finance/entries — stub (L-VEN-2)
+   *
+   * Hoje o módulo financeiro só agrega dados derivados de Sale. O CRUD de
+   * lançamentos (receitas/despesas avulsas) está no roadmap mas ainda não
+   * foi implementado — ver explicação completa em finance.service.ts.
+   * Resposta intencional: 501 NOT IMPLEMENTED com mensagem clara para o
+   * frontend/integrador.
+   */
+  async createEntryStub(_req: AuthenticatedRequest, res: Response, _next: NextFunction): Promise<void> {
+    res.status(501).json({
+      error: {
+        code: 'NOT_IMPLEMENTED',
+        message:
+          'POST /finance/entries ainda não foi implementado. O módulo financeiro hoje só agrega dados derivados de vendas (Sale). CRUD completo de lançamentos (receitas/despesas avulsas) está no roadmap — ver finance.service.ts para detalhes.',
+        feature: 'finance.entries.crud',
+      },
+    });
+  }
 }
 
 export const financeController = new FinanceController();

@@ -21,7 +21,7 @@
 
 import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
-import { ValidationError } from '../utils/errors';
+import { ValidationError, NotFoundError } from '../utils/errors';
 
 /**
  * Range máximo permitido para consultas de métricas (em dias).
@@ -42,6 +42,15 @@ export interface MetricsFilters {
   inboxId?: string;
   teamId?: string;
   agentId?: string;
+  /**
+   * IANA timezone (ex: "America/Sao_Paulo") usado para bucketizar `dailyVolume`
+   * por dia LOCAL ao invés de UTC. Sem isso, uma conversa criada às 22h de SP
+   * (01:00Z do dia seguinte) cai no bucket do dia errado para o operador BR.
+   *
+   * Quando omitido, mantém comportamento legado (UTC) — preserva chamadas
+   * antigas/snapshots existentes.
+   */
+  tz?: string;
 }
 
 export interface AgentMetricRow {
@@ -191,6 +200,49 @@ function utcDayKey(d: Date): string {
 }
 
 /**
+ * Cache de Intl.DateTimeFormat por timezone — instanciar formatter é caro
+ * (alguns ms) e nós chamamos por conversa em loop.
+ */
+const dayFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function getDayFormatter(tz: string): Intl.DateTimeFormat {
+  let fmt = dayFormatterCache.get(tz);
+  if (!fmt) {
+    // en-CA produz yyyy-mm-dd nativamente sem precisar montar via parts.
+    fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    dayFormatterCache.set(tz, fmt);
+  }
+  return fmt;
+}
+
+/**
+ * Valida que `tz` é uma IANA timezone aceita por Intl. Se não for, joga
+ * ValidationError pro controller responder 400 com mensagem clara.
+ */
+function assertValidTimezone(tz: string): void {
+  try {
+    // Construtor lança RangeError em string inválida.
+    new Intl.DateTimeFormat('en-CA', { timeZone: tz });
+  } catch {
+    throw new ValidationError(`Timezone inválido: ${tz}`);
+  }
+}
+
+/**
+ * Chave yyyy-mm-dd no fuso `tz`. Quando `tz` é omitido, cai pro modo UTC
+ * legado pra preservar consumidores que não passam o filtro.
+ */
+function dayKeyInTz(d: Date, tz: string | undefined): string {
+  if (!tz) return utcDayKey(d);
+  return getDayFormatter(tz).format(d);
+}
+
+/**
  * Gera lista de chaves yyyy-mm-dd entre `from` e `to` (inclusive), em UTC.
  * Garante que dias sem dados apareçam como 0 no gráfico ao invés de sumir.
  */
@@ -218,6 +270,45 @@ function eachUtcDayKey(from: Date, to: Date): string[] {
   return keys;
 }
 
+/**
+ * Gera lista de chaves yyyy-mm-dd entre `from` e `to` (inclusive) no fuso
+ * `tz`. Quando `tz` é omitido, cai pro `eachUtcDayKey` legado.
+ *
+ * Avança em incrementos de 12h em UTC (menor que qualquer offset DST possível)
+ * e usa o formatter pra extrair o dia local, dedupando via Set. Isso lida
+ * corretamente com dias "perdidos" ou "duplicados" pelo DST sem precisar de
+ * matemática de timezone manual.
+ */
+function eachDayKeyInTz(from: Date, to: Date, tz: string | undefined): string[] {
+  if (!tz) return eachUtcDayKey(from, to);
+
+  const fmt = getDayFormatter(tz);
+  const seen = new Set<string>();
+  const keys: string[] = [];
+
+  const stepMs = 12 * 60 * 60 * 1000; // 12h
+  const MAX_STEPS = 366 * 10 * 2; // 10 anos em passos de 12h
+  let cursor = from.getTime();
+  const endMs = to.getTime();
+  let safety = 0;
+  while (cursor <= endMs && safety < MAX_STEPS) {
+    const key = fmt.format(new Date(cursor));
+    if (!seen.has(key)) {
+      seen.add(key);
+      keys.push(key);
+    }
+    cursor += stepMs;
+    safety += 1;
+  }
+  // Garante que o dia de `to` entre mesmo se o último passo passou (ex: to=23:30 local).
+  const lastKey = fmt.format(to);
+  if (!seen.has(lastKey)) {
+    seen.add(lastKey);
+    keys.push(lastKey);
+  }
+  return keys;
+}
+
 class ChatMetricsService {
   /**
    * Métricas agregadas do chat interno para uma conta no período.
@@ -226,7 +317,7 @@ class ChatMetricsService {
     accountId: string,
     filters: MetricsFilters
   ): Promise<ChatMetricsResult> {
-    const { fromDate, toDate, inboxId, teamId, agentId } = filters;
+    const { fromDate, toDate, inboxId, teamId, agentId, tz } = filters;
 
     if (!(fromDate instanceof Date) || !(toDate instanceof Date)) {
       throw new Error('fromDate e toDate devem ser instâncias de Date');
@@ -234,6 +325,7 @@ class ChatMetricsService {
     if (fromDate > toDate) {
       throw new Error('fromDate não pode ser maior que toDate');
     }
+    if (tz) assertValidTimezone(tz);
 
     // FIX (T2-METRICS-RANGE): cap em 365 dias. Sem isso, um range de "30 anos"
     // gera 3660 buckets diários (~198KB de JSON) e trava o recharts no FE.
@@ -502,8 +594,13 @@ class ChatMetricsService {
     // ============================================
     // Série diária (FIX BUG-3: substitui placeholder do FE que dividia o
     // total pelo nº de dias e gerava a linha laranja "flat 0.45")
+    //
+    // FIX (L-DASH-2): bucketiza por dia LOCAL ao timezone do account
+    // (parâmetro `tz`) ao invés de UTC, pra que conversas das 22h-23h locais
+    // (que caem no dia seguinte em UTC) apareçam no dia certo do gráfico.
+    // Quando `tz` é omitido, mantém comportamento legado (UTC).
     // ============================================
-    const dayKeys = eachUtcDayKey(fromDate, toDate);
+    const dayKeys = eachDayKeyInTz(fromDate, toDate, tz);
     const dailyMap = new Map<string, { total: number; resolved: number; open: number }>();
     for (const key of dayKeys) {
       dailyMap.set(key, { total: 0, resolved: 0, open: 0 });
@@ -513,14 +610,14 @@ class ChatMetricsService {
       // existente. Conversas resolvidas no período mas criadas fora caem no
       // bucket da data de criação se estiver dentro; caso contrário, criamos
       // o bucket pela data de resolução pra elas aparecerem como "resolvidas".
-      const createdKey = utcDayKey(c.createdAt);
+      const createdKey = dayKeyInTz(c.createdAt, tz);
       if (dailyMap.has(createdKey)) {
         const bucket = dailyMap.get(createdKey)!;
         bucket.total += 1;
         if (c.status === 'resolved') bucket.resolved += 1;
         if (['open', 'pending', 'snoozed'].includes(c.status)) bucket.open += 1;
       } else if (c.resolvedAt) {
-        const resolvedKey = utcDayKey(c.resolvedAt);
+        const resolvedKey = dayKeyInTz(c.resolvedAt, tz);
         if (dailyMap.has(resolvedKey)) {
           const bucket = dailyMap.get(resolvedKey)!;
           // Não conta como total (foi criada fora do período) — apenas
@@ -552,6 +649,18 @@ class ChatMetricsService {
 
   /**
    * Métricas individuais de um agente no período (assigneeId = userId).
+   *
+   * FIX (L-DASH-1): valida que `userId` existe E pertence a `accountId` antes
+   * de calcular. Sem isso, qualquer UUID inexistente (ou de outra conta) volta
+   * 200 com zeros — vaza existência via canal de tempo de resposta e confunde
+   * o FE (que aceita "agente válido com zero atividade" como estado legítimo).
+   *
+   * L-DASH-3 (follow-up): paginar/streamar quando os logs ficarem grandes.
+   * Hoje os SELECTs são limitados pelo período (default 30d) e por
+   * `accountId + assigneeId`, então o set permanece pequeno em produção.
+   * Quando a janela máxima de 365d for batida com volume real (>50k cycles
+   * por agente), reescrever em SQL agregado (GROUP BY) ou paginar via
+   * cursor para evitar carregar tudo em memória.
    */
   async getAgentMetrics(
     accountId: string,
@@ -565,6 +674,16 @@ class ChatMetricsService {
     }
     if (fromDate > toDate) {
       throw new Error('fromDate não pode ser maior que toDate');
+    }
+
+    // L-DASH-1: garante que o user existe na conta. Cross-tenant ou UUID
+    // inexistente → 404 (NotFoundError vira HTTP 404 no errorHandler).
+    const userExists = await prisma.user.findFirst({
+      where: { id: userId, accountId },
+      select: { id: true },
+    });
+    if (!userExists) {
+      throw new NotFoundError('Usuário');
     }
 
     const conversations = await prisma.conversation.findMany({
@@ -854,6 +973,14 @@ class ChatMetricsService {
    * drill-down do card "Retornos" no dashboard. Reaproveita a regra de
    * `getReturningLeadsCount` e enriquece com nome/telefone do contato + última
    * conversa (inbox/agente atual).
+   *
+   * L-DASH-3 (follow-up): a paginação atual roda *em memória* — a query do
+   * Postgres traz TODOS os ciclos/conversas/contatos do período e o slice
+   * acontece depois (linhas 980-982). Funciona até alguns milhares de leads
+   * recorrentes; em contas FitPark com >10k contatos retornando, mover o
+   * `LIMIT/OFFSET` (ou `cursor`) pra dentro das queries Prisma e calcular
+   * `total` via `count` separado. Trocar `findMany` por SQL agregado
+   * (GROUP BY contactId HAVING COUNT(*) >= 2) também elimina o `Map` em JS.
    */
   async getReturningLeadsList(
     accountId: string,

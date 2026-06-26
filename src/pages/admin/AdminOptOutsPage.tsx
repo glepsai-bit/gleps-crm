@@ -38,6 +38,14 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -48,6 +56,7 @@ import {
   Ban,
   Download,
   Loader2,
+  Plus,
   Search,
   UserCheck,
 } from 'lucide-react';
@@ -107,6 +116,12 @@ export default function AdminOptOutsPage() {
   const [motivo, setMotivo] = useState('');
   const [exportando, setExportando] = useState(false);
 
+  // L-CFG-2: dialog "Adicionar opt-out manual" — UI para o endpoint
+  // POST /api/whatsapp-consents/:phone/opt-out já existente no backend.
+  const [addOpen, setAddOpen] = useState(false);
+  const [addTelefone, setAddTelefone] = useState('');
+  const [addMotivo, setAddMotivo] = useState('');
+
   // Busca server-side (filtro período e q debounced)
   const { data: optOuts = [], isLoading } = useQuery<WhatsappConsent[]>({
     queryKey: ['whatsapp-optouts', filtro, buscaDebounced],
@@ -116,6 +131,24 @@ export default function AdminOptOutsPage() {
 
   // Resultados = retorno do server (sem refiltro client-side).
   const resultados = optOuts;
+
+  const optOutManualMutation = useMutation({
+    mutationFn: (vars: { telefone: string; motivo?: string }) =>
+      whatsappConsentsBackendService.optOut(vars.telefone, vars.motivo),
+    onSuccess: () => {
+      toast.success('Opt-out manual registrado com sucesso');
+      queryClient.invalidateQueries({ queryKey: ['whatsapp-optouts'] });
+      setAddOpen(false);
+      setAddTelefone('');
+      setAddMotivo('');
+    },
+    onError: (err: unknown) => {
+      toast.error(
+        'Erro ao registrar opt-out: ' +
+          ((err as { message?: string })?.message ?? 'desconhecido')
+      );
+    },
+  });
 
   const reoptInMutation = useMutation({
     mutationFn: (vars: { id: string; motivo?: string }) =>
@@ -162,19 +195,31 @@ export default function AdminOptOutsPage() {
             Contatos que solicitaram não receber mensagens via WhatsApp.
           </p>
         </div>
-        <Button
-          variant="outline"
-          className="gap-2"
-          onClick={handleExportar}
-          disabled={exportando}
-        >
-          {exportando ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Download className="w-4 h-4" />
-          )}
-          Exportar CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* L-CFG-2: gatilho para registrar opt-out manualmente
+              (consume POST /api/whatsapp-consents/:phone/opt-out já existente). */}
+          <Button
+            variant="default"
+            className="gap-2"
+            onClick={() => setAddOpen(true)}
+          >
+            <Plus className="w-4 h-4" />
+            Adicionar manual
+          </Button>
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={handleExportar}
+            disabled={exportando}
+          >
+            {exportando ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            Exportar CSV
+          </Button>
+        </div>
       </div>
 
       {/* Filtros */}
@@ -340,6 +385,93 @@ export default function AdminOptOutsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* L-CFG-2: dialog "Adicionar opt-out manual" */}
+      <Dialog
+        open={addOpen}
+        onOpenChange={(open) => {
+          if (!open && !optOutManualMutation.isPending) {
+            setAddOpen(false);
+            setAddTelefone('');
+            setAddMotivo('');
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Adicionar opt-out manual</DialogTitle>
+            <DialogDescription>
+              Registra opt-out de WhatsApp para um número. O contato deixará de
+              receber mensagens via campanhas e disparos.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="optout-telefone" className="text-sm">
+                Telefone <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="optout-telefone"
+                placeholder="Ex.: 5511999998888"
+                value={addTelefone}
+                onChange={(e) => setAddTelefone(e.target.value)}
+                disabled={optOutManualMutation.isPending}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Formato livre — o backend normaliza para apenas dígitos.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="optout-motivo" className="text-sm">
+                Motivo (opcional)
+              </Label>
+              <Textarea
+                id="optout-motivo"
+                placeholder="Ex.: contato solicitou via telefone em 25/06"
+                value={addMotivo}
+                onChange={(e) => setAddMotivo(e.target.value)}
+                disabled={optOutManualMutation.isPending}
+                rows={3}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setAddOpen(false);
+                setAddTelefone('');
+                setAddMotivo('');
+              }}
+              disabled={optOutManualMutation.isPending}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => {
+                const telefone = addTelefone.trim();
+                if (!telefone) {
+                  toast.error('Informe o telefone');
+                  return;
+                }
+                optOutManualMutation.mutate({
+                  telefone,
+                  motivo: addMotivo.trim() || undefined,
+                });
+              }}
+              disabled={optOutManualMutation.isPending}
+            >
+              {optOutManualMutation.isPending && (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              )}
+              Registrar opt-out
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

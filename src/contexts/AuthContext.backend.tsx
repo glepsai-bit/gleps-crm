@@ -142,6 +142,12 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
   const [originalUser, setOriginalUser] = useState<User | null>(null);
   const [isImpersonating, setIsImpersonating] = useState(false);
   const mountedRef = useRef(true);
+  // L-CHAT-2: flag pra impedir multiplas chamadas concorrentes de hydrate.
+  // Sem isso, mounts/re-mounts rapidos (StrictMode dev, troca de route,
+  // refetch trigado por outro provider) disparavam varias /api/auth/me
+  // simultaneas — e em token expirado isso virava 8+ requests 401/s antes
+  // do clearTokens propagar.
+  const isHydratingRef = useRef(false);
 
   const clearAuthError = useCallback(() => {
     setAuthState(prev => ({ ...prev, authError: null }));
@@ -149,77 +155,104 @@ export function BackendAuthProvider({ children }: { children: ReactNode }) {
 
   // Hydrate user from /api/auth/me
   const hydrateFromToken = useCallback(async () => {
-    const token = tokenManager.getToken();
-    console.log('[BackendAuth] Hydrating from token:', token ? 'Found' : 'None');
-    
-    if (!token) {
-      console.log('[BackendAuth] No token found, finalizing loading');
-      clearAuthCache();
-      setAuthState(prev => ({ ...prev, isLoading: false }));
+    // L-CHAT-2: guard concorrencia — se ja tem hydrate em voo, ignora a nova
+    // chamada. Antes, um token expirado podia disparar 8+ /api/auth/me em
+    // 30s (cada um voltando 401 e atualizando state, que disparava re-render
+    // que disparava novo hydrate). Agora so 1 hydrate por vez.
+    if (isHydratingRef.current) {
+      console.log('[BackendAuth] Hydrate ja em andamento — ignorando chamada concorrente');
       return;
     }
+    isHydratingRef.current = true;
 
     try {
-      console.log('[BackendAuth] Fetching user info from backend...');
-      const raw = await apiClient.get<any>(API_ENDPOINTS.AUTH.ME);
-      // Support both { data: { user, account } } and { user, account }
-      const response = raw?.data ?? raw;
+      const token = tokenManager.getToken();
+      console.log('[BackendAuth] Hydrating from token:', token ? 'Found' : 'None');
 
-      if (!mountedRef.current) return;
-
-      const normalizedUser = normalizeUser(response.user);
-      const normalizedAccount = normalizeAccount(response.account);
-
-      console.log('[BackendAuth] Hydration successful for:', response.user?.email);
-      writeAuthCache(normalizedUser, normalizedAccount);
-      setAuthState({
-        user: normalizedUser,
-        account: normalizedAccount,
-        isAuthenticated: true,
-        isLoading: false,
-        authError: null,
-      });
-    } catch (error: any) {
-      console.error('[BackendAuth] Failed to hydrate:', error);
-      
-      // Only clear tokens if we are sure it's an auth failure (401)
-      // Network errors (no status) should NOT clear tokens to allow refresh retry
-      if (error?.status === 401) {
-        console.log('[BackendAuth] Token invalid/expired, clearing tokens');
-        tokenManager.clearTokens();
+      if (!token) {
+        console.log('[BackendAuth] No token found, finalizing loading');
         clearAuthCache();
-        if (mountedRef.current) {
-          setAuthState({
-            user: null,
-            account: null,
-            isAuthenticated: false,
-            isLoading: false,
-            authError: null,
-          });
-        }
+        setAuthState(prev => ({ ...prev, isLoading: false }));
         return;
       }
 
-      const cached = readAuthCache();
-      
-      if (mountedRef.current) {
-        if (cached) {
-          console.warn('[BackendAuth] Falling back to cached auth session after transient failure');
-          setAuthState({
-            user: cached.user,
-            account: cached.account,
-            isAuthenticated: true,
-            isLoading: false,
-            authError: null,
-          });
-        } else {
-          setAuthState(prev => ({ 
-            ...prev, 
-            isLoading: false,
-            isAuthenticated: false,
-          }));
+      try {
+        console.log('[BackendAuth] Fetching user info from backend...');
+        const raw = await apiClient.get<any>(API_ENDPOINTS.AUTH.ME);
+        // Support both { data: { user, account } } and { user, account }
+        const response = raw?.data ?? raw;
+
+        if (!mountedRef.current) return;
+
+        const normalizedUser = normalizeUser(response.user);
+        const normalizedAccount = normalizeAccount(response.account);
+
+        console.log('[BackendAuth] Hydration successful for:', response.user?.email);
+        writeAuthCache(normalizedUser, normalizedAccount);
+        setAuthState({
+          user: normalizedUser,
+          account: normalizedAccount,
+          isAuthenticated: true,
+          isLoading: false,
+          authError: null,
+        });
+      } catch (error: any) {
+        console.error('[BackendAuth] Failed to hydrate:', error);
+
+        // L-CHAT-2: 401 = token invalido/expirado. Limpa tokens IMEDIATAMENTE
+        // e redireciona pra /login. NAO retry — antes o estado ficava
+        // suspenso e qualquer re-render disparava novo hydrate, gerando
+        // tempestade de 401 (8+ tentativas em 30s observado em prod).
+        // Network errors (sem status) seguem com fallback cache.
+        if (error?.status === 401) {
+          console.log('[BackendAuth] Token invalid/expired, clearing tokens + redirect /login');
+          tokenManager.clearTokens();
+          clearAuthCache();
+          if (mountedRef.current) {
+            setAuthState({
+              user: null,
+              account: null,
+              isAuthenticated: false,
+              isLoading: false,
+              authError: null,
+            });
+          }
+          // Redirect imediato — evita ficar em rota protegida atualizando
+          // em loop. Window.location preserva o behavior do interceptor
+          // 'auth:unauthorized' (que tambem manda pra /login).
+          try {
+            if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+              window.location.href = '/login';
+            }
+          } catch {
+            // SSR/teste — silencioso
+          }
+          return;
+        }
+
+        const cached = readAuthCache();
+
+        if (mountedRef.current) {
+          if (cached) {
+            console.warn('[BackendAuth] Falling back to cached auth session after transient failure');
+            setAuthState({
+              user: cached.user,
+              account: cached.account,
+              isAuthenticated: true,
+              isLoading: false,
+              authError: null,
+            });
+          } else {
+            setAuthState(prev => ({
+              ...prev,
+              isLoading: false,
+              isAuthenticated: false,
+            }));
+          }
         }
       }
+    } finally {
+      isHydratingRef.current = false;
     }
   }, []);
 

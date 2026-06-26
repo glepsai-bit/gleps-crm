@@ -26,17 +26,22 @@ import { logger } from '../utils/logger';
 // Validation schemas
 // ============================================
 
-// H-CHAT-1: cap em todos os campos string para impedir payloads gigantes
-// (ex.: 1MB de content) que persistem no banco mas são cortados pela
-// Evolution em ~4096 chars. URLs/file names também recebem cap defensivo
-// pra evitar abuso (preencher disco / quebrar logs / DoS de I/O).
+// H-CHAT-1 + L-CHAT-1: cap em todos os campos string para impedir payloads
+// gigantes (ex.: 1MB de content) que persistem no banco mas são cortados
+// pela Evolution em ~4096 chars. URLs/file names também recebem cap
+// defensivo pra evitar abuso (preencher disco / quebrar logs / DoS de I/O).
+//
+// L-CHAT-1: fileUrl aceita data URL base64 de anexo (frontend limita a 5MB).
+// 5MB binario => ~6.67MB em base64 + header data:; previne payload absurdo
+// de cliente custom (curl, n8n, etc.) mas sem quebrar o fluxo legitimo.
+// mimeType e fileName ja tinham cap; mantido. Cap conservador em 7MB.
 const attachmentSchema = z.object({
   fileType: z.enum(['image', 'video', 'audio', 'document']),
-  fileUrl: z.string().min(1).max(2048, 'fileUrl muito longa (max 2048 caracteres)'),
+  fileUrl: z.string().min(1).max(7_000_000, 'Anexo muito grande (max ~5MB base64)'),
   fileSize: z.number().int().nonnegative().optional(),
   fileName: z.string().max(512, 'fileName muito longo (max 512 caracteres)').optional(),
   mimeType: z.string().max(128, 'mimeType muito longo (max 128 caracteres)').optional(),
-  thumbnailUrl: z.string().max(2048, 'thumbnailUrl muito longa (max 2048 caracteres)').optional(),
+  thumbnailUrl: z.string().max(7_000_000, 'thumbnailUrl muito grande (max ~5MB base64)').optional(),
   duration: z.number().int().nonnegative().optional(),
 });
 

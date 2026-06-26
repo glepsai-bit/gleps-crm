@@ -99,13 +99,15 @@ export const useTagContext = () => {
 
 interface TagProviderProps {
   children: React.ReactNode;
-  accountId: string;
+  // L-CROSS-2: accountId pode ser null durante a hidratação do AuthContext.
+  // Quando null, NÃO disparamos queries — apenas montamos com state vazio.
+  accountId: string | null;
 }
 
 export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId }) => {
   // State filtered by account
   const [tags, setTags] = useState<Tag[]>(
-    useBackend ? [] : mockTags.filter((t) => t.account_id === accountId && t.ativo)
+    useBackend || !accountId ? [] : mockTags.filter((t) => t.account_id === accountId && t.ativo)
   );
   const [leadTags, setLeadTags] = useState<LeadTag[]>(useBackend ? [] : mockLeadTags);
   const [tagHistory, setTagHistory] = useState<TagHistory[]>(useBackend ? [] : mockTagHistory);
@@ -359,6 +361,13 @@ export const TagProvider: React.FC<TagProviderProps> = ({ children, accountId })
   // Criar nova tag de etapa (também cria coluna no Kanban)
   const createStageTag = useCallback((data: CreateStageTagData): { success: boolean; tagId?: string; error?: string } => {
     const { name, slug, color, source } = data;
+
+    // L-CROSS-2: bloqueia criação enquanto accountId não está resolvido
+    // (hidratação do AuthContext). Sem isso, account_id ficaria como string
+    // vazio/null e a tag ficaria órfã.
+    if (!accountId) {
+      return { success: false, error: 'Conta não disponível' };
+    }
 
     // Check if slug already exists
     if (getTagBySlug(slug)) {

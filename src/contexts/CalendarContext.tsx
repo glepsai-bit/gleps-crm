@@ -68,8 +68,11 @@ const CalendarContext = createContext<CalendarContextType | undefined>(undefined
 
 interface CalendarProviderProps {
   children: ReactNode;
-  accountId: string;
-  userId: string;
+  // L-CROSS-2: aceitam null durante hidratação do AuthContext. Quando null,
+  // useEffects abaixo têm guard `if (!accountId) return` e não disparam
+  // fetch/polling com accountId/userId inválidos.
+  accountId: string | null;
+  userId: string | null;
 }
 
 const defaultConnection: GoogleConnection = {
@@ -429,6 +432,12 @@ export function CalendarProvider({ children, accountId, userId }: CalendarProvid
       setEvents(prev => [...prev, mappedEvent]);
       toast.success('Evento criado com sucesso!');
       return mappedEvent;
+    }
+
+    // L-CROSS-2: bloqueia mutação no path Supabase quando accountId não está
+    // resolvido (no path backend o accountId vem do JWT, então não é necessário).
+    if (!accountId) {
+      throw new Error('Conta não disponível');
     }
 
     const { data: newEvent, error } = await supabase

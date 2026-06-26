@@ -62,10 +62,18 @@ const queryClient = new QueryClient();
 
 // Wrapper component to provide contexts with accountId and userId from AuthContext
 // TagProvider must be outside FinanceProvider because FinanceContext uses TagContext
+//
+// L-CROSS-2: antes usávamos `account?.id || 'acc-1'` como fallback durante a
+// hidratação do AuthContext. O id mock 'acc-1' vazava pra TODAS as queries
+// (TagProvider, FinanceProvider, ProductProvider, CalendarProvider), que então
+// disparavam fetches `?accountId=acc-1` — no melhor caso 404, no pior caso
+// retornavam dados da conta errada se 'acc-1' existisse de fato em outra
+// instância. Agora passamos `?? null` e cada provider tem guard pra não
+// disparar query enquanto o accountId não for resolvido.
 function AdminFinanceWrapper({ children }: { children: React.ReactNode }) {
   const { account, user } = useAuth();
-  const accountId = account?.id || 'acc-1';
-  const userId = user?.id || '';
+  const accountId = account?.id ?? null;
+  const userId = user?.id ?? null;
   return (
     <TagProvider accountId={accountId}>
       <FinanceProvider accountId={accountId}>

@@ -17,17 +17,25 @@ export interface UpdateWhatsappTemplateInput {
 
 /**
  * Regex unificada para variáveis de template de WhatsApp.
- * Aceita tanto `{nome}` quanto `{{ nome }}` (com espaços opcionais),
- * e nomes com pontos para acesso aninhado (ex.: `{{ contato.nome }}`).
+ * Aceita SOMENTE o formato Handlebars `{{ nome }}` (par completo `{{}}`),
+ * com espaços opcionais e nomes com pontos para acesso aninhado
+ * (ex.: `{{ contato.nome }}`).
+ *
+ * L-CFG-1: a regex anterior (`/\{\{?\s*([\w.]+)\s*\}?\}/g`) aceitava também
+ * `{nome}` e formas assimétricas (`{{nome}` e `{nome}}`), permitindo que
+ * templates malformados fossem renderizados parcialmente. A versão estrita
+ * abaixo exige par completo `{{}}` e rejeita qualquer outra forma.
  *
  * Compartilhada entre whatsapp-template.service e whatsapp-campaign.service
  * para garantir que extração e renderização usem exatamente o mesmo padrão.
  */
-export const TEMPLATE_VAR_REGEX = /\{\{?\s*([\w.]+)\s*\}?\}/g;
+export const TEMPLATE_VAR_REGEX = /\{\{\s*([\w.]+)\s*\}\}/g;
 
 /**
- * Extrai a lista de variáveis presentes em um template ({nome}, {{ valor }}, ...).
+ * Extrai a lista de variáveis presentes em um template (`{{nome}}`, `{{ valor }}`, ...).
  * Retorna nomes únicos na ordem de primeira aparição.
+ *
+ * Aceita apenas o formato `{{ }}` (par completo). Veja `TEMPLATE_VAR_REGEX`.
  */
 export function extractTemplateVariables(content: string): string[] {
   const found = new Set<string>();
@@ -184,7 +192,7 @@ class WhatsappTemplateService {
   }
 
   /**
-   * Renderiza um template substituindo variáveis ({nome}, {{ valor }}, ...) pelos
+   * Renderiza um template substituindo variáveis (`{{nome}}`, `{{ valor }}`, ...) pelos
    * valores fornecidos. Variáveis sem valor correspondente viram string vazia.
    *
    * Delega para o helper `renderTemplate` para garantir consistência com

@@ -10,6 +10,30 @@ export interface FinanceKpiExtraFilters {
   metodoPagamento?: PaymentMethod;
 }
 
+/**
+ * L-VEN-2 — Escopo do módulo financeiro
+ * --------------------------------------------------------------------------
+ * Hoje o "Financeiro" é um agregador de dados DERIVADOS das vendas
+ * (Sale): KPIs, gráficos, métodos de pagamento e funil. Não existe um CRUD
+ * de "lançamentos" (entries) — receitas/despesas avulsas, transferências,
+ * categorização contábil etc. — porque o módulo nasceu para servir o caso
+ * de uso atual (FitPark / SaaS B2B leve).
+ *
+ * Caso surja demanda real para um livro-caixa completo (POST /entries,
+ * GET /entries, PATCH, DELETE, categorização, anexo de comprovante,
+ * conciliação bancária), criar:
+ *   - model FinanceEntry no schema.prisma (id, accountId, tipo, valor,
+ *     categoria, descricao, data, comprovanteUrl, criadoPor, ...)
+ *   - financeEntryService (CRUD + agregações)
+ *   - rotas REST em finance.routes.ts (sob requirePermission('finance'))
+ *   - integrar nos KPIs (totalRevenue passaria a somar entries.tipo=receita
+ *     + sales.paid; despesas viram outro KPI)
+ *
+ * Até lá, o controller responde 501 NOT_IMPLEMENTED para a rota stub
+ * `POST /finance/entries` deixando claro pro frontend/integrador que o
+ * recurso existe no roadmap mas ainda não foi implementado.
+ */
+
 class FinanceService {
   /**
    * Get finance KPIs
@@ -39,8 +63,14 @@ class FinanceService {
       }
     }
 
+    // L-VEN-1: SOURCE OF TRUTH — `totalSales` é igual a `paidSales` (vendas
+    // com status='paid'). Mantemos `allSales` como total bruto (todos os
+    // statuses) para uso opcional, mas o KPI principal de "vendas" usado
+    // pelo dashboard e pelo financeiro deve sempre vir de paidSales.
+    // Antes desse ajuste, /dashboard/kpis.totalSales (todos os status) podia
+    // divergir de /finance/kpis.totalSales — agora os dois batem.
     const [
-      totalSales,
+      allSales,
       paidSales,
       pendingSales,
       refundedSales,
@@ -76,8 +106,11 @@ class FinanceService {
     const recurringRateRaw = paidSales > 0 ? (recurringSales / paidSales) * 100 : 0;
     const recurringRate = Math.min(100, Math.round(recurringRateRaw * 100) / 100);
 
+    const totalSales = paidSales;
+
     return {
       totalSales,
+      allSales,
       paidSales,
       pendingSales,
       refundedSales,
@@ -86,7 +119,7 @@ class FinanceService {
       pendingRevenue: Number(pendingRevenue._sum.valor || 0),
       refundedRevenue: Number(refundedRevenue._sum.valor || 0),
       avgTicket: Number(avgTicket._avg.valor || 0),
-      conversionRate: totalSales > 0 ? Math.round((paidSales / totalSales) * 100) : 0,
+      conversionRate: allSales > 0 ? Math.round((paidSales / allSales) * 100) : 0,
       recurringRate,
     };
   }

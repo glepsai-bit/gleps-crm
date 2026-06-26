@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { webhookOutboundService } from '../services/webhook-outbound.service';
 import { AuthenticatedRequest } from '../types';
-import { ValidationError, ForbiddenError, ErrorCodes } from '../utils/errors';
+import { ValidationError, ForbiddenError, NotFoundError, ErrorCodes } from '../utils/errors';
 import { isSafeOutboundUrl } from '../utils/ssrf-guard';
 
 // ============================================
@@ -112,10 +112,12 @@ export class WebhookOutboundController {
 
       // O service não tem um getOne dedicado — reaproveitamos list+filter
       // para manter o escopo por accountId garantido em uma única consulta.
+      // L-CFG-1 (b): subscription inexistente devolve 404 (NotFoundError) em vez
+      // de 400 (ValidationError) — recurso ausente é o caso correto de 404.
       const all = await webhookOutboundService.listSubscriptions(accountId);
       const found = all.find(sub => sub.id === id);
       if (!found) {
-        throw new ValidationError('Webhook não encontrado');
+        throw new NotFoundError('Webhook');
       }
 
       res.json({ data: found });

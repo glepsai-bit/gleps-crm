@@ -1,7 +1,7 @@
 import type { Conversation, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
-import { escapeLike } from '../utils/helpers';
+import { escapeLike, slugify } from '../utils/helpers';
 import { eventService } from './event.service';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
@@ -945,6 +945,108 @@ class ConversationService {
     safeEmitUpdated(accountId, id, updated);
 
     return updated;
+  }
+
+  // ============================================
+  // L-CROSS-3 — resolveOrCreateTagByLabel
+  // ============================================
+  // Resolve uma tag pelo nome (case-insensitive) dentro do escopo da conta;
+  // se não existir, cria como `operational` no funil default. Usado pela
+  // rota POST /conversations/:id/labels quando o cliente envia `{ label }`
+  // em vez de `{ tagId }`. Reduz fricção pra integrações simples (n8n, curl,
+  // bots) que só conhecem o nome da label, sem ter que fazer GET /tags antes.
+  // Comportamento:
+  //   - busca por name OU slug (case-insensitive) na conta
+  //   - se achou, retorna o id
+  //   - se não achou, cria como operational no funil isDefault da conta
+  //   - se a conta não tem funil isDefault, usa o primeiro funil disponível
+  //   - se a conta não tem NENHUM funil, lança ValidationError (raro: contas
+  //     novas sempre têm 1 funil seedado em account.service.ts)
+  async resolveOrCreateTagByLabel(
+    accountId: string,
+    label: string,
+    userId: string
+  ): Promise<string> {
+    const trimmed = label.trim();
+    if (!trimmed) {
+      throw new ValidationError('label não pode ser vazio');
+    }
+    const slug = slugify(trimmed);
+
+    // 1) tenta encontrar tag existente (por slug é determinístico, por name
+    //    cobre o caso de slug diferente — ex: tag criada manualmente com
+    //    slug custom diferente do slugify do nome).
+    const existing = await prisma.tag.findFirst({
+      where: {
+        accountId,
+        OR: [
+          { slug },
+          { name: { equals: trimmed, mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (existing) return existing.id;
+
+    // 2) precisa criar — escolhe funil destino
+    const funnel =
+      (await prisma.funnel.findFirst({
+        where: { accountId, isDefault: true },
+        select: { id: true },
+      })) ??
+      (await prisma.funnel.findFirst({
+        where: { accountId },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      }));
+
+    if (!funnel) {
+      throw new ValidationError(
+        'Conta não possui funil cadastrado — crie um funil antes de usar labels on-the-fly'
+      );
+    }
+
+    // 3) garante slug único na conta (race-safe: se outro request paralelo
+    //    criou na mesma janela, P2002 → re-busca).
+    const maxOrdem = await prisma.tag.findFirst({
+      where: { funnelId: funnel.id, type: 'operational' },
+      orderBy: { ordem: 'desc' },
+      select: { ordem: true },
+    });
+
+    try {
+      const created = await prisma.tag.create({
+        data: {
+          accountId,
+          funnelId: funnel.id,
+          name: trimmed,
+          slug,
+          type: 'operational',
+          color: '#6366F1',
+          ordem: (maxOrdem?.ordem ?? -1) + 1,
+        },
+        select: { id: true },
+      });
+
+      logger.info('[conversation] tag criada on-the-fly via label', {
+        accountId,
+        label: trimmed,
+        tagId: created.id,
+        userId,
+      });
+
+      return created.id;
+    } catch (err: any) {
+      // Race: outro request criou a mesma tag em paralelo.
+      if (err?.code === 'P2002') {
+        const reloaded = await prisma.tag.findFirst({
+          where: { accountId, slug },
+          select: { id: true },
+        });
+        if (reloaded) return reloaded.id;
+      }
+      throw err;
+    }
   }
 
   // ============================================

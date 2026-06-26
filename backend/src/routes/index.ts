@@ -63,6 +63,23 @@ leadTagRouter.use(authenticate);
 leadTagRouter.use(requireAccountId);
 leadTagRouter.get('/', requirePermission('leads', 'kanban'), (req, res, next) => contactController.listLeadTags(req, res, next));
 
+// L-CROSS-1: rotas versionadas (`/api/v1/*`) NÃO existem no backend hoje, mas
+// como o messageJwtRoutes mais abaixo está montado em '/' (catch-all com
+// `authenticate`), qualquer request `/api/v1/auth/login` cai no middleware JWT
+// e devolve 401 "Token não fornecido" em vez do esperado 404. O comportamento
+// engana clientes — parece que a rota EXISTE mas está protegida.
+// Interceptamos `/v1/*` aqui (antes de qualquer router com auth) e devolvemos
+// 404 explícito via notFoundHandler. Quando/se introduzirmos versionamento,
+// trocamos este handler pelo router de v1.
+router.use('/v1', (req, res) => {
+  res.status(404).json({
+    error: {
+      code: 'NOT_FOUND',
+      message: `Rota não encontrada: ${req.method} /api/v1${req.path}`,
+    },
+  });
+});
+
 // API routes
 router.use('/auth', authRoutes);
 router.use('/accounts', accountRoutes);

@@ -43,7 +43,9 @@ interface ProductContextType {
 
 interface ProductProviderProps {
   children: ReactNode;
-  accountId: string;
+  // L-CROSS-2: aceita null durante hidratação do AuthContext. Quando null,
+  // useEffect já tem `if (!accountId) return` e não dispara fetch.
+  accountId: string | null;
 }
 
 // ============= CONTEXT =============
@@ -106,6 +108,10 @@ export function ProductProvider({ children, accountId }: ProductProviderProps) {
   // ============= CRUD OPERATIONS =============
 
   const createProduct = useCallback((data: CreateProductData) => {
+    // L-CROSS-2: bloqueia mutação enquanto accountId não está resolvido.
+    if (!accountId) {
+      return { success: false, error: 'Conta não disponível' };
+    }
     if (!data.nome.trim()) {
       return { success: false, error: 'Nome é obrigatório' };
     }

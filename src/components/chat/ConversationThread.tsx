@@ -551,10 +551,35 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
   }, [conversationId, queryClient, user?.id]);
 
   const conversation = conversationQuery.data ?? null;
-  const messages = useMemo(
+  const allMessages = useMemo(
     () => conversation?.messages ?? [],
     [conversation?.messages]
   );
+
+  // L-CHAT-3: paginacao "Carregar mais" pra mitigar render pesado em threads
+  // longas. Antes a thread renderizava todas as bubbles (141 observado, 1000+
+  // travava o browser). Agora mostra so as ULTIMAS `visibleCount` msgs;
+  // botao no topo carrega +50. Mensagens novas (socket/optimistic) sempre
+  // aparecem porque pegamos as ultimas N do array. Virtualizacao real
+  // (react-window) fica como follow-up.
+  const PAGE_SIZE = 50;
+  const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
+
+  // Reset paginacao ao trocar de conversa — sem isso, abrir uma conversa
+  // nova herdaria o visibleCount aumentado da anterior (pequeno bug visual
+  // mas inconsistente).
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [conversationId]);
+
+  const totalCount = allMessages.length;
+  const hasMore = totalCount > visibleCount;
+  const messages = useMemo(() => {
+    if (totalCount <= visibleCount) return allMessages;
+    // slice das ultimas N preserva a ordem cronologica (mensagens novas
+    // sao sempre as ultimas no array, mantidas no merge do socket).
+    return allMessages.slice(totalCount - visibleCount);
+  }, [allMessages, totalCount, visibleCount]);
   const grouped = useMemo(() => groupByDay(messages), [messages]);
 
   if (conversationQuery.isLoading) {
@@ -657,7 +682,29 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
               <Loader2 className="w-5 h-5 animate-spin opacity-50" />
             </div>
           ) : (
-            grouped.map((group) => (
+            <>
+              {/* L-CHAT-3: botao "Carregar mais" no topo. Aparece so quando
+                  ha msgs mais antigas escondidas. Click adiciona +PAGE_SIZE
+                  msgs ao inicio da lista visivel. O auto-scroll abaixo nao
+                  dispara (currentMessageCount nao muda — usa allMessages),
+                  entao o scroll fica no topo permitindo ler as msgs novas. */}
+              {hasMore && (
+                <div className="flex justify-center">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[11px]"
+                    onClick={() =>
+                      setVisibleCount((prev) =>
+                        Math.min(prev + PAGE_SIZE, totalCount)
+                      )
+                    }
+                  >
+                    Carregar mais ({totalCount - visibleCount} restantes)
+                  </Button>
+                </div>
+              )}
+              {grouped.map((group) => (
               <div key={group.day} className="space-y-3">
                 <div className="sticky top-0 z-10 flex justify-center">
                   <Badge
@@ -750,7 +797,8 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
                   );
                 })}
               </div>
-            ))
+              ))}
+            </>
           )}
         </div>
       </ScrollArea>

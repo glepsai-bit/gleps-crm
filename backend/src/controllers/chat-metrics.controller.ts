@@ -62,11 +62,25 @@ const periodSchema = z
     { message: 'fromDate deve ser anterior ou igual a toDate', path: ['fromDate'] }
   );
 
+// FIX (L-DASH-2): aceita `tz=America/Sao_Paulo` (IANA timezone) pra bucketizar
+// `dailyVolume` no fuso local do account. Validação leve aqui (regex de área/cidade);
+// a validação real (rejeição de string que o Intl não reconhece) acontece dentro
+// do service via `assertValidTimezone`.
+const tzSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z]+\/[A-Za-z_+\-0-9]+(?:\/[A-Za-z_+\-0-9]+)?$|^UTC$|^GMT$/, {
+    message: 'tz deve ser uma IANA timezone (ex: America/Sao_Paulo)',
+  })
+  .optional();
+
 const filtersSchema = periodSchema.and(
   z.object({
     inboxId: z.string().uuid().optional(),
     teamId: z.string().uuid().optional(),
     agentId: z.string().uuid().optional(),
+    tz: tzSchema,
   })
 );
 
@@ -139,6 +153,7 @@ export class ChatMetricsController {
         inboxId: parsed.data.inboxId,
         teamId: parsed.data.teamId,
         agentId: parsed.data.agentId,
+        tz: parsed.data.tz,
       });
 
       res.json({ data: result });

@@ -60,6 +60,12 @@ export function errorHandler(
   }
 
   // Handle Zod validation errors
+  // L-AUTH-1: além do shape legado `{ [field]: message }` (mantido em
+  // `details` por compatibilidade com clientes antigos), incluímos
+  // `fieldErrors: Array<{ field, message }>` para o frontend mapear erros
+  // diretamente nos forms (react-hook-form). A mensagem geral também
+  // referencia o primeiro campo inválido pra dar contexto quando a UI não
+  // consegue (ou não quer) renderizar por campo.
   if (error instanceof ZodError) {
     const details = error.errors.reduce((acc, err) => {
       const path = err.path.join('.');
@@ -67,11 +73,22 @@ export function errorHandler(
       return acc;
     }, {} as Record<string, string>);
 
+    const fieldErrors = error.errors.map((err) => ({
+      field: err.path.join('.'),
+      message: err.message,
+    }));
+
+    const primary = fieldErrors[0];
+    const message = primary
+      ? `Dados inválidos: ${primary.field ? primary.field + ' — ' : ''}${primary.message}`
+      : 'Dados inválidos';
+
     res.status(400).json({
       error: {
         code: 'VALIDATION_ERROR',
-        message: 'Dados inválidos',
+        message,
         details,
+        fieldErrors,
       },
     });
     return;

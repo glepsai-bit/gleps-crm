@@ -21,11 +21,22 @@ export interface ApiResponse<T> {
   };
 }
 
+// L-AUTH-1: backend retorna ZodError como { error: { details: { [field]: message }, fieldErrors: [{ field, message }] } }
+// Antes o client lia apenas `body?.details` (top-level) e o usuário via apenas
+// "Dados inválidos" sem indicação de qual campo. Agora consumimos
+// `body.error.details` E `body.error.fieldErrors` pra que os forms (react-hook-form)
+// possam mapear erros campo-a-campo via setError().
+export interface ApiFieldError {
+  field: string;
+  message: string;
+}
+
 export interface ApiError {
   message: string;
   code?: string;
   status: number;
   details?: Record<string, unknown>;
+  fieldErrors?: ApiFieldError[];
 }
 
 // Token storage keys
@@ -161,11 +172,24 @@ async function handleResponse<T>(response: Response): Promise<T> {
     let errorData: ApiError;
     try {
       const body = await response.json();
+      // L-AUTH-1: prioriza body.error.details (shape padrão do backend) sobre
+      // body.details (legado). Idem fieldErrors — usado por forms pra mapear
+      // erros por campo via setError(field, { message }).
+      const rawDetails = body?.error?.details ?? body?.details;
+      const rawFieldErrors = body?.error?.fieldErrors ?? body?.fieldErrors;
       errorData = {
         message: body?.error?.message || body?.message || body?.error || response.statusText || 'Erro desconhecido',
         code: body?.error?.code || body?.code,
         status: response.status,
-        details: body?.details,
+        details: rawDetails && typeof rawDetails === 'object' && !Array.isArray(rawDetails)
+          ? (rawDetails as Record<string, unknown>)
+          : undefined,
+        fieldErrors: Array.isArray(rawFieldErrors)
+          ? rawFieldErrors.filter(
+              (f: any): f is ApiFieldError =>
+                f && typeof f === 'object' && typeof f.field === 'string' && typeof f.message === 'string'
+            )
+          : undefined,
       };
     } catch {
       errorData = { message: response.statusText || 'Erro desconhecido', status: response.status };

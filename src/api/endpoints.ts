@@ -54,8 +54,11 @@ export const API_ENDPOINTS = {
     UPDATE: (id: string) => `/api/contacts/${id}`,
     DELETE: (id: string) => `/api/contacts/${id}`,
     SEARCH: '/api/contacts/search',
-    BY_STAGE: (stageId: string) => `/api/contacts/stage/${stageId}`,
-    MOVE_STAGE: (id: string) => `/api/contacts/${id}/move`,
+    // L-LEAD-1: BY_STAGE e MOVE_STAGE foram removidos por serem código morto —
+    // o backend nunca implementou /api/contacts/stage/:id nem /api/contacts/:id/move
+    // (rotas 404). A "movimentação de estágio" no kanban é, na prática, feita via
+    // aplicação/remoção de tags (`/api/contacts/:id/tags`). Não reintroduza esses
+    // endpoints sem antes ter rota correspondente no backend.
     NOTES: (id: string) => `/api/contacts/${id}/notes`,
     ADD_NOTE: (id: string) => `/api/contacts/${id}/notes`,
   },

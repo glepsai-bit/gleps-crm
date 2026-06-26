@@ -14,6 +14,14 @@ import { SaveAudienceDialog } from '@/components/extracao/SaveAudienceDialog';
 import { SavedAudiencesTab } from '@/components/extracao/SavedAudiencesTab';
 import { CampaignDashboard } from '@/components/extracao/CampaignDashboard';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -120,6 +128,10 @@ function AgendadasTab({ accountId }: { accountId: string }) {
   const queryClient = useQueryClient();
   const [cancelingId, setCancelingId] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  // L-CFG-3: filtros UI (status + busca por nome do disparo) — aplicados
+  // client-side sobre o array retornado pelo polling de 5s.
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [searchFilter, setSearchFilter] = useState<string>('');
 
   const mutateCancelar = useMutation({
     mutationFn: async (batchId: string) => {
@@ -188,6 +200,18 @@ function AgendadasTab({ accountId }: { accountId: string }) {
 
   const detailBatch = detailId ? agendadas.find((b) => b.id === detailId) ?? null : null;
 
+  // L-CFG-3: aplica filtros de status + busca (case-insensitive, trim) antes
+  // de renderizar a Table. `all` mantém o comportamento original (sem filtro).
+  const searchTermNorm = searchFilter.trim().toLowerCase();
+  const filteredAgendadas = agendadas.filter((b) => {
+    if (statusFilter !== 'all' && String(b.status) !== statusFilter) return false;
+    if (searchTermNorm.length > 0) {
+      const nome = getBatchName(b).toLowerCase();
+      if (!nome.includes(searchTermNorm)) return false;
+    }
+    return true;
+  });
+
   if (isLoading) {
     return (
       <Card>
@@ -220,15 +244,52 @@ function AgendadasTab({ accountId }: { accountId: string }) {
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Disparos em andamento e agendados</CardTitle>
           <Badge variant="outline" className="text-xs">
-            {agendadas.length} disparo{agendadas.length === 1 ? '' : 's'}
+            {filteredAgendadas.length} de {agendadas.length} disparo{agendadas.length === 1 ? '' : 's'}
           </Badge>
         </CardHeader>
         <CardContent>
+          {/* L-CFG-3: filtros (status + busca por nome) */}
+          {agendadas.length > 0 && (
+            <div className="flex flex-col sm:flex-row gap-3 mb-4">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar por nome do disparo..."
+                  className="pl-9"
+                  value={searchFilter}
+                  onChange={(e) => setSearchFilter(e.target.value)}
+                />
+              </div>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-full sm:w-48">
+                  <SelectValue placeholder="Filtrar por status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os status</SelectItem>
+                  <SelectItem value="scheduled">Agendado</SelectItem>
+                  <SelectItem value="running">Em andamento</SelectItem>
+                  <SelectItem value="paused">Pausado</SelectItem>
+                  <SelectItem value="completed">Concluído</SelectItem>
+                  <SelectItem value="cancelled">Cancelado</SelectItem>
+                  <SelectItem value="failed">Falhou</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           {agendadas.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <Calendar className="w-10 h-10 mb-3 opacity-30" />
               <p className="text-sm font-medium">Nenhum disparo agendado ou em andamento</p>
               <p className="text-xs mt-1">Configure um agendamento ao criar um disparo</p>
+            </div>
+          ) : filteredAgendadas.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+              <Search className="w-10 h-10 mb-3 opacity-30" />
+              <p className="text-sm font-medium">Nenhum disparo corresponde aos filtros</p>
+              <p className="text-xs mt-1">
+                Ajuste a busca ou o status para ver mais resultados.
+              </p>
             </div>
           ) : (
             <Table>
@@ -243,7 +304,7 @@ function AgendadasTab({ accountId }: { accountId: string }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {agendadas.map((b) => {
+                {filteredAgendadas.map((b) => {
                   const status = String(b.status ?? 'scheduled');
                   const total = getNum(b, 'total_contacts', 'totalContacts');
                   const sent = getNum(b, 'sent_count', 'sentCount');

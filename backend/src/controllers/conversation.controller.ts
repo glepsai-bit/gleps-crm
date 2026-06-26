@@ -68,9 +68,19 @@ const resolveSchema = z.object({
   resolvedBy: z.enum(ALLOWED_RESOLVED_BY),
 });
 
-const labelSchema = z.object({
-  tagId: z.string().min(1, 'tagId é obrigatório'),
-});
+// L-CROSS-3: aceita `tagId` (UUID de tag existente) OU `label` (string nome
+// que cria a tag on-the-fly via findOrCreate). Antes só aceitava tagId, o que
+// quebrava integrações simples (n8n / curl) que só conhecem o nome da label —
+// rejeitava com "tagId é obrigatório" mesmo recebendo `{ label: "qa-stress" }`.
+// Pelo menos um dos dois precisa estar presente; se ambos vierem, tagId ganha.
+const labelSchema = z
+  .object({
+    tagId: z.string().uuid().optional(),
+    label: z.string().min(1).max(60).optional(),
+  })
+  .refine((d) => Boolean(d.tagId || d.label), {
+    message: 'Informe tagId (UUID) ou label (string)',
+  });
 
 const participantSchema = z.object({
   userId: z.string().min(1, 'userId é obrigatório'),
@@ -348,15 +358,27 @@ export class ConversationController {
 
   /**
    * POST /conversations/:id/labels
+   * L-CROSS-3: aceita { tagId } OU { label } — se vier label, resolve a tag
+   * pelo nome (findOrCreate, escopo da conta) antes de associar.
    */
   async addLabel(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = req.params.id as string;
-      const { tagId } = labelSchema.parse(req.body);
-      await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
+      const parsed = labelSchema.parse(req.body);
+      const accountId = getAccountId(req);
+      await conversationService.ensureConversationAccess(id, accountId, getActor(req));
+
+      const tagId = parsed.tagId
+        ? parsed.tagId
+        : await conversationService.resolveOrCreateTagByLabel(
+            accountId,
+            parsed.label!,
+            req.user!.id
+          );
+
       const data = await conversationService.addLabel(
         id,
-        getAccountId(req),
+        accountId,
         tagId,
         req.user!.id
       );
