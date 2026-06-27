@@ -12,11 +12,12 @@
  */
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { MessageSquare, Inbox as InboxIcon, User } from 'lucide-react';
+import { MessageSquare, User } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { conversationsBackendService } from '@/services/conversations.backend.service';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { ConversationList } from '@/components/chat/ConversationList';
 import { ConversationThread } from '@/components/chat/ConversationThread';
 import { ContactSidePanel } from '@/components/chat/ContactSidePanel';
@@ -26,7 +27,6 @@ export default function AdminChatPage() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
     null
   );
-  const [mobileListOpen, setMobileListOpen] = useState(false);
   const [mobileContactOpen, setMobileContactOpen] = useState(false);
 
   // OBS sobre Socket.IO (T-022 / BUG-4):
@@ -89,8 +89,17 @@ export default function AdminChatPage() {
   });
 
   function handleSelectConversation(id: string) {
+    // BUG-CRIT-4: ao selecionar uma conversa em mobile, o `selectedConversationId`
+    // troca o que esta renderizado: lista some, thread aparece (via classes
+    // condicionais no JSX abaixo). Em desktop o efeito visual e so destacar
+    // a conversa selecionada na lista lateral (que permanece visivel).
     setSelectedConversationId(id);
-    setMobileListOpen(false);
+  }
+
+  function handleBackToList() {
+    // BUG-CRIT-4: callback do botao "Voltar" na thread em mobile.
+    // Limpa a selecao e o JSX condicional volta a renderizar a lista.
+    setSelectedConversationId(null);
   }
 
   if (!account?.id) {
@@ -101,36 +110,50 @@ export default function AdminChatPage() {
     );
   }
 
+  // BUG-CRIT-4: helpers de visibilidade mobile.
+  // Em <lg: alterna lista <-> thread baseado em `selectedConversationId`.
+  //   - sem selecao: lista visivel, thread escondida.
+  //   - com selecao: thread visivel, lista escondida + botao "Voltar".
+  // Em lg+: ambos sempre visiveis lado a lado (como antes).
+  const showListOnMobile = !selectedConversationId;
+  const showThreadOnMobile = Boolean(selectedConversationId);
+
   return (
     <div className="flex h-[calc(100vh-4rem)] lg:h-[calc(100vh-2rem)] overflow-hidden">
-      {/* Coluna esquerda — desktop */}
-      <aside className="hidden lg:flex w-[320px] shrink-0">
+      {/* Coluna esquerda — lista de conversas.
+          BUG-CRIT-4: em <lg ocupa a largura inteira (w-full) e so aparece
+          quando nao ha conversa selecionada. Em lg+ volta a ser uma coluna
+          fixa de 320px sempre visivel. */}
+      <aside
+        className={cn(
+          'shrink-0 lg:w-[320px] lg:flex',
+          // Mobile: lista ocupa tela inteira quando nada selecionado;
+          // some quando ha conversa aberta (a thread toma o lugar).
+          // Em lg+ o `lg:flex` acima reativa, mantendo lado a lado.
+          showListOnMobile ? 'flex w-full' : 'hidden'
+        )}
+      >
         <ConversationList
           selectedConversationId={selectedConversationId}
           onSelectConversation={handleSelectConversation}
         />
       </aside>
 
-      {/* Centro */}
-      <main className="flex-1 flex flex-col min-w-0">
-        {/* Mobile header (toggles drawers) */}
-        <div className="lg:hidden flex items-center justify-between border-b border-border bg-card px-3 py-2">
-          <Sheet open={mobileListOpen} onOpenChange={setMobileListOpen}>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-8">
-                <InboxIcon className="w-4 h-4 mr-1" />
-                Conversas
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="p-0 w-[320px]">
-              <ConversationList
-                selectedConversationId={selectedConversationId}
-                onSelectConversation={handleSelectConversation}
-              />
-            </SheetContent>
-          </Sheet>
-
-          {selectedConversationId && (
+      {/* Centro — thread.
+          BUG-CRIT-4: em <lg fica oculto quando nao ha conversa selecionada
+          (a lista ocupa a tela inteira). Em lg+ esta sempre presente. */}
+      <main
+        className={cn(
+          'flex-1 flex-col min-w-0 lg:flex',
+          showThreadOnMobile ? 'flex' : 'hidden'
+        )}
+      >
+        {/* Mobile header (botao Contato a direita). O botao Conversas/voltar
+            fica dentro do header da propria ConversationThread via prop
+            `onBack` — assim a transicao volta-pra-lista vira parte do
+            cabecalho da conversa em si. */}
+        {selectedConversationId && (
+          <div className="lg:hidden flex items-center justify-end border-b border-border bg-card px-3 py-1">
             <Sheet open={mobileContactOpen} onOpenChange={setMobileContactOpen}>
               <SheetTrigger asChild>
                 <Button variant="ghost" size="sm" className="h-8">
@@ -144,13 +167,19 @@ export default function AdminChatPage() {
                 )}
               </SheetContent>
             </Sheet>
-          )}
-        </div>
+          </div>
+        )}
 
         {selectedConversationId ? (
-          <ConversationThread conversationId={selectedConversationId} />
+          <ConversationThread
+            conversationId={selectedConversationId}
+            onBack={handleBackToList}
+          />
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
+          // Placeholder exibido apenas em desktop (lg+) quando nada esta
+          // selecionado. Em mobile esse ramo nunca renderiza porque o
+          // <main> esta hidden quando showThreadOnMobile = false.
+          <div className="flex-1 hidden lg:flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
             <MessageSquare className="w-12 h-12 mb-3 opacity-30" />
             <h2 className="text-lg font-semibold text-foreground">
               Selecione uma conversa
@@ -163,7 +192,8 @@ export default function AdminChatPage() {
         )}
       </main>
 
-      {/* Coluna direita — desktop */}
+      {/* Coluna direita — desktop somente (em mobile o painel de contato vira
+          drawer acionado pelo botao "Contato" no header acima). */}
       <aside className="hidden lg:flex w-[320px] shrink-0">
         {selectedConversationQuery.data ? (
           <ContactSidePanel conversation={selectedConversationQuery.data} />

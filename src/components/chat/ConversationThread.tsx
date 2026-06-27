@@ -21,6 +21,7 @@ import {
   MessageSquare,
   CornerUpLeft,
   Loader2,
+  ArrowLeft,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -127,9 +128,17 @@ function statusIcon(status: Message['status']) {
 
 interface ConversationThreadProps {
   conversationId: string;
+  /**
+   * BUG-CRIT-4 (chat mobile): callback opcional para o botao "Voltar" que
+   * aparece SOMENTE em viewports <lg. No mobile, a lista de conversas e a
+   * thread se alternam (em vez de ficarem lado a lado), entao precisamos
+   * de um caminho de volta. Em desktop (lg+) o botao fica escondido via
+   * `lg:hidden` e essa prop pode ser omitida sem efeito.
+   */
+  onBack?: () => void;
 }
 
-export function ConversationThread({ conversationId }: ConversationThreadProps) {
+export function ConversationThread({ conversationId, onBack }: ConversationThreadProps) {
   const { toast } = useToast();
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -610,6 +619,21 @@ export function ConversationThread({ conversationId }: ConversationThreadProps) 
       {/* Header — altura fixa (shrink-0) para não comprimir a área de mensagens */}
       <div className="shrink-0 flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2.5 shadow-sm min-w-0">
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          {/* BUG-CRIT-4: botao "Voltar" no header, visivel SO em <lg
+              (mobile/tablet portrait). Em desktop, lista e thread ficam lado
+              a lado, entao o botao seria redundante. Em mobile, e o unico
+              caminho de volta para a lista de conversas. */}
+          {onBack && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="lg:hidden h-8 w-8 shrink-0 -ml-2"
+              onClick={onBack}
+              aria-label="Voltar para lista de conversas"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          )}
           <Avatar className="h-9 w-9 shrink-0">
             <AvatarFallback className="text-sm bg-primary/10 text-primary">
               {getInitials(contactName)}

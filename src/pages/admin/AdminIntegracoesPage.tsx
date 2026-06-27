@@ -992,7 +992,7 @@ export default function AdminIntegracoesPage() {
       </div>
 
       <Tabs defaultValue="saida">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="w-full sm:grid sm:grid-cols-3">
           <TabsTrigger value="saida" className="gap-2">
             <Webhook className="w-4 h-4" />
             Webhooks de saída

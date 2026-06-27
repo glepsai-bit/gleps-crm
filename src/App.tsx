@@ -3,9 +3,11 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useBackend } from "@/config/backend.config";
+import { createAppQueryClient } from "@/lib/query-client";
+import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 
 // Auth providers
 import { AuthProvider as SupabaseAuthProvider, useAuth } from "@/contexts/AuthContext";
@@ -58,7 +60,19 @@ import AdminCannedResponsesPage from "./pages/admin/AdminCannedResponsesPage";
 import AdminSLAPoliciesPage from "./pages/admin/AdminSLAPoliciesPage";
 import AdminCustomAttributesPage from "./pages/admin/AdminCustomAttributesPage";
 
-const queryClient = new QueryClient();
+// CRITICAL #3: QueryClient com handlers default de erro (toast em 5xx/network).
+// Detalhes em src/lib/query-client.ts.
+const queryClient = createAppQueryClient();
+
+// Hook montado uma unica vez no boot. Precisa estar DENTRO do BrowserRouter
+// (caso futuras versoes usem useNavigate/useLocation), mas pode ficar fora
+// do AuthProvider — status de rede e independente de auth. Encapsulamos
+// num componente filho pra usar hooks no topo da App sem quebrar a regra
+// "hooks dentro de componentes".
+function NetworkStatusWatcher() {
+  useNetworkStatus();
+  return null;
+}
 
 // Wrapper component to provide contexts with accountId and userId from AuthContext
 // TagProvider must be outside FinanceProvider because FinanceContext uses TagContext
@@ -95,6 +109,7 @@ const App = () => (
           <AuthProvider>
             <Toaster />
             <Sonner />
+            <NetworkStatusWatcher />
           <Routes>
             {/* Public Routes */}
             <Route path="/login" element={<LoginPage />} />

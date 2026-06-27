@@ -190,7 +190,10 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
                   <DropdownMenuSeparator />
                 </>
               )}
-              <DropdownMenuItem onClick={handleLogout} className="text-destructive">
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="text-destructive dark:text-red-300 focus:text-destructive dark:focus:text-red-300"
+              >
                 <LogOut className="w-4 h-4 mr-2" />
                 Sair
               </DropdownMenuItem>
@@ -230,7 +233,11 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
           </nav>
         </ScrollArea>
         <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border safe-area-bottom">
-          <Button onClick={handleLogout} variant="ghost" className="w-full justify-start text-destructive min-h-[44px]">
+          <Button
+            onClick={handleLogout}
+            variant="ghost"
+            className="w-full justify-start text-red-300 hover:text-red-200 hover:bg-sidebar-accent min-h-[44px]"
+          >
             <LogOut className="w-4 h-4 mr-2" />
             Sair
           </Button>

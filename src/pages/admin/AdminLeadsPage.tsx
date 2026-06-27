@@ -28,6 +28,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -83,6 +93,8 @@ export default function AdminLeadsPage() {
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [saleContactId, setSaleContactId] = useState<string | null>(null);
   const [profileContact, setProfileContact] = useState<Contact | null>(null);
+  const [deletingContact, setDeletingContact] = useState<Contact | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   
   // Kanban stages for CreateLeadDialog
   const [stages, setStages] = useState<CloudTag[]>([]);
@@ -206,24 +218,44 @@ export default function AdminLeadsPage() {
     }
   };
 
-  const handleDelete = async (contactId: string) => {
-    const contactSales = getContactSales(contactId);
+  const handleRequestDelete = (contact: Contact) => {
+    const contactSales = getContactSales(contact.id);
     if (contactSales.length > 0) {
       toast.error('Não é possível remover lead com vendas registradas');
       return;
     }
+    setDeletingContact(contact);
+  };
 
-    const result = useBackend
-      ? await contactsBackendService.deleteLead(contactId)
-      : await contactsCloudService.deleteLead(contactId);
+  const handleConfirmDelete = async () => {
+    if (!deletingContact) return;
+    const contactId = deletingContact.id;
+    const nome = deletingContact.nome || 'Lead';
 
-    if (!result.success) {
-      toast.error(result.error || 'Erro ao remover lead');
-      return;
+    setIsDeleting(true);
+    try {
+      const result = useBackend
+        ? await contactsBackendService.deleteLead(contactId)
+        : await contactsCloudService.deleteLead(contactId);
+
+      if (!result.success) {
+        // onError
+        toast.error(result.error || 'Erro ao remover lead');
+        return;
+      }
+
+      // onSuccess
+      toast.success(`${nome} removido com sucesso!`);
+      await refetchContacts();
+    } catch (err) {
+      // onError (rede/exceção inesperada)
+      const message = err instanceof Error ? err.message : 'Erro inesperado ao remover lead';
+      toast.error(message);
+    } finally {
+      // onSettled
+      setIsDeleting(false);
+      setDeletingContact(null);
     }
-
-    toast.success('Lead removido com sucesso!');
-    await refetchContacts();
   };
 
   return (
@@ -377,7 +409,7 @@ export default function AdminLeadsPage() {
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-destructive"
-                            onClick={() => void handleDelete(contact.id)}
+                            onClick={() => handleRequestDelete(contact)}
                           >
                             <Trash2 className="w-4 h-4 mr-2" />
                             Remover
@@ -475,11 +507,43 @@ export default function AdminLeadsPage() {
 
       {/* Sale Dialog (controlled externally) */}
       {saleContactId && (
-        <CreateSaleDialog 
+        <CreateSaleDialog
           preSelectedContactId={saleContactId}
           onClose={() => setSaleContactId(null)}
         />
       )}
+
+      {/* AlertDialog excluir lead */}
+      <AlertDialog
+        open={!!deletingContact}
+        onOpenChange={(open) => {
+          if (!open && !isDeleting) setDeletingContact(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir lead?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta ação não pode ser desfeita. O lead{' '}
+              <strong>{deletingContact?.nome || 'sem nome'}</strong> será removido
+              permanentemente desta conta.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault();
+                void handleConfirmDelete();
+              }}
+              disabled={isDeleting}
+            >
+              {isDeleting ? 'Excluindo...' : 'Excluir'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

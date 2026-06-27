@@ -660,7 +660,7 @@ export default function AdminExtracaoPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} activationMode="manual" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-5 max-w-2xl">
+        <TabsList className="w-full max-w-2xl sm:grid sm:grid-cols-5">
           <TabsTrigger value="extracao" className="gap-1 text-xs sm:text-sm">
             <Search className="w-4 h-4" /> Extração
           </TabsTrigger>

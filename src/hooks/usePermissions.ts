@@ -63,16 +63,29 @@ export function usePermissions() {
 
     // Rotas marcadas como admin-only nunca sao acessadas por agents
     if (adminOnlyRoutes.has(route)) {
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.debug('[canAccessRoute] DENY (admin-only):', route, 'role=', user?.role);
+      }
       return false;
     }
 
     const permission = routePermissionMap[route];
     if (permission) {
-      return hasPermission(permission);
+      const allowed = hasPermission(permission);
+      if (import.meta.env.DEV && !allowed) {
+        // eslint-disable-next-line no-console
+        console.debug('[canAccessRoute] DENY (missing permission):', route, 'permission=', permission, 'userPerms=', user?.permissions);
+      }
+      return allowed;
     }
 
     // Por seguranca, rotas /admin/* nao mapeadas sao negadas para agents
     if (route.startsWith('/admin/')) {
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.debug('[canAccessRoute] DENY (unmapped /admin/* route):', route);
+      }
       return false;
     }
 

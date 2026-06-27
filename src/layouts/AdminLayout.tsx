@@ -219,13 +219,13 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
       {/* Sidebar */}
       <aside
         className={cn(
-          'fixed top-0 left-0 z-50 h-full bg-sidebar border-r border-sidebar-border transition-all duration-300',
+          'fixed top-0 left-0 z-50 h-screen bg-sidebar border-r border-sidebar-border transition-all duration-300 flex-col',
           collapsed ? 'w-[72px]' : 'w-64',
-          'hidden lg:block'
+          'hidden lg:flex'
         )}
       >
         {/* Logo */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border">
+        <div className="h-16 flex items-center justify-between px-4 border-b border-sidebar-border flex-shrink-0">
           {!collapsed && (
             <div className="flex items-center gap-2 overflow-hidden">
               <Logo variant="full" className="h-8 w-auto text-sidebar-foreground flex-shrink-0" />
@@ -245,8 +245,9 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           </button>
         </div>
 
-        {/* Navigation */}
-        <ScrollArea className="h-[calc(100vh-11rem)]">
+        {/* Navigation - flex-1 + min-h-0 garante que o nav cresça e role,
+            nunca sobrepondo o footer (Critical #7: viewport <800px). */}
+        <ScrollArea className="flex-1 min-h-0">
           <nav className="p-3 space-y-1">
             {visibleNavItems.map((item) => {
               const isActive = location.pathname === item.href;
@@ -269,8 +270,8 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           </nav>
         </ScrollArea>
 
-        {/* User Menu */}
-        <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border space-y-1">
+        {/* User Menu - footer no fim do flex-col, sem absolute */}
+        <div className="flex-shrink-0 p-3 border-t border-sidebar-border space-y-1">
           <div
             className={cn(
               'flex items-center gap-1',
@@ -323,7 +324,10 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                   <DropdownMenuSeparator />
                 </>
               )}
-              <DropdownMenuItem onClick={handleLogout} className="text-destructive">
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="text-destructive dark:text-red-300 focus:text-destructive dark:focus:text-red-300"
+              >
                 <LogOut className="w-4 h-4 mr-2" />
                 Sair
               </DropdownMenuItem>
@@ -332,14 +336,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </div>
       </aside>
 
-      {/* Mobile Sidebar */}
+      {/* Mobile Sidebar - flex-col garante que footer "Sair" nunca cubra itens */}
       <aside
         className={cn(
-          'lg:hidden fixed top-14 sm:top-16 left-0 z-50 h-[calc(100vh-3.5rem)] sm:h-[calc(100vh-4rem)] w-[75vw] xs:w-64 bg-sidebar border-r border-sidebar-border transition-transform duration-300 safe-area-bottom',
+          'lg:hidden fixed top-14 sm:top-16 left-0 z-50 h-[calc(100vh-3.5rem)] sm:h-[calc(100vh-4rem)] w-[75vw] xs:w-64 bg-sidebar border-r border-sidebar-border transition-transform duration-300 safe-area-bottom flex flex-col',
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
-        <ScrollArea className="h-[calc(100%-5rem)]">
+        <ScrollArea className="flex-1 min-h-0">
           <nav className="p-3 space-y-1">
             {visibleNavItems.map((item) => {
               const isActive = location.pathname === item.href;
@@ -362,8 +366,12 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             })}
           </nav>
         </ScrollArea>
-        <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-sidebar-border safe-area-bottom">
-          <Button onClick={handleLogout} variant="ghost" className="w-full justify-start text-destructive min-h-[44px]">
+        <div className="flex-shrink-0 p-3 border-t border-sidebar-border safe-area-bottom">
+          <Button
+            onClick={handleLogout}
+            variant="ghost"
+            className="w-full justify-start text-red-300 hover:text-red-200 hover:bg-sidebar-accent min-h-[44px]"
+          >
             <LogOut className="w-4 h-4 mr-2" />
             Sair
           </Button>
