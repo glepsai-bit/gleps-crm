@@ -55,6 +55,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Plus,
   Search,
@@ -80,13 +81,14 @@ import { contactsBackendService } from '@/services/contacts.backend.service';
 export default function AdminLeadsPage() {
   const { account, user } = useAuth();
   const { isAdmin } = useRoleAccess();
-  const { 
-    contacts, 
-    leadFunnelStates, 
+  const {
+    contacts,
+    leadFunnelStates,
     updateContact,
     getContactFunnelStageOrder,
     getContactSales,
     refetchContacts,
+    isLoadingContacts,
   } = useFinance();
   const accountId = account?.id || '';
 
@@ -330,8 +332,78 @@ export default function AdminLeadsPage() {
         </CardContent>
       </Card>
 
-      {/* Empty state */}
-      {filteredContacts.length === 0 ? (
+      {/* C2 — Skeleton (desktop table + mobile cards) durante carregamento
+           inicial. Sem isso, a primeira renderização caía direto no empty
+           state "Nenhum lead cadastrado" mesmo com dados a caminho. */}
+      {isLoadingContacts && contacts.length === 0 ? (
+        <>
+          {/* Skeleton table (>=md) */}
+          <Card className="hidden md:block">
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="min-w-[150px]">Lead</TableHead>
+                      <TableHead className="min-w-[140px]">Contato</TableHead>
+                      <TableHead className="min-w-[100px]">Origem</TableHead>
+                      <TableHead className="min-w-[100px]">Etapa</TableHead>
+                      <TableHead className="min-w-[100px]">Criado em</TableHead>
+                      <TableHead className="text-right min-w-[80px]">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {[...Array(5)].map((_, i) => (
+                      <TableRow key={i}>
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <Skeleton className="h-9 w-9 rounded-full" />
+                            <Skeleton className="h-4 w-32" />
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="space-y-2">
+                            <Skeleton className="h-3 w-28" />
+                            <Skeleton className="h-3 w-36" />
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton className="h-5 w-20 rounded-full" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton className="h-5 w-24 rounded-full" />
+                        </TableCell>
+                        <TableCell>
+                          <Skeleton className="h-4 w-20" />
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Skeleton className="h-8 w-8 ml-auto rounded-md" />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Skeleton mobile cards (<md) */}
+          <div className="md:hidden space-y-2">
+            {[...Array(5)].map((_, i) => (
+              <Card key={i} className="p-3">
+                <div className="flex items-start gap-3">
+                  <Skeleton className="h-9 w-9 rounded-full shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-4 w-3/4" />
+                    <Skeleton className="h-3 w-full" />
+                    <Skeleton className="h-3 w-2/3" />
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </>
+      ) : filteredContacts.length === 0 ? (
         <Card>
           <CardContent className="p-0">
             {hasActiveFilters ? (

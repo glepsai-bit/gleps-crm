@@ -507,7 +507,8 @@ export default function AdminChatDashboardPage() {
                 Período
               </label>
               <Select value={period} onValueChange={handlePeriodChange}>
-                <SelectTrigger className="w-[150px] h-9">
+                {/* C6: tap target 44px em mobile */}
+                <SelectTrigger className="w-[150px] min-h-[44px] sm:min-h-9 h-9">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -529,7 +530,8 @@ export default function AdminChatDashboardPage() {
                     <Button
                       variant="outline"
                       className={cn(
-                        'h-9 justify-start text-left font-normal w-[260px]',
+                        // C6: tap target 44px em mobile
+                        'min-h-[44px] sm:min-h-9 h-9 justify-start text-left font-normal w-[260px]',
                         !dateRange?.from && 'text-muted-foreground'
                       )}
                     >
@@ -572,7 +574,8 @@ export default function AdminChatDashboardPage() {
                 Inbox
               </label>
               <Select value={inboxId} onValueChange={setInboxId}>
-                <SelectTrigger className="w-[180px] h-9">
+                {/* C6: tap target 44px em mobile */}
+                <SelectTrigger className="w-[180px] min-h-[44px] sm:min-h-9 h-9">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -592,7 +595,8 @@ export default function AdminChatDashboardPage() {
                 Time
               </label>
               <Select value={teamId} onValueChange={setTeamId}>
-                <SelectTrigger className="w-[180px] h-9">
+                {/* C6: tap target 44px em mobile */}
+                <SelectTrigger className="w-[180px] min-h-[44px] sm:min-h-9 h-9">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -612,7 +616,8 @@ export default function AdminChatDashboardPage() {
                 Agente
               </label>
               <Select value={agentId} onValueChange={setAgentId}>
-                <SelectTrigger className="w-[200px] h-9">
+                {/* C6: tap target 44px em mobile */}
+                <SelectTrigger className="w-[200px] min-h-[44px] sm:min-h-9 h-9">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -630,7 +635,7 @@ export default function AdminChatDashboardPage() {
       </Card>
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 auto-rows-fr">
         <KpiCard
           icon={<MessageSquare className="w-4 h-4" />}
           label="Total de conversas"
@@ -879,8 +884,10 @@ export default function AdminChatDashboardPage() {
         </CardContent>
       </Card>
 
-      {/* Charts row 2 — Distribuição por team + inbox (pies) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Charts row 2 — Distribuição por team + inbox (pies).
+          C6: em tablet (md 768-1024) mostramos 2 colunas em vez de stack vertical
+          gigante. lg mantém 2 colunas. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Por team */}
         <Card>
           <CardHeader className="pb-2">
@@ -1263,9 +1270,12 @@ function KpiCard({
     destructive: 'bg-destructive/10 text-destructive',
   };
 
+  // C2 — Loading: mostra skeleton em vez de '—' enquanto value === null.
+  // O '—' (em-dash) confundia usuários ("os dados estão zerados?").
+  const isLoading = value === null;
   const display =
     value === null
-      ? '—'
+      ? null
       : formatter
       ? formatter(value)
       : new Intl.NumberFormat('pt-BR').format(value);
@@ -1301,7 +1311,11 @@ function KpiCard({
             {label}
           </span>
         </div>
-        <p className="text-2xl font-bold">{display}</p>
+        {isLoading ? (
+          <Skeleton className="h-8 w-24" />
+        ) : (
+          <p className="text-2xl font-bold">{display}</p>
+        )}
         {subtitle && (
           <p className="text-[11px] text-muted-foreground mt-1">{subtitle}</p>
         )}

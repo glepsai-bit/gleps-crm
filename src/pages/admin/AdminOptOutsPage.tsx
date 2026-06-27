@@ -183,7 +183,7 @@ export default function AdminOptOutsPage() {
   }
 
   return (
-    <div className="page-container space-y-6">
+    <div className="page-container space-y-6 max-w-7xl mx-auto">
       {/* Header */}
       <div className="page-header">
         <div>
@@ -301,7 +301,7 @@ export default function AdminOptOutsPage() {
               <TableBody>
                 {resultados.map((contato) => (
                   <TableRow key={contato.contactId ?? contato.telefone}>
-                    <TableCell className="font-medium">{contato.nome}</TableCell>
+                    <TableCell className="font-medium">{contato.nome || '—'}</TableCell>
                     <TableCell className="font-mono text-sm">
                       {contato.telefone}
                     </TableCell>

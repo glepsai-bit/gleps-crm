@@ -563,7 +563,8 @@ export default function EmailCampaignsTab() {
     <div className="space-y-4">
       {/* Back + Campaign header */}
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => { setSelectedCampaign(null); setSelectedCadence(null); }}>
+        {/* C6: tap target 44x44 em mobile (ghost size="sm" = h-9 ~36px) */}
+        <Button variant="ghost" size="sm" onClick={() => { setSelectedCampaign(null); setSelectedCadence(null); }} className="min-h-[44px] min-w-[44px] sm:min-h-9 sm:min-w-0" aria-label="Voltar para lista de campanhas">
           <ArrowLeft className="w-4 h-4" />
         </Button>
         <div className="flex-1">
@@ -601,10 +602,10 @@ export default function EmailCampaignsTab() {
             setEditingCampaign(selectedCampaign);
             setForm({ name: selectedCampaign.name, description: selectedCampaign.description || '', audienceId: (selectedCampaign as any).audience_id || '' });
             setShowCreateDialog(true);
-          }}>
+          }} className="min-h-[44px] min-w-[44px] sm:min-h-9 sm:min-w-0" aria-label="Editar campanha">
             <Edit2 className="w-4 h-4" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setDeleteId(selectedCampaign.id)}>
+          <Button variant="ghost" size="sm" onClick={() => setDeleteId(selectedCampaign.id)} className="min-h-[44px] min-w-[44px] sm:min-h-9 sm:min-w-0" aria-label="Excluir campanha">
             <Trash2 className="w-4 h-4 text-destructive" />
           </Button>
           <Button
@@ -622,6 +623,8 @@ export default function EmailCampaignsTab() {
               }
             }}
             title="Atualizar métricas"
+            className="min-h-[44px] min-w-[44px] sm:min-h-9 sm:min-w-0"
+            aria-label="Atualizar métricas"
           >
             <RefreshCw className="w-4 h-4" />
           </Button>
@@ -734,10 +737,10 @@ export default function EmailCampaignsTab() {
                     setEditingCadence(selectedCadence);
                     setCadenceForm({ name: selectedCadence.name, description: selectedCadence.description || '', sendAtTime: selectedCadence.send_at_time || '09:00', startDate: selectedCadence.start_date || new Date().toISOString().split('T')[0] });
                     setShowCadenceDialog(true);
-                  }}>
+                  }} className="min-h-[44px] min-w-[44px] sm:min-h-9 sm:min-w-0" aria-label="Editar cadência">
                     <Edit2 className="w-4 h-4" />
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={() => handleDeleteCadence(selectedCadence.id)}>
+                  <Button variant="ghost" size="sm" onClick={() => handleDeleteCadence(selectedCadence.id)} className="min-h-[44px] min-w-[44px] sm:min-h-9 sm:min-w-0" aria-label="Excluir cadência">
                     <Trash2 className="w-4 h-4 text-destructive" />
                   </Button>
                 </>

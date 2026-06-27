@@ -320,8 +320,10 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 <Link
                   key={item.href}
                   to={item.href}
+                  aria-current={isActive ? 'page' : undefined}
                   className={cn(
                     'flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar',
                     isActive
                       ? 'bg-sidebar-primary text-sidebar-primary-foreground'
                       : 'text-sidebar-foreground hover:bg-sidebar-accent'
@@ -417,8 +419,10 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                   key={item.href}
                   to={item.href}
                   onClick={() => setMobileOpen(false)}
+                  aria-current={isActive ? 'page' : undefined}
                   className={cn(
                     'flex items-center justify-start gap-3 px-4 py-3 rounded-lg transition-all touch-target text-left',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar',
                     isActive
                       ? 'bg-sidebar-primary text-sidebar-primary-foreground'
                       : 'text-sidebar-foreground hover:bg-sidebar-accent'

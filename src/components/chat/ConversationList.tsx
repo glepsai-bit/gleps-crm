@@ -18,7 +18,6 @@ import {
   BookmarkPlus,
   AlertCircle,
   Inbox as InboxIcon,
-  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -27,6 +26,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Select,
   SelectContent,
@@ -623,8 +623,19 @@ export function ConversationList({
       {/* Lista */}
       <ScrollArea className="flex-1">
         {listQuery.isLoading ? (
-          <div className="flex items-center justify-center py-12 text-muted-foreground">
-            <Loader2 className="w-5 h-5 animate-spin" />
+          // C2 — Skeleton rows (5) imitando o card real (avatar + 2 linhas)
+          // dão sensação concreta de "tem conteúdo vindo" em vez do spinner
+          // genérico que parecia um erro/lentidão.
+          <div className="space-y-2 p-3">
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="flex gap-3">
+                <Skeleton className="h-10 w-10 rounded-full" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-3 w-full" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : listQuery.isError ? (
           <div className="flex flex-col items-center justify-center py-12 px-4 text-center text-muted-foreground">

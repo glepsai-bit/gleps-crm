@@ -93,7 +93,7 @@ export default function AdminProductsPage() {
   };
 
   return (
-    <div className="page-container">
+    <div className="page-container max-w-7xl mx-auto">
       {/* Header */}
       <div className="page-header">
         <div>

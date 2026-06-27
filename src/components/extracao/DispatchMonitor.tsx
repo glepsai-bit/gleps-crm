@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Zap, CheckCircle2, XCircle, Clock, Download, ArrowLeft, Phone, StopCircle, Ban, Eye } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
@@ -485,13 +486,32 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
 
   // Batch history list
   if (loading) {
+    // C2 — Skeleton cards (5) substituem o spinner "Carregando histórico..."
+    // pra dar feedback concreto de estrutura, não só atividade.
     return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-12 text-muted-foreground">
-          <Clock className="w-5 h-5 animate-spin mr-2" />
-          Carregando histórico...
-        </CardContent>
-      </Card>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <Skeleton className="h-6 w-44" />
+        </div>
+        {[...Array(5)].map((_, i) => (
+          <Card key={i}>
+            <CardContent className="pt-4 pb-3 space-y-2">
+              <div className="flex items-start justify-between">
+                <div className="space-y-2 flex-1">
+                  <Skeleton className="h-4 w-1/3" />
+                  <Skeleton className="h-3 w-1/4" />
+                </div>
+                <Skeleton className="h-6 w-20 rounded-full" />
+              </div>
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-3 w-14" />
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     );
   }
 

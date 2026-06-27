@@ -100,13 +100,14 @@ export function DashboardFilters({
               key={period.value}
               variant={activePeriod === period.value ? 'default' : 'ghost'}
               size="sm"
-              className="h-7 sm:h-8 px-2 sm:px-3 text-[10px] sm:text-xs shrink-0"
+              // C6: tap target 44px em mobile (h-7 = 28px viola WCAG)
+              className="min-h-[44px] sm:min-h-0 h-7 sm:h-8 px-3 sm:px-3 text-xs sm:text-xs shrink-0"
               onClick={() => handlePeriodChange(period.value)}
             >
               {period.label}
             </Button>
           ))}
-          
+
           {/* Calendar Picker */}
           <Popover>
             <PopoverTrigger asChild>
@@ -114,7 +115,8 @@ export function DashboardFilters({
                 variant={activePeriod === 'custom' ? 'default' : 'ghost'}
                 size="sm"
                 className={cn(
-                  "h-7 sm:h-8 px-2 sm:px-3 text-[10px] sm:text-xs gap-1 sm:gap-1.5 shrink-0",
+                  // C6: tap target 44px em mobile
+                  "min-h-[44px] sm:min-h-0 h-7 sm:h-8 px-3 sm:px-3 text-xs sm:text-xs gap-1 sm:gap-1.5 shrink-0",
                   activePeriod === 'custom' && "bg-primary text-primary-foreground"
                 )}
               >
@@ -165,7 +167,8 @@ export function DashboardFilters({
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <MessageCircle className="w-4 h-4 text-muted-foreground flex-shrink-0 hidden sm:block" />
             <Select value={channel} onValueChange={handleChannelChange}>
-              <SelectTrigger className="w-full sm:w-[120px] md:w-[140px] h-8 text-xs sm:text-sm">
+              {/* C6: tap target 44px em mobile */}
+              <SelectTrigger className="w-full sm:w-[120px] md:w-[140px] min-h-[44px] sm:min-h-0 h-8 text-xs sm:text-sm">
                 <SelectValue placeholder="Canal" />
               </SelectTrigger>
               <SelectContent className="bg-popover border border-border z-50">
@@ -184,7 +187,8 @@ export function DashboardFilters({
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <Filter className="w-4 h-4 text-muted-foreground flex-shrink-0 hidden sm:block" />
           <Select value={type} onValueChange={handleTypeChange}>
-            <SelectTrigger className="w-full sm:w-[110px] md:w-[140px] h-8 text-xs sm:text-sm">
+            {/* C6: tap target 44px em mobile */}
+            <SelectTrigger className="w-full sm:w-[110px] md:w-[140px] min-h-[44px] sm:min-h-0 h-8 text-xs sm:text-sm">
               <SelectValue placeholder="Tipo" />
             </SelectTrigger>
             <SelectContent className="bg-popover border border-border z-50">
