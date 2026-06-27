@@ -21,6 +21,7 @@ import systemSettingsRoutes from './system-settings.routes';
 import whatsappTemplateRoutes from './whatsapp-template.routes';
 import whatsappCampaignJwtRoutes, { apiKeyRouter as whatsappCampaignApiKeyRoutes } from './whatsapp-campaign.routes';
 import integrationWhatsappRoutes from './integration-whatsapp.routes';
+import integrationKanbanRoutes from './integration-kanban.routes';
 import contactsApiRoutes from './contacts-api.routes';
 import webhookRoutes from './webhook-outbound.routes';
 import {
@@ -113,6 +114,7 @@ router.use('/whatsapp/campaigns', whatsappCampaignJwtRoutes);
 router.use('/dispatch', whatsappCampaignJwtRoutes); // alias canonical para o frontend (DispatchDialog, aba Agendadas, Dashboard)
 router.use('/integrations/whatsapp/campaigns', whatsappCampaignApiKeyRoutes);
 router.use('/integrations/whatsapp', integrationWhatsappRoutes);
+router.use('/integrations/kanban', integrationKanbanRoutes);
 router.use('/integrations/contatos', contactsApiRoutes);
 router.use('/webhooks', webhookRoutes);
 // Inbound integrations:

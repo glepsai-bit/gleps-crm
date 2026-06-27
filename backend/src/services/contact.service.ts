@@ -322,7 +322,11 @@ class ContactService {
     accountId: string,
     tagId: string,
     source: 'kanban' | 'system' | 'api',
-    appliedById?: string
+    appliedById?: string,
+    options?: {
+      reason?: string;
+      apiKeyId?: string;
+    }
   ) {
     const contact = await this.getById(id, accountId);
 
@@ -335,8 +339,43 @@ class ContactService {
       throw new NotFoundError('Tag');
     }
 
+    // T1-APPLYTAG-RACE-FIX (BUG 8): com 5 POSTs paralelos em stages diferentes
+    // no MESMO lead, cada transaction lia "from" snapshot estática e ao final
+    // ficavam todas as N stages aplicadas (violação do invariante kanban:
+    // 1 lead = 1 stage) e/ou alguns requests retornavam 404 (P2025 do delete
+    // após outra transação já ter removido a linha) em vez de 409/200.
+    //
+    // Fix em duas frentes:
+    //   (a) Serializar pelo contactId via pg_advisory_xact_lock(int8). O hash
+    //       é determinístico (hashtext()) e o lock vive só pela transação,
+    //       então 5 requests concorrentes no mesmo lead viram fila — "último
+    //       a chegar vence" como o brief exige.
+    //   (b) Mapear tanto P2002 (unique violation no leadTag.create) quanto
+    //       P2025 (RecordNotFound no leadTag.delete) para ConflictError 409,
+    //       já que ambos só ocorrem em corrida residual após o lock liberar.
+    //
+    // O escopo do advisory lock é (accountId, contactId) — não bloqueia outros
+    // tenants nem outros leads do mesmo tenant.
+    //
+    // Para chamadas via API key (source='api' + options.apiKeyId), o actor é
+    // gravado como external/<apiKeyId> em vez de system/null, atendendo ao
+    // requisito de rastreabilidade do BUG 11.
+    const actorType: 'user' | 'external' | 'system' = appliedById
+      ? 'user'
+      : options?.apiKeyId
+        ? 'external'
+        : 'system';
+    const actorId: string | undefined = appliedById ?? options?.apiKeyId ?? undefined;
+    const reason = options?.reason ?? null;
+
     try {
       await prisma.$transaction(async (tx) => {
+        // (a) Advisory lock pelo contactId — serializa concorrência neste lead.
+        await tx.$executeRawUnsafe(
+          `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+          id
+        );
+
         // If it's a stage tag, remove other stage tags first (mesma transação).
         if (tag.type === 'stage') {
           const existingStageTags = await tx.leadTag.findMany({
@@ -358,9 +397,10 @@ class ContactService {
                 contactId: id,
                 tagId: existing.tagId,
                 action: 'removed',
-                actorType: appliedById ? 'user' : 'system',
-                actorId: appliedById,
+                actorType,
+                actorId,
                 source,
+                reason,
                 tagName: existing.tag.name,
                 contactNome: contact.nome,
               },
@@ -396,9 +436,10 @@ class ContactService {
             contactId: id,
             tagId,
             action: 'added',
-            actorType: appliedById ? 'user' : 'system',
-            actorId: appliedById,
+            actorType,
+            actorId,
             source,
+            reason,
             tagName: tag.name,
             contactNome: contact.nome,
           },
@@ -410,10 +451,15 @@ class ContactService {
       // P2002 (unique violation). Em vez de devolver 500, traduzimos pra 409:
       // a tag já foi aplicada por outra request paralela, então o efeito
       // semântico está garantido.
-      if (err?.code === 'P2002') {
+      //
+      // P2025 (RecordNotFound) também pode acontecer em corrida residual com
+      // delete em LeadTag — outra request já apagou a linha antes desta. O
+      // estado final pretendido (essa stage NÃO presente) já está satisfeito,
+      // então também devolvemos 409 (e não 404, que confundiria o caller).
+      if (err?.code === 'P2002' || err?.code === 'P2025') {
         throw new ConflictError(
-          'Tag já aplicada nesta requisição concorrente',
-          { contactId: id, tagId }
+          'Concorrência detectada ao aplicar tag — tente novamente',
+          { contactId: id, tagId, prismaCode: err.code }
         );
       }
       throw err;
@@ -422,11 +468,17 @@ class ContactService {
     await eventService.create({
       eventType: tag.type === 'stage' ? 'lead.stage.changed' : 'lead.tag.added',
       accountId,
-      actorType: appliedById ? 'user' : 'system',
-      actorId: appliedById,
+      actorType,
+      actorId,
       entityType: 'contact',
       entityId: id,
-      payload: { tagId, tagName: tag.name, source },
+      payload: {
+        tagId,
+        tagName: tag.name,
+        source,
+        ...(reason ? { reason } : {}),
+        ...(options?.apiKeyId ? { apiKeyId: options.apiKeyId } : {}),
+      },
     });
 
     return this.getById(id, accountId);

@@ -18,6 +18,12 @@ import { apiKeyService } from '../services/api-key.service';
  *   - "campaigns:write"      → dispara campanhas WhatsApp (send-single /
  *                              send-batch).
  *   - "campaigns:read"       → leitura de lotes de campanha.
+ *   - "kanban:write"         → move leads entre etapas do funil via
+ *                              /api/integrations/kanban/leads/:leadId/stage.
+ *                              Aceita também "leads:write" como alias
+ *                              (semântica alinhada às permissões JWT).
+ *   - "kanban:read"          → lista etapas disponíveis. Aceita
+ *                              "leads:read", "kanban:write", "leads:write".
  *
  * Comportamento:
  *   - requireApiKey valida que a chave é válida/não-revogada e popula
