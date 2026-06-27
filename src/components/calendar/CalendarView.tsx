@@ -2,9 +2,11 @@ import { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { EmptyState } from '@/components/ui/empty-state';
 import { useCalendar } from '@/contexts/CalendarContext';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { CalendarEvent } from '@/types/calendar';
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Info, Plus } from 'lucide-react';
 import {
   format,
   startOfWeek,
@@ -47,14 +49,25 @@ export function CalendarView({
     selectEvent,
   } = useCalendar();
 
+  // GRUPO B6: em mobile (<768px) a vista Semana exige scroll horizontal e
+  // expoe apenas 2-3 dias visiveis, alem de espremer os botoes de navegacao.
+  // Para evitar UX degradada, forcamos Day view enquanto o viewport for mobile,
+  // mantendo a escolha do usuario ('week'/'month') para quando ele voltar pro
+  // desktop. Tambem mostramos um aviso explicando o downgrade automatico.
+  const isMobile = useIsMobile();
+  const effectiveViewMode =
+    isMobile && (viewMode === 'week' || viewMode === 'month') ? 'day' : viewMode;
+  const showMobileWeekNotice = isMobile && viewMode === 'week';
+  const showMobileMonthNotice = isMobile && viewMode === 'month';
+
   // Get events for the current view
   const visibleEvents = useMemo(() => {
     let start: Date, end: Date;
 
-    if (viewMode === 'day') {
+    if (effectiveViewMode === 'day') {
       start = startOfDay(currentDate);
       end = addHours(start, 24);
-    } else if (viewMode === 'week') {
+    } else if (effectiveViewMode === 'week') {
       start = startOfWeek(currentDate, { weekStartsOn: 1 });
       end = endOfWeek(currentDate, { weekStartsOn: 1 });
     } else {
@@ -66,7 +79,7 @@ export function CalendarView({
       const eventStart = parseISO(event.start);
       return eventStart >= start && eventStart <= end;
     });
-  }, [events, currentDate, viewMode]);
+  }, [events, currentDate, effectiveViewMode]);
 
   const getEventColor = (event: CalendarEvent) => {
     if (event.source === 'google') {
@@ -126,19 +139,32 @@ export function CalendarView({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <CardTitle className="text-xl">
-              {format(currentDate, viewMode === 'day' ? 'dd MMMM yyyy' : 'MMMM yyyy', { locale: ptBR })}
+              {format(currentDate, effectiveViewMode === 'day' ? 'dd MMMM yyyy' : 'MMMM yyyy', { locale: ptBR })}
             </CardTitle>
-            <Button variant="outline" size="sm" onClick={goToToday}>
+            <Button variant="outline" size="sm" onClick={goToToday} className="min-h-[44px] sm:min-h-0">
               Hoje
             </Button>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" onClick={goToPrevious}>
-              <ChevronLeft className="w-4 h-4" />
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* GRUPO B6: prev/next maiores em mobile (touch target 44x44) */}
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={goToPrevious}
+              aria-label="Anterior"
+              className="h-11 w-11 sm:h-9 sm:w-9"
+            >
+              <ChevronLeft className="w-5 h-5 sm:w-4 sm:h-4" />
             </Button>
-            <Button variant="outline" size="icon" onClick={goToNext}>
-              <ChevronRight className="w-4 h-4" />
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={goToNext}
+              aria-label="Proximo"
+              className="h-11 w-11 sm:h-9 sm:w-9"
+            >
+              <ChevronRight className="w-5 h-5 sm:w-4 sm:h-4" />
             </Button>
 
             <div className="flex border rounded-lg overflow-hidden ml-2">
@@ -147,7 +173,7 @@ export function CalendarView({
                   key={mode}
                   variant={viewMode === mode ? 'default' : 'ghost'}
                   size="sm"
-                  className="rounded-none"
+                  className="rounded-none min-h-[44px] sm:min-h-0"
                   onClick={() => setViewMode(mode)}
                 >
                   {mode === 'day' ? 'Dia' : mode === 'week' ? 'Semana' : 'Mês'}
@@ -156,18 +182,60 @@ export function CalendarView({
             </div>
 
             {onNewEvent && (
-              <Button onClick={onNewEvent} size="sm" className="ml-2">
+              <Button onClick={onNewEvent} size="sm" className="ml-2 min-h-[44px] sm:min-h-0">
                 <Plus className="w-4 h-4 mr-1" />
                 Novo Evento
               </Button>
             )}
           </div>
         </div>
+
+        {/* GRUPO B6: aviso quando o usuario escolheu Semana/Mes mas estamos em mobile */}
+        {(showMobileWeekNotice || showMobileMonthNotice) && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="mt-3 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground/90"
+          >
+            <Info className="w-4 h-4 shrink-0 mt-0.5 text-warning" aria-hidden="true" />
+            <span>
+              Vista {showMobileWeekNotice ? 'Semana' : 'Mês'} é otimizada para desktop.
+              Em telas pequenas exibimos a vista Dia. Gire o aparelho ou abra no
+              desktop para ver a {showMobileWeekNotice ? 'semana completa' : 'grade mensal'}.
+            </span>
+          </div>
+        )}
       </CardHeader>
 
       <CardContent className="flex-1 overflow-auto p-0">
+        {/* GRUPO B4: empty state quando nao ha eventos no periodo visivel.
+            Mostra acima do grid em vez de substitui-lo para o usuario continuar
+            tendo o contexto temporal (linhas de hora / dias do mes). */}
+        {visibleEvents.length === 0 && (
+          <EmptyState
+            icon={<CalendarDays className="w-10 h-10" />}
+            title="Sem eventos no periodo"
+            description={
+              effectiveViewMode === 'day'
+                ? 'Nada agendado para este dia. Crie um evento ou navegue para outra data.'
+                : effectiveViewMode === 'week'
+                  ? 'Nada agendado nesta semana. Crie um evento ou navegue para outra semana.'
+                  : 'Nada agendado neste mes. Crie um evento ou navegue para outro mes.'
+            }
+            action={
+              onNewEvent ? (
+                <Button size="sm" onClick={onNewEvent} className="gap-2">
+                  <Plus className="w-4 h-4" />
+                  Novo Evento
+                </Button>
+              ) : null
+            }
+            className="py-8 border-b"
+          />
+        )}
+
         {/* Week View */}
-        {viewMode === 'week' && (
+        {effectiveViewMode === 'week' && (
           <div className="overflow-x-auto">
             <div className="min-w-[700px] min-h-[600px]">
               {/* Header */}
@@ -248,7 +316,7 @@ export function CalendarView({
         )}
 
         {/* Month View */}
-        {viewMode === 'month' && (
+        {effectiveViewMode === 'month' && (
           <div className="min-h-[600px] p-4">
             {/* Day Labels */}
             <div className="grid grid-cols-7 mb-2">
@@ -305,7 +373,7 @@ export function CalendarView({
         )}
 
         {/* Day View */}
-        {viewMode === 'day' && (
+        {effectiveViewMode === 'day' && (
           <div className="min-h-[600px]">
             <div className="flex">
               {/* Time Labels */}

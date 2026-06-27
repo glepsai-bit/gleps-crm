@@ -442,12 +442,12 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
                       <TableCell className="text-xs">{log.inbox_name || '—'}</TableCell>
                       <TableCell>
                         {log.status === 'sent' && (
-                          <Badge variant="outline" className="text-green-600 border-green-200 bg-green-50">
+                          <Badge variant="outline" className="text-green-600 border-green-200 bg-green-50 dark:text-green-400 dark:border-green-900 dark:bg-green-950/30">
                             <CheckCircle2 className="w-3 h-3 mr-1" /> Enviado
                           </Badge>
                         )}
                         {log.status === 'failed' && (
-                          <Badge variant="outline" className="text-destructive border-red-200 bg-red-50">
+                          <Badge variant="outline" className="text-destructive border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30">
                             <XCircle className="w-3 h-3 mr-1" /> Erro
                           </Badge>
                         )}

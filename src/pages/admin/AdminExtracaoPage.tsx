@@ -45,7 +45,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Download, Send, Search, Zap, Save, Users, Calendar, BarChart2, X as XIcon, Pause, Play, Eye } from 'lucide-react';
+import { Download, Send, Search, Zap, Save, Users, Calendar, BarChart2, X as XIcon, Pause, Play, Eye, MapPin } from 'lucide-react';
+import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/hooks/use-toast';
 import type { ExtractedLead, ApiUsage } from '@/components/extracao/types';
 
@@ -686,6 +687,17 @@ export default function AdminExtracaoPage() {
              setIsLoading={setIsLoading}
              isLimitReached={isLimitReached}
            />
+          {leads.length === 0 && !isLoading && (
+            <Card>
+              <CardContent className="p-0">
+                <EmptyState
+                  icon={<MapPin className="w-10 h-10" />}
+                  title="Faca uma busca para extrair leads"
+                  description="Informe a palavra-chave e a localizacao acima para extrair leads do Google Maps. Os resultados aparecerao aqui prontos para selecao e disparo."
+                />
+              </CardContent>
+            </Card>
+          )}
           {leads.length > 0 && (
             <>
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">

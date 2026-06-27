@@ -379,7 +379,7 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Configurar Disparo</DialogTitle>
           <DialogDescription>
@@ -387,7 +387,7 @@ export function DispatchDialog({ open, onOpenChange, leads, accountId, onDispatc
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
+        <div className="space-y-4 flex-1 overflow-y-auto pr-2 -mr-2">
           <ComplianceWarning totalLote={leads.length} totalOptOut={optOutCount} />
 
           <div className="space-y-2">

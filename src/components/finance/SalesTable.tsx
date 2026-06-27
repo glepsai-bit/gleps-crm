@@ -165,16 +165,17 @@ export function SalesTable({ isLoading = false }: SalesTableProps) {
           </div>
         </CardHeader>
         <CardContent className="p-3 sm:p-6 pt-0 sm:pt-0">
-          <div className="rounded-md border overflow-x-auto -mx-3 sm:mx-0">
-            <Table className="min-w-[400px] sm:min-w-[500px]">
+          {/* Table (>=md) */}
+          <div className="hidden md:block rounded-md border overflow-x-auto">
+            <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="text-xs sm:text-sm min-w-[80px] sm:min-w-[120px]">Cliente</TableHead>
-                  <TableHead className="text-xs sm:text-sm min-w-[70px] sm:min-w-[80px]">Valor</TableHead>
-                  <TableHead className="text-xs sm:text-sm min-w-[70px] hidden sm:table-cell">Pagamento</TableHead>
-                  <TableHead className="text-xs sm:text-sm min-w-[60px] sm:min-w-[80px]">Status</TableHead>
-                  <TableHead className="text-xs sm:text-sm min-w-[90px] hidden md:table-cell">Data</TableHead>
-                  <TableHead className="text-xs sm:text-sm text-right min-w-[50px] sm:min-w-[60px]">Ações</TableHead>
+                  <TableHead className="text-xs sm:text-sm min-w-[120px]">Cliente</TableHead>
+                  <TableHead className="text-xs sm:text-sm min-w-[80px]">Valor</TableHead>
+                  <TableHead className="text-xs sm:text-sm min-w-[70px]">Pagamento</TableHead>
+                  <TableHead className="text-xs sm:text-sm min-w-[80px]">Status</TableHead>
+                  <TableHead className="text-xs sm:text-sm min-w-[90px]">Data</TableHead>
+                  <TableHead className="text-xs sm:text-sm text-right min-w-[60px]">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -189,13 +190,13 @@ export function SalesTable({ isLoading = false }: SalesTableProps) {
                     const contact = getContactById(sale.contact_id);
                     return (
                       <TableRow key={sale.id}>
-                        <TableCell className="font-medium text-xs sm:text-sm truncate max-w-[80px] sm:max-w-[150px]">
+                        <TableCell className="font-medium text-xs sm:text-sm truncate max-w-[150px]">
                           {contact?.nome || 'Cliente não encontrado'}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-xs sm:text-sm">{formatCurrency(sale.valor)}</TableCell>
-                        <TableCell className="hidden sm:table-cell">{getPaymentMethodBadge(sale.metodo_pagamento)}</TableCell>
+                        <TableCell>{getPaymentMethodBadge(sale.metodo_pagamento)}</TableCell>
                         <TableCell>{getStatusBadge(sale.status)}</TableCell>
-                        <TableCell className="hidden md:table-cell whitespace-nowrap text-xs sm:text-sm">
+                        <TableCell className="whitespace-nowrap text-xs sm:text-sm">
                           {format(new Date(sale.created_at), 'dd/MM HH:mm', {
                             locale: ptBR,
                           })}
@@ -242,6 +243,80 @@ export function SalesTable({ isLoading = false }: SalesTableProps) {
                 )}
               </TableBody>
             </Table>
+          </div>
+
+          {/* Mobile cards (<md) */}
+          <div className="md:hidden space-y-2">
+            {filteredSales.length === 0 ? (
+              <div className="text-center py-6 text-xs text-muted-foreground">
+                Nenhuma venda encontrada
+              </div>
+            ) : (
+              filteredSales.map((sale) => {
+                const contact = getContactById(sale.contact_id);
+                return (
+                  <Card key={sale.id} className="p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-medium text-sm truncate min-w-0">
+                        {contact?.nome || 'Cliente não encontrado'}
+                      </span>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8">
+                            <MoreHorizontal className="w-4 h-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {sale.status === 'pending' && (
+                            <>
+                              <DropdownMenuItem onClick={() => handleMarkAsPaid(sale.id)}>
+                                <CheckCircle className="w-4 h-4 mr-2 text-success" />
+                                Marcar como Pago
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleCancelSale(sale.id)}>
+                                <XCircle className="w-4 h-4 mr-2 text-destructive" />
+                                Cancelar Venda
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                          {sale.status === 'paid' && (
+                            <DropdownMenuItem
+                              onClick={() => setRefundDialog({ open: true, sale })}
+                            >
+                              <RotateCcw className="w-4 h-4 mr-2 text-warning" />
+                              Estornar Venda
+                            </DropdownMenuItem>
+                          )}
+                          {sale.status === 'refunded' && (
+                            <DropdownMenuItem disabled>
+                              Nenhuma ação disponível
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    <div className="mt-3 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground">Valor</span>
+                        <span className="font-medium">{formatCurrency(sale.valor)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground">Pagamento</span>
+                        {getPaymentMethodBadge(sale.metodo_pagamento)}
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground">Status</span>
+                        {getStatusBadge(sale.status)}
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground">Data</span>
+                        <span>{format(new Date(sale.created_at), 'dd/MM HH:mm', { locale: ptBR })}</span>
+                      </div>
+                    </div>
+                  </Card>
+                );
+              })
+            )}
           </div>
         </CardContent>
       </Card>

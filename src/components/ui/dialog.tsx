@@ -36,7 +36,14 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-[calc(100%-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-4 sm:p-6 shadow-lg duration-200 max-h-[90vh] overflow-hidden rounded-lg sm:rounded-lg data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]",
+        // Layout base: mobile = fullscreen (max-w-full + max-h-[100dvh] + sem
+        // arredondar), desktop (>=sm) = centralizado com max-h-[90vh].
+        // Flex coluna + overflow-hidden permitem que DialogHeader/DialogFooter
+        // fiquem fixos (shrink-0) e só o corpo role (flex-1 overflow-y-auto).
+        "fixed left-[50%] top-[50%] z-50 flex flex-col translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background shadow-lg duration-200 overflow-hidden",
+        "w-full max-w-full h-[100dvh] max-h-[100dvh] rounded-none p-4",
+        "sm:w-[calc(100%-2rem)] sm:max-w-lg sm:h-auto sm:max-h-[90vh] sm:rounded-lg sm:p-6",
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]",
         className,
       )}
       {...props}
@@ -52,12 +59,20 @@ const DialogContent = React.forwardRef<
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
 const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex flex-col space-y-1.5 text-center sm:text-left pr-8", className)} {...props} />
+  // shrink-0 mantém o header fixo no topo quando o corpo do dialog rola
+  <div className={cn("flex flex-col space-y-1.5 text-center sm:text-left pr-8 shrink-0", className)} {...props} />
 );
 DialogHeader.displayName = "DialogHeader";
 
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-2 pt-2", className)} {...props} />
+  // shrink-0 + border-t pt-3 garantem footer fixo na base (não some atrás do conteúdo rolável)
+  <div
+    className={cn(
+      "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-2 shrink-0 border-t pt-3",
+      className,
+    )}
+    {...props}
+  />
 );
 DialogFooter.displayName = "DialogFooter";
 

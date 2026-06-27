@@ -152,8 +152,12 @@ export function CreateLeadDialog({
         </DialogHeader>
 
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} autoComplete="off">
-            <div className="space-y-4 max-h-[50dvh] overflow-y-auto px-1 py-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+          <form
+            onSubmit={form.handleSubmit(onSubmit)}
+            autoComplete="off"
+            className="flex flex-col flex-1 min-h-0 gap-4"
+          >
+            <div className="space-y-4 flex-1 overflow-y-auto pr-2 -mr-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
             <FormField
               control={form.control}
               name="nome"
@@ -256,7 +260,7 @@ export function CreateLeadDialog({
 
             </div>
 
-            <DialogFooter className="gap-3 sm:gap-3 pt-4 mt-4">
+            <DialogFooter className="gap-3 sm:gap-3">
               <Button
                 type="button"
                 variant="outline"

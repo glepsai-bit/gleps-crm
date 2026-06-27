@@ -52,6 +52,68 @@ import {
 } from 'lucide-react';
 import { Logo } from '@/components/branding/Logo';
 import { ThemeToggle } from '@/components/theme-toggle';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb';
+
+// ============================================
+// Mapa de títulos por rota (B5 — breadcrumbs/título no header)
+// Solução pragmática: título claro na página + breadcrumb com pai quando aplicável.
+// ============================================
+const routeTitles: Record<string, { title: string; parent?: { label: string; href: string } }> = {
+  '/admin/chat': { title: 'Atendimento' },
+  '/admin/chat/dashboard': {
+    title: 'Dashboard do Chat',
+    parent: { label: 'Atendimento', href: '/admin/chat' },
+  },
+  '/admin/kanban': { title: 'Funil de Vendas' },
+  '/admin/leads': { title: 'Leads' },
+  '/admin/agenda': { title: 'Agenda' },
+  '/admin/sales': { title: 'Vendas' },
+  '/admin/finance': { title: 'Financeiro' },
+  '/admin/products': { title: 'Produtos' },
+  '/admin/prospeccao': { title: 'Prospecção' },
+  '/admin/emails': { title: 'E-mails' },
+  '/admin/whatsapp-templates': { title: 'Templates WhatsApp' },
+  '/admin/inboxes': { title: 'Inboxes' },
+  '/admin/teams': { title: 'Times' },
+  '/admin/canned-responses': { title: 'Respostas Rápidas' },
+  '/admin/sla-policies': { title: 'Políticas de SLA' },
+  '/admin/custom-attributes': { title: 'Atributos Customizados' },
+  '/admin/opt-outs': { title: 'Opt-outs WhatsApp' },
+  '/admin/integracoes': { title: 'Integrações' },
+};
+
+function PageTitleHeader({ pathname }: { pathname: string }) {
+  const entry = routeTitles[pathname];
+  if (!entry) return null;
+  return (
+    <div className="border-b border-border bg-background px-4 sm:px-6 py-2.5">
+      {entry.parent ? (
+        <Breadcrumb>
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <BreadcrumbLink asChild>
+                <Link to={entry.parent.href}>{entry.parent.label}</Link>
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
+              <BreadcrumbPage className="font-semibold">{entry.title}</BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+      ) : (
+        <h1 className="text-sm font-semibold text-foreground">{entry.title}</h1>
+      )}
+    </div>
+  );
+}
 
 interface AdminLayoutProps {
   children: ReactNode;
@@ -208,11 +270,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </div>
       </header>
 
-      {/* Mobile Overlay */}
+      {/* Mobile Overlay — backdrop opaco + blur garante padrão drawer modal:
+          conteúdo atrás não fica clicável (z-40 abaixo do sidebar z-50)
+          e fica visualmente atenuado. aria-hidden pois é puro chrome. */}
       {mobileOpen && (
         <div
-          className="lg:hidden fixed inset-0 z-40 bg-black/50"
+          className="lg:hidden fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
           onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
         />
       )}
 
@@ -401,6 +466,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             </div>
           </div>
         )}
+        <PageTitleHeader pathname={location.pathname} />
         {children}
       </main>
     </div>

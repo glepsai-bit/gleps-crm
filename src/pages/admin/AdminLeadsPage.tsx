@@ -11,6 +11,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { EmptyState } from '@/components/ui/empty-state';
 import {
   Table,
   TableBody,
@@ -64,6 +65,8 @@ import {
   Mail,
   DollarSign,
   Eye,
+  Users,
+  SearchX,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
 import { toast } from 'sonner';
@@ -200,6 +203,17 @@ export default function AdminLeadsPage() {
     await refetchContacts();
   };
 
+  const hasActiveFilters =
+    searchTerm.trim().length > 0 ||
+    originFilter !== 'all' ||
+    selectedAgent !== 'all';
+
+  const handleClearFilters = () => {
+    setSearchTerm('');
+    setOriginFilter('all');
+    setSelectedAgent('all');
+  };
+
   const handleUpdate = () => {
     if (!editingContact) return;
 
@@ -316,55 +330,232 @@ export default function AdminLeadsPage() {
         </CardContent>
       </Card>
 
-      {/* Table */}
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table className="min-w-[700px]">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="min-w-[150px]">Lead</TableHead>
-                <TableHead className="min-w-[140px]">Contato</TableHead>
-                <TableHead className="min-w-[100px]">Origem</TableHead>
-                <TableHead className="hidden md:table-cell min-w-[100px]">Etapa</TableHead>
-                <TableHead className="hidden sm:table-cell min-w-[100px]">Criado em</TableHead>
-                <TableHead className="text-right min-w-[80px]">Ações</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredContacts.map((contact) => {
-                const stage = getStage(contact.id);
-                const canSell = canCreateSaleForLead(contact.id);
-                return (
-                  <TableRow key={contact.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <Avatar className="h-9 w-9">
-                          <AvatarFallback className="bg-primary/10 text-primary text-sm">
-                            {getInitials(contact.nome)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <span className="font-medium">{contact.nome || 'Sem nome'}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="space-y-1">
-                        {contact.telefone && (
-                          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                            <Phone className="w-3 h-3" />
-                            {contact.telefone}
-                          </div>
+      {/* Empty state */}
+      {filteredContacts.length === 0 ? (
+        <Card>
+          <CardContent className="p-0">
+            {hasActiveFilters ? (
+              <EmptyState
+                icon={<SearchX className="w-10 h-10" />}
+                title="Nenhum lead corresponde aos filtros"
+                description="Ajuste a busca, origem ou agente para ver mais resultados."
+                action={
+                  <Button variant="outline" size="sm" onClick={handleClearFilters}>
+                    Limpar filtros
+                  </Button>
+                }
+              />
+            ) : (
+              <EmptyState
+                icon={<Users className="w-10 h-10" />}
+                title="Nenhum lead cadastrado"
+                description="Comece adicionando o primeiro lead desta conta."
+                action={
+                  accountId ? (
+                    <CreateLeadDialog
+                      accountId={accountId}
+                      stages={stages}
+                      onLeadCreated={handleLeadCreated}
+                      trigger={
+                        <Button size="sm" className="gap-2">
+                          <Plus className="w-4 h-4" />
+                          Adicionar Lead
+                        </Button>
+                      }
+                    />
+                  ) : null
+                }
+              />
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {/* Table (>=md) */}
+          <Card className="hidden md:block">
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="min-w-[150px]">Lead</TableHead>
+                      <TableHead className="min-w-[140px]">Contato</TableHead>
+                      <TableHead className="min-w-[100px]">Origem</TableHead>
+                      <TableHead className="min-w-[100px]">Etapa</TableHead>
+                      <TableHead className="min-w-[100px]">Criado em</TableHead>
+                      <TableHead className="text-right min-w-[80px]">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredContacts.map((contact) => {
+                      const stage = getStage(contact.id);
+                      const canSell = canCreateSaleForLead(contact.id);
+                      return (
+                        <TableRow key={contact.id}>
+                          <TableCell>
+                            <div className="flex items-center gap-3">
+                              <Avatar className="h-9 w-9">
+                                <AvatarFallback className="bg-primary/10 text-primary text-sm">
+                                  {getInitials(contact.nome)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span className="font-medium">{contact.nome || 'Sem nome'}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="space-y-1">
+                              {contact.telefone && (
+                                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                  <Phone className="w-3 h-3" />
+                                  {contact.telefone}
+                                </div>
+                              )}
+                              {contact.email && (
+                                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                  <Mail className="w-3 h-3" />
+                                  {contact.email}
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>{getOriginBadge(contact.origem)}</TableCell>
+                          <TableCell>
+                            {stage ? (
+                              <Badge
+                                variant="outline"
+                                style={{
+                                  borderColor: stage.cor || '#0EA5E9',
+                                  color: stage.cor || '#0EA5E9',
+                                }}
+                              >
+                                {stage.nome}
+                              </Badge>
+                            ) : (
+                              <span className="text-muted-foreground text-sm">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {safeFormatDateBR(contact.created_at, 'dd/MM/yyyy')}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon">
+                                  <MoreHorizontal className="w-4 h-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuLabel>Ações</DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem onClick={() => setProfileContact(contact)}>
+                                  <Eye className="w-4 h-4 mr-2" />
+                                  Ver Ficha do Cliente
+                                </DropdownMenuItem>
+                                {canSell && (
+                                  <DropdownMenuItem onClick={() => setSaleContactId(contact.id)}>
+                                    <DollarSign className="w-4 h-4 mr-2" />
+                                    Criar Venda
+                                  </DropdownMenuItem>
+                                )}
+                                <DropdownMenuItem onClick={() => setEditingContact(contact)}>
+                                  <Edit className="w-4 h-4 mr-2" />
+                                  Editar
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-destructive"
+                                  onClick={() => handleRequestDelete(contact)}
+                                >
+                                  <Trash2 className="w-4 h-4 mr-2" />
+                                  Remover
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Mobile cards (<md) */}
+          <div className="md:hidden space-y-2">
+            {filteredContacts.map((contact) => {
+              const stage = getStage(contact.id);
+              const canSell = canCreateSaleForLead(contact.id);
+              return (
+                <Card key={contact.id} className="p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Avatar className="h-9 w-9 shrink-0">
+                        <AvatarFallback className="bg-primary/10 text-primary text-sm">
+                          {getInitials(contact.nome)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="font-medium truncate">{contact.nome || 'Sem nome'}</span>
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="shrink-0">
+                          <MoreHorizontal className="w-4 h-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuLabel>Ações</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => setProfileContact(contact)}>
+                          <Eye className="w-4 h-4 mr-2" />
+                          Ver Ficha do Cliente
+                        </DropdownMenuItem>
+                        {canSell && (
+                          <DropdownMenuItem onClick={() => setSaleContactId(contact.id)}>
+                            <DollarSign className="w-4 h-4 mr-2" />
+                            Criar Venda
+                          </DropdownMenuItem>
                         )}
-                        {contact.email && (
-                          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                            <Mail className="w-3 h-3" />
-                            {contact.email}
-                          </div>
-                        )}
+                        <DropdownMenuItem onClick={() => setEditingContact(contact)}>
+                          <Edit className="w-4 h-4 mr-2" />
+                          Editar
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          onClick={() => handleRequestDelete(contact)}
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Remover
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <div className="mt-3 space-y-1.5 text-sm">
+                    {contact.telefone && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground flex items-center gap-1.5">
+                          <Phone className="w-3 h-3" />
+                          Telefone
+                        </span>
+                        <span className="truncate">{contact.telefone}</span>
                       </div>
-                    </TableCell>
-                    <TableCell>{getOriginBadge(contact.origem)}</TableCell>
-                    <TableCell className="hidden md:table-cell">
+                    )}
+                    {contact.email && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground flex items-center gap-1.5">
+                          <Mail className="w-3 h-3" />
+                          Email
+                        </span>
+                        <span className="truncate">{contact.email}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground">Origem</span>
+                      {getOriginBadge(contact.origem)}
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground">Etapa</span>
                       {stage ? (
                         <Badge
                           variant="outline"
@@ -376,55 +567,20 @@ export default function AdminLeadsPage() {
                           {stage.nome}
                         </Badge>
                       ) : (
-                        <span className="text-muted-foreground text-sm">-</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground hidden sm:table-cell">
-                      {safeFormatDateBR(contact.created_at, 'dd/MM/yyyy')}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <MoreHorizontal className="w-4 h-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuLabel>Ações</DropdownMenuLabel>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => setProfileContact(contact)}>
-                            <Eye className="w-4 h-4 mr-2" />
-                            Ver Ficha do Cliente
-                          </DropdownMenuItem>
-                          {canSell && (
-                            <DropdownMenuItem onClick={() => setSaleContactId(contact.id)}>
-                              <DollarSign className="w-4 h-4 mr-2" />
-                              Criar Venda
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem onClick={() => setEditingContact(contact)}>
-                            <Edit className="w-4 h-4 mr-2" />
-                            Editar
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => handleRequestDelete(contact)}
-                          >
-                            <Trash2 className="w-4 h-4 mr-2" />
-                            Remover
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground">Criado em</span>
+                      <span>{safeFormatDateBR(contact.created_at, 'dd/MM/yyyy')}</span>
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
           </div>
-        </CardContent>
-      </Card>
+        </>
+      )}
 
       {/* Edit Dialog */}
       <Dialog open={!!editingContact} onOpenChange={() => setEditingContact(null)}>

@@ -1,185 +1,93 @@
+// Compatibility shim — antes existiam 2 stacks de toast (Radix `<Toaster />`
+// em `@/components/ui/toaster` + Sonner). Eram montados em paralelo no App.tsx,
+// gerando DOIS landmarks `region` ("Notifications (F8)" do Radix e
+// "Notifications alt+T" do Sonner), confundindo leitor de tela e duplicando
+// pilhas visuais.
+//
+// Decisão: manter UMA única implementação (Sonner). Mas vários componentes
+// já usam `const { toast } = useToast(); toast({ title, description, variant })`,
+// então mantemos esse hook como **adapter** para o Sonner — sem precisar
+// reescrever 20+ call sites.
+//
+// Mapeamento:
+//   toast({ title, description })                  -> sonner.toast(title, { description })
+//   toast({ title, description, variant: 'destructive' }) -> sonner.toast.error(...)
+//
+// O `<Toaster />` Radix foi removido do App.tsx. Só o `<Sonner />` permanece.
 import * as React from "react";
+import { toast as sonnerToast, type ExternalToast } from "sonner";
 
-import type { ToastActionElement, ToastProps } from "@/components/ui/toast";
+// Tipo aproximado — mantém compat com call sites antigos (`variant`,
+// `action`, etc.) sem importar o ToastProps do Radix.
+type ToastVariant = "default" | "destructive" | "success" | "warning";
 
-const TOAST_LIMIT = 1;
-const TOAST_REMOVE_DELAY = 1000000;
-
-type ToasterToast = ToastProps & {
-  id: string;
+type ToastInput = {
   title?: React.ReactNode;
   description?: React.ReactNode;
-  action?: ToastActionElement;
+  variant?: ToastVariant;
+  duration?: number;
+  // Mantido por compat — não há mapping 1:1 trivial para o `action` do Radix
+  // (que aceita um JSX ToastActionElement). Sonner usa `{ label, onClick }`.
+  // Se algum call site passar `action`, ignoramos silenciosamente — comportamento
+  // anterior também já era frequentemente quebrado em mobile.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  action?: any;
+  // Outros campos opcionais que o Radix aceitava — toleramos sem erro.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
 };
 
-const actionTypes = {
-  ADD_TOAST: "ADD_TOAST",
-  UPDATE_TOAST: "UPDATE_TOAST",
-  DISMISS_TOAST: "DISMISS_TOAST",
-  REMOVE_TOAST: "REMOVE_TOAST",
-} as const;
-
-let count = 0;
-
-function genId() {
-  count = (count + 1) % Number.MAX_SAFE_INTEGER;
-  return count.toString();
+function renderTitle(title?: React.ReactNode): string | React.ReactNode {
+  if (title === null || title === undefined) return "";
+  return title;
 }
 
-type ActionType = typeof actionTypes;
+function toast(input: ToastInput) {
+  const { title, description, variant, duration } = input;
 
-type Action =
-  | {
-      type: ActionType["ADD_TOAST"];
-      toast: ToasterToast;
-    }
-  | {
-      type: ActionType["UPDATE_TOAST"];
-      toast: Partial<ToasterToast>;
-    }
-  | {
-      type: ActionType["DISMISS_TOAST"];
-      toastId?: ToasterToast["id"];
-    }
-  | {
-      type: ActionType["REMOVE_TOAST"];
-      toastId?: ToasterToast["id"];
-    };
+  const options: ExternalToast = {};
+  if (description !== undefined) options.description = description as string;
+  if (duration !== undefined) options.duration = duration;
 
-interface State {
-  toasts: ToasterToast[];
-}
+  const titleNode = renderTitle(title);
 
-const toastTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
-
-const addToRemoveQueue = (toastId: string) => {
-  if (toastTimeouts.has(toastId)) {
-    return;
+  let id: string | number;
+  switch (variant) {
+    case "destructive":
+      id = sonnerToast.error(titleNode as string, options);
+      break;
+    case "success":
+      id = sonnerToast.success(titleNode as string, options);
+      break;
+    case "warning":
+      id = sonnerToast.warning(titleNode as string, options);
+      break;
+    default:
+      id = sonnerToast(titleNode as string, options);
   }
-
-  const timeout = setTimeout(() => {
-    toastTimeouts.delete(toastId);
-    dispatch({
-      type: "REMOVE_TOAST",
-      toastId: toastId,
-    });
-  }, TOAST_REMOVE_DELAY);
-
-  toastTimeouts.set(toastId, timeout);
-};
-
-export const reducer = (state: State, action: Action): State => {
-  switch (action.type) {
-    case "ADD_TOAST":
-      return {
-        ...state,
-        toasts: [action.toast, ...state.toasts].slice(0, TOAST_LIMIT),
-      };
-
-    case "UPDATE_TOAST":
-      return {
-        ...state,
-        toasts: state.toasts.map((t) => (t.id === action.toast.id ? { ...t, ...action.toast } : t)),
-      };
-
-    case "DISMISS_TOAST": {
-      const { toastId } = action;
-
-      // ! Side effects ! - This could be extracted into a dismissToast() action,
-      // but I'll keep it here for simplicity
-      if (toastId) {
-        addToRemoveQueue(toastId);
-      } else {
-        state.toasts.forEach((toast) => {
-          addToRemoveQueue(toast.id);
-        });
-      }
-
-      return {
-        ...state,
-        toasts: state.toasts.map((t) =>
-          t.id === toastId || toastId === undefined
-            ? {
-                ...t,
-                open: false,
-              }
-            : t,
-        ),
-      };
-    }
-    case "REMOVE_TOAST":
-      if (action.toastId === undefined) {
-        return {
-          ...state,
-          toasts: [],
-        };
-      }
-      return {
-        ...state,
-        toasts: state.toasts.filter((t) => t.id !== action.toastId),
-      };
-  }
-};
-
-const listeners: Array<(state: State) => void> = [];
-
-let memoryState: State = { toasts: [] };
-
-function dispatch(action: Action) {
-  memoryState = reducer(memoryState, action);
-  listeners.forEach((listener) => {
-    listener(memoryState);
-  });
-}
-
-type Toast = Omit<ToasterToast, "id">;
-
-function toast({ ...props }: Toast) {
-  const id = genId();
-
-  const update = (props: ToasterToast) =>
-    dispatch({
-      type: "UPDATE_TOAST",
-      toast: { ...props, id },
-    });
-  const dismiss = () => dispatch({ type: "DISMISS_TOAST", toastId: id });
-
-  dispatch({
-    type: "ADD_TOAST",
-    toast: {
-      ...props,
-      id,
-      open: true,
-      onOpenChange: (open) => {
-        if (!open) dismiss();
-      },
-    },
-  });
 
   return {
-    id: id,
-    dismiss,
-    update,
+    id: String(id),
+    dismiss: () => sonnerToast.dismiss(id),
+    update: (next: ToastInput) => {
+      // Sonner não tem update in-place 1:1 — emitimos novo toast com mesmo id.
+      sonnerToast.dismiss(id);
+      toast(next);
+    },
   };
 }
 
 function useToast() {
-  const [state, setState] = React.useState<State>(memoryState);
-
-  React.useEffect(() => {
-    listeners.push(setState);
-    return () => {
-      const index = listeners.indexOf(setState);
-      if (index > -1) {
-        listeners.splice(index, 1);
-      }
-    };
-  }, [state]);
-
   return {
-    ...state,
+    // `toasts` vazio mantém a forma esperada pelo `<Toaster />` Radix legado
+    // (que ainda existe como arquivo mas não é montado). Componentes que
+    // só desestruturam `toast`/`dismiss` continuam funcionando.
+    toasts: [] as Array<{ id: string; [key: string]: unknown }>,
     toast,
-    dismiss: (toastId?: string) => dispatch({ type: "DISMISS_TOAST", toastId }),
+    dismiss: (toastId?: string | number) => {
+      if (toastId === undefined) sonnerToast.dismiss();
+      else sonnerToast.dismiss(toastId);
+    },
   };
 }
 

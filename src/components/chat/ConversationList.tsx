@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Search,
+  SearchX,
   Bookmark,
   BookmarkPlus,
   AlertCircle,
@@ -49,6 +50,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/hooks/use-toast';
 import {
   conversationsBackendService,
@@ -638,11 +640,28 @@ export function ConversationList({
             </Button>
           </div>
         ) : visibleConversations.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 px-4 text-center text-muted-foreground">
-            <InboxIcon className="w-10 h-10 mb-2 opacity-30" />
-            <p className="text-sm font-medium">Nenhuma conversa encontrada</p>
-            <p className="text-xs mt-1">Ajuste os filtros para ver mais resultados</p>
-          </div>
+          activeFiltersCount > 0 ? (
+            <EmptyState
+              icon={<SearchX className="w-10 h-10" />}
+              title={
+                filters.search.trim()
+                  ? 'Nenhuma conversa para essa busca'
+                  : 'Nenhuma conversa corresponde aos filtros'
+              }
+              description="Ajuste a busca ou os filtros para ver mais resultados."
+              action={
+                <Button variant="outline" size="sm" onClick={resetFilters}>
+                  Limpar filtros
+                </Button>
+              }
+            />
+          ) : (
+            <EmptyState
+              icon={<InboxIcon className="w-10 h-10" />}
+              title="Nenhuma conversa ainda"
+              description="As conversas dos seus canais conectados aparecerao aqui."
+            />
+          )
         ) : (
           <div className="divide-y divide-border">
             {visibleConversations.map((conv) => {

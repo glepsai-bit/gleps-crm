@@ -1,5 +1,8 @@
 // App root component with authentication and routing – sync test
-import { Toaster } from "@/components/ui/toaster";
+// Toaster: usamos APENAS Sonner. O Radix `<Toaster />` foi removido para
+// eliminar a duplicação de landmarks `region` (Notifications F8 + alt+T)
+// no DOM. O hook `useToast()` em `@/hooks/use-toast` agora é um adapter
+// que delega para o Sonner, preservando compat com 20+ call sites.
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -107,7 +110,6 @@ const App = () => (
       <TooltipProvider>
         <BrowserRouter>
           <AuthProvider>
-            <Toaster />
             <Sonner />
             <NetworkStatusWatcher />
           <Routes>

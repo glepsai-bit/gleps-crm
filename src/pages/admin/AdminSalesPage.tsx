@@ -5,6 +5,7 @@ import { Sale, SaleStatus } from '@/types/crm';
 import { RefundConfirmationDialog } from '@/components/finance/RefundConfirmationDialog';
 import { CreateSaleDialog } from '@/components/finance/CreateSaleDialog';
 import { SaleItemsRow } from '@/components/finance/SaleItemsRow';
+import { SaleMobileCard } from '@/components/finance/SaleMobileCard';
 import { SaleDetailsSheet } from '@/components/finance/SaleDetailsSheet';
 import { SalesAuditLog } from '@/components/finance/SalesAuditLog';
 import { AgentFilter } from '@/components/dashboard/AgentFilter';
@@ -174,19 +175,19 @@ export default function AdminSalesPage() {
         </CardContent>
       </Card>
 
-      {/* Table */}
-      <Card>
+      {/* Table (>=md) */}
+      <Card className="hidden md:block">
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <Table className="min-w-[700px]">
+            <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead className="min-w-[130px]">Cliente</TableHead>
                   <TableHead className="min-w-[120px]">Produtos</TableHead>
                   <TableHead className="min-w-[100px]">Valor Total</TableHead>
-                  <TableHead className="hidden md:table-cell min-w-[90px]">Método</TableHead>
+                  <TableHead className="min-w-[90px]">Método</TableHead>
                   <TableHead className="min-w-[90px]">Status</TableHead>
-                  <TableHead className="hidden sm:table-cell min-w-[90px]">Data</TableHead>
+                  <TableHead className="min-w-[90px]">Data</TableHead>
                   <TableHead className="text-right min-w-[80px]">Ações</TableHead>
                 </TableRow>
               </TableHeader>
@@ -214,6 +215,28 @@ export default function AdminSalesPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Mobile cards (<md) */}
+      <div className="md:hidden space-y-2">
+        {filteredSales.length === 0 ? (
+          <Card>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">
+              Nenhuma venda encontrada
+            </CardContent>
+          </Card>
+        ) : (
+          filteredSales.map((sale) => (
+            <SaleMobileCard
+              key={sale.id}
+              sale={sale}
+              contactName={getContactName(sale.contact_id)}
+              onMarkAsPaid={handleMarkAsPaid}
+              onRefundSale={(saleId, valor) => setRefundDialog({ open: true, saleId, valor })}
+              onInspect={(sale) => setSelectedSale(sale)}
+            />
+          ))
+        )}
+      </div>
     </>
   );
 
