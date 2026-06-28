@@ -1,0 +1,601 @@
+/**
+ * T-023 — whatsapp-warmup service tests
+ *
+ * Cobre:
+ *  - startNumber / pauseNumber / resumeNumber
+ *  - tick: rollover, janela horaria, jitter, alternancia, pareamento,
+ *    picker por fase, auto-pause, auto-promocao
+ *  - mock evolutionService.sendText (NUNCA bate em API real)
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock evolution.service ANTES de qualquer import do servico (vi.mock eh hoisted)
+vi.mock('../services/evolution.service', () => ({
+  evolutionService: {
+    sendText: vi.fn(async () => ({ messageId: 'evo-warmup-test', raw: {} })),
+  },
+}));
+
+import { prismaTest } from '../test/setup';
+import {
+  whatsappWarmupService,
+  STRATEGY_CURVES,
+  isInsideWindow,
+  getTypeWeightsForDay,
+} from './whatsapp-warmup.service';
+import { evolutionService } from './evolution.service';
+import { AppError } from '../utils/errors';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+// ============================================
+// Helpers de factory
+// ============================================
+
+async function createAccount(opts: { tz?: string; name?: string } = {}) {
+  return prismaTest.account.create({
+    data: {
+      nome: opts.name ?? 'Warmup Test',
+      timezone: opts.tz ?? 'America/Sao_Paulo',
+    },
+  });
+}
+
+async function createPool(accountId: string, strategy: 'conservative' | 'moderate' | 'aggressive' = 'moderate') {
+  return prismaTest.warmupPool.create({
+    data: {
+      accountId,
+      name: `pool-${strategy}`,
+      strategy,
+      isActive: true,
+    },
+  });
+}
+
+async function createNumber(
+  poolId: string,
+  accountId: string,
+  opts: { phone?: string; instance?: string; status?: string; currentDay?: number; quality?: number } = {}
+) {
+  return prismaTest.warmupNumber.create({
+    data: {
+      poolId,
+      accountId,
+      evolutionInstance: opts.instance ?? `inst-${Math.random().toString(36).slice(2, 8)}`,
+      phoneE164: opts.phone ?? `5511${Math.floor(Math.random() * 100000000)}`,
+      status: opts.status ?? 'cold',
+      currentDay: opts.currentDay ?? 0,
+      qualityScore: opts.quality ?? 100,
+    },
+  });
+}
+
+async function seedTemplates() {
+  const tpls = [
+    { type: 'text', category: 'greeting', content: 'Oi' },
+    { type: 'text', category: 'greeting', content: 'Bom dia' },
+    { type: 'text', category: 'response', content: 'Beleza' },
+    { type: 'text', category: 'response', content: 'Joia' },
+    { type: 'text', category: 'smalltalk', content: 'Como foi o dia?' },
+    { type: 'reaction', category: 'reaction', content: '👍' },
+    { type: 'reaction', category: 'reaction', content: '❤️' },
+    { type: 'audio', category: 'media', content: 'audio-template-1' },
+    { type: 'sticker', category: 'media', content: 'sticker-1' },
+    { type: 'image', category: 'media', content: 'image-1' },
+  ];
+  for (const t of tpls) {
+    await prismaTest.warmupTemplate.create({
+      data: {
+        accountId: null,
+        type: t.type,
+        category: t.category,
+        content: t.content,
+        weight: 1,
+        language: 'pt-BR',
+        isActive: true,
+      },
+    });
+  }
+}
+
+function expectValidationError(err: unknown) {
+  expect(err).toBeInstanceOf(AppError);
+  expect((err as AppError).statusCode).toBe(400);
+}
+
+function expectNotFoundError(err: unknown) {
+  expect(err).toBeInstanceOf(AppError);
+  expect((err as AppError).statusCode).toBe(404);
+}
+
+// ============================================
+// Curvas pre-definidas
+// ============================================
+
+describe('STRATEGY_CURVES', () => {
+  it('moderate D1=10, D2=12, D3=15, D7=40 (curva default MVP)', () => {
+    expect(STRATEGY_CURVES.moderate[0]).toBe(10);
+    expect(STRATEGY_CURVES.moderate[1]).toBe(12);
+    expect(STRATEGY_CURVES.moderate[2]).toBe(15);
+    expect(STRATEGY_CURVES.moderate[3]).toBe(20);
+    expect(STRATEGY_CURVES.moderate[6]).toBe(40);
+  });
+
+  it('conservative cresce mais devagar (D1=5, D7=30)', () => {
+    expect(STRATEGY_CURVES.conservative[0]).toBe(5);
+    expect(STRATEGY_CURVES.conservative[6]).toBe(30);
+  });
+
+  it('aggressive cresce mais rapido (D1=15, D7=120)', () => {
+    expect(STRATEGY_CURVES.aggressive[0]).toBe(15);
+    expect(STRATEGY_CURVES.aggressive[6]).toBe(120);
+  });
+
+  it('todas as curvas tem 30 dias', () => {
+    expect(STRATEGY_CURVES.moderate.length).toBe(30);
+    expect(STRATEGY_CURVES.conservative.length).toBe(30);
+    expect(STRATEGY_CURVES.aggressive.length).toBe(30);
+  });
+});
+
+// ============================================
+// startNumber
+// ============================================
+
+describe('whatsappWarmupService.startNumber', () => {
+  it('seta status=warming, currentDay=1, persiste dailyEnvioPlan da strategy', async () => {
+    const acc = await createAccount();
+    const pool = await createPool(acc.id, 'moderate');
+    const num = await createNumber(pool.id, acc.id);
+
+    const updated = await whatsappWarmupService.startNumber({
+      numberId: num.id,
+      accountId: acc.id,
+    });
+
+    expect(updated.status).toBe('warming');
+    expect(updated.currentDay).toBe(1);
+    expect(updated.startedAt).toBeTruthy();
+    expect(updated.qualityScore).toBe(100);
+
+    const plan = updated.dailyEnvioPlan as unknown as number[];
+    expect(plan[0]).toBe(10);
+    expect(plan[1]).toBe(12);
+    expect(plan[6]).toBe(40);
+  });
+
+  it('throws NotFoundError se number nao existe na account', async () => {
+    const acc = await createAccount();
+    const err = await whatsappWarmupService
+      .startNumber({ numberId: '00000000-0000-0000-0000-000000000000', accountId: acc.id })
+      .catch(e => e);
+    expectNotFoundError(err);
+  });
+
+  it('throws ValidationError se number ja esta warming', async () => {
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const num = await createNumber(pool.id, acc.id, { status: 'warming' });
+
+    const err = await whatsappWarmupService
+      .startNumber({ numberId: num.id, accountId: acc.id })
+      .catch(e => e);
+
+    expectValidationError(err);
+  });
+
+  it('respeita unique [accountId, phoneE164]', async () => {
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    await createNumber(pool.id, acc.id, { phone: '5534993383017' });
+
+    const err = await createNumber(pool.id, acc.id, { phone: '5534993383017' }).catch(e => e);
+    expect(err).toBeTruthy();
+  });
+});
+
+// ============================================
+// pauseNumber / resumeNumber
+// ============================================
+
+describe('whatsappWarmupService.pauseNumber', () => {
+  it('seta status=paused com reason', async () => {
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const num = await createNumber(pool.id, acc.id, { status: 'warming' });
+
+    const updated = await whatsappWarmupService.pauseNumber({
+      numberId: num.id,
+      accountId: acc.id,
+      reason: 'manutencao',
+    });
+
+    expect(updated.status).toBe('paused');
+    expect(updated.pausedReason).toBe('manutencao');
+  });
+
+  it('throws NotFoundError se numero nao existe', async () => {
+    const acc = await createAccount();
+    const err = await whatsappWarmupService
+      .pauseNumber({ numberId: '00000000-0000-0000-0000-000000000000', accountId: acc.id })
+      .catch(e => e);
+    expectNotFoundError(err);
+  });
+});
+
+describe('whatsappWarmupService.resumeNumber', () => {
+  it('seta status=warming + limpa pausedReason', async () => {
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const num = await createNumber(pool.id, acc.id, { status: 'warming' });
+
+    await whatsappWarmupService.pauseNumber({
+      numberId: num.id,
+      accountId: acc.id,
+      reason: 'teste',
+    });
+    const resumed = await whatsappWarmupService.resumeNumber({
+      numberId: num.id,
+      accountId: acc.id,
+    });
+
+    expect(resumed.status).toBe('warming');
+    expect(resumed.pausedReason).toBeNull();
+  });
+
+  it('throws ValidationError se number nao esta paused', async () => {
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const num = await createNumber(pool.id, acc.id, { status: 'warming' });
+
+    const err = await whatsappWarmupService
+      .resumeNumber({ numberId: num.id, accountId: acc.id })
+      .catch(e => e);
+    expectValidationError(err);
+  });
+});
+
+// ============================================
+// Helpers puros
+// ============================================
+
+describe('isInsideWindow', () => {
+  it('retorna true para 09:00 America/Sao_Paulo', () => {
+    // 12:00 UTC = 09:00 America/Sao_Paulo (UTC-3)
+    const d = new Date('2026-01-15T12:00:00Z');
+    expect(isInsideWindow(d, 'America/Sao_Paulo')).toBe(true);
+  });
+
+  it('retorna false para 03:00 America/Sao_Paulo (fora janela)', () => {
+    // 06:00 UTC = 03:00 America/Sao_Paulo
+    const d = new Date('2026-01-15T06:00:00Z');
+    expect(isInsideWindow(d, 'America/Sao_Paulo')).toBe(false);
+  });
+
+  it('retorna false para 22:00 America/Sao_Paulo (fora janela)', () => {
+    // 01:00 UTC do dia 16 = 22:00 do dia 15 America/Sao_Paulo
+    const d = new Date('2026-01-16T01:00:00Z');
+    expect(isInsideWindow(d, 'America/Sao_Paulo')).toBe(false);
+  });
+});
+
+describe('getTypeWeightsForDay', () => {
+  it('D1-D3: apenas text', () => {
+    const w = getTypeWeightsForDay(1);
+    expect(w.text).toBeGreaterThan(0);
+    expect(w.reaction).toBe(0);
+    expect(w.audio).toBe(0);
+    expect(w.sticker).toBe(0);
+    expect(w.image).toBe(0);
+  });
+
+  it('D4-D7: text + reaction (sem audio/sticker/image)', () => {
+    const w = getTypeWeightsForDay(5);
+    expect(w.text).toBeGreaterThan(0);
+    expect(w.reaction).toBeGreaterThan(0);
+    expect(w.audio).toBe(0);
+    expect(w.image).toBe(0);
+  });
+
+  it('D8-D14: introduz audio + sticker', () => {
+    const w = getTypeWeightsForDay(10);
+    expect(w.audio).toBeGreaterThan(0);
+    expect(w.sticker).toBeGreaterThan(0);
+    expect(w.image).toBe(0);
+  });
+
+  it('D15+: introduz image (mistura plena)', () => {
+    const w = getTypeWeightsForDay(20);
+    expect(w.text).toBeGreaterThan(0);
+    expect(w.reaction).toBeGreaterThan(0);
+    expect(w.audio).toBeGreaterThan(0);
+    expect(w.sticker).toBeGreaterThan(0);
+    expect(w.image).toBeGreaterThan(0);
+  });
+});
+
+// ============================================
+// tick
+// ============================================
+
+describe('whatsappWarmupService.tick', () => {
+  it('noop se nenhum number esta warming', async () => {
+    const r = await whatsappWarmupService.tick();
+    expect(r.sent).toBe(0);
+    expect(r.failed).toBe(0);
+    expect(r.checked).toBe(0);
+  });
+
+  it('fora da janela 08-20h: nao envia (skipped)', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511B' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    // 03:00 America/Sao_Paulo
+    const fakeNow = new Date('2026-01-15T06:00:00Z');
+    const r = await whatsappWarmupService.tick(fakeNow);
+
+    expect(r.sent).toBe(0);
+    expect((evolutionService.sendText as any)).not.toHaveBeenCalled();
+  });
+
+  it('dentro da janela: envia via Evolution para peer do mesmo pool', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5534993383017' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511444444444' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    // Forca jitter a NAO pular (Math.random() < 0.5)
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+
+    // 12:00 America/Sao_Paulo (= 15:00 UTC, janela ativa, jah ha tempo decorrido)
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    const r = await whatsappWarmupService.tick(fakeNow);
+
+    rng.mockRestore();
+
+    expect(r.sent).toBeGreaterThan(0);
+    expect((evolutionService.sendText as any)).toHaveBeenCalled();
+
+    // valida pareamento — criou conversa entre A e B
+    const convs = await prismaTest.warmupConversation.findMany({ where: { poolId: pool.id } });
+    expect(convs.length).toBe(1);
+    expect([convs[0].numberAId, convs[0].numberBId].sort()).toEqual([numA.id, numB.id].sort());
+
+    // valida mensagem persistida
+    const msgs = await prismaTest.warmupMessage.findMany({ where: { conversationId: convs[0].id } });
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0].status).toBe('sent');
+  });
+
+  it('jitter: com Math.random() < 0.5 sempre skip envio', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511B' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.0);
+
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    const r = await whatsappWarmupService.tick(fakeNow);
+
+    rng.mockRestore();
+
+    expect(r.sent).toBe(0);
+    expect((evolutionService.sendText as any)).not.toHaveBeenCalled();
+  });
+
+  it('alternancia: se lastSenderId == this, skip turno (cede para peer)', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511B' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    // Cria conversa pre-existente entre A e B onde lastSenderId == A
+    const [first, second] = [numA, numB].sort((x, y) => (x.id < y.id ? -1 : 1));
+    await prismaTest.warmupConversation.create({
+      data: {
+        poolId: pool.id,
+        numberAId: first.id,
+        numberBId: second.id,
+        lastSenderId: numA.id,
+        lastTurnAt: new Date('2026-01-15T14:55:00Z'),
+        turnsCount: 1,
+        isActive: true,
+      },
+    });
+
+    // Forca jitter a NAO pular E forca pickPeer a escolher B como peer de A
+    // Math.random retornos sequenciais; vamos forcar > 0.5 sempre
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    // A foi ultimo sender; quando A processar, deve ceder.
+    // Mas B nao foi ultimo sender, entao B pode enviar.
+    // Forcamos a ordem analizando individualmente: vamos pegar so o A no tick
+    // pausando o B antes.
+    await whatsappWarmupService.pauseNumber({ numberId: numB.id, accountId: acc.id });
+
+    const r = await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    // Como B esta pausado e nao ha peer warming pra A, ou A cede turno — em ambos
+    // os casos NAO houve envio. Sent deve ser 0.
+    expect(r.sent).toBe(0);
+  });
+
+  it('rollover: dia diferente -> persiste WarmupDailyStats + reset contadores + currentDay++', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const num = await createNumber(pool.id, acc.id, { phone: '5511A' });
+    await createNumber(pool.id, acc.id, { phone: '5511B' });
+
+    await whatsappWarmupService.startNumber({ numberId: num.id, accountId: acc.id });
+
+    // Simula que lastActivityAt foi ontem (manipula DB direto)
+    const yesterday = new Date('2026-01-14T15:00:00Z');
+    await prismaTest.warmupNumber.update({
+      where: { id: num.id },
+      data: {
+        lastActivityAt: yesterday,
+        dailyEnviadasHoje: 5,
+        dailyRecebidasHoje: 3,
+      },
+    });
+
+    // tick num momento de hoje DENTRO da janela
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    // Forca jitter a SEMPRE pular (mas o rollover deve rodar antes do jitter)
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.0);
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    // Verifica: DailyStats criado para o dia anterior
+    const stats = await prismaTest.warmupDailyStats.findMany({ where: { numberId: num.id } });
+    expect(stats.length).toBe(1);
+    expect(stats[0].actualSends).toBe(5);
+    expect(stats[0].actualReceives).toBe(3);
+
+    // Verifica: contadores resetados + currentDay++
+    const after = await prismaTest.warmupNumber.findUnique({ where: { id: num.id } });
+    expect(after?.dailyEnviadasHoje).toBe(0);
+    expect(after?.dailyRecebidasHoje).toBe(0);
+    expect(after?.currentDay).toBe(2);
+  });
+
+  it('auto-pause: qualityScore < 60 -> status=paused com reason', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511B' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    // Baixa o quality manualmente pra 65 (1 falha = -5 -> cai pra 60, ainda >= 60)
+    // melhor: forcar 55 ja menor que 60 antes de chamar tick para garantir auto-pause
+    // independente de envio. Usar pickPeer + jitter pra evitar envio.
+    await prismaTest.warmupNumber.update({
+      where: { id: numA.id },
+      data: { qualityScore: 55 },
+    });
+
+    // Trigger applyHealthChecks via tick — mas precisamos chegar la
+    // Simulamos: mocka sendText pra falhar para forcar penalidade adicional
+    (evolutionService.sendText as any).mockRejectedValueOnce(new Error('forbidden 403'));
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    const after = await prismaTest.warmupNumber.findUnique({ where: { id: numA.id } });
+    expect(after?.status).toBe('paused');
+    expect(after?.pausedReason).toMatch(/quality|auto/i);
+  });
+
+  it('auto-promocao: day>=21 + quality>=80 + zero falhas 3d -> warm', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511B' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    // Coloca day=22, quality=90
+    await prismaTest.warmupNumber.update({
+      where: { id: numA.id },
+      data: { currentDay: 22, qualityScore: 90 },
+    });
+
+    // Cria 3 dias de stats zero-falha
+    const baseDate = new Date('2026-01-15T12:00:00Z');
+    for (let i = 1; i <= 3; i++) {
+      const d = new Date(baseDate);
+      d.setUTCDate(d.getUTCDate() - i);
+      await prismaTest.warmupDailyStats.create({
+        data: {
+          numberId: numA.id,
+          date: d,
+          protocolDay: 22 - i,
+          plannedSends: 100,
+          actualSends: 95,
+          actualReceives: 80,
+          failedSends: 0,
+          qualityEnd: 95,
+          statusEnd: 'warming',
+        },
+      });
+    }
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    const after = await prismaTest.warmupNumber.findUnique({ where: { id: numA.id } });
+    expect(after?.status).toBe('warm');
+  });
+
+  it('numero sem peer no pool: skipped (nao envia, nao crasha)', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const num = await createNumber(pool.id, acc.id, { phone: '5511A' });
+    await whatsappWarmupService.startNumber({ numberId: num.id, accountId: acc.id });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    const r = await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    expect(r.sent).toBe(0);
+    expect((evolutionService.sendText as any)).not.toHaveBeenCalled();
+  });
+
+  it('D1: gera apenas type=text greeting/response (sem audio/sticker)', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511B' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T18:00:00Z'); // 15:00 SP, tarde da janela
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    const msgs = await prismaTest.warmupMessage.findMany({});
+    // Como D1, todas as mensagens devem ser type=text
+    for (const m of msgs) {
+      expect(m.messageType).toBe('text');
+    }
+  });
+});

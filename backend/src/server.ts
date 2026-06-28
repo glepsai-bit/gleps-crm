@@ -9,6 +9,7 @@ import { metricsCollector } from './services/metrics-collector';
 import { emailService } from './services/email.service';
 import { whatsappCampaignService } from './services/whatsapp-campaign.service';
 import { whatsappRateLimitService } from './services/whatsapp-rate-limit.service';
+import { whatsappWarmupService } from './services/whatsapp-warmup.service';
 import { webhookOutboundService } from './services/webhook-outbound.service';
 import { slaService } from './services/sla.service';
 import { agentAvailabilityService } from './services/agent-availability.service';
@@ -69,6 +70,35 @@ async function bootstrap() {
       }
     }, WA_CRON_INTERVAL_MS);
     logger.info(`📲 WhatsApp campaign cron started (interval: ${WA_CRON_INTERVAL_MS / 1000}s)`);
+  }
+
+  // T-023 — cron de aquecimento de chips WhatsApp (tick 60s).
+  // CRON-WARMUP-001: mutex isWarmingChips evita overlap se um tick demorar
+  // mais que o intervalo (rede lenta + muitos numbers em pool). Idempotencia
+  // por number eh garantida pelos increments atomicos em recordSend.
+  {
+    const WARMUP_CRON_INTERVAL_MS = 60 * 1000;
+    let isWarmingChips = false;
+    setInterval(async () => {
+      if (isWarmingChips) {
+        logger.warn('[warmup] previous tick still running, skipping');
+        return;
+      }
+      isWarmingChips = true;
+      try {
+        const result = await whatsappWarmupService.tick();
+        if (result.sent > 0 || result.failed > 0) {
+          logger.info(
+            `🔥 Warmup tick: ${result.sent} sent, ${result.failed} failed, ${result.skipped} skipped (checked ${result.checked})`
+          );
+        }
+      } catch (err) {
+        logger.error('Warmup cron error:', err);
+      } finally {
+        isWarmingChips = false;
+      }
+    }, WARMUP_CRON_INTERVAL_MS);
+    logger.info(`🔥 Warmup cron started (60s tick)`);
   }
 
   // BUG-038 — cron de cleanup das janelas de rate-limit do WhatsApp (5 min)

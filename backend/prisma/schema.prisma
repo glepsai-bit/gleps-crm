@@ -99,6 +99,11 @@ model Account {
   slaPolicies                SLAPolicy[]
   conversationCycles         ConversationCycle[]
 
+  // T-023 — WhatsApp Warmup (aquecimento de chips)
+  warmupPools     WarmupPool[]
+  warmupNumbers   WarmupNumber[]
+  warmupTemplates WarmupTemplate[]
+
   @@index([status])
   @@map("accounts")
 }
@@ -1566,4 +1571,142 @@ model AgentAvailability {
 
   @@index([status])
   @@map("agent_availability")
+}
+
+// ============================================
+// WHATSAPP WARMUP (T-023 — aquecimento de chips)
+// ============================================
+// WarmupPool: agrupa numeros que devem conversar entre si para aquecer chips Evolution
+model WarmupPool {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @map("account_id") @db.Uuid
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String   @db.VarChar(160)
+  description String?  @db.VarChar(500)
+  isPublic    Boolean  @default(false) @map("is_public") // pool compartilhado entre accounts (admin global)
+  isActive    Boolean  @default(true) @map("is_active")
+  strategy    String   @default("moderate") @db.VarChar(20) // conservative | moderate | aggressive
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  numbers       WarmupNumber[]
+  conversations WarmupConversation[]
+
+  @@index([accountId])
+  @@map("warmup_pools")
+}
+
+// WarmupNumber: numero Evolution dentro de uma pool, com plano diario e estado de protocolo
+model WarmupNumber {
+  id                 String    @id @default(uuid()) @db.Uuid
+  poolId             String    @map("pool_id") @db.Uuid
+  pool               WarmupPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  accountId          String    @map("account_id") @db.Uuid
+  account            Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  evolutionInstance  String    @map("evolution_instance") @db.VarChar(255)
+  phoneE164          String    @map("phone_e164") @db.VarChar(20)
+  displayName        String?   @map("display_name") @db.VarChar(160)
+  status             String    @default("cold") @db.VarChar(20) // cold | warming | warm | paused | banned | error
+  currentDay         Int       @default(0) @map("current_day")
+  qualityScore       Int       @default(100) @map("quality_score")
+  dailyEnvioPlan     Json?     @map("daily_envio_plan") // plano completo dos dias (array de quotas)
+  dailyEnviadasHoje  Int       @default(0) @map("daily_enviadas_hoje")
+  dailyRecebidasHoje Int       @default(0) @map("daily_recebidas_hoje")
+  startedAt          DateTime? @map("started_at") @db.Timestamptz
+  lastActivityAt     DateTime? @map("last_activity_at") @db.Timestamptz
+  pausedReason       String?   @map("paused_reason") @db.VarChar(500)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  conversationsAsA WarmupConversation[] @relation("WarmupConversationNumberA")
+  conversationsAsB WarmupConversation[] @relation("WarmupConversationNumberB")
+  messagesSent     WarmupMessage[]      @relation("WarmupMessageSender")
+  messagesReceived WarmupMessage[]      @relation("WarmupMessageReceiver")
+  dailyStats       WarmupDailyStats[]
+
+  @@unique([accountId, phoneE164])
+  @@index([poolId, status])
+  @@index([status, currentDay])
+  @@map("warmup_numbers")
+}
+
+// WarmupConversation: par ativo entre dois numbers; mantem cursor de turno
+model WarmupConversation {
+  id           String       @id @default(uuid()) @db.Uuid
+  poolId       String       @map("pool_id") @db.Uuid
+  pool         WarmupPool   @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  numberAId    String       @map("number_a_id") @db.Uuid
+  numberA      WarmupNumber @relation("WarmupConversationNumberA", fields: [numberAId], references: [id], onDelete: Cascade)
+  numberBId    String       @map("number_b_id") @db.Uuid
+  numberB      WarmupNumber @relation("WarmupConversationNumberB", fields: [numberBId], references: [id], onDelete: Cascade)
+  lastTurnAt   DateTime?    @map("last_turn_at") @db.Timestamptz
+  lastSenderId String?      @map("last_sender_id") @db.Uuid
+  turnsCount   Int          @default(0) @map("turns_count")
+  isActive     Boolean      @default(true) @map("is_active")
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+
+  messages WarmupMessage[]
+
+  @@unique([numberAId, numberBId])
+  @@index([poolId, isActive])
+  @@map("warmup_conversations")
+}
+
+// WarmupMessage: trace de cada envio (auditoria + replay de qualidade)
+model WarmupMessage {
+  id              String             @id @default(uuid()) @db.Uuid
+  conversationId  String             @map("conversation_id") @db.Uuid
+  conversation    WarmupConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId        String             @map("sender_id") @db.Uuid
+  sender          WarmupNumber       @relation("WarmupMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId      String             @map("receiver_id") @db.Uuid
+  receiver        WarmupNumber       @relation("WarmupMessageReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  messageType     String             @map("message_type") @db.VarChar(20) // text | audio | sticker | image | reaction
+  content         String?            @db.Text
+  evolutionMsgId  String?            @map("evolution_msg_id") @db.VarChar(255)
+  status          String             @default("pending") @db.VarChar(20) // pending | sent | delivered | failed
+  errorMessage    String?            @map("error_message") @db.VarChar(1000)
+  sentAt          DateTime?          @map("sent_at") @db.Timestamptz
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([conversationId, createdAt])
+  @@index([senderId, sentAt])
+  @@map("warmup_messages")
+}
+
+// WarmupDailyStats: snapshot diario por numero (relatorio + decisao de promocao)
+model WarmupDailyStats {
+  id            String       @id @default(uuid()) @db.Uuid
+  numberId      String       @map("number_id") @db.Uuid
+  number        WarmupNumber @relation(fields: [numberId], references: [id], onDelete: Cascade)
+  date          DateTime     @db.Date
+  protocolDay   Int          @map("protocol_day")
+  plannedSends  Int          @default(0) @map("planned_sends")
+  actualSends   Int          @default(0) @map("actual_sends")
+  actualReceives Int         @default(0) @map("actual_receives")
+  failedSends   Int          @default(0) @map("failed_sends")
+  qualityEnd   Int          @default(100) @map("quality_end")
+  statusEnd    String       @default("warming") @map("status_end") @db.VarChar(20)
+
+  @@unique([numberId, date])
+  @@index([date])
+  @@map("warmup_daily_stats")
+}
+
+// WarmupTemplate: biblioteca de mensagens/reacoes (accountId null = seed global)
+model WarmupTemplate {
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String?  @map("account_id") @db.Uuid
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  type      String   @db.VarChar(20) // text | audio | sticker | image | reaction
+  category  String   @db.VarChar(40) // greeting | response | smalltalk | reaction | media
+  content   String   @db.Text
+  weight    Int      @default(1)
+  language  String   @default("pt-BR") @db.VarChar(10)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([type, isActive])
+  @@index([accountId])
+  @@map("warmup_templates")
 }

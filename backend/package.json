@@ -12,6 +12,7 @@
     "db:migrate:prod": "prisma migrate deploy",
     "db:push": "prisma db push",
     "db:seed": "tsx src/prisma/seed.ts",
+    "seed:warmup": "tsx src/prisma/seed-warmup.ts",
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",
     "lint": "eslint src/**/*.ts",

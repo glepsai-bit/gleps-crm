@@ -15,6 +15,12 @@ export const prismaTest = new PrismaClient({
  * limpeza correta mesmo se ordem nao estiver perfeita.
  */
 const TABLES_TO_TRUNCATE = [
+  'warmup_messages',
+  'warmup_conversations',
+  'warmup_daily_stats',
+  'warmup_numbers',
+  'warmup_pools',
+  'warmup_templates',
   'tag_history',
   'lead_tags',
   'dispatch_logs',

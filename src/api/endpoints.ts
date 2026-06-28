@@ -378,6 +378,21 @@ export const API_ENDPOINTS = {
     DELETE: (id: string) => `/api/custom-attributes/${id}`,
   },
 
+  // ============= WARMUP (T-022 FitPark — aquecimento de chips WhatsApp) =============
+  // Pools de chips em aquecimento + números individuais com curva de envio
+  // diária (D1..D21+). Acesso restrito a admin/super_admin (server valida).
+  // Stats devolve últimos 30 dias de WarmupDailyStats (planned vs actual).
+  WARMUP: {
+    POOLS: '/api/warmup/pools',
+    POOL: (id: string) => `/api/warmup/pools/${id}`,
+    NUMBERS: '/api/warmup/numbers',
+    NUMBER: (id: string) => `/api/warmup/numbers/${id}`,
+    NUMBER_START: (id: string) => `/api/warmup/numbers/${id}/start`,
+    NUMBER_PAUSE: (id: string) => `/api/warmup/numbers/${id}/pause`,
+    NUMBER_RESUME: (id: string) => `/api/warmup/numbers/${id}/resume`,
+    NUMBER_STATS: (id: string) => `/api/warmup/numbers/${id}/stats`,
+  },
+
   // ============= CHAT METRICS (T-022 — métricas do chat interno) =============
   // Métricas agregadas (conversations / messages / SLA breaches) calculadas
   // a partir dos models do chat interno. Escopo automático por accountId

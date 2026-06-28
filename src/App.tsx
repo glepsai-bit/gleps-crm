@@ -51,6 +51,7 @@ import AdminAgendaPage from "./pages/admin/AdminAgendaPage";
 import AdminExtracaoPage from "./pages/admin/AdminExtracaoPage";
 import AdminEmailsPage from "./pages/admin/AdminEmailsPage";
 import AdminWhatsappTemplatesPage from "./pages/admin/AdminWhatsappTemplatesPage";
+import AdminWarmupPage from "./pages/admin/AdminWarmupPage";
 import AdminIntegracoesPage from "./pages/admin/AdminIntegracoesPage";
 import AdminOptOutsPage from "./pages/admin/AdminOptOutsPage";
 
@@ -137,6 +138,7 @@ const App = () => (
             <Route path="/admin/prospeccao" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminExtracaoPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/emails" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminEmailsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/whatsapp-templates" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminWhatsappTemplatesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            <Route path="/admin/warmup" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminWarmupPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/integracoes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIntegracoesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/opt-outs" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminOptOutsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
 

@@ -1,0 +1,1145 @@
+/**
+ * Admin Warmup Page (T-022 FitPark — aquecimento de chips WhatsApp)
+ *
+ * Layout master-detail:
+ *   - Esquerda: cards de WarmupPool (criar/editar/excluir).
+ *   - Direita: tabela de WarmupNumber do pool selecionado com badges
+ *     de status, currentDay, qualityScore (progress bar) e ações de
+ *     ciclo de vida (start/pause/resume/excluir).
+ *
+ * Estratégia de curva (default 'moderate'):
+ *   D1 10 / D2 12 / D3 15 / D4 20 / D5 25 / D6 30 / D7 40 /
+ *   D8-14 50-80 / D15-21 100-180 / D22+ 200 estabilizado.
+ *
+ * Backend:
+ *   - src/services/warmup.backend.service.ts
+ *   - src/services/inboxes.backend.service.ts (lookup das instâncias Evolution)
+ */
+
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+} from 'recharts';
+
+import warmupBackendService, {
+  WarmupPool,
+  WarmupNumber,
+  WarmupNumberStatus,
+  WarmupStrategy,
+  WarmupDailyStats,
+  CreatePoolInput,
+  CreateNumberInput,
+} from '@/services/warmup.backend.service';
+import inboxesBackendService, { Inbox } from '@/services/inboxes.backend.service';
+
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { useToast } from '@/hooks/use-toast';
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  Flame,
+  Play,
+  Pause,
+  RotateCcw,
+  BarChart3,
+} from 'lucide-react';
+
+// ============================================
+// Schemas
+// ============================================
+
+const poolSchema = z.object({
+  name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
+  description: z.string().optional(),
+  strategy: z.enum(['conservative', 'moderate', 'aggressive']),
+  isPublic: z.boolean().optional(),
+});
+type PoolFormData = z.infer<typeof poolSchema>;
+
+const PHONE_REGEX = /^\+?[1-9]\d{7,14}$/;
+const numberSchema = z.object({
+  evolutionInstance: z.string().min(1, 'Selecione uma instância Evolution'),
+  phoneE164: z
+    .string()
+    .min(8, 'Telefone obrigatório')
+    .regex(
+      PHONE_REGEX,
+      'Use formato E.164 (ex: +5534993383017 ou 5534993383017)',
+    ),
+  displayName: z.string().optional(),
+});
+type NumberFormData = z.infer<typeof numberSchema>;
+
+const STRATEGY_LABELS: Record<WarmupStrategy, string> = {
+  conservative: 'Conservadora',
+  moderate: 'Moderada (recomendada)',
+  aggressive: 'Agressiva',
+};
+
+const STATUS_LABELS: Record<WarmupNumberStatus, string> = {
+  cold: 'Frio',
+  warming: 'Aquecendo',
+  warm: 'Quente',
+  paused: 'Pausado',
+  banned: 'Banido',
+  error: 'Erro',
+};
+
+// ============================================
+// Helpers visuais
+// ============================================
+
+function statusBadge(status: WarmupNumberStatus) {
+  const label = STATUS_LABELS[status];
+  switch (status) {
+    case 'cold':
+      return <Badge variant="outline">{label}</Badge>;
+    case 'warming':
+      return (
+        <Badge className="bg-green-600 text-white hover:bg-green-600">
+          {label}
+        </Badge>
+      );
+    case 'warm':
+      return (
+        <Badge className="bg-green-800 text-white hover:bg-green-800">
+          {label}
+        </Badge>
+      );
+    case 'paused':
+      return <Badge variant="secondary">{label}</Badge>;
+    case 'banned':
+    case 'error':
+      return <Badge variant="destructive">{label}</Badge>;
+  }
+}
+
+function qualityProgressColor(score: number): string {
+  if (score >= 80) return 'bg-green-600';
+  if (score >= 60) return 'bg-yellow-500';
+  return 'bg-red-600';
+}
+
+function QualityBar({ score }: { score: number }) {
+  const safe = Math.max(0, Math.min(100, Math.round(score)));
+  return (
+    <div className="flex items-center gap-2 min-w-[110px]">
+      <div className="w-20 h-2 rounded bg-muted overflow-hidden">
+        <div
+          className={`h-full ${qualityProgressColor(safe)}`}
+          style={{ width: `${safe}%` }}
+        />
+      </div>
+      <span className="text-xs text-muted-foreground tabular-nums">{safe}</span>
+    </div>
+  );
+}
+
+function plannedToday(n: WarmupNumber): number {
+  if (!n.dailyEnvioPlan) return 0;
+  const key = String(n.currentDay);
+  const raw = n.dailyEnvioPlan[key];
+  return typeof raw === 'number' ? raw : 0;
+}
+
+// ============================================
+// Página
+// ============================================
+
+export default function AdminWarmupPage() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const [selectedPoolId, setSelectedPoolId] = useState<string | null>(null);
+
+  // Dialogs
+  const [poolDialogOpen, setPoolDialogOpen] = useState(false);
+  const [editingPool, setEditingPool] = useState<WarmupPool | null>(null);
+  const [deletingPool, setDeletingPool] = useState<WarmupPool | null>(null);
+
+  const [numberDialogOpen, setNumberDialogOpen] = useState(false);
+  const [deletingNumber, setDeletingNumber] = useState<WarmupNumber | null>(null);
+
+  const [statsNumberId, setStatsNumberId] = useState<string | null>(null);
+
+  // ----- Queries -----
+
+  const { data: pools = [], isLoading: loadingPools } = useQuery<WarmupPool[]>({
+    queryKey: ['warmup-pools'],
+    queryFn: () => warmupBackendService.listPools({ includePublic: true }),
+  });
+
+  // Seleciona primeiro pool quando carregar e nada estiver selecionado.
+  useEffect(() => {
+    if (!selectedPoolId && pools.length > 0) {
+      setSelectedPoolId(pools[0].id);
+    }
+  }, [pools, selectedPoolId]);
+
+  const selectedPool = useMemo(
+    () => pools.find((p) => p.id === selectedPoolId) ?? null,
+    [pools, selectedPoolId],
+  );
+
+  const { data: numbers = [], isLoading: loadingNumbers } = useQuery<WarmupNumber[]>({
+    queryKey: ['warmup-numbers', selectedPoolId],
+    queryFn: () =>
+      warmupBackendService.listNumbers({ poolId: selectedPoolId! }),
+    enabled: !!selectedPoolId,
+  });
+
+  // Inboxes WhatsApp ativos com evolutionInstance preenchido — usado pra
+  // alimentar o select do form "Adicionar chip".
+  const { data: inboxes = [] } = useQuery<Inbox[]>({
+    queryKey: ['inboxes'],
+    queryFn: () => inboxesBackendService.listInboxes(),
+  });
+
+  const whatsappInstances = useMemo(
+    () =>
+      inboxes.filter(
+        (i) =>
+          i.channelType === 'whatsapp' &&
+          !!i.evolutionInstance &&
+          i.evolutionInstance.trim().length > 0,
+      ),
+    [inboxes],
+  );
+
+  // ----- Mutations: Pool -----
+
+  const mutateCreatePool = useMutation({
+    mutationFn: (body: CreatePoolInput) => warmupBackendService.createPool(body),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ['warmup-pools'] });
+      toast({ title: 'Pool criada com sucesso!' });
+      setPoolDialogOpen(false);
+      setSelectedPoolId(created.id);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao criar pool',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const mutateUpdatePool = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: CreatePoolInput }) =>
+      warmupBackendService.updatePool(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['warmup-pools'] });
+      toast({ title: 'Pool atualizada.' });
+      setPoolDialogOpen(false);
+      setEditingPool(null);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao atualizar pool',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const mutateDeletePool = useMutation({
+    mutationFn: (id: string) => warmupBackendService.deletePool(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['warmup-pools'] });
+      toast({ title: 'Pool excluída.' });
+      setDeletingPool(null);
+      if (selectedPoolId === id) setSelectedPoolId(null);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao excluir pool',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // ----- Mutations: Number -----
+
+  const mutateCreateNumber = useMutation({
+    mutationFn: (body: CreateNumberInput) => warmupBackendService.createNumber(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['warmup-numbers', selectedPoolId],
+      });
+      toast({ title: 'Chip adicionado ao pool.' });
+      setNumberDialogOpen(false);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao adicionar chip',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const mutateStartNumber = useMutation({
+    mutationFn: (id: string) => warmupBackendService.startNumber(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['warmup-numbers', selectedPoolId],
+      });
+      toast({ title: 'Aquecimento iniciado.' });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao iniciar',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const mutatePauseNumber = useMutation({
+    mutationFn: (id: string) => warmupBackendService.pauseNumber(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['warmup-numbers', selectedPoolId],
+      });
+      toast({ title: 'Aquecimento pausado.' });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao pausar',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const mutateResumeNumber = useMutation({
+    mutationFn: (id: string) => warmupBackendService.resumeNumber(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['warmup-numbers', selectedPoolId],
+      });
+      toast({ title: 'Aquecimento retomado.' });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao retomar',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const mutateDeleteNumber = useMutation({
+    mutationFn: (id: string) => warmupBackendService.deleteNumber(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['warmup-numbers', selectedPoolId],
+      });
+      toast({ title: 'Chip removido.' });
+      setDeletingNumber(null);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao remover',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // ----- Forms -----
+
+  const poolForm = useForm<PoolFormData>({
+    resolver: zodResolver(poolSchema),
+    defaultValues: {
+      name: '',
+      description: '',
+      strategy: 'moderate',
+      isPublic: false,
+    },
+  });
+
+  const numberForm = useForm<NumberFormData>({
+    resolver: zodResolver(numberSchema),
+    defaultValues: {
+      evolutionInstance: '',
+      phoneE164: '',
+      displayName: '',
+    },
+  });
+
+  const abrirCriarPool = () => {
+    setEditingPool(null);
+    poolForm.reset({
+      name: '',
+      description: '',
+      strategy: 'moderate',
+      isPublic: false,
+    });
+    setPoolDialogOpen(true);
+  };
+
+  const abrirEditarPool = (pool: WarmupPool) => {
+    setEditingPool(pool);
+    poolForm.reset({
+      name: pool.name,
+      description: pool.description ?? '',
+      strategy: pool.strategy,
+      isPublic: pool.isPublic,
+    });
+    setPoolDialogOpen(true);
+  };
+
+  const onSubmitPool = (data: PoolFormData) => {
+    const body: CreatePoolInput = {
+      name: data.name,
+      description: data.description?.trim() ? data.description.trim() : null,
+      strategy: data.strategy,
+      isPublic: !!data.isPublic,
+    };
+    if (editingPool) {
+      mutateUpdatePool.mutate({ id: editingPool.id, body });
+    } else {
+      mutateCreatePool.mutate(body);
+    }
+  };
+
+  const abrirAddNumber = () => {
+    if (!selectedPoolId) return;
+    numberForm.reset({
+      evolutionInstance: '',
+      phoneE164: '',
+      displayName: '',
+    });
+    setNumberDialogOpen(true);
+  };
+
+  const onSubmitNumber = (data: NumberFormData) => {
+    if (!selectedPoolId) return;
+    mutateCreateNumber.mutate({
+      poolId: selectedPoolId,
+      evolutionInstance: data.evolutionInstance,
+      phoneE164: data.phoneE164,
+      displayName: data.displayName?.trim() ? data.displayName.trim() : null,
+    });
+  };
+
+  const isSavingPool = mutateCreatePool.isPending || mutateUpdatePool.isPending;
+
+  return (
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
+            <Flame className="w-6 h-6 text-orange-500" />
+            Aquecimento de Chips
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
+            Eleve a reputação de novos números WhatsApp com tráfego sintético
+            entre chips do mesmo pool. Curva D1→D22+ ajustada pela estratégia
+            escolhida, com pausas automáticas em caso de queda de qualidade.
+          </p>
+        </div>
+        <Button onClick={abrirCriarPool}>
+          <Plus className="w-4 h-4 mr-2" />
+          Novo pool
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 lg:gap-6">
+        {/* ---------- Coluna esquerda: lista de pools ---------- */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Pools ({pools.length})</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {loadingPools ? (
+              <div className="space-y-2">
+                {[1, 2, 3].map((i) => (
+                  <Skeleton key={i} className="h-16 w-full" />
+                ))}
+              </div>
+            ) : pools.length === 0 ? (
+              <div className="text-center py-10 text-sm text-muted-foreground">
+                <Flame className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                Nenhum pool ainda.
+                <br />
+                Clique em &quot;Novo pool&quot; para começar.
+              </div>
+            ) : (
+              pools.map((pool) => {
+                const active = pool.id === selectedPoolId;
+                return (
+                  <button
+                    key={pool.id}
+                    type="button"
+                    onClick={() => setSelectedPoolId(pool.id)}
+                    className={
+                      'w-full text-left rounded-lg border p-3 transition-colors ' +
+                      (active
+                        ? 'border-primary bg-primary/5'
+                        : 'hover:bg-muted/50')
+                    }
+                    aria-pressed={active}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold truncate">
+                          {pool.name}
+                        </p>
+                        {pool.description && (
+                          <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                            {pool.description}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <Badge variant="outline" className="text-[10px] py-0">
+                            {STRATEGY_LABELS[pool.strategy]}
+                          </Badge>
+                          {pool.isPublic && (
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px] py-0"
+                            >
+                              Público
+                            </Badge>
+                          )}
+                          {!pool.isActive && (
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px] py-0"
+                            >
+                              Inativo
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            abrirEditarPool(pool);
+                          }}
+                          aria-label={`Editar pool ${pool.name}`}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-destructive hover:text-destructive"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeletingPool(pool);
+                          }}
+                          aria-label={`Excluir pool ${pool.name}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
+
+        {/* ---------- Coluna direita: tabela de números do pool ---------- */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-2">
+            <div className="min-w-0">
+              <CardTitle className="text-base truncate">
+                {selectedPool
+                  ? `Chips em ${selectedPool.name}`
+                  : 'Selecione um pool'}
+              </CardTitle>
+              {selectedPool && (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {numbers.length} chip(s) — estratégia{' '}
+                  {STRATEGY_LABELS[selectedPool.strategy].toLowerCase()}
+                </p>
+              )}
+            </div>
+            {selectedPool && (
+              <Button onClick={abrirAddNumber} size="sm">
+                <Plus className="w-4 h-4 mr-2" />
+                Adicionar chip
+              </Button>
+            )}
+          </CardHeader>
+          <CardContent>
+            {!selectedPool ? (
+              <div className="text-center py-12 text-sm text-muted-foreground">
+                Crie ou selecione um pool à esquerda.
+              </div>
+            ) : loadingNumbers ? (
+              <div className="space-y-2">
+                {[1, 2, 3].map((i) => (
+                  <Skeleton key={i} className="h-10 w-full" />
+                ))}
+              </div>
+            ) : numbers.length === 0 ? (
+              <div className="text-center py-10 text-sm text-muted-foreground">
+                Nenhum chip neste pool ainda.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Telefone</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="hidden md:table-cell">
+                        Dia
+                      </TableHead>
+                      <TableHead className="hidden md:table-cell">
+                        Quality
+                      </TableHead>
+                      <TableHead className="hidden lg:table-cell">
+                        Enviadas hoje
+                      </TableHead>
+                      <TableHead className="text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {numbers.map((n) => {
+                      const planned = plannedToday(n);
+                      return (
+                        <TableRow key={n.id}>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span className="font-medium">{n.phoneE164}</span>
+                              {n.displayName && (
+                                <span className="text-xs text-muted-foreground">
+                                  {n.displayName}
+                                </span>
+                              )}
+                              <span className="text-[11px] text-muted-foreground opacity-70">
+                                {n.evolutionInstance}
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell>{statusBadge(n.status)}</TableCell>
+                          <TableCell className="hidden md:table-cell">
+                            <span className="text-sm tabular-nums">
+                              D{n.currentDay}
+                            </span>
+                          </TableCell>
+                          <TableCell className="hidden md:table-cell">
+                            <QualityBar score={n.qualityScore} />
+                          </TableCell>
+                          <TableCell className="hidden lg:table-cell">
+                            <span className="text-sm tabular-nums">
+                              {n.dailyEnviadasHoje}
+                              {planned > 0 && (
+                                <span className="text-muted-foreground">
+                                  {' '}
+                                  / {planned}
+                                </span>
+                              )}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setStatsNumberId(n.id)}
+                                title="Ver estatísticas"
+                                aria-label={`Estatísticas de ${n.phoneE164}`}
+                              >
+                                <BarChart3 className="w-4 h-4" />
+                              </Button>
+                              {(n.status === 'cold' || n.status === 'error') && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => mutateStartNumber.mutate(n.id)}
+                                  disabled={mutateStartNumber.isPending}
+                                  title="Iniciar aquecimento"
+                                  aria-label={`Iniciar ${n.phoneE164}`}
+                                >
+                                  <Play className="w-4 h-4" />
+                                </Button>
+                              )}
+                              {n.status === 'warming' && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => mutatePauseNumber.mutate(n.id)}
+                                  disabled={mutatePauseNumber.isPending}
+                                  title="Pausar"
+                                  aria-label={`Pausar ${n.phoneE164}`}
+                                >
+                                  <Pause className="w-4 h-4" />
+                                </Button>
+                              )}
+                              {n.status === 'paused' && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => mutateResumeNumber.mutate(n.id)}
+                                  disabled={mutateResumeNumber.isPending}
+                                  title="Retomar"
+                                  aria-label={`Retomar ${n.phoneE164}`}
+                                >
+                                  <RotateCcw className="w-4 h-4" />
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="text-destructive hover:text-destructive"
+                                onClick={() => setDeletingNumber(n)}
+                                title="Excluir"
+                                aria-label={`Excluir ${n.phoneE164}`}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ============ Dialog: criar / editar pool ============ */}
+      <Dialog
+        open={poolDialogOpen}
+        onOpenChange={(open) => {
+          setPoolDialogOpen(open);
+          if (!open) setEditingPool(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {editingPool ? 'Editar pool' : 'Novo pool de aquecimento'}
+            </DialogTitle>
+            <DialogDescription>
+              Pools agrupam chips que conversam entre si. A estratégia define o
+              ritmo da curva diária de envios.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={poolForm.handleSubmit(onSubmitPool)}
+            className="space-y-4 py-2"
+          >
+            <div className="space-y-1">
+              <Label>Nome</Label>
+              <Input
+                {...poolForm.register('name')}
+                placeholder="Ex: Pool comercial FitPark"
+              />
+              {poolForm.formState.errors.name && (
+                <p className="text-xs text-destructive">
+                  {poolForm.formState.errors.name.message}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <Label>Descrição (opcional)</Label>
+              <Textarea
+                rows={2}
+                {...poolForm.register('description')}
+                placeholder="Para o que esse pool é usado?"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label>Estratégia</Label>
+              <Select
+                value={poolForm.watch('strategy')}
+                onValueChange={(v) =>
+                  poolForm.setValue('strategy', v as WarmupStrategy, {
+                    shouldValidate: true,
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="conservative">
+                    {STRATEGY_LABELS.conservative}
+                  </SelectItem>
+                  <SelectItem value="moderate">
+                    {STRATEGY_LABELS.moderate}
+                  </SelectItem>
+                  <SelectItem value="aggressive">
+                    {STRATEGY_LABELS.aggressive}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Moderada: D1=10, D7=40, D14=80, D21=180, D22+ estabiliza em 200
+                envios/dia.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3">
+              <Switch
+                id="pool-is-public"
+                checked={!!poolForm.watch('isPublic')}
+                onCheckedChange={(checked) =>
+                  poolForm.setValue('isPublic', checked)
+                }
+              />
+              <div className="space-y-0.5">
+                <Label
+                  htmlFor="pool-is-public"
+                  className="cursor-pointer text-sm font-medium"
+                >
+                  Pool público
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Outras contas podem usar este pool como peer das conversas
+                  sintéticas (mais variedade de tráfego).
+                </p>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setPoolDialogOpen(false);
+                  setEditingPool(null);
+                }}
+                disabled={isSavingPool}
+              >
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={isSavingPool}>
+                {isSavingPool
+                  ? 'Salvando...'
+                  : editingPool
+                    ? 'Salvar alterações'
+                    : 'Criar pool'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ============ Dialog: adicionar chip ============ */}
+      <Dialog open={numberDialogOpen} onOpenChange={setNumberDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Adicionar chip ao pool</DialogTitle>
+            <DialogDescription>
+              O chip começa em status &quot;Frio&quot;. Use o botão Play para
+              gerar o plano de envios e iniciar o aquecimento.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={numberForm.handleSubmit(onSubmitNumber)}
+            className="space-y-4 py-2"
+          >
+            <div className="space-y-1">
+              <Label>Instância Evolution</Label>
+              <Select
+                value={numberForm.watch('evolutionInstance')}
+                onValueChange={(v) =>
+                  numberForm.setValue('evolutionInstance', v, {
+                    shouldValidate: true,
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione um canal WhatsApp" />
+                </SelectTrigger>
+                <SelectContent>
+                  {whatsappInstances.length === 0 ? (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      Nenhum inbox WhatsApp com instância configurada.
+                      <br />
+                      Configure em /admin/inboxes primeiro.
+                    </div>
+                  ) : (
+                    whatsappInstances.map((i) => (
+                      <SelectItem
+                        key={i.id}
+                        value={i.evolutionInstance as string}
+                      >
+                        {i.name} — {i.evolutionInstance}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+              {numberForm.formState.errors.evolutionInstance && (
+                <p className="text-xs text-destructive">
+                  {numberForm.formState.errors.evolutionInstance.message}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <Label>Telefone (E.164)</Label>
+              <Input
+                {...numberForm.register('phoneE164')}
+                placeholder="+5534993383017"
+              />
+              {numberForm.formState.errors.phoneE164 && (
+                <p className="text-xs text-destructive">
+                  {numberForm.formState.errors.phoneE164.message}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <Label>Apelido (opcional)</Label>
+              <Input
+                {...numberForm.register('displayName')}
+                placeholder="Chip atendimento 01"
+              />
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setNumberDialogOpen(false)}
+                disabled={mutateCreateNumber.isPending}
+              >
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={mutateCreateNumber.isPending}>
+                {mutateCreateNumber.isPending ? 'Adicionando...' : 'Adicionar'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ============ AlertDialog: excluir pool ============ */}
+      <AlertDialog
+        open={!!deletingPool}
+        onOpenChange={(open) => {
+          if (!open) setDeletingPool(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">
+              Excluir pool?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              A pool <strong>{deletingPool?.name}</strong> e todos os chips
+              vinculados serão removidos. Esta ação é irreversível.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={mutateDeletePool.isPending}>
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={mutateDeletePool.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (deletingPool) mutateDeletePool.mutate(deletingPool.id);
+              }}
+            >
+              {mutateDeletePool.isPending ? 'Excluindo...' : 'Excluir'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ============ AlertDialog: excluir chip ============ */}
+      <AlertDialog
+        open={!!deletingNumber}
+        onOpenChange={(open) => {
+          if (!open) setDeletingNumber(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">
+              Remover chip do pool?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              O chip <strong>{deletingNumber?.phoneE164}</strong> e seu
+              histórico de envios serão apagados. Esta ação é irreversível.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={mutateDeleteNumber.isPending}>
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={mutateDeleteNumber.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (deletingNumber)
+                  mutateDeleteNumber.mutate(deletingNumber.id);
+              }}
+            >
+              {mutateDeleteNumber.isPending ? 'Removendo...' : 'Remover'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ============ Dialog: estatísticas do chip ============ */}
+      <NumberStatsDialog
+        numberId={statsNumberId}
+        onOpenChange={(open) => {
+          if (!open) setStatsNumberId(null);
+        }}
+      />
+
+      {/* Suppress unused import warning for Progress (UI shadcn que pode ser usada futuramente) */}
+      <Progress className="hidden" value={0} />
+    </div>
+  );
+}
+
+// ============================================
+// NumberStatsDialog — gráfico simples com últimos 30 dias.
+// Mostra planned vs actual por dia (BarChart Recharts).
+// ============================================
+
+function NumberStatsDialog({
+  numberId,
+  onOpenChange,
+}: {
+  numberId: string | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const isOpen = !!numberId;
+  const { data: stats = [], isLoading } = useQuery<WarmupDailyStats[]>({
+    queryKey: ['warmup-stats', numberId],
+    queryFn: () => warmupBackendService.getStats(numberId!),
+    enabled: isOpen,
+  });
+
+  // Recharts pede data ordenada cronologicamente; backend pode devolver
+  // qualquer ordem — ordenamos defensivamente.
+  const chartData = useMemo(
+    () =>
+      [...stats]
+        .sort((a, b) => (a.date < b.date ? -1 : 1))
+        .map((s) => ({
+          date: s.date.slice(5), // MM-DD pra economizar espaço
+          planejado: s.plannedSends,
+          enviado: s.actualSends,
+          falhas: s.failedSends,
+        })),
+    [stats],
+  );
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Estatísticas de envio (últimos 30 dias)</DialogTitle>
+          <DialogDescription>
+            Comparativo entre planejado pela curva e realmente enviado.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="py-4">
+          {isLoading ? (
+            <Skeleton className="h-64 w-full" />
+          ) : chartData.length === 0 ? (
+            <div className="text-center py-12 text-sm text-muted-foreground">
+              Sem estatísticas ainda. O chip precisa rodar pelo menos um dia
+              para gerar dados.
+            </div>
+          ) : (
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" fontSize={11} />
+                  <YAxis fontSize={11} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="planejado" fill="#94a3b8" />
+                  <Bar dataKey="enviado" fill="#16a34a" />
+                  <Bar dataKey="falhas" fill="#dc2626" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Fechar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

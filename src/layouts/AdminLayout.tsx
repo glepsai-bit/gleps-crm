@@ -49,6 +49,7 @@ import {
   Zap,
   Clock,
   Settings2,
+  Flame,
 } from 'lucide-react';
 import { Logo } from '@/components/branding/Logo';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -80,6 +81,7 @@ const routeTitles: Record<string, { title: string; parent?: { label: string; hre
   '/admin/prospeccao': { title: 'Prospecção' },
   '/admin/emails': { title: 'E-mails' },
   '/admin/whatsapp-templates': { title: 'Templates WhatsApp' },
+  '/admin/warmup': { title: 'Aquecimento de Chips' },
   '/admin/inboxes': { title: 'Inboxes' },
   '/admin/teams': { title: 'Times' },
   '/admin/canned-responses': { title: 'Respostas Rápidas' },
@@ -135,6 +137,7 @@ const adminNavItems = [
   { title: 'Prospecção', href: '/admin/prospeccao', icon: Crosshair },
   { title: 'E-mails', href: '/admin/emails', icon: Mail },
   { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },
+  { title: 'Aquecimento', href: '/admin/warmup', icon: Flame },
   // Config do Chat (uso ocasional)
   { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox },
   { title: 'Times', href: '/admin/teams', icon: Users },
