@@ -455,8 +455,11 @@ class WhatsappWarmupService {
   // ============================================
 
   private async pickPeer(num: WarmupNumber): Promise<WarmupNumber | null> {
+    // Pareamento eh SEMPRE intra-tenant (mesmo accountId). Sem cross-account,
+    // sem pool publica — regra LGPD + isolamento multi-tenant estrito.
     const peers = await prisma.warmupNumber.findMany({
       where: {
+        accountId: num.accountId,
         poolId: num.poolId,
         status: 'warming',
         id: { not: num.id },

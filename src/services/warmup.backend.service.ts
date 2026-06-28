@@ -54,7 +54,6 @@ export interface WarmupPool {
   accountId: string;
   name: string;
   description: string | null;
-  isPublic: boolean;
   isActive: boolean;
   strategy: WarmupStrategy;
   /**
@@ -141,7 +140,6 @@ export interface WarmupDailyStats {
 export interface CreatePoolInput {
   name: string;
   description?: string | null;
-  isPublic?: boolean;
   strategy: WarmupStrategy;
   /** T-023 — IA opt-in por pool. Default false. */
   useAi?: boolean;
@@ -153,18 +151,12 @@ export interface CreatePoolInput {
 export interface UpdatePoolInput {
   name?: string;
   description?: string | null;
-  isPublic?: boolean;
   isActive?: boolean;
   strategy?: WarmupStrategy;
   useAi?: boolean;
   aiProvider?: WarmupAiProviderName | null;
   aiModel?: string | null;
   aiTone?: WarmupTone | null;
-}
-
-export interface ListPoolsParams {
-  /** Inclui pools publicos de outras contas (default false no backend). */
-  includePublic?: boolean;
 }
 
 export interface CreateNumberInput {
@@ -206,7 +198,6 @@ function mapPool(raw: Record<string, unknown>): WarmupPool {
     accountId: String(r.accountId ?? r.account_id ?? ''),
     name: String(r.name ?? ''),
     description: (r.description as string | null) ?? null,
-    isPublic: Boolean(r.isPublic ?? r.is_public ?? false),
     isActive: Boolean(r.isActive ?? r.is_active ?? true),
     strategy: ((r.strategy as WarmupStrategy) ?? 'moderate') as WarmupStrategy,
     useAi: Boolean(r.useAi ?? r.use_ai ?? false),
@@ -309,13 +300,9 @@ function mapDailyStats(raw: Record<string, unknown>): WarmupDailyStats {
 export const warmupBackendService = {
   // ----- Pools -----
 
-  async listPools(params?: ListPoolsParams): Promise<WarmupPool[]> {
-    const qs =
-      params && params.includePublic
-        ? `?includePublic=${params.includePublic ? 'true' : 'false'}`
-        : '';
+  async listPools(): Promise<WarmupPool[]> {
     const response = await apiClient.get<unknown>(
-      API_ENDPOINTS.WARMUP.POOLS + qs,
+      API_ENDPOINTS.WARMUP.POOLS,
     );
     const raw = unwrap<unknown[]>(response);
     return (Array.isArray(raw) ? raw : []).map((p) =>

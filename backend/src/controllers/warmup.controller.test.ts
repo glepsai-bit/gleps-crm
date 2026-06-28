@@ -62,14 +62,13 @@ async function createAgentJwt(accountId: string): Promise<string> {
  */
 async function createPool(
   accountId: string,
-  overrides?: { name?: string; strategy?: string; isPublic?: boolean }
+  overrides?: { name?: string; strategy?: string }
 ) {
   return prismaTest.warmupPool.create({
     data: {
       accountId,
       name: overrides?.name ?? `Pool ${randomUUID().slice(0, 6)}`,
       strategy: overrides?.strategy ?? 'moderate',
-      isPublic: overrides?.isPublic ?? false,
     },
   });
 }
@@ -128,7 +127,6 @@ describe('WarmupController — Pools', () => {
       expect(res.body.data).toMatchObject({
         name: 'Pool Aquecimento',
         strategy: 'moderate',
-        isPublic: false,
         isActive: true,
       });
       expect(res.body.data.id).toMatch(

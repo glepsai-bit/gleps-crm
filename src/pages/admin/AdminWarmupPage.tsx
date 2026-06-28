@@ -52,7 +52,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -123,7 +122,6 @@ const poolSchema = z.object({
   name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
   description: z.string().optional(),
   strategy: z.enum(['conservative', 'moderate', 'aggressive']),
-  isPublic: z.boolean().optional(),
   useAi: z.boolean().optional(),
   aiProvider: z.enum(['openai', 'anthropic']).optional(),
   aiModel: z.string().optional(),
@@ -297,7 +295,7 @@ export default function AdminWarmupPage() {
 
   const { data: pools = [], isLoading: loadingPools } = useQuery<WarmupPool[]>({
     queryKey: ['warmup-pools'],
-    queryFn: () => warmupBackendService.listPools({ includePublic: true }),
+    queryFn: () => warmupBackendService.listPools(),
   });
 
   // Seleciona primeiro pool quando carregar e nada estiver selecionado.
@@ -525,7 +523,6 @@ export default function AdminWarmupPage() {
       name: '',
       description: '',
       strategy: 'moderate',
-      isPublic: false,
       useAi: false,
       aiProvider: undefined,
       aiModel: '',
@@ -548,7 +545,6 @@ export default function AdminWarmupPage() {
       name: '',
       description: '',
       strategy: 'moderate',
-      isPublic: false,
       useAi: false,
       aiProvider: undefined,
       aiModel: '',
@@ -563,7 +559,6 @@ export default function AdminWarmupPage() {
       name: pool.name,
       description: pool.description ?? '',
       strategy: pool.strategy,
-      isPublic: pool.isPublic,
       useAi: pool.useAi,
       aiProvider: pool.aiProvider ?? undefined,
       aiModel: pool.aiModel ?? '',
@@ -603,7 +598,6 @@ export default function AdminWarmupPage() {
       name: data.name,
       description: data.description?.trim() ? data.description.trim() : null,
       strategy: data.strategy,
-      isPublic: !!data.isPublic,
       useAi: wantsAi,
       aiProvider: wantsAi ? (data.aiProvider as WarmupAiProviderName) : null,
       aiModel: wantsAi && aiModelTrimmed ? aiModelTrimmed : null,
@@ -729,14 +723,6 @@ export default function AdminWarmupPage() {
                             {STRATEGY_LABELS[pool.strategy]}
                           </Badge>
                           <AiSourceBadge pool={pool} />
-                          {pool.isPublic && (
-                            <Badge
-                              variant="secondary"
-                              className="text-[10px] py-0"
-                            >
-                              Público
-                            </Badge>
-                          )}
                           {!pool.isActive && (
                             <Badge
                               variant="secondary"
@@ -1162,28 +1148,6 @@ export default function AdminWarmupPage() {
                   </div>
                 </div>
               )}
-            </div>
-
-            <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3">
-              <Switch
-                id="pool-is-public"
-                checked={!!poolForm.watch('isPublic')}
-                onCheckedChange={(checked) =>
-                  poolForm.setValue('isPublic', checked)
-                }
-              />
-              <div className="space-y-0.5">
-                <Label
-                  htmlFor="pool-is-public"
-                  className="cursor-pointer text-sm font-medium"
-                >
-                  Pool público
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  Outras contas podem usar este pool como peer das conversas
-                  sintéticas (mais variedade de tráfego).
-                </p>
-              </div>
             </div>
 
             <DialogFooter>

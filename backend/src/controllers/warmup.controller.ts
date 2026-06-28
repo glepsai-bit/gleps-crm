@@ -49,7 +49,6 @@ const createPoolSchema = z
   .object({
     name: poolNameSchema,
     description: z.string().trim().max(500).optional(),
-    isPublic: z.boolean().optional(),
     strategy: strategyEnum.optional(),
     useAi: z.boolean().default(false),
     aiProvider: aiProviderEnum.optional().nullable(),
@@ -70,7 +69,6 @@ const updatePoolSchema = z
   .object({
     name: poolNameSchema.optional(),
     description: z.string().trim().max(500).nullable().optional(),
-    isPublic: z.boolean().optional(),
     isActive: z.boolean().optional(),
     strategy: strategyEnum.optional(),
     useAi: z.boolean().optional(),
@@ -162,7 +160,8 @@ class ApiWarmupController {
 
   /**
    * GET /api/warmup/pools
-   * Lista pools da accountId (e opcionalmente pools publicas).
+   * Lista pools da accountId. Pools sao SEMPRE isoladas por conta — sem
+   * compartilhamento cross-tenant (regra LGPD + isolamento multi-tenant).
    */
   async listPools(
     req: AuthenticatedRequest,
@@ -173,14 +172,8 @@ class ApiWarmupController {
       const accountId = req.user?.accountId;
       if (!accountId) throw new UnauthorizedError();
 
-      const includePublic = req.query.includePublic === 'true';
-
-      const where: Prisma.WarmupPoolWhereInput = includePublic
-        ? { OR: [{ accountId }, { isPublic: true }] }
-        : { accountId };
-
       const pools = await prisma.warmupPool.findMany({
-        where,
+        where: { accountId },
         orderBy: { createdAt: 'desc' },
         include: {
           _count: { select: { numbers: true } },
@@ -193,7 +186,6 @@ class ApiWarmupController {
           accountId: p.accountId,
           name: p.name,
           description: p.description,
-          isPublic: p.isPublic,
           isActive: p.isActive,
           strategy: p.strategy,
           useAi: p.useAi,
@@ -229,7 +221,6 @@ class ApiWarmupController {
           accountId,
           name: body.name,
           description: body.description,
-          isPublic: body.isPublic ?? false,
           strategy: body.strategy ?? 'moderate',
           useAi: body.useAi,
           aiProvider: body.aiProvider ?? null,
@@ -252,7 +243,6 @@ class ApiWarmupController {
           accountId: pool.accountId,
           name: pool.name,
           description: pool.description,
-          isPublic: pool.isPublic,
           isActive: pool.isActive,
           strategy: pool.strategy,
           useAi: pool.useAi,
@@ -312,7 +302,6 @@ class ApiWarmupController {
           ...(body.description !== undefined
             ? { description: body.description }
             : {}),
-          ...(body.isPublic !== undefined ? { isPublic: body.isPublic } : {}),
           ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
           ...(body.strategy !== undefined ? { strategy: body.strategy } : {}),
           ...(body.useAi !== undefined ? { useAi: body.useAi } : {}),
@@ -330,7 +319,6 @@ class ApiWarmupController {
           accountId: updated.accountId,
           name: updated.name,
           description: updated.description,
-          isPublic: updated.isPublic,
           isActive: updated.isActive,
           strategy: updated.strategy,
           useAi: updated.useAi,
@@ -488,11 +476,12 @@ class ApiWarmupController {
 
       const body = createNumberSchema.parse(req.body ?? {});
 
-      // Pool precisa existir e pertencer a accountId (ou ser publica).
+      // Pool precisa existir e pertencer a accountId (isolamento estrito —
+      // sem pools compartilhadas cross-tenant).
       const pool = await prisma.warmupPool.findFirst({
         where: {
           id: body.poolId,
-          OR: [{ accountId }, { isPublic: true }],
+          accountId,
         },
       });
       if (!pool) throw new NotFoundError('Pool');

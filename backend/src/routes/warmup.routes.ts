@@ -6,7 +6,7 @@
  *   GET    /ai/providers                lista providers IA + se estao habilitados
  *
  *   POST   /pools                       criar pool
- *   GET    /pools                       listar pools (query includePublic)
+ *   GET    /pools                       listar pools (sempre escopadas por accountId)
  *   PATCH  /pools/:id                   editar pool
  *   DELETE /pools/:id                   excluir pool (cascade nos numbers)
  *
