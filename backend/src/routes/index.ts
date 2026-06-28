@@ -22,6 +22,9 @@ import whatsappTemplateRoutes from './whatsapp-template.routes';
 import whatsappCampaignJwtRoutes, { apiKeyRouter as whatsappCampaignApiKeyRoutes } from './whatsapp-campaign.routes';
 import integrationWhatsappRoutes from './integration-whatsapp.routes';
 import integrationKanbanRoutes from './integration-kanban.routes';
+import integrationContactsRoutes from './integration-contacts.routes';
+import integrationChatRoutes from './integration-chat.routes';
+import integrationLookupRoutes from './integration-lookup.routes';
 import contactsApiRoutes from './contacts-api.routes';
 import webhookRoutes from './webhook-outbound.routes';
 import {
@@ -116,6 +119,16 @@ router.use('/dispatch', whatsappCampaignJwtRoutes); // alias canonical para o fr
 router.use('/integrations/whatsapp/campaigns', whatsappCampaignApiKeyRoutes);
 router.use('/integrations/whatsapp', integrationWhatsappRoutes);
 router.use('/integrations/kanban', integrationKanbanRoutes);
+// T-LOOKUP-API: discovery endpoints (teams + users) pra agentes IA
+// descobrirem destinatários válidos antes de chamar assign / assign-team.
+// Mount na raiz '/integrations' porque expõe paths /teams e /users em
+// paralelo (não um sub-recurso).
+router.use('/integrations', integrationLookupRoutes);
+// T-CONTACTS-API: novo CRUD canônico de contatos via API key (IA / n8n).
+// Mount em '/integrations/contacts' (en-US, alinhado com kanban / chat).
+// `/integrations/contatos` (pt-BR, legado) continua respondendo ao
+// query endpoint antigo por compat.
+router.use('/integrations/contacts', integrationContactsRoutes);
 router.use('/integrations/contatos', contactsApiRoutes);
 router.use('/webhooks', webhookRoutes);
 // Inbound integrations:
@@ -144,6 +157,12 @@ router.use('/conversations', slaConversationsRouter);
 // (que responde sem chamar next), e o JWT router nunca é alcançado para
 // rotas de integração.
 // API Key router p/ integrações externas (n8n, agente IA)
+// T-CHAT-API: integrationChatRoutes precisa vir ANTES de messageApiKeyRoutes
+// porque ambos cobrem `/integrations/chat/conversations/:id/messages`. O
+// novo router é o canônico (default senderType='ai_bot', marca ai_handled,
+// retorna no padrão `{ data }`). messageApiKeyRoutes fica como fallback
+// pra compat com integrações antigas que ainda mandam `sender_type` no body.
+router.use('/integrations/chat', integrationChatRoutes);
 router.use('/integrations/chat', messageApiKeyRoutes);
 // messageJwtRoutes usa paths absolutos (/conversations/:id/messages,
 // /messages/:id/read, /messages/search) — montamos na raiz para cobrir

@@ -332,6 +332,11 @@ model Contact {
   followupCount  Int       @default(0) @map("followup_count")
   lastFollowupAt DateTime? @map("last_followup_at") @db.Timestamptz
 
+  // Custom attributes — bag jsonb usada por integrações externas (n8n / IA)
+  // pra gravar atributos arbitrários por contato (plano, data_nascimento,
+  // segmento, etc). Default '{}' pra simplificar leituras.
+  customAttributes Json @default("{}") @map("custom_attributes")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
