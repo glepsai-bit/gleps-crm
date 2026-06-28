@@ -1347,10 +1347,20 @@ model ConversationCycle {
   slaBreachedAt         DateTime?    @map("sla_breached_at") @db.Timestamptz
   snapshot              Json? // priority, team, assignee, labels no momento da resolucao
 
+  // SLA v2 — outcome + avaliacao + CSAT
+  outcome        String? @db.VarChar(30) // resolved | transferred | spam | not_related | abandoned | unable_to_resolve
+  internalRating Int?    @map("internal_rating") // 1-5 auto-avaliacao agente/IA, opcional
+  resolveReason  String? @map("resolve_reason") @db.Text // motivo opcional ao fechar
+  customerCsat   Int?    @map("customer_csat") // 1-5 resposta do cliente, opcional (vem via webhook depois)
+  customerCsatAt DateTime? @map("customer_csat_at") @db.Timestamptz
+  csatSentAt     DateTime? @map("csat_sent_at") @db.Timestamptz // quando perguntou (pra nao mandar 2x)
+  csatRequested  Boolean   @default(false) @map("csat_requested") // flag: agente marcou pra enviar CSAT
+
   @@index([accountId, resolvedAt])
   @@index([conversationId])
   @@index([resolvedBy])
   @@index([accountId, openedAt])
+  @@index([accountId, outcome])
   @@map("conversation_cycles")
 }
 
@@ -1511,6 +1521,13 @@ model SLAPolicy {
   active            Boolean  @default(true)
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // SLA v2 — pausa quando aguarda cliente + horario comercial
+  pauseWhenWaitingCustomer Boolean @default(false) @map("pause_when_waiting_customer") // se true, cronometro pausa enquanto ultima msg foi do agente/IA
+  businessHoursStart       String? @map("business_hours_start") @db.VarChar(5) // formato "HH:MM" ex: "09:00"
+  businessHoursEnd         String? @map("business_hours_end") @db.VarChar(5) // formato "HH:MM" ex: "18:00"
+  businessDays             Int[]   @default([1, 2, 3, 4, 5]) @map("business_days") // 0=domingo ... 6=sabado
+  timezone                 String  @default("America/Sao_Paulo") @db.VarChar(60)
 
   inboxes       Inbox[]
   teams         Team[]

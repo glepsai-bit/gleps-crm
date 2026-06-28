@@ -6,6 +6,7 @@ import { evolutionService } from '../services/evolution.service';
 import { whatsappConsentService } from '../services/whatsapp-consent.service';
 import { inboxChannelService } from '../services/inbox.service';
 import { conversationService } from '../services/conversation.service';
+import { csatService } from '../services/csat.service';
 import {
   messageService,
   MessageContentType,
@@ -856,6 +857,21 @@ export class EvolutionController {
         messageId,
       });
       return;
+    }
+
+    // SLA v2 — CSAT parser: se a mensagem inbound for resposta a uma pergunta
+    // CSAT pendente (ciclo com csatSentAt != null e customerCsat IS NULL),
+    // grava customerCsat antes do processamento normal. Best-effort: erro aqui
+    // nao bloqueia a ingestao da mensagem.
+    if (!fromMe && content) {
+      try {
+        await csatService.parseCustomerResponse(conversation.id, accountId, content);
+      } catch (err) {
+        logger.debug('[evolution-webhook] CSAT parse falhou — segue normal', {
+          conversationId: conversation.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     // SE-H2: o findFirst acima é fast-path serial; ele NÃO protege contra retries

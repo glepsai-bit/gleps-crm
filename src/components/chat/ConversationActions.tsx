@@ -17,6 +17,7 @@ import {
   Tag as TagIcon,
   Flag,
   MoreVertical,
+  Star,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
@@ -48,23 +49,21 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Checkbox } from '@/components/ui/checkbox';
+import { cn } from '@/lib/utils';
+// SLA v2: o AlertDialog "Resolver" foi substituido por um Dialog rico com
+// outcome obrigatorio + internalRating + reason + CSAT opt-out. Por isso o
+// import de AlertDialog* foi removido — agora so o Dialog basico e usado.
 import {
   conversationsBackendService,
   type Conversation,
+  type ConversationOutcome,
   type ConversationPriority,
   type ConversationResolvedBy,
 } from '@/services/conversations.backend.service';
@@ -98,9 +97,18 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeUntil, setSnoozeUntil] = useState('');
 
+  // SLA v2 — dialog "Resolver com avaliacao". `resolveConfirm` agora alem de
+  // marcar quem resolveu (ai|human) tambem abre o dialog que coleta outcome,
+  // internalRating (1-5), reason e flag sendCsatToCustomer. null = fechado.
   const [resolveConfirm, setResolveConfirm] = useState<ConversationResolvedBy | null>(
     null
   );
+  const [resolveOutcome, setResolveOutcome] = useState<ConversationOutcome | ''>('');
+  const [resolveRating, setResolveRating] = useState<number>(0);
+  const [resolveReason, setResolveReason] = useState<string>('');
+  // Default ON conforme requisito v2 — agente desmarca quando faz sentido
+  // (ex: spam/abandoned, conversas sem cliente real, etc).
+  const [resolveSendCsat, setResolveSendCsat] = useState<boolean>(true);
 
   const { data: agents = [] } = useQuery({
     queryKey: ['chat-users', account?.id],
@@ -217,22 +225,45 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
     onError: (err) => handleMutationError(err, 'Erro ao adiar'),
   });
 
+  // SLA v2 — payload completo: outcome obrigatorio + internalRating opcional
+  // + reason opcional + flag sendCsatToCustomer. resolvedBy continua sendo
+  // selecionado pelo item do menu (ai|human) — preservamos a UX original.
+  interface ResolvePayload {
+    resolvedBy: ConversationResolvedBy;
+    outcome: ConversationOutcome;
+    internalRating?: number;
+    reason?: string;
+    sendCsatToCustomer: boolean;
+  }
   const resolveMutation = useMutation({
-    mutationFn: (resolvedBy: ConversationResolvedBy) =>
-      conversationsBackendService.resolveConversation(conversationId, { resolvedBy }),
+    mutationFn: (payload: ResolvePayload) =>
+      conversationsBackendService.resolveConversation(conversationId, payload),
     onSuccess: () => {
       invalidate();
       toast({ title: 'Conversa resolvida' });
     },
     onError: (err) => handleMutationError(err, 'Erro ao resolver'),
-    // BUG-B3 (ajuste): fechar o AlertDialog em AMBOS os cenários (success/error)
-    // evita o estado "dialog preso" quando a mutation falha. Antes só fechávamos
-    // em onSuccess; se a request quebrasse o usuário precisava clicar Cancel
-    // manualmente. onSettled roda depois de onSuccess/onError.
+    // SLA v2: limpa o form e fecha o dialog em sucess/error. Antes era
+    // AlertDialog simples; agora e Dialog com state local que precisa reset.
     onSettled: () => {
       setResolveConfirm(null);
+      setResolveOutcome('');
+      setResolveRating(0);
+      setResolveReason('');
+      setResolveSendCsat(true);
     },
   });
+
+  function handleResolveSubmit() {
+    if (!resolveConfirm || !resolveOutcome) return;
+    resolveMutation.mutate({
+      resolvedBy: resolveConfirm,
+      outcome: resolveOutcome as ConversationOutcome,
+      internalRating: resolveRating > 0 ? resolveRating : undefined,
+      reason: resolveReason.trim() ? resolveReason.trim() : undefined,
+      sendCsatToCustomer: resolveSendCsat,
+    });
+  }
 
   const reopenMutation = useMutation({
     mutationFn: () => conversationsBackendService.reopenConversation(conversationId),
@@ -591,43 +622,196 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
         </DialogContent>
       </Dialog>
 
-      {/* AlertDialog Resolver — controlled via open prop (sempre montado).
-          BUG-B3 (ajuste): o render condicional anterior quebrava as animações
-          de entrada/saída do Radix (o portal era desmontado antes do exit
-          terminar). Voltamos ao padrão controlado: sempre montado, com `open`
-          derivado de `resolveConfirm`. */}
-      <AlertDialog
+      {/* SLA v2 — Dialog "Resolver conversa": substitui o AlertDialog simples
+          por um form completo (outcome obrigatorio, internalRating opcional
+          1-5, motivo opcional, opt-out de CSAT). `resolveConfirm` agora
+          carrega quem resolveu (ai|human) decidido no menu anterior. */}
+      <Dialog
         open={resolveConfirm !== null}
-        onOpenChange={(open) => { if (!open) setResolveConfirm(null); }}
+        onOpenChange={(open) => {
+          if (resolveMutation.isPending) return;
+          if (!open) {
+            setResolveConfirm(null);
+            setResolveOutcome('');
+            setResolveRating(0);
+            setResolveReason('');
+            setResolveSendCsat(true);
+          }
+        }}
       >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Resolver conversa?</AlertDialogTitle>
-            <AlertDialogDescription>
-              A conversa será marcada como resolvida (
-              {resolveConfirm === 'ai' ? 'atribuída à IA' : 'atribuída a um humano'}).
-              Você ainda poderá reabrir depois.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            {/* BUG-B3 (ajuste): SEM e.preventDefault(). O preventDefault
-                short-circuita o composeEventHandlers interno do Radix, que é
-                exatamente o handler responsável pelo auto-close ao confirmar.
-                Sem auto-close, se a mutation falhasse o dialog ficava preso.
-                Agora o Radix fecha normalmente e onSettled da mutation limpa
-                o resolveConfirm de qualquer forma. */}
-            <AlertDialogAction
-              onClick={() => {
-                resolveMutation.mutate(resolveConfirm ?? 'human');
-              }}
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Resolver conversa</DialogTitle>
+            <DialogDescription>
+              Avalie o atendimento antes de fechar. {' '}
+              {resolveConfirm === 'ai'
+                ? 'Resolvido pela IA.'
+                : 'Resolvido por humano.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* Outcome obrigatorio */}
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">
+                Resultado <span className="text-destructive">*</span>
+              </Label>
+              <RadioGroup
+                value={resolveOutcome}
+                onValueChange={(v) =>
+                  setResolveOutcome(v as ConversationOutcome)
+                }
+                className="grid grid-cols-1 gap-1.5"
+              >
+                <Label
+                  htmlFor="ro-resolved"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 cursor-pointer hover:bg-accent text-sm font-normal"
+                >
+                  <RadioGroupItem value="resolved" id="ro-resolved" />
+                  <span aria-hidden>✅</span> Resolvido
+                </Label>
+                <Label
+                  htmlFor="ro-transferred"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 cursor-pointer hover:bg-accent text-sm font-normal"
+                >
+                  <RadioGroupItem value="transferred" id="ro-transferred" />
+                  <span aria-hidden>🔄</span> Transferido
+                </Label>
+                <Label
+                  htmlFor="ro-spam"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 cursor-pointer hover:bg-accent text-sm font-normal"
+                >
+                  <RadioGroupItem value="spam" id="ro-spam" />
+                  <span aria-hidden>🚫</span> Spam / Inválido
+                </Label>
+                <Label
+                  htmlFor="ro-not_related"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 cursor-pointer hover:bg-accent text-sm font-normal"
+                >
+                  <RadioGroupItem value="not_related" id="ro-not_related" />
+                  <span aria-hidden>👤</span> Não relacionado
+                </Label>
+                <Label
+                  htmlFor="ro-abandoned"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 cursor-pointer hover:bg-accent text-sm font-normal"
+                >
+                  <RadioGroupItem value="abandoned" id="ro-abandoned" />
+                  <span aria-hidden>💤</span> Abandonado
+                </Label>
+                <Label
+                  htmlFor="ro-unable"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 cursor-pointer hover:bg-accent text-sm font-normal"
+                >
+                  <RadioGroupItem
+                    value="unable_to_resolve"
+                    id="ro-unable"
+                  />
+                  <span aria-hidden>❌</span> Não conseguiu resolver
+                </Label>
+              </RadioGroup>
+            </div>
+
+            {/* Internal rating (opcional) */}
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">
+                Avaliação interna (opcional)
+              </Label>
+              <div className="flex items-center gap-1">
+                {[1, 2, 3, 4, 5].map((n) => {
+                  const active = resolveRating >= n;
+                  return (
+                    <button
+                      key={n}
+                      type="button"
+                      aria-label={`${n} estrela${n > 1 ? 's' : ''}`}
+                      onClick={() =>
+                        setResolveRating((cur) => (cur === n ? 0 : n))
+                      }
+                      className={cn(
+                        'p-1 rounded hover:bg-accent transition-colors',
+                        active ? 'text-amber-500' : 'text-muted-foreground'
+                      )}
+                    >
+                      <Star
+                        className={cn(
+                          'w-5 h-5',
+                          active && 'fill-amber-500'
+                        )}
+                      />
+                    </button>
+                  );
+                })}
+                {resolveRating > 0 && (
+                  <button
+                    type="button"
+                    className="ml-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    onClick={() => setResolveRating(0)}
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Como foi a qualidade desse atendimento?
+              </p>
+            </div>
+
+            {/* Motivo (opcional) */}
+            <div className="space-y-1">
+              <Label htmlFor="ro-reason" className="text-xs font-medium">
+                Motivo (opcional)
+              </Label>
+              <Textarea
+                id="ro-reason"
+                value={resolveReason}
+                onChange={(e) => setResolveReason(e.target.value.slice(0, 500))}
+                rows={3}
+                maxLength={500}
+                placeholder="Observações adicionais..."
+              />
+              <p className="text-[11px] text-muted-foreground text-right">
+                {resolveReason.length}/500
+              </p>
+            </div>
+
+            {/* Checkbox CSAT */}
+            <div className="flex items-start gap-2 rounded-md border border-border p-3">
+              <Checkbox
+                id="ro-csat"
+                checked={resolveSendCsat}
+                onCheckedChange={(v) => setResolveSendCsat(v === true)}
+              />
+              <div className="grid gap-0.5">
+                <Label htmlFor="ro-csat" className="cursor-pointer text-sm">
+                  Enviar pesquisa CSAT pro cliente
+                </Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Default ligado — desmarque para spam, abandono ou conversas
+                  internas.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setResolveConfirm(null)}
               disabled={resolveMutation.isPending}
             >
-              {resolveMutation.isPending ? 'Resolvendo...' : 'Resolver'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleResolveSubmit}
+              disabled={!resolveOutcome || resolveMutation.isPending}
+            >
+              {resolveMutation.isPending
+                ? 'Resolvendo...'
+                : 'Resolver com avaliação'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

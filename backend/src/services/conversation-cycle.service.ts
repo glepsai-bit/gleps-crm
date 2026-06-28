@@ -53,6 +53,12 @@ export interface CloseCycleInput {
    * Se omitido, o service captura via lookup leve (priority/team/assignee/labels).
    */
   snapshot?: Record<string, unknown>;
+  // SLA v2 — outcome obrigatorio (quando vindo do controller), internalRating
+  // opcional, reason opcional, csatRequested controla se vai pedir CSAT depois.
+  outcome?: string | null;
+  internalRating?: number | null;
+  resolveReason?: string | null;
+  csatRequested?: boolean;
 }
 
 export interface CycleMetricsFilters {
@@ -206,6 +212,17 @@ class ConversationCycleService {
           resolvedByUserId: input.resolvedByUserId ?? null,
           durationSec,
           snapshot: (snapshot ?? {}) as Prisma.InputJsonValue,
+          // SLA v2 — campos novos. Sempre que vier (mesmo null), aplica.
+          ...(input.outcome !== undefined ? { outcome: input.outcome } : {}),
+          ...(input.internalRating !== undefined
+            ? { internalRating: input.internalRating }
+            : {}),
+          ...(input.resolveReason !== undefined
+            ? { resolveReason: input.resolveReason }
+            : {}),
+          ...(input.csatRequested !== undefined
+            ? { csatRequested: input.csatRequested }
+            : {}),
         },
       });
       await tx.conversation.update({

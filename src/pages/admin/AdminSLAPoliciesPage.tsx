@@ -67,6 +67,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Select as SelectTz,
+  SelectContent as SelectTzContent,
+  SelectItem as SelectTzItem,
+  SelectTrigger as SelectTzTrigger,
+  SelectValue as SelectTzValue,
+} from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -128,6 +136,27 @@ const FIRST_RESPONSE_MAX = 1440; // 24h
 const RESOLUTION_MIN = 10;
 const RESOLUTION_MAX = 43200; // 30 dias
 
+// SLA v2 — formato "HH:MM" valido (00:00 .. 23:59).
+const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// SLA v2 — opcoes de timezone IANA mais comuns no Brasil/Latam. Lista
+// curta para evitar combobox gigante; usuario customiza no banco se quiser
+// algo fora dessa lista.
+const TIMEZONES = [
+  'America/Sao_Paulo',
+  'America/Manaus',
+  'America/Cuiaba',
+  'America/Belem',
+  'America/Fortaleza',
+  'America/Recife',
+  'America/Bahia',
+  'America/Argentina/Buenos_Aires',
+  'America/Mexico_City',
+  'UTC',
+] as const;
+
+const DAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'] as const;
+
 const policyFormSchema = z
   .object({
     name: z
@@ -147,11 +176,54 @@ const policyFormSchema = z
       .max(RESOLUTION_MAX, `Máximo ${RESOLUTION_MAX} minutos (30 dias)`),
     businessHoursOnly: z.boolean(),
     active: z.boolean(),
+    // SLA v2 — pausa quando aguarda cliente
+    pauseWhenWaitingCustomer: z.boolean(),
+    // SLA v2 — horario comercial (opcional). businessHoursStart/End sao
+    // "HH:MM" ou string vazia (UI). Quando "Restringir ao horario comercial"
+    // estiver ligado, ambos devem ser preenchidos.
+    restrictBusinessHours: z.boolean(),
+    businessHoursStart: z
+      .string()
+      .regex(HHMM_REGEX, 'Use HH:MM (ex: 09:00)')
+      .or(z.literal('')),
+    businessHoursEnd: z
+      .string()
+      .regex(HHMM_REGEX, 'Use HH:MM (ex: 18:00)')
+      .or(z.literal('')),
+    businessDays: z.array(z.number().int().min(0).max(6)),
+    timezone: z.string().min(1, 'Selecione um timezone'),
   })
   .refine((v) => v.resolutionMin >= v.firstResponseMin, {
     message: 'Resolução deve ser >= primeira resposta',
     path: ['resolutionMin'],
-  });
+  })
+  .refine(
+    (v) =>
+      !v.restrictBusinessHours ||
+      (v.businessHoursStart && v.businessHoursEnd),
+    {
+      message: 'Informe início e fim do horário comercial',
+      path: ['businessHoursStart'],
+    }
+  )
+  .refine(
+    (v) =>
+      !v.restrictBusinessHours ||
+      !v.businessHoursStart ||
+      !v.businessHoursEnd ||
+      v.businessHoursStart < v.businessHoursEnd,
+    {
+      message: 'Fim do expediente deve ser maior que o início',
+      path: ['businessHoursEnd'],
+    }
+  )
+  .refine(
+    (v) => !v.restrictBusinessHours || v.businessDays.length > 0,
+    {
+      message: 'Selecione pelo menos um dia útil',
+      path: ['businessDays'],
+    }
+  );
 
 type PolicyFormValues = z.infer<typeof policyFormSchema>;
 
@@ -161,6 +233,15 @@ const DEFAULT_FORM: PolicyFormValues = {
   resolutionMin: 240,
   businessHoursOnly: true,
   active: true,
+  // SLA v2 — defaults sensatos: pausa off, horario 09:00-18:00 seg-sex,
+  // timezone Sao Paulo, mas restrictBusinessHours off (so liga se usuario
+  // quiser explicitamente).
+  pauseWhenWaitingCustomer: false,
+  restrictBusinessHours: false,
+  businessHoursStart: '09:00',
+  businessHoursEnd: '18:00',
+  businessDays: [1, 2, 3, 4, 5],
+  timezone: 'America/Sao_Paulo',
 };
 
 // ---------------------------------------------------------------------------
@@ -575,6 +656,18 @@ export default function AdminSLAPoliciesPage() {
             firstResponseMin: values.firstResponseMin,
             resolutionMin: values.resolutionMin,
             businessHoursOnly: values.businessHoursOnly,
+            // SLA v2 — quando restrictBusinessHours OFF, envia null pra
+            // "limpar" a janela (24/7); caso contrario manda os valores
+            // do form.
+            pauseWhenWaitingCustomer: values.pauseWhenWaitingCustomer,
+            businessHoursStart: values.restrictBusinessHours
+              ? values.businessHoursStart
+              : null,
+            businessHoursEnd: values.restrictBusinessHours
+              ? values.businessHoursEnd
+              : null,
+            businessDays: values.businessDays,
+            timezone: values.timezone,
           })
         }
       />
@@ -597,6 +690,19 @@ export default function AdminSLAPoliciesPage() {
                 resolutionMin: editing.resolutionMin,
                 businessHoursOnly: editing.businessHoursOnly,
                 active: editing.active,
+                pauseWhenWaitingCustomer: editing.pauseWhenWaitingCustomer,
+                // restrictBusinessHours = true sse a policy ja tem janela
+                // definida no banco (ambos start/end nao-null).
+                restrictBusinessHours: Boolean(
+                  editing.businessHoursStart && editing.businessHoursEnd
+                ),
+                businessHoursStart: editing.businessHoursStart ?? '09:00',
+                businessHoursEnd: editing.businessHoursEnd ?? '18:00',
+                businessDays:
+                  editing.businessDays && editing.businessDays.length
+                    ? editing.businessDays
+                    : [1, 2, 3, 4, 5],
+                timezone: editing.timezone ?? 'America/Sao_Paulo',
               }
             : DEFAULT_FORM
         }
@@ -610,6 +716,15 @@ export default function AdminSLAPoliciesPage() {
               resolutionMin: values.resolutionMin,
               businessHoursOnly: values.businessHoursOnly,
               active: values.active,
+              pauseWhenWaitingCustomer: values.pauseWhenWaitingCustomer,
+              businessHoursStart: values.restrictBusinessHours
+                ? values.businessHoursStart
+                : null,
+              businessHoursEnd: values.restrictBusinessHours
+                ? values.businessHoursEnd
+                : null,
+              businessDays: values.businessDays,
+              timezone: values.timezone,
             },
           });
         }}
@@ -847,6 +962,11 @@ function PolicyFormDialog({
 
   const businessHoursOnly = watch('businessHoursOnly');
   const active = watch('active');
+  // SLA v2
+  const pauseWhenWaiting = watch('pauseWhenWaitingCustomer');
+  const restrictHours = watch('restrictBusinessHours');
+  const businessDays = watch('businessDays') ?? [];
+  const timezone = watch('timezone');
 
   return (
     <Dialog
@@ -963,6 +1083,149 @@ function PolicyFormDialog({
               onCheckedChange={(v) => setValue('active', v)}
               disabled={isSubmitting}
             />
+          </div>
+
+          {/* SLA v2 — Pausa quando aguarda cliente */}
+          <div className="flex items-center justify-between rounded-md border border-border p-3">
+            <div>
+              <Label htmlFor="sla-pause" className="cursor-pointer">
+                Pausar SLA quando aguarda cliente
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Cronômetro pausa enquanto a última mensagem foi do agente/IA.
+              </p>
+            </div>
+            <Switch
+              id="sla-pause"
+              checked={pauseWhenWaiting}
+              onCheckedChange={(v) => setValue('pauseWhenWaitingCustomer', v)}
+              disabled={isSubmitting}
+            />
+          </div>
+
+          {/* SLA v2 — Section "Horario comercial" */}
+          <div className="space-y-3 rounded-md border border-border p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="sla-restrict-hours" className="cursor-pointer">
+                  Restringir ao horário comercial
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  SLA só conta tempo dentro do expediente configurado abaixo.
+                </p>
+              </div>
+              <Switch
+                id="sla-restrict-hours"
+                checked={restrictHours}
+                onCheckedChange={(v) => setValue('restrictBusinessHours', v)}
+                disabled={isSubmitting}
+              />
+            </div>
+
+            {restrictHours && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="sla-hours-start" className="text-xs">
+                      Início (HH:MM)
+                    </Label>
+                    <Input
+                      id="sla-hours-start"
+                      type="time"
+                      {...register('businessHoursStart')}
+                      disabled={isSubmitting}
+                    />
+                    {errors.businessHoursStart && (
+                      <p className="text-xs text-destructive">
+                        {errors.businessHoursStart.message}
+                      </p>
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="sla-hours-end" className="text-xs">
+                      Fim (HH:MM)
+                    </Label>
+                    <Input
+                      id="sla-hours-end"
+                      type="time"
+                      {...register('businessHoursEnd')}
+                      disabled={isSubmitting}
+                    />
+                    {errors.businessHoursEnd && (
+                      <p className="text-xs text-destructive">
+                        {errors.businessHoursEnd.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Dias úteis</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {DAY_LABELS.map((label, idx) => {
+                      const checked = businessDays.includes(idx);
+                      return (
+                        <label
+                          key={idx}
+                          className={cn(
+                            'flex items-center gap-1.5 rounded-md border px-2 py-1 cursor-pointer text-xs',
+                            checked
+                              ? 'border-primary bg-primary/10'
+                              : 'border-border hover:bg-accent'
+                          )}
+                        >
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(v) => {
+                              const next = v
+                                ? Array.from(new Set([...businessDays, idx])).sort()
+                                : businessDays.filter((d) => d !== idx);
+                              setValue('businessDays', next, {
+                                shouldValidate: true,
+                              });
+                            }}
+                            disabled={isSubmitting}
+                          />
+                          {label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {errors.businessDays && (
+                    <p className="text-xs text-destructive">
+                      {errors.businessDays.message as string}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Timezone</Label>
+                  <SelectTz
+                    value={timezone}
+                    onValueChange={(v) =>
+                      setValue('timezone', v, { shouldValidate: true })
+                    }
+                    disabled={isSubmitting}
+                  >
+                    <SelectTzTrigger>
+                      <SelectTzValue placeholder="Selecione" />
+                    </SelectTzTrigger>
+                    <SelectTzContent>
+                      {TIMEZONES.map((tz) => (
+                        <SelectTzItem key={tz} value={tz}>
+                          {tz}
+                        </SelectTzItem>
+                      ))}
+                    </SelectTzContent>
+                  </SelectTz>
+                  {errors.timezone && (
+                    <p className="text-xs text-destructive">
+                      {errors.timezone.message}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           <DialogFooter>

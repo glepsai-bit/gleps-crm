@@ -42,7 +42,7 @@ import {
 } from './message.routes';
 import customAttributeRoutes from './custom-attribute.routes';
 import cannedResponseRoutes from './canned-response.routes';
-import slaRoutes, { conversationsRouter as slaConversationsRouter } from './sla.routes';
+import slaRoutes, { conversationsRouter as slaConversationsRouter, slaDashboardRouter } from './sla.routes';
 import chatMetricsRoutes from './chat-metrics.routes';
 import agentAvailabilityRoutes from './agent-availability.routes';
 import attachmentRoutes from './attachment.routes';
@@ -171,6 +171,7 @@ router.use('/', messageJwtRoutes);
 router.use('/custom-attributes', customAttributeRoutes);
 router.use('/canned-responses', cannedResponseRoutes);
 router.use('/sla-policies', slaRoutes);
+router.use('/sla', slaDashboardRouter);
 router.use('/chat', chatMetricsRoutes);
 router.use('/availability', agentAvailabilityRoutes);
 // Bug A: media proxy (audio/image/video baixados da Evolution)

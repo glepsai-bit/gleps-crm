@@ -32,6 +32,11 @@ const createPolicySchema = z
       .int('resolutionMin deve ser inteiro')
       .positive('resolutionMin deve ser positivo'),
     businessHoursOnly: z.boolean().optional(),
+    pauseWhenWaitingCustomer: z.boolean().optional(),
+    businessHoursStart: z.string().regex(/^([0-2]\d):([0-5]\d)$/).optional(),
+    businessHoursEnd: z.string().regex(/^([0-2]\d):([0-5]\d)$/).optional(),
+    businessDays: z.array(z.number().int().min(0).max(6)).optional(),
+    timezone: z.string().max(60).optional(),
   })
   .superRefine((data, ctx) => {
     if (
@@ -66,6 +71,20 @@ const updatePolicySchema = z
       .optional(),
     businessHoursOnly: z.boolean().optional(),
     active: z.boolean().optional(),
+    // SLA v2 — pausa + horario comercial (mesmos shapes do create)
+    pauseWhenWaitingCustomer: z.boolean().optional(),
+    businessHoursStart: z
+      .string()
+      .regex(/^([0-2]\d):([0-5]\d)$/)
+      .nullable()
+      .optional(),
+    businessHoursEnd: z
+      .string()
+      .regex(/^([0-2]\d):([0-5]\d)$/)
+      .nullable()
+      .optional(),
+    businessDays: z.array(z.number().int().min(0).max(6)).optional(),
+    timezone: z.string().max(60).optional(),
   })
   .refine(data => Object.keys(data).length > 0, {
     message: 'Nada para atualizar',
@@ -123,6 +142,11 @@ function resolveAccountId(req: AuthenticatedRequest): string {
 
   return user.accountId;
 }
+
+const dashboardSchema = z.object({
+  fromDate: z.string().min(1, 'fromDate e obrigatorio'),
+  toDate: z.string().min(1, 'toDate e obrigatorio'),
+});
 
 export class SLAController {
   // ============================================
@@ -296,6 +320,35 @@ export class SLAController {
    * Retorna os N=50 breaches mais recentes da politica.
    * Escopada por accountId via verificacao previa da policy.
    */
+  /**
+   * GET /api/sla/dashboard?fromDate=...&toDate=...
+   * Dashboard SLA v2 — metricas agregadas para o periodo.
+   */
+  async getDashboard(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const accountId = resolveAccountId(req);
+      const { fromDate, toDate } = dashboardSchema.parse(req.query);
+
+      const from = new Date(fromDate);
+      const to = new Date(toDate);
+      if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+        throw new ValidationError('fromDate/toDate devem ser ISO 8601');
+      }
+
+      const result = await slaService.getDashboard(accountId, {
+        fromDate: from,
+        toDate: to,
+      });
+      res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async listRecentBreaches(
     req: AuthenticatedRequest,
     res: Response,

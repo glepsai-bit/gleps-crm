@@ -94,9 +94,23 @@ const transferSchema = z
     message: 'Informe exatamente um entre toUserId OU toTeamId',
   });
 
+// SLA v2 — outcome obrigatorio, internalRating 1-5 opcional, sendCsat default true.
+// resolvedBy default 'ai' pra api-key (origem comum: n8n).
+const ALLOWED_OUTCOMES = [
+  'resolved',
+  'transferred',
+  'spam',
+  'not_related',
+  'abandoned',
+  'unable_to_resolve',
+] as const;
+
 const resolveSchema = z.object({
   resolvedBy: z.enum(ALLOWED_RESOLVED_BY).optional(),
+  outcome: z.enum(ALLOWED_OUTCOMES),
+  internalRating: z.number().int().min(1).max(5).optional(),
   reason: z.string().trim().max(500).optional(),
+  sendCsatToCustomer: z.boolean().default(true),
 });
 
 // Aceita ambos shapes — alinhado com o fix de customAttrsSchema em conversation.controller.
@@ -628,6 +642,12 @@ class IntegrationChatController {
       const updated = await conversationService.resolve(id, accountId, {
         resolvedBy,
         userId: apiActorId(req),
+        outcome: parsed.outcome,
+        internalRating: parsed.internalRating,
+        reason: parsed.reason,
+        sendCsatToCustomer: parsed.sendCsatToCustomer,
+        // api-key actor nao tem User real — nao seta resolvedByUserId
+        resolvedByUserId: null,
       });
 
       // ai_handled=true quando a IA resolveu

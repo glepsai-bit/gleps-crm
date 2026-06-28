@@ -1,0 +1,274 @@
+/**
+ * CSAT service tests — SLA v2.
+ *
+ * Cobre:
+ *  - sendPendingCsatMessages: cria msg system pra cycles elegiveis
+ *  - nao envia 2x (csatSentAt guard)
+ *  - nao envia se passou 24h (janela maxima)
+ *  - nao envia se ainda nao passou 15min (delay minimo)
+ *  - parseRatingFromText: reconhece formatos comuns
+ *  - parseCustomerResponse: grava customerCsat=5 quando msg='5'
+ *  - parseCustomerResponse no-op quando texto nao for rating
+ *
+ * Mock: messageService.create (nao bate evolution real).
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./evolution.service', () => ({
+  evolutionService: {
+    sendText: vi.fn(async () => ({ messageId: 'mock' })),
+    sendMedia: vi.fn(async () => ({ messageId: 'mock' })),
+    sendAudio: vi.fn(async () => ({ messageId: 'mock' })),
+  },
+}));
+
+// Mock messageService: nao queremos disparar webhook outbound nem socket;
+// soh queremos validar que a chamada aconteceu com os parametros certos.
+vi.mock('./message.service', () => ({
+  messageService: {
+    create: vi.fn(async (accountId: string, input: any) => ({
+      id: `msg-${Math.random()}`,
+      conversationId: input.conversationId,
+      senderType: input.senderType,
+      content: input.content,
+      contentType: input.contentType,
+      isPrivate: input.isPrivate ?? false,
+      metadata: input.metadata ?? {},
+      createdAt: new Date(),
+    })),
+  },
+}));
+
+import { prismaTest } from '../test/setup';
+import { createTestAccount } from '../test/helpers';
+import { csatService, parseRatingFromText } from './csat.service';
+import { messageService } from './message.service';
+
+beforeEach(() => {
+  vi.mocked(messageService.create).mockClear();
+});
+
+async function createConvWithCycle(
+  accountId: string,
+  overrides: {
+    resolvedAtAgoMs?: number;
+    csatRequested?: boolean;
+    csatSentAt?: Date | null;
+    customerCsat?: number | null;
+    contactPhone?: string | null;
+  } = {}
+) {
+  const inbox = await prismaTest.inbox.create({
+    data: {
+      accountId,
+      name: 'Inbox CSAT',
+      channelType: 'whatsapp',
+      evolutionInstance: `inst-${Date.now()}-${Math.random()}`,
+    },
+  });
+  const contact = overrides.contactPhone === null
+    ? null
+    : await prismaTest.contact.create({
+        data: {
+          accountId,
+          nome: 'Contato CSAT',
+          telefone: overrides.contactPhone ?? '5534993383017', // numero de teste
+        },
+      });
+  const conv = await prismaTest.conversation.create({
+    data: {
+      accountId,
+      inboxId: inbox.id,
+      contactId: contact?.id ?? null,
+      status: 'resolved',
+    },
+  });
+  const resolvedAt =
+    overrides.resolvedAtAgoMs !== undefined
+      ? new Date(Date.now() - overrides.resolvedAtAgoMs)
+      : new Date(Date.now() - 30 * 60 * 1000); // 30min atras (elegivel)
+  const cycle = await prismaTest.conversationCycle.create({
+    data: {
+      accountId,
+      conversationId: conv.id,
+      openedAt: new Date(Date.now() - 60 * 60 * 1000),
+      resolvedAt,
+      resolvedBy: 'human',
+      outcome: 'resolved',
+      durationSec: 1800,
+      csatRequested: overrides.csatRequested ?? true,
+      csatSentAt: overrides.csatSentAt ?? null,
+      customerCsat: overrides.customerCsat ?? null,
+    },
+  });
+  return { inbox, contact, conv, cycle };
+}
+
+describe('parseRatingFromText', () => {
+  it('reconhece "1", "5" como string inteira', () => {
+    expect(parseRatingFromText('1')).toBe(1);
+    expect(parseRatingFromText('5')).toBe(5);
+    expect(parseRatingFromText('3')).toBe(3);
+  });
+
+  it('reconhece "5/5" e "3/5"', () => {
+    expect(parseRatingFromText('5/5')).toBe(5);
+    expect(parseRatingFromText('3 / 5')).toBe(3);
+  });
+
+  it('reconhece palavras-chave', () => {
+    expect(parseRatingFromText('ruim')).toBe(1);
+    expect(parseRatingFromText('pessimo')).toBe(1);
+    expect(parseRatingFromText('otimo')).toBe(5);
+    expect(parseRatingFromText('excelente')).toBe(5);
+    expect(parseRatingFromText('bom')).toBe(4);
+  });
+
+  it('retorna null pra texto sem rating', () => {
+    expect(parseRatingFromText('oi')).toBeNull();
+    expect(parseRatingFromText('')).toBeNull();
+    expect(parseRatingFromText(null)).toBeNull();
+    expect(parseRatingFromText('quero falar com humano')).toBeNull();
+  });
+});
+
+describe('csatService.sendPendingCsatMessages', () => {
+  it('cria msg system pra cycles elegiveis (resolvido entre 15min e 24h)', async () => {
+    const { account } = await createTestAccount();
+    await createConvWithCycle(account.id, { resolvedAtAgoMs: 30 * 60 * 1000 }); // 30min atras
+
+    const result = await csatService.sendPendingCsatMessages();
+    expect(result.sent).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(messageService.create).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(messageService.create).mock.calls[0];
+    expect(call[1].senderType).toBe('system');
+    expect(call[1].content).toMatch(/avalia/i);
+    expect(call[1].metadata).toMatchObject({ csat_request: true });
+  });
+
+  it('NAO envia 2x — guard csatSentAt', async () => {
+    const { account } = await createTestAccount();
+    // Cycle ja teve csat enviado 1h atras
+    await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 30 * 60 * 1000,
+      csatSentAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const result = await csatService.sendPendingCsatMessages();
+    expect(result.sent).toBe(0);
+    expect(messageService.create).not.toHaveBeenCalled();
+  });
+
+  it('NAO envia se passou 24h da resolucao', async () => {
+    const { account } = await createTestAccount();
+    await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 25 * 60 * 60 * 1000, // 25h atras (passou janela)
+    });
+
+    const result = await csatService.sendPendingCsatMessages();
+    expect(result.sent).toBe(0);
+  });
+
+  it('NAO envia se ainda nao passou 15min da resolucao', async () => {
+    const { account } = await createTestAccount();
+    await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 5 * 60 * 1000, // 5min atras (cedo demais)
+    });
+
+    const result = await csatService.sendPendingCsatMessages();
+    expect(result.sent).toBe(0);
+  });
+
+  it('NAO envia se csatRequested=false', async () => {
+    const { account } = await createTestAccount();
+    await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 30 * 60 * 1000,
+      csatRequested: false,
+    });
+
+    const result = await csatService.sendPendingCsatMessages();
+    expect(result.sent).toBe(0);
+  });
+
+  it('marca csatSentAt apos envio bem-sucedido', async () => {
+    const { account } = await createTestAccount();
+    const { cycle } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 30 * 60 * 1000,
+    });
+
+    await csatService.sendPendingCsatMessages();
+
+    const reloaded = await prismaTest.conversationCycle.findUnique({
+      where: { id: cycle.id },
+    });
+    expect(reloaded?.csatSentAt).not.toBeNull();
+  });
+});
+
+describe('csatService.parseCustomerResponse', () => {
+  it('grava customerCsat=5 quando msg=5 em ciclo com csat pendente', async () => {
+    const { account } = await createTestAccount();
+    const { conv, cycle } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: new Date(Date.now() - 5 * 60 * 1000), // ja perguntou 5min atras
+    });
+
+    const result = await csatService.parseCustomerResponse(conv.id, account.id, '5');
+    expect(result.matched).toBe(true);
+    expect(result.rating).toBe(5);
+    expect(result.cycleId).toBe(cycle.id);
+
+    const reloaded = await prismaTest.conversationCycle.findUnique({
+      where: { id: cycle.id },
+    });
+    expect(reloaded?.customerCsat).toBe(5);
+    expect(reloaded?.customerCsatAt).not.toBeNull();
+  });
+
+  it('no-op quando ciclo nao teve csat enviado', async () => {
+    const { account } = await createTestAccount();
+    const { conv } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: null, // nunca perguntou
+    });
+
+    const result = await csatService.parseCustomerResponse(conv.id, account.id, '5');
+    expect(result.matched).toBe(false);
+  });
+
+  it('no-op quando texto nao for rating', async () => {
+    const { account } = await createTestAccount();
+    const { conv } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: new Date(Date.now() - 5 * 60 * 1000),
+    });
+
+    const result = await csatService.parseCustomerResponse(
+      conv.id,
+      account.id,
+      'quero falar com vendedor'
+    );
+    expect(result.matched).toBe(false);
+    expect(result.rating).toBeNull();
+  });
+
+  it('no-op quando customerCsat ja gravado (evita duplicata)', async () => {
+    const { account } = await createTestAccount();
+    const { conv, cycle } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: new Date(Date.now() - 5 * 60 * 1000),
+      customerCsat: 3, // ja respondeu
+    });
+
+    const result = await csatService.parseCustomerResponse(conv.id, account.id, '5');
+    expect(result.matched).toBe(false);
+
+    const reloaded = await prismaTest.conversationCycle.findUnique({
+      where: { id: cycle.id },
+    });
+    // Manteve valor original
+    expect(reloaded?.customerCsat).toBe(3);
+  });
+});

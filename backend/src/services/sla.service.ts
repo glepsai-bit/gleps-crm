@@ -1,5 +1,6 @@
 import type { SLAPolicy, SLABreach } from '@prisma/client';
 import { Prisma } from '@prisma/client';
+import { toZonedTime } from 'date-fns-tz';
 import { prisma } from '../config/database';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
@@ -15,6 +16,12 @@ export interface CreatePolicyInput {
   firstResponseMin: number;
   resolutionMin: number;
   businessHoursOnly?: boolean;
+  // SLA v2 — campos de horario comercial e pausa
+  pauseWhenWaitingCustomer?: boolean;
+  businessHoursStart?: string | null;
+  businessHoursEnd?: string | null;
+  businessDays?: number[];
+  timezone?: string;
 }
 
 export interface UpdatePolicyInput {
@@ -23,6 +30,12 @@ export interface UpdatePolicyInput {
   resolutionMin?: number;
   businessHoursOnly?: boolean;
   active?: boolean;
+  // SLA v2 — campos de horario comercial e pausa
+  pauseWhenWaitingCustomer?: boolean;
+  businessHoursStart?: string | null;
+  businessHoursEnd?: string | null;
+  businessDays?: number[];
+  timezone?: string;
 }
 
 export interface CheckBreachesResult {
@@ -30,6 +43,85 @@ export interface CheckBreachesResult {
 }
 
 type BreachType = 'first_response' | 'resolution';
+
+// ============================================
+// SLA v2 — Business hours helpers
+// ============================================
+
+/**
+ * Parse "HH:MM" → { hours, minutes }. Retorna null se invalido.
+ */
+function parseHHMM(s: string | null | undefined): { h: number; m: number } | null {
+  if (!s) return null;
+  const m = s.match(/^([0-2]\d):([0-5]\d)$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  if (h > 23) return null;
+  return { h, m: mi };
+}
+
+/**
+ * Calcula segundos uteis (dentro do horario comercial) decorridos entre
+ * `from` e `to`, considerando os campos da policy:
+ *   - businessHoursStart / businessHoursEnd ("HH:MM")
+ *   - businessDays (array de int 0..6, 0=domingo)
+ *   - timezone (IANA, ex: "America/Sao_Paulo")
+ *
+ * Se a policy nao tiver businessHoursStart/End definidos, retorna o elapsed
+ * puro (segundos corridos), preservando comportamento legado.
+ *
+ * Implementacao: walk minuto a minuto eh caro mas correto. Como o cron roda
+ * em conversas open (geralmente < 1000), e cada slice e < 24h, o custo eh
+ * aceitavel. Se virar gargalo, refatorar pra calculo em janelas diarias.
+ */
+export function calculateBusinessElapsedSec(
+  from: Date,
+  to: Date,
+  policy: Pick<
+    SLAPolicy,
+    'businessHoursStart' | 'businessHoursEnd' | 'businessDays' | 'timezone'
+  >
+): number {
+  // Sem horario comercial configurado — usa elapsed puro
+  const start = parseHHMM(policy.businessHoursStart);
+  const end = parseHHMM(policy.businessHoursEnd);
+  if (!start || !end) {
+    return Math.max(0, Math.floor((to.getTime() - from.getTime()) / 1000));
+  }
+
+  const tz = policy.timezone || 'UTC';
+  const days = policy.businessDays && policy.businessDays.length > 0
+    ? policy.businessDays
+    : [1, 2, 3, 4, 5];
+
+  if (to.getTime() <= from.getTime()) return 0;
+
+  // Walk em passos de 1 minuto. Soma os minutos que cairem dentro de
+  // (dia comercial) AND (start <= hora < end) na timezone da policy.
+  const STEP_MS = 60 * 1000;
+  let cursor = from.getTime();
+  const endMs = to.getTime();
+  let businessMs = 0;
+
+  while (cursor < endMs) {
+    const slice = Math.min(STEP_MS, endMs - cursor);
+    const zoned = toZonedTime(new Date(cursor), tz);
+    const day = zoned.getDay();
+    const hour = zoned.getHours();
+    const minute = zoned.getMinutes();
+    const minuteOfDay = hour * 60 + minute;
+    const startMin = start.h * 60 + start.m;
+    const endMin = end.h * 60 + end.m;
+
+    if (days.includes(day) && minuteOfDay >= startMin && minuteOfDay < endMin) {
+      businessMs += slice;
+    }
+    cursor += STEP_MS;
+  }
+
+  return Math.max(0, Math.floor(businessMs / 1000));
+}
 
 class SLAService {
   // ============================================
@@ -105,6 +197,13 @@ class SLAService {
         firstResponseMin: Math.floor(input.firstResponseMin),
         resolutionMin: Math.floor(input.resolutionMin),
         businessHoursOnly: input.businessHoursOnly ?? true,
+        // SLA v2 — defaults sensatos: pausa off, horario 09:00-18:00 seg-sex,
+        // timezone Sao Paulo. Aceita override do input.
+        pauseWhenWaitingCustomer: input.pauseWhenWaitingCustomer ?? false,
+        businessHoursStart: input.businessHoursStart ?? null,
+        businessHoursEnd: input.businessHoursEnd ?? null,
+        businessDays: input.businessDays ?? [1, 2, 3, 4, 5],
+        timezone: input.timezone ?? 'America/Sao_Paulo',
       },
     });
 
@@ -152,6 +251,23 @@ class SLAService {
       data.businessHoursOnly = input.businessHoursOnly;
     }
     if (input.active !== undefined) data.active = input.active;
+    // SLA v2 — campos novos (pausa + horario comercial). null em
+    // businessHoursStart/End e tratado pelo schema (campo opcional).
+    if (input.pauseWhenWaitingCustomer !== undefined) {
+      data.pauseWhenWaitingCustomer = input.pauseWhenWaitingCustomer;
+    }
+    if (input.businessHoursStart !== undefined) {
+      data.businessHoursStart = input.businessHoursStart;
+    }
+    if (input.businessHoursEnd !== undefined) {
+      data.businessHoursEnd = input.businessHoursEnd;
+    }
+    if (input.businessDays !== undefined) {
+      data.businessDays = input.businessDays;
+    }
+    if (input.timezone !== undefined) {
+      data.timezone = input.timezone;
+    }
 
     const policy = await prisma.sLAPolicy.update({
       where: { id },
@@ -247,8 +363,7 @@ class SLAService {
    * Skip se ja existe um SLABreach do mesmo tipo para a conversation.
    * Emite sla.breached via eventService + webhookOutboundService.
    */
-  async checkBreaches(): Promise<CheckBreachesResult> {
-    const now = new Date();
+  async checkBreaches(now: Date = new Date()): Promise<CheckBreachesResult> {
     let detected = 0;
 
     const conversations = await prisma.conversation.findMany({
@@ -264,8 +379,30 @@ class SLAService {
       const policy = conversation.slaPolicy;
       if (!policy) continue;
 
-      const createdAtMs = conversation.createdAt.getTime();
-      const elapsedSec = Math.floor((now.getTime() - createdAtMs) / 1000);
+      // SLA v2 — pausa quando aguarda cliente: se a ultima mensagem foi do
+      // agente/IA, o cronometro NAO conta enquanto espera o cliente. Soma
+      // segundos uteis ate a ultima msg do cliente (ou ate agora se cliente
+      // foi o ultimo a falar).
+      let effectiveEnd: Date = now;
+      if (policy.pauseWhenWaitingCustomer) {
+        const lastMsg = await prisma.message.findFirst({
+          where: { conversationId: conversation.id, isPrivate: false },
+          orderBy: { createdAt: 'desc' },
+          select: { senderType: true, createdAt: true },
+        });
+        if (lastMsg && lastMsg.senderType !== 'customer') {
+          // Cronometro pausa neste ponto — usa createdAt da ultima msg como fim
+          effectiveEnd = lastMsg.createdAt;
+        }
+      }
+
+      // SLA v2 — horario comercial: usa calculateBusinessElapsedSec quando
+      // businessHoursStart/End configurados, senao elapsed puro.
+      const elapsedSec = calculateBusinessElapsedSec(
+        conversation.createdAt,
+        effectiveEnd,
+        policy
+      );
 
       // first_response: ainda nao houve primeira resposta e estourou o prazo
       if (
@@ -277,7 +414,7 @@ class SLAService {
           conversation.accountId,
           policy,
           'first_response',
-          new Date(createdAtMs + policy.firstResponseMin * 60_000),
+          new Date(conversation.createdAt.getTime() + policy.firstResponseMin * 60_000),
           now
         );
         if (created) detected += 1;
@@ -293,7 +430,7 @@ class SLAService {
           conversation.accountId,
           policy,
           'resolution',
-          new Date(createdAtMs + policy.resolutionMin * 60_000),
+          new Date(conversation.createdAt.getTime() + policy.resolutionMin * 60_000),
           now
         );
         if (created) detected += 1;
@@ -411,6 +548,226 @@ class SLAService {
       where: { conversationId },
       orderBy: { breachedAt: 'desc' },
     });
+  }
+
+  // ============================================
+  // SLA v2 — Dashboard
+  // ============================================
+
+  /**
+   * Agregacao para dashboard SLA. Calcula:
+   *   - totalConversations / resolvedWithinSla
+   *   - breachedFirstResponse / breachedResolution
+   *   - avgFirstResponseSec / avgResolutionSec
+   *   - outcomes: distribuicao por outcome
+   *   - csatAvg / csatResponseRate (ignora null)
+   *   - byAgent: ranking de agentes
+   *   - aiVsHuman: comparativo IA vs Humano
+   *
+   * Usa ConversationCycle como fonte de verdade — cada ciclo open->resolved
+   * conta. Reaberturas geram ciclos novos, preservando o historico.
+   */
+  async getDashboard(
+    accountId: string,
+    filters: { fromDate: Date; toDate: Date }
+  ): Promise<{
+    totalConversations: number;
+    resolvedWithinSla: number;
+    breachedFirstResponse: number;
+    breachedResolution: number;
+    avgFirstResponseSec: number | null;
+    avgResolutionSec: number | null;
+    outcomes: Record<string, number>;
+    csatAvg: number | null;
+    csatResponseRate: number;
+    byAgent: Array<{
+      userId: string;
+      name: string;
+      resolved: number;
+      csatAvg: number | null;
+      breaches: number;
+    }>;
+    aiVsHuman: {
+      ai: { resolved: number; csat: number | null; breaches: number };
+      human: { resolved: number; csat: number | null; breaches: number };
+    };
+  }> {
+    const { fromDate, toDate } = filters;
+    if (!(fromDate instanceof Date) || !(toDate instanceof Date)) {
+      throw new ValidationError('fromDate e toDate sao obrigatorios');
+    }
+    if (fromDate > toDate) {
+      throw new ValidationError('fromDate nao pode ser maior que toDate');
+    }
+
+    const cycles = await prisma.conversationCycle.findMany({
+      where: {
+        accountId,
+        OR: [
+          { openedAt: { gte: fromDate, lte: toDate } },
+          { resolvedAt: { gte: fromDate, lte: toDate } },
+        ],
+      },
+      select: {
+        id: true,
+        conversationId: true,
+        openedAt: true,
+        resolvedAt: true,
+        resolvedBy: true,
+        resolvedByUserId: true,
+        firstResponseAt: true,
+        outcome: true,
+        customerCsat: true,
+        csatRequested: true,
+        csatSentAt: true,
+        slaBreached: true,
+        durationSec: true,
+      },
+    });
+
+    // Lookup de breaches por conversation (filtrados pelo periodo)
+    const conversationIds = Array.from(new Set(cycles.map((c) => c.conversationId)));
+    const breaches = conversationIds.length
+      ? await prisma.sLABreach.findMany({
+          where: {
+            conversationId: { in: conversationIds },
+            breachedAt: { gte: fromDate, lte: toDate },
+          },
+          select: { conversationId: true, breachType: true },
+        })
+      : [];
+
+    const breachedFirstResponse = breaches.filter(
+      (b) => b.breachType === 'first_response'
+    ).length;
+    const breachedResolution = breaches.filter(
+      (b) => b.breachType === 'resolution'
+    ).length;
+    const breachedConvIds = new Set(breaches.map((b) => b.conversationId));
+
+    const totalConversations = conversationIds.length;
+    const resolvedCycles = cycles.filter((c) => c.resolvedAt);
+    const resolvedWithinSla = resolvedCycles.filter(
+      (c) => !c.slaBreached && !breachedConvIds.has(c.conversationId)
+    ).length;
+
+    // Durations
+    const frtSamples: number[] = [];
+    const resolutionSamples: number[] = [];
+    for (const c of cycles) {
+      if (c.firstResponseAt) {
+        frtSamples.push(
+          Math.max(0, Math.floor((c.firstResponseAt.getTime() - c.openedAt.getTime()) / 1000))
+        );
+      }
+      if (c.resolvedAt) {
+        const dur =
+          c.durationSec ??
+          Math.max(0, Math.floor((c.resolvedAt.getTime() - c.openedAt.getTime()) / 1000));
+        resolutionSamples.push(dur);
+      }
+    }
+    const avg = (arr: number[]): number | null =>
+      arr.length === 0
+        ? null
+        : Math.round((arr.reduce((s, v) => s + v, 0) / arr.length) * 100) / 100;
+
+    // Outcomes
+    const outcomes: Record<string, number> = {};
+    for (const c of cycles) {
+      if (!c.outcome) continue;
+      outcomes[c.outcome] = (outcomes[c.outcome] ?? 0) + 1;
+    }
+
+    // CSAT — ignora null (so conta resposta efetiva). csatResponseRate = respondidos / pedidos
+    const csatValues = cycles
+      .map((c) => c.customerCsat)
+      .filter((v): v is number => v !== null && v !== undefined);
+    const csatAvg = avg(csatValues);
+    const csatRequestedCount = cycles.filter((c) => c.csatSentAt).length;
+    const csatResponseRate =
+      csatRequestedCount === 0
+        ? 0
+        : Math.round((csatValues.length / csatRequestedCount) * 1000) / 1000;
+
+    // By agent — apenas ciclos resolvidos por humano com resolvedByUserId
+    const agentBuckets = new Map<
+      string,
+      { resolved: number; csatSum: number; csatCount: number; breaches: number }
+    >();
+    for (const c of cycles) {
+      if (!c.resolvedAt || c.resolvedBy !== 'human' || !c.resolvedByUserId) continue;
+      const bucket = agentBuckets.get(c.resolvedByUserId) ?? {
+        resolved: 0,
+        csatSum: 0,
+        csatCount: 0,
+        breaches: 0,
+      };
+      bucket.resolved += 1;
+      if (c.customerCsat != null) {
+        bucket.csatSum += c.customerCsat;
+        bucket.csatCount += 1;
+      }
+      if (c.slaBreached || breachedConvIds.has(c.conversationId)) {
+        bucket.breaches += 1;
+      }
+      agentBuckets.set(c.resolvedByUserId, bucket);
+    }
+    const userIds = Array.from(agentBuckets.keys());
+    const users = userIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: userIds }, accountId },
+          select: { id: true, nome: true, email: true },
+        })
+      : [];
+    const userMap = new Map(users.map((u) => [u.id, u.nome ?? u.email]));
+    const byAgent = userIds
+      .map((uid) => {
+        const b = agentBuckets.get(uid)!;
+        return {
+          userId: uid,
+          name: userMap.get(uid) ?? 'Desconhecido',
+          resolved: b.resolved,
+          csatAvg: b.csatCount === 0 ? null : Math.round((b.csatSum / b.csatCount) * 100) / 100,
+          breaches: b.breaches,
+        };
+      })
+      .sort((a, b) => b.resolved - a.resolved);
+
+    // AI vs Human
+    const aiCycles = cycles.filter((c) => c.resolvedAt && c.resolvedBy === 'ai');
+    const humanCycles = cycles.filter((c) => c.resolvedAt && c.resolvedBy === 'human');
+    const csatOf = (arr: typeof cycles): number | null => {
+      const vals = arr.map((c) => c.customerCsat).filter((v): v is number => v != null);
+      return vals.length === 0 ? null : Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 100) / 100;
+    };
+    const breachesOf = (arr: typeof cycles): number =>
+      arr.filter((c) => c.slaBreached || breachedConvIds.has(c.conversationId)).length;
+
+    return {
+      totalConversations,
+      resolvedWithinSla,
+      breachedFirstResponse,
+      breachedResolution,
+      avgFirstResponseSec: avg(frtSamples),
+      avgResolutionSec: avg(resolutionSamples),
+      outcomes,
+      csatAvg,
+      csatResponseRate,
+      byAgent,
+      aiVsHuman: {
+        ai: {
+          resolved: aiCycles.length,
+          csat: csatOf(aiCycles),
+          breaches: breachesOf(aiCycles),
+        },
+        human: {
+          resolved: humanCycles.length,
+          csat: csatOf(humanCycles),
+          breaches: breachesOf(humanCycles),
+        },
+      },
+    };
   }
 
   /**

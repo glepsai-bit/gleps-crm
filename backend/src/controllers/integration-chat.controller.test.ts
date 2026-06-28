@@ -497,7 +497,8 @@ describe('IntegrationChatController', () => {
       const res = await request(app)
         .post(`/api/integrations/chat/conversations/${conversation.id}/resolve`)
         .set(apiKeyHeader(plaintextKey))
-        .send({});
+        // SLA v2: outcome agora eh obrigatorio
+        .send({ outcome: 'resolved' });
 
       expect(res.status).toBe(200);
       expect(res.body.data.status).toBe('resolved');
@@ -518,7 +519,7 @@ describe('IntegrationChatController', () => {
       const res = await request(app)
         .post(`/api/integrations/chat/conversations/${conversation.id}/resolve`)
         .set(apiKeyHeader(plaintextKey))
-        .send({ reason: 'Cliente confirmou o boleto pago' });
+        .send({ outcome: 'resolved', reason: 'Cliente confirmou o boleto pago' });
 
       expect(res.status).toBe(200);
 

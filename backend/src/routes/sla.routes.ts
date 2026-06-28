@@ -46,3 +46,15 @@ conversationsRouter.post('/:id/sla', (req, res, next) =>
 );
 
 export { conversationsRouter };
+
+// ============================================
+// Router para /api/sla (dashboard, etc — endpoints "transversais")
+// ============================================
+
+const dashboardRouter = Router();
+dashboardRouter.use(authenticate, requireRole('super_admin', 'admin'));
+dashboardRouter.get('/dashboard', (req, res, next) =>
+  slaController.getDashboard(req, res, next)
+);
+
+export { dashboardRouter as slaDashboardRouter };

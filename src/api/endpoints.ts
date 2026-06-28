@@ -367,6 +367,9 @@ export const API_ENDPOINTS = {
     BREACHES: (id: string) => `/api/sla-policies/${id}/breaches`,
     APPLY_TO_CONVERSATION: (conversationId: string) =>
       `/api/conversations/${conversationId}/sla`,
+    // SLA v2 — dashboard agregado de outcomes, CSAT, ranking de agentes
+    // e IA vs Humano (montado em /api/sla, nao /api/sla-policies).
+    DASHBOARD: '/api/sla/dashboard',
   },
 
   // ============= CUSTOM ATTRIBUTES (T-022 — campos customizados) =============

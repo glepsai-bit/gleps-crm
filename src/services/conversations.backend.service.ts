@@ -189,8 +189,26 @@ export interface TransferConversationInput {
   note?: string;
 }
 
+/**
+ * SLA v2 — `outcome` agora e OBRIGATORIO no resolve, conforme:
+ *   resolved | transferred | spam | not_related | abandoned | unable_to_resolve
+ * `internalRating` (1-5) e auto-avaliacao opcional do agente/IA.
+ * `sendCsatToCustomer` default true — backend enfileira CSAT.
+ */
+export type ConversationOutcome =
+  | 'resolved'
+  | 'transferred'
+  | 'spam'
+  | 'not_related'
+  | 'abandoned'
+  | 'unable_to_resolve';
+
 export interface ResolveConversationInput {
-  resolvedBy: ConversationResolvedBy;
+  resolvedBy?: ConversationResolvedBy;
+  outcome: ConversationOutcome;
+  internalRating?: number;
+  reason?: string;
+  sendCsatToCustomer?: boolean;
 }
 
 // ============================================
@@ -396,9 +414,26 @@ export const conversationsBackendService = {
     id: string,
     body: ResolveConversationInput
   ): Promise<Conversation> {
+    // SLA v2 — passamos outcome obrigatorio + campos opcionais. `resolvedBy`
+    // permanece compat (UI do ConversationActions ainda escolhe ai/human via
+    // dropdown). `sendCsatToCustomer` default true no backend; so enviamos
+    // false explicito quando o usuario desmarca o checkbox.
+    const payload: Record<string, unknown> = {
+      outcome: body.outcome,
+    };
+    if (body.resolvedBy) payload.resolvedBy = body.resolvedBy;
+    if (typeof body.internalRating === 'number') {
+      payload.internalRating = body.internalRating;
+    }
+    if (body.reason && body.reason.trim()) {
+      payload.reason = body.reason.trim();
+    }
+    if (typeof body.sendCsatToCustomer === 'boolean') {
+      payload.sendCsatToCustomer = body.sendCsatToCustomer;
+    }
     const response = await apiClient.post<DataEnvelope<Conversation> | Conversation>(
       API_ENDPOINTS.CONVERSATIONS.RESOLVE(id),
-      { resolvedBy: body.resolvedBy }
+      payload
     );
     return unwrapData<Conversation>(response);
   },

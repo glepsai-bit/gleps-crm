@@ -62,6 +62,7 @@ import AdminInboxesPage from "./pages/admin/AdminInboxesPage";
 import AdminTeamsPage from "./pages/admin/AdminTeamsPage";
 import AdminCannedResponsesPage from "./pages/admin/AdminCannedResponsesPage";
 import AdminSLAPoliciesPage from "./pages/admin/AdminSLAPoliciesPage";
+import AdminSlaDashboardPage from "./pages/admin/AdminSlaDashboardPage";
 import AdminCustomAttributesPage from "./pages/admin/AdminCustomAttributesPage";
 
 // CRITICAL #3: QueryClient com handlers default de erro (toast em 5xx/network).
@@ -149,6 +150,7 @@ const App = () => (
             <Route path="/admin/teams" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminTeamsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/canned-responses" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminCannedResponsesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/sla-policies" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminSLAPoliciesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            <Route path="/admin/sla/dashboard" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminSlaDashboardPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/custom-attributes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminCustomAttributesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
 
             {/* Agent Routes */}

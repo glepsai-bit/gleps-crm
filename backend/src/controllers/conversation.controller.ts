@@ -64,8 +64,22 @@ const snoozeSchema = z.object({
   until: z.union([z.string(), z.number(), z.date()]),
 });
 
+// SLA v2 — outcome obrigatorio, internalRating 1-5 opcional, sendCsat default true
+const ALLOWED_OUTCOMES = [
+  'resolved',
+  'transferred',
+  'spam',
+  'not_related',
+  'abandoned',
+  'unable_to_resolve',
+] as const;
+
 const resolveSchema = z.object({
-  resolvedBy: z.enum(ALLOWED_RESOLVED_BY),
+  resolvedBy: z.enum(ALLOWED_RESOLVED_BY).optional(),
+  outcome: z.enum(ALLOWED_OUTCOMES),
+  internalRating: z.number().int().min(1).max(5).optional(),
+  reason: z.string().max(500).optional(),
+  sendCsatToCustomer: z.boolean().default(true),
 });
 
 // L-CROSS-3: aceita `tagId` (UUID de tag existente) OU `label` (string nome
@@ -330,11 +344,16 @@ export class ConversationController {
   async resolve(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = req.params.id as string;
-      const { resolvedBy } = resolveSchema.parse(req.body);
+      const parsed = resolveSchema.parse(req.body);
       await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.resolve(id, getAccountId(req), {
-        resolvedBy,
+        resolvedBy: parsed.resolvedBy ?? 'human',
         userId: req.user!.id,
+        outcome: parsed.outcome,
+        internalRating: parsed.internalRating,
+        reason: parsed.reason,
+        sendCsatToCustomer: parsed.sendCsatToCustomer,
+        resolvedByUserId: req.user!.id,
       });
       res.json({ data });
     } catch (error) {

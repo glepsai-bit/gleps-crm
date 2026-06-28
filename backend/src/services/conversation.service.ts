@@ -65,6 +65,24 @@ export type ConversationStatus = 'open' | 'pending' | 'resolved' | 'snoozed';
 export type ConversationPriority = 'urgent' | 'high' | 'medium' | 'low';
 export type ConversationResolvedBy = 'ai' | 'human' | 'timeout';
 
+// SLA v2 — outcome obrigatorio ao resolver
+export type ResolveOutcome =
+  | 'resolved'
+  | 'transferred'
+  | 'spam'
+  | 'not_related'
+  | 'abandoned'
+  | 'unable_to_resolve';
+
+export const RESOLVE_OUTCOMES: ResolveOutcome[] = [
+  'resolved',
+  'transferred',
+  'spam',
+  'not_related',
+  'abandoned',
+  'unable_to_resolve',
+];
+
 export interface ListConversationFilters {
   status?: ConversationStatus | string;
   assigneeId?: string | null;
@@ -101,6 +119,13 @@ export interface TransferConversationInput {
 export interface ResolveConversationInput {
   resolvedBy: ConversationResolvedBy;
   userId: string;
+  // SLA v2 — campos novos. Mantemos opcional pra retro-compat dos callers
+  // existentes mas o controller passa a exigir outcome.
+  outcome?: ResolveOutcome;
+  internalRating?: number; // 1-5 opcional auto-avaliacao agente/IA
+  reason?: string; // motivo opcional max 500 chars
+  sendCsatToCustomer?: boolean; // default true — pede CSAT depois
+  resolvedByUserId?: string | null;
 }
 
 export interface FindOrCreateForCustomerInput {
@@ -812,6 +837,20 @@ class ConversationService {
       throw new ValidationError(`resolvedBy inválido: ${input.resolvedBy}`);
     }
 
+    // SLA v2 — validacao de outcome/internalRating quando fornecidos.
+    if (input.outcome !== undefined && !RESOLVE_OUTCOMES.includes(input.outcome)) {
+      throw new ValidationError(`outcome inválido: ${input.outcome}`);
+    }
+    if (input.internalRating !== undefined && input.internalRating !== null) {
+      const r = input.internalRating;
+      if (!Number.isInteger(r) || r < 1 || r > 5) {
+        throw new ValidationError('internalRating deve ser inteiro entre 1 e 5');
+      }
+    }
+    if (input.reason !== undefined && input.reason !== null && input.reason.length > 500) {
+      throw new ValidationError('reason deve ter no máximo 500 caracteres');
+    }
+
     const existing = await this.requireConversation(id, accountId);
 
     if (existing.status === 'resolved') {
@@ -832,14 +871,27 @@ class ConversationService {
     });
 
     // CYCLE-WIRE: fecha o ciclo ativo com snapshot do estado atual e
-    // resolvedBy/resolvedByUserId. Best-effort (não aborta resolve).
+    // resolvedBy/resolvedByUserId. SLA v2: persiste outcome, internalRating,
+    // resolveReason e csatRequested no ConversationCycle. Best-effort (não aborta resolve).
     try {
+      // sendCsatToCustomer default true — sempre marca pra cron CSAT enviar
+      const sendCsat = input.sendCsatToCustomer !== false;
+      const resolvedByUserId =
+        input.resolvedByUserId !== undefined
+          ? input.resolvedByUserId
+          : input.resolvedBy === 'ai'
+            ? null
+            : input.userId;
       await conversationCycleService.closeCycle(
         id,
         accountId,
         {
           resolvedBy: input.resolvedBy,
-          resolvedByUserId: input.resolvedBy === 'ai' ? null : input.userId,
+          resolvedByUserId,
+          outcome: input.outcome ?? null,
+          internalRating: input.internalRating ?? null,
+          resolveReason: input.reason ?? null,
+          csatRequested: sendCsat,
         },
         { resolvedAt }
       );

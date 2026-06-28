@@ -41,6 +41,7 @@ const adminOnlyRoutes = new Set<string>([
   '/admin/teams',
   '/admin/canned-responses',
   '/admin/sla-policies',
+  '/admin/sla/dashboard',
   '/admin/custom-attributes',
 ]);
 

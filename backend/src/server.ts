@@ -13,6 +13,7 @@ import { whatsappRateLimitService } from './services/whatsapp-rate-limit.service
 import { whatsappWarmupService } from './services/whatsapp-warmup.service';
 import { webhookOutboundService } from './services/webhook-outbound.service';
 import { slaService } from './services/sla.service';
+import { csatService } from './services/csat.service';
 import { agentAvailabilityService } from './services/agent-availability.service';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import routes from './routes';
@@ -149,6 +150,31 @@ async function bootstrap() {
       }
     }, SLA_CRON_INTERVAL_MS);
     logger.info(`⏱️  SLA breach check cron started (interval: ${SLA_CRON_INTERVAL_MS / 1000}s)`);
+  }
+
+  // SLA v2 — cron CSAT (5 min). Envia mensagem de CSAT pros ciclos elegiveis
+  // (csatRequested=true, csatSentAt=null, resolvedAt entre [now-24h, now-15min]).
+  {
+    const CSAT_CRON_INTERVAL_MS = 5 * 60 * 1000;
+    let isSendingCsat = false;
+    setInterval(async () => {
+      if (isSendingCsat) {
+        logger.warn('[csat] previous send still running, skipping tick');
+        return;
+      }
+      isSendingCsat = true;
+      try {
+        const result = await csatService.sendPendingCsatMessages();
+        if (result.sent > 0 || result.failed > 0) {
+          logger.info('[csat] sendPendingCsatMessages tick', { ...result });
+        }
+      } catch (err) {
+        logger.error('CSAT cron error:', err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        isSendingCsat = false;
+      }
+    }, CSAT_CRON_INTERVAL_MS);
+    logger.info(`💬 CSAT cron started (interval: ${CSAT_CRON_INTERVAL_MS / 1000}s)`);
   }
 
   // T-022 Sprint 4 — cron de "agente offline por inatividade" (1 min, 2min idle = offline)
