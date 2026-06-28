@@ -15,12 +15,13 @@
 import type {
   WarmupNumber,
   WarmupConversation,
-  WarmupTemplate,
 } from '@prisma/client';
 import { prisma } from '../config/database';
 import { evolutionService } from './evolution.service';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { warmupContentGenerator } from './warmup-content-generator';
+import type { GeneratedContent } from './ai/types';
 
 // ============================================
 // Types
@@ -50,6 +51,7 @@ interface PickContentResult {
   type: WarmupMessageType;
   content: string;
   templateId?: string;
+  source: GeneratedContent['source'];
 }
 
 // ============================================
@@ -186,27 +188,6 @@ function getTypeWeightsForDay(day: number): TypeWeights {
   if (day <= 14) return { text: 50, reaction: 25, audio: 15, sticker: 10, image: 0 };
   // Fase 4 (D15+): introduz image, mistura plena
   return { text: 40, reaction: 20, audio: 20, sticker: 10, image: 10 };
-}
-
-function getCategoryForDay(day: number): 'greeting' | 'response' | 'smalltalk' {
-  if (day <= 3) return Math.random() < 0.7 ? 'greeting' : 'response';
-  if (day <= 7) {
-    const r = Math.random();
-    if (r < 0.4) return 'greeting';
-    if (r < 0.8) return 'response';
-    return 'smalltalk';
-  }
-  return 'smalltalk';
-}
-
-function pickTypeByWeights(weights: TypeWeights): WarmupMessageType {
-  const total = weights.text + weights.reaction + weights.audio + weights.sticker + weights.image;
-  let r = Math.random() * total;
-  if ((r -= weights.text) < 0) return 'text';
-  if ((r -= weights.reaction) < 0) return 'reaction';
-  if ((r -= weights.audio) < 0) return 'audio';
-  if ((r -= weights.sticker) < 0) return 'sticker';
-  return 'image';
 }
 
 // ============================================
@@ -357,12 +338,23 @@ class WhatsappWarmupService {
           continue;
         }
 
-        // 7) Gerar conteudo
-        const content = await this.pickContent(fresh, conv);
-        if (!content) {
+        // 7) Gerar conteudo (template ou IA, decidido pela pool via generator)
+        const generated = await warmupContentGenerator.pick(
+          num.pool,
+          conv,
+          fresh,
+        );
+        if (!generated.content) {
+          // Sem template/conteudo disponivel — skip do tick
           skipped++;
           continue;
         }
+        const content: PickContentResult = {
+          type: generated.type as WarmupMessageType,
+          content: generated.content,
+          templateId: generated.templateId,
+          source: generated.source,
+        };
 
         // 8) Enviar via Evolution
         const result = await this.sendViaEvolution(fresh, peer, content);
@@ -495,53 +487,6 @@ class WhatsappWarmupService {
   }
 
   // ============================================
-  // Picker de conteudo
-  // ============================================
-
-  private async pickContent(
-    num: WarmupNumber,
-    _conv: WarmupConversation
-  ): Promise<PickContentResult | null> {
-    void _conv;
-    const day = num.currentDay;
-    const weights = getTypeWeightsForDay(day);
-    const type = pickTypeByWeights(weights);
-
-    // Para text, escolher categoria por fase. Para reaction/audio/sticker/image,
-    // usar categoria correspondente (reaction|media).
-    const category =
-      type === 'text'
-        ? getCategoryForDay(day)
-        : type === 'reaction'
-          ? 'reaction'
-          : 'media';
-
-    // Busca templates globais (accountId null) OU da conta (preferindo conta)
-    const templates: WarmupTemplate[] = await prisma.warmupTemplate.findMany({
-      where: {
-        type,
-        category,
-        isActive: true,
-        OR: [{ accountId: null }, { accountId: num.accountId }],
-      },
-    });
-    if (templates.length === 0) return null;
-
-    // Picker ponderado
-    const total = templates.reduce((s, t) => s + (t.weight ?? 1), 0);
-    let r = Math.random() * total;
-    let chosen = templates[0];
-    for (const t of templates) {
-      r -= t.weight ?? 1;
-      if (r <= 0) {
-        chosen = t;
-        break;
-      }
-    }
-    return { type, content: chosen.content, templateId: chosen.id };
-  }
-
-  // ============================================
   // Envio via Evolution
   // ============================================
 
@@ -587,6 +532,7 @@ class WhatsappWarmupService {
         receiverId: peer.id,
         messageType: content.type,
         content: content.content,
+        contentSource: content.source,
         evolutionMsgId: result.evolutionMsgId ?? null,
         status: result.success ? 'sent' : 'failed',
         errorMessage: result.error ?? null,

@@ -3,6 +3,8 @@
  *
  * Todas as rotas exigem JWT + accountId + role admin/super_admin.
  *
+ *   GET    /ai/providers                lista providers IA + se estao habilitados
+ *
  *   POST   /pools                       criar pool
  *   GET    /pools                       listar pools (query includePublic)
  *   PATCH  /pools/:id                   editar pool
@@ -30,6 +32,11 @@ const router = Router();
 router.use(authenticate);
 router.use(requireAccountId);
 router.use(requireRole('admin', 'super_admin'));
+
+// ─── AI Providers ─────────────────────────────────────────────────────────
+router.get('/ai/providers', (req, res, next) =>
+  warmupController.listAiProviders(req, res, next)
+);
 
 // ─── Pools ────────────────────────────────────────────────────────────────
 router.get('/pools', (req, res, next) =>

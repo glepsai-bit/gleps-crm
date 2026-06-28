@@ -54,6 +54,15 @@ const envSchema = z.object({
 
   // Logging
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+
+  // Warmup AI providers (T-023 Fase 2) — TODAS opcionais.
+  // Se a chave de um provider estiver vazia, o provider eh marcado disabled
+  // e o registry ignora ele; a geracao cai pra template automaticamente.
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
+  WARMUP_AI_TIMEOUT_MS: z.string().transform(Number).default('5000'),
 });
 
 const parsed = envSchema.safeParse(process.env);

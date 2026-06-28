@@ -28,10 +28,16 @@ import {
   ValidationError,
 } from '../utils/errors';
 import { logger } from '../utils/logger';
+import {
+  listEnabledProviders,
+  isAnyProviderEnabled,
+} from '../services/ai/registry';
 
 // ─── Schemas ─────────────────────────────────────────────────────────────────
 
 const strategyEnum = z.enum(['conservative', 'moderate', 'aggressive']);
+const aiProviderEnum = z.enum(['openai', 'anthropic']);
+const aiToneEnum = z.enum(['casual', 'formal', 'gym', 'clinic']);
 
 const poolNameSchema = z
   .string()
@@ -39,20 +45,48 @@ const poolNameSchema = z
   .min(1, 'name nao pode ser vazio')
   .max(160, 'name maximo 160 caracteres');
 
-const createPoolSchema = z.object({
-  name: poolNameSchema,
-  description: z.string().trim().max(500).optional(),
-  isPublic: z.boolean().optional(),
-  strategy: strategyEnum.optional(),
-});
+const createPoolSchema = z
+  .object({
+    name: poolNameSchema,
+    description: z.string().trim().max(500).optional(),
+    isPublic: z.boolean().optional(),
+    strategy: strategyEnum.optional(),
+    useAi: z.boolean().default(false),
+    aiProvider: aiProviderEnum.optional().nullable(),
+    aiModel: z.string().trim().min(1).max(100).optional().nullable(),
+    aiTone: aiToneEnum.default('casual'),
+  })
+  .superRefine((data, ctx) => {
+    if (data.useAi && !data.aiProvider) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['aiProvider'],
+        message: 'aiProvider obrigatorio quando useAi=true',
+      });
+    }
+  });
 
-const updatePoolSchema = z.object({
-  name: poolNameSchema.optional(),
-  description: z.string().trim().max(500).nullable().optional(),
-  isPublic: z.boolean().optional(),
-  isActive: z.boolean().optional(),
-  strategy: strategyEnum.optional(),
-});
+const updatePoolSchema = z
+  .object({
+    name: poolNameSchema.optional(),
+    description: z.string().trim().max(500).nullable().optional(),
+    isPublic: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+    strategy: strategyEnum.optional(),
+    useAi: z.boolean().optional(),
+    aiProvider: aiProviderEnum.optional().nullable(),
+    aiModel: z.string().trim().min(1).max(100).optional().nullable(),
+    aiTone: aiToneEnum.optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.useAi === true && data.aiProvider === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['aiProvider'],
+        message: 'aiProvider obrigatorio quando useAi=true',
+      });
+    }
+  });
 
 // E.164 — '+' obrigatorio + 8 a 15 digitos. Aceita tambem formatos sem '+'
 // (Evolution costuma armazenar '5534999...'). Padronizamos: se nao tem '+',
@@ -162,6 +196,10 @@ class ApiWarmupController {
           isPublic: p.isPublic,
           isActive: p.isActive,
           strategy: p.strategy,
+          useAi: p.useAi,
+          aiProvider: p.aiProvider,
+          aiModel: p.aiModel,
+          aiTone: p.aiTone,
           numbersCount: p._count.numbers,
           createdAt: p.createdAt.toISOString(),
           updatedAt: p.updatedAt.toISOString(),
@@ -193,6 +231,10 @@ class ApiWarmupController {
           description: body.description,
           isPublic: body.isPublic ?? false,
           strategy: body.strategy ?? 'moderate',
+          useAi: body.useAi,
+          aiProvider: body.aiProvider ?? null,
+          aiModel: body.aiModel ?? null,
+          aiTone: body.aiTone,
         },
       });
 
@@ -200,6 +242,8 @@ class ApiWarmupController {
         accountId,
         poolId: pool.id,
         name: pool.name,
+        useAi: pool.useAi,
+        aiProvider: pool.aiProvider,
       });
 
       res.status(201).json({
@@ -211,6 +255,10 @@ class ApiWarmupController {
           isPublic: pool.isPublic,
           isActive: pool.isActive,
           strategy: pool.strategy,
+          useAi: pool.useAi,
+          aiProvider: pool.aiProvider,
+          aiModel: pool.aiModel,
+          aiTone: pool.aiTone,
           createdAt: pool.createdAt.toISOString(),
           updatedAt: pool.updatedAt.toISOString(),
         },
@@ -245,6 +293,18 @@ class ApiWarmupController {
       });
       if (!existing) throw new NotFoundError('Pool');
 
+      // Cross-field validation pos-merge: se o estado final terminar com
+      // useAi=true mas sem aiProvider efetivo, rejeita.
+      const finalUseAi = body.useAi ?? existing.useAi;
+      const finalAiProvider =
+        body.aiProvider === undefined ? existing.aiProvider : body.aiProvider;
+      if (finalUseAi && !finalAiProvider) {
+        throw new ValidationError(
+          'aiProvider obrigatorio quando useAi=true',
+          { field: 'aiProvider' }
+        );
+      }
+
       const updated = await prisma.warmupPool.update({
         where: { id },
         data: {
@@ -255,6 +315,12 @@ class ApiWarmupController {
           ...(body.isPublic !== undefined ? { isPublic: body.isPublic } : {}),
           ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
           ...(body.strategy !== undefined ? { strategy: body.strategy } : {}),
+          ...(body.useAi !== undefined ? { useAi: body.useAi } : {}),
+          ...(body.aiProvider !== undefined
+            ? { aiProvider: body.aiProvider }
+            : {}),
+          ...(body.aiModel !== undefined ? { aiModel: body.aiModel } : {}),
+          ...(body.aiTone !== undefined ? { aiTone: body.aiTone } : {}),
         },
       });
 
@@ -267,6 +333,10 @@ class ApiWarmupController {
           isPublic: updated.isPublic,
           isActive: updated.isActive,
           strategy: updated.strategy,
+          useAi: updated.useAi,
+          aiProvider: updated.aiProvider,
+          aiModel: updated.aiModel,
+          aiTone: updated.aiTone,
           createdAt: updated.createdAt.toISOString(),
           updatedAt: updated.updatedAt.toISOString(),
         },
@@ -310,6 +380,34 @@ class ApiWarmupController {
         next(new ValidationError('id invalido', { issues: error.issues }));
         return;
       }
+      next(error);
+    }
+  }
+
+  // ─── AI Providers ─────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/warmup/ai/providers
+   * Lista providers de IA registrados e se cada um esta habilitado em runtime
+   * (env var presente). Usado pela UI pra mostrar/desabilitar selects de
+   * provider no formulario de pool.
+   */
+  async listAiProviders(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const accountId = req.user?.accountId;
+      if (!accountId) throw new UnauthorizedError();
+
+      const providers = listEnabledProviders();
+      res.status(200).json({
+        providers,
+        anyEnabled: isAnyProviderEnabled(),
+        supportedTones: ['casual', 'formal', 'gym', 'clinic'],
+      });
+    } catch (error) {
       next(error);
     }
   }

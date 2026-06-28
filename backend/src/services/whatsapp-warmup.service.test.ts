@@ -599,3 +599,114 @@ describe('whatsappWarmupService.tick', () => {
     }
   });
 });
+
+// ============================================
+// AI providers — contentSource em WarmupMessage (T-023 Fase 2)
+// ============================================
+
+import { openaiProvider } from './ai/openai-provider';
+import { anthropicProvider } from './ai/anthropic-provider';
+
+describe('whatsappWarmupService.tick — contentSource via providers IA', () => {
+  it('pool useAi=true via OpenAI -> WarmupMessage.contentSource = "openai"', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    // pool com useAi habilitado e provider openai
+    const pool = await prismaTest.warmupPool.create({
+      data: {
+        accountId: acc.id,
+        name: 'pool-ai-openai',
+        strategy: 'moderate',
+        useAi: true,
+        aiProvider: 'openai',
+        aiTone: 'casual',
+      },
+    });
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511AI-A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511AI-B' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    vi.spyOn(openaiProvider, 'isEnabled').mockReturnValue(true);
+    vi.spyOn(openaiProvider, 'generate').mockResolvedValue({
+      source: 'openai',
+      type: 'text',
+      content: 'oi tudo bem',
+      model: 'gpt-4o-mini',
+      cost: { inputTokens: 30, outputTokens: 3, usdEstimate: 0.0000063 },
+    });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T18:00:00Z');
+    const r = await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    expect(r.sent).toBeGreaterThan(0);
+    const msgs = await prismaTest.warmupMessage.findMany({});
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs.every(m => m.contentSource === 'openai')).toBe(true);
+  });
+
+  it('pool useAi=true via Anthropic -> WarmupMessage.contentSource = "anthropic"', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await prismaTest.warmupPool.create({
+      data: {
+        accountId: acc.id,
+        name: 'pool-ai-anthropic',
+        strategy: 'moderate',
+        useAi: true,
+        aiProvider: 'anthropic',
+        aiTone: 'casual',
+      },
+    });
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511AI-C' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511AI-D' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    vi.spyOn(anthropicProvider, 'isEnabled').mockReturnValue(true);
+    vi.spyOn(anthropicProvider, 'generate').mockResolvedValue({
+      source: 'anthropic',
+      type: 'text',
+      content: 'beleza',
+      model: 'claude-haiku-4-5-20251001',
+      cost: { inputTokens: 20, outputTokens: 2, usdEstimate: 0.00003 },
+    });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T18:00:00Z');
+    const r = await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    expect(r.sent).toBeGreaterThan(0);
+    const msgs = await prismaTest.warmupMessage.findMany({});
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs.every(m => m.contentSource === 'anthropic')).toBe(true);
+  });
+
+  it('pool useAi=false (default) -> WarmupMessage.contentSource = "template" (regressao)', async () => {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511T-A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511T-B' });
+
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+
+    const oaiSpy = vi.spyOn(openaiProvider, 'generate');
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T18:00:00Z');
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    expect(oaiSpy).not.toHaveBeenCalled();
+    const msgs = await prismaTest.warmupMessage.findMany({});
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs.every(m => m.contentSource === 'template')).toBe(true);
+  });
+});

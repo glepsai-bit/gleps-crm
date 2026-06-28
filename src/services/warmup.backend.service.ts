@@ -29,6 +29,25 @@ export type WarmupNumberStatus =
   | 'banned'
   | 'error';
 
+/**
+ * T-023 Fase 2 — providers de IA disponiveis e tons de conversa
+ * suportados pelo backend.
+ */
+export type WarmupAiProviderName = 'openai' | 'anthropic';
+export type WarmupTone = 'casual' | 'formal' | 'gym' | 'clinic';
+
+export interface WarmupAiProviderInfo {
+  name: WarmupAiProviderName;
+  defaultModel: string;
+  enabled: boolean;
+}
+
+export interface WarmupAiProvidersResponse {
+  providers: WarmupAiProviderInfo[];
+  anyEnabled: boolean;
+  supportedTones: WarmupTone[];
+}
+
 export interface WarmupPool {
   id: string;
   accountId: string;
@@ -37,6 +56,16 @@ export interface WarmupPool {
   isPublic: boolean;
   isActive: boolean;
   strategy: WarmupStrategy;
+  /**
+   * T-023 — configuracao opcional de geracao de conteudo via IA. Quando
+   * useAi=false (default) o backend usa templates do banco; quando true,
+   * usa o provider/model/tom escolhidos com fallback automatico para
+   * template em caso de falha.
+   */
+  useAi: boolean;
+  aiProvider: WarmupAiProviderName | null;
+  aiModel: string | null;
+  aiTone: WarmupTone | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -89,6 +118,11 @@ export interface CreatePoolInput {
   description?: string | null;
   isPublic?: boolean;
   strategy: WarmupStrategy;
+  /** T-023 — IA opt-in por pool. Default false. */
+  useAi?: boolean;
+  aiProvider?: WarmupAiProviderName | null;
+  aiModel?: string | null;
+  aiTone?: WarmupTone | null;
 }
 
 export interface UpdatePoolInput {
@@ -97,6 +131,10 @@ export interface UpdatePoolInput {
   isPublic?: boolean;
   isActive?: boolean;
   strategy?: WarmupStrategy;
+  useAi?: boolean;
+  aiProvider?: WarmupAiProviderName | null;
+  aiModel?: string | null;
+  aiTone?: WarmupTone | null;
 }
 
 export interface ListPoolsParams {
@@ -134,6 +172,10 @@ function unwrap<T = unknown>(response: unknown): T {
 
 function mapPool(raw: Record<string, unknown>): WarmupPool {
   const r = raw as Record<string, unknown>;
+  const providerRaw = (r.aiProvider ?? r.ai_provider ?? null) as
+    | string
+    | null;
+  const toneRaw = (r.aiTone ?? r.ai_tone ?? null) as string | null;
   return {
     id: String(r.id),
     accountId: String(r.accountId ?? r.account_id ?? ''),
@@ -142,6 +184,19 @@ function mapPool(raw: Record<string, unknown>): WarmupPool {
     isPublic: Boolean(r.isPublic ?? r.is_public ?? false),
     isActive: Boolean(r.isActive ?? r.is_active ?? true),
     strategy: ((r.strategy as WarmupStrategy) ?? 'moderate') as WarmupStrategy,
+    useAi: Boolean(r.useAi ?? r.use_ai ?? false),
+    aiProvider:
+      providerRaw === 'openai' || providerRaw === 'anthropic'
+        ? (providerRaw as WarmupAiProviderName)
+        : null,
+    aiModel: (r.aiModel ?? r.ai_model ?? null) as string | null,
+    aiTone:
+      toneRaw === 'casual' ||
+      toneRaw === 'formal' ||
+      toneRaw === 'gym' ||
+      toneRaw === 'clinic'
+        ? (toneRaw as WarmupTone)
+        : null,
     createdAt: String(r.createdAt ?? r.created_at ?? ''),
     updatedAt: String(r.updatedAt ?? r.updated_at ?? ''),
   };
@@ -289,6 +344,53 @@ export const warmupBackendService = {
     return (Array.isArray(raw) ? raw : []).map((s) =>
       mapDailyStats(s as Record<string, unknown>),
     );
+  },
+
+  // ----- AI Providers (T-023) -----
+
+  /**
+   * Lista providers de IA registrados no backend e indica quais estao
+   * habilitados em runtime (env vars presentes). Tambem retorna a lista
+   * canonica de tons suportados, evitando que a UI fique fora de sincronia
+   * com o backend.
+   */
+  async getAiProviders(): Promise<WarmupAiProvidersResponse> {
+    const response = await apiClient.get<unknown>(
+      API_ENDPOINTS.WARMUP.AI_PROVIDERS,
+    );
+    const raw = unwrap<Record<string, unknown>>(response);
+    const providersRaw = Array.isArray(raw?.providers)
+      ? (raw.providers as Record<string, unknown>[])
+      : [];
+    const providers: WarmupAiProviderInfo[] = providersRaw
+      .map((p) => {
+        const name = String(p.name ?? '');
+        if (name !== 'openai' && name !== 'anthropic') return null;
+        return {
+          name: name as WarmupAiProviderName,
+          defaultModel: String(p.defaultModel ?? p.default_model ?? ''),
+          enabled: Boolean(p.enabled),
+        } satisfies WarmupAiProviderInfo;
+      })
+      .filter((p): p is WarmupAiProviderInfo => p !== null);
+
+    const tonesRaw = Array.isArray(raw?.supportedTones)
+      ? (raw.supportedTones as unknown[])
+      : Array.isArray(raw?.supported_tones)
+        ? (raw.supported_tones as unknown[])
+        : [];
+    const supportedTones: WarmupTone[] = tonesRaw
+      .map((t) => String(t))
+      .filter(
+        (t): t is WarmupTone =>
+          t === 'casual' || t === 'formal' || t === 'gym' || t === 'clinic',
+      );
+
+    return {
+      providers,
+      anyEnabled: Boolean(raw?.anyEnabled ?? raw?.any_enabled ?? false),
+      supportedTones,
+    };
   },
 };
 

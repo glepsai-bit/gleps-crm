@@ -391,6 +391,7 @@ export const API_ENDPOINTS = {
     NUMBER_PAUSE: (id: string) => `/api/warmup/numbers/${id}/pause`,
     NUMBER_RESUME: (id: string) => `/api/warmup/numbers/${id}/resume`,
     NUMBER_STATS: (id: string) => `/api/warmup/numbers/${id}/stats`,
+    AI_PROVIDERS: '/api/warmup/ai/providers',
   },
 
   // ============= CHAT METRICS (T-022 — métricas do chat interno) =============

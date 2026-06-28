@@ -13,7 +13,7 @@
  * (incluindo tabelas warmup_*) no beforeEach.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
@@ -22,6 +22,8 @@ import * as bcrypt from 'bcryptjs';
 import { prismaTest } from '../test/setup';
 import { createTestAccount, authHeader } from '../test/helpers';
 import { createTestApp } from '../test/app';
+import { openaiProvider } from '../services/ai/openai-provider';
+import { anthropicProvider } from '../services/ai/anthropic-provider';
 
 const app = createTestApp();
 
@@ -500,5 +502,220 @@ describe('WarmupController — Numbers', () => {
       });
       expect(gone).toBeNull();
     });
+  });
+});
+
+// ─── Phase 3 — IA pluggable multi-provider ──────────────────────────────────
+
+describe('WarmupController — Pools com IA (Phase 3)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('POST /api/warmup/pools — useAi', () => {
+    it('useAi=true SEM aiProvider: 400 (refine)', async () => {
+      const { jwt } = await createTestAccount();
+
+      const res = await request(app)
+        .post('/api/warmup/pools')
+        .set(authHeader(jwt))
+        .send({ name: 'Pool IA', useAi: true });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('useAi=true + aiProvider=openai: 201 + persiste campos IA', async () => {
+      const { jwt } = await createTestAccount();
+
+      const res = await request(app)
+        .post('/api/warmup/pools')
+        .set(authHeader(jwt))
+        .send({
+          name: 'Pool OpenAI',
+          useAi: true,
+          aiProvider: 'openai',
+          aiModel: 'gpt-4o-mini',
+          aiTone: 'gym',
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data).toMatchObject({
+        name: 'Pool OpenAI',
+        useAi: true,
+        aiProvider: 'openai',
+        aiModel: 'gpt-4o-mini',
+        aiTone: 'gym',
+      });
+    });
+
+    it('default: useAi=false + aiTone=casual quando nao enviados', async () => {
+      const { jwt } = await createTestAccount();
+
+      const res = await request(app)
+        .post('/api/warmup/pools')
+        .set(authHeader(jwt))
+        .send({ name: 'Pool Default' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.useAi).toBe(false);
+      expect(res.body.data.aiProvider).toBeNull();
+      expect(res.body.data.aiTone).toBe('casual');
+    });
+  });
+
+  describe('PATCH /api/warmup/pools/:id — troca provider', () => {
+    it('muda provider de openai pra anthropic', async () => {
+      const { account, jwt } = await createTestAccount();
+      const pool = await prismaTest.warmupPool.create({
+        data: {
+          accountId: account.id,
+          name: 'Pool Switch',
+          strategy: 'moderate',
+          useAi: true,
+          aiProvider: 'openai',
+          aiModel: 'gpt-4o-mini',
+          aiTone: 'casual',
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/api/warmup/pools/${pool.id}`)
+        .set(authHeader(jwt))
+        .send({
+          aiProvider: 'anthropic',
+          aiModel: 'claude-haiku-4-5-20251001',
+          aiTone: 'clinic',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.aiProvider).toBe('anthropic');
+      expect(res.body.data.aiModel).toBe('claude-haiku-4-5-20251001');
+      expect(res.body.data.aiTone).toBe('clinic');
+      expect(res.body.data.useAi).toBe(true);
+
+      const persisted = await prismaTest.warmupPool.findUnique({
+        where: { id: pool.id },
+      });
+      expect(persisted?.aiProvider).toBe('anthropic');
+    });
+
+    it('PATCH useAi=true sem aiProvider em pool que nao tem provider: 400', async () => {
+      const { account, jwt } = await createTestAccount();
+      const pool = await prismaTest.warmupPool.create({
+        data: {
+          accountId: account.id,
+          name: 'Pool Sem IA',
+          strategy: 'moderate',
+          useAi: false,
+          aiProvider: null,
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/api/warmup/pools/${pool.id}`)
+        .set(authHeader(jwt))
+        .send({ useAi: true });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('GET /api/warmup/pools — campos IA expostos', () => {
+    it('retorna useAi/aiProvider/aiModel/aiTone na listagem', async () => {
+      const { account, jwt } = await createTestAccount();
+      await prismaTest.warmupPool.create({
+        data: {
+          accountId: account.id,
+          name: 'Pool IA Lista',
+          strategy: 'moderate',
+          useAi: true,
+          aiProvider: 'anthropic',
+          aiModel: 'claude-haiku-4-5-20251001',
+          aiTone: 'formal',
+        },
+      });
+
+      const res = await request(app)
+        .get('/api/warmup/pools')
+        .set(authHeader(jwt));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0]).toMatchObject({
+        name: 'Pool IA Lista',
+        useAi: true,
+        aiProvider: 'anthropic',
+        aiModel: 'claude-haiku-4-5-20251001',
+        aiTone: 'formal',
+      });
+    });
+  });
+});
+
+describe('WarmupController — GET /api/warmup/ai/providers (Phase 3)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('sem JWT: 401', async () => {
+    const res = await request(app).get('/api/warmup/ai/providers');
+    expect(res.status).toBe(401);
+  });
+
+  it('sem env vars: anyEnabled=false + ambos providers enabled=false', async () => {
+    vi.spyOn(openaiProvider, 'isEnabled').mockReturnValue(false);
+    vi.spyOn(anthropicProvider, 'isEnabled').mockReturnValue(false);
+
+    const { jwt } = await createTestAccount();
+
+    const res = await request(app)
+      .get('/api/warmup/ai/providers')
+      .set(authHeader(jwt));
+
+    expect(res.status).toBe(200);
+    expect(res.body.anyEnabled).toBe(false);
+    expect(res.body.supportedTones).toEqual([
+      'casual',
+      'formal',
+      'gym',
+      'clinic',
+    ]);
+    expect(res.body.providers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'openai',
+          enabled: false,
+          defaultModel: expect.any(String),
+        }),
+        expect.objectContaining({
+          name: 'anthropic',
+          enabled: false,
+          defaultModel: expect.any(String),
+        }),
+      ])
+    );
+  });
+
+  it('com mock OPENAI_API_KEY (openai isEnabled=true): openai.enabled=true + anyEnabled=true', async () => {
+    vi.spyOn(openaiProvider, 'isEnabled').mockReturnValue(true);
+    vi.spyOn(anthropicProvider, 'isEnabled').mockReturnValue(false);
+
+    const { jwt } = await createTestAccount();
+
+    const res = await request(app)
+      .get('/api/warmup/ai/providers')
+      .set(authHeader(jwt));
+
+    expect(res.status).toBe(200);
+    expect(res.body.anyEnabled).toBe(true);
+
+    const oai = res.body.providers.find(
+      (p: { name: string }) => p.name === 'openai'
+    );
+    const anth = res.body.providers.find(
+      (p: { name: string }) => p.name === 'anthropic'
+    );
+    expect(oai?.enabled).toBe(true);
+    expect(anth?.enabled).toBe(false);
   });
 });

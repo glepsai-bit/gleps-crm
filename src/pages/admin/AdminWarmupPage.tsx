@@ -38,6 +38,9 @@ import warmupBackendService, {
   WarmupNumberStatus,
   WarmupStrategy,
   WarmupDailyStats,
+  WarmupTone,
+  WarmupAiProviderName,
+  WarmupAiProvidersResponse,
   CreatePoolInput,
   CreateNumberInput,
 } from '@/services/warmup.backend.service';
@@ -52,6 +55,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -106,6 +110,10 @@ const poolSchema = z.object({
   description: z.string().optional(),
   strategy: z.enum(['conservative', 'moderate', 'aggressive']),
   isPublic: z.boolean().optional(),
+  useAi: z.boolean().optional(),
+  aiProvider: z.enum(['openai', 'anthropic']).optional(),
+  aiModel: z.string().optional(),
+  aiTone: z.enum(['casual', 'formal', 'gym', 'clinic']).optional(),
 });
 type PoolFormData = z.infer<typeof poolSchema>;
 
@@ -136,6 +144,23 @@ const STATUS_LABELS: Record<WarmupNumberStatus, string> = {
   paused: 'Pausado',
   banned: 'Banido',
   error: 'Erro',
+};
+
+/**
+ * T-023 — labels visiveis pros providers e tons. Mantemos o valor canonico
+ * do backend (openai/anthropic e casual/formal/gym/clinic) e mapeamos pra
+ * texto em portugues so na UI.
+ */
+const PROVIDER_LABELS: Record<WarmupAiProviderName, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+};
+
+const TONE_LABELS: Record<WarmupTone, string> = {
+  casual: 'Casual',
+  formal: 'Profissional',
+  gym: 'Academia',
+  clinic: 'Clínica',
 };
 
 // ============================================
@@ -195,6 +220,41 @@ function plannedToday(n: WarmupNumber): number {
   return typeof raw === 'number' ? raw : 0;
 }
 
+/**
+ * T-023 — badge que indica a origem do conteudo do pool. Cinza
+ * "Templates" quando useAi=false (default), roxo "OpenAI" quando o
+ * pool usa GPT, verde "Anthropic" quando usa Claude.
+ */
+function AiSourceBadge({ pool }: { pool: WarmupPool }) {
+  if (!pool.useAi) {
+    return (
+      <Badge variant="secondary" className="text-[10px] py-0">
+        Templates
+      </Badge>
+    );
+  }
+  if (pool.aiProvider === 'openai') {
+    return (
+      <Badge className="bg-purple-600 text-white hover:bg-purple-600 text-[10px] py-0">
+        OpenAI
+      </Badge>
+    );
+  }
+  if (pool.aiProvider === 'anthropic') {
+    return (
+      <Badge className="bg-green-600 text-white hover:bg-green-600 text-[10px] py-0">
+        Anthropic
+      </Badge>
+    );
+  }
+  // useAi=true sem provider valido (estado intermediario) -> fallback visual.
+  return (
+    <Badge variant="outline" className="text-[10px] py-0">
+      IA
+    </Badge>
+  );
+}
+
 // ============================================
 // Página
 // ============================================
@@ -248,6 +308,20 @@ export default function AdminWarmupPage() {
     queryFn: () => inboxesBackendService.listInboxes(),
   });
 
+  // T-023 — providers de IA disponiveis no backend (env vars setadas) +
+  // tons suportados. Usado pra habilitar/desabilitar o checkbox "Usar IA"
+  // e popular o select de provider no dialog de pool.
+  const { data: aiData } = useQuery<WarmupAiProvidersResponse>({
+    queryKey: ['warmup-ai-providers'],
+    queryFn: () => warmupBackendService.getAiProviders(),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const enabledAiProviders = useMemo(
+    () => (aiData?.providers ?? []).filter((p) => p.enabled),
+    [aiData],
+  );
+
   const whatsappInstances = useMemo(
     () =>
       inboxes.filter(
@@ -279,7 +353,7 @@ export default function AdminWarmupPage() {
   });
 
   const mutateUpdatePool = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: CreatePoolInput }) =>
+    mutationFn: ({ id, body }: { id: string; body: Partial<CreatePoolInput> }) =>
       warmupBackendService.updatePool(id, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['warmup-pools'] });
@@ -411,6 +485,10 @@ export default function AdminWarmupPage() {
       description: '',
       strategy: 'moderate',
       isPublic: false,
+      useAi: false,
+      aiProvider: undefined,
+      aiModel: '',
+      aiTone: 'casual',
     },
   });
 
@@ -430,6 +508,10 @@ export default function AdminWarmupPage() {
       description: '',
       strategy: 'moderate',
       isPublic: false,
+      useAi: false,
+      aiProvider: undefined,
+      aiModel: '',
+      aiTone: 'casual',
     });
     setPoolDialogOpen(true);
   };
@@ -441,16 +523,50 @@ export default function AdminWarmupPage() {
       description: pool.description ?? '',
       strategy: pool.strategy,
       isPublic: pool.isPublic,
+      useAi: pool.useAi,
+      aiProvider: pool.aiProvider ?? undefined,
+      aiModel: pool.aiModel ?? '',
+      aiTone: pool.aiTone ?? 'casual',
     });
     setPoolDialogOpen(true);
   };
 
   const onSubmitPool = (data: PoolFormData) => {
+    // T-023 — quando o usuario nao opta por IA, mandamos useAi=false e
+    // limpamos os outros campos pra evitar inconsistencia (provider escolhido
+    // sem useAi nao deveria ser persistido). Quando opta por IA, validamos
+    // que escolheu um provider habilitado antes de submeter.
+    const wantsAi = !!data.useAi;
+    if (wantsAi) {
+      if (!data.aiProvider) {
+        poolForm.setError('aiProvider', {
+          type: 'manual',
+          message: 'Selecione um provider de IA',
+        });
+        return;
+      }
+      const providerStillEnabled = enabledAiProviders.some(
+        (p) => p.name === data.aiProvider,
+      );
+      if (!providerStillEnabled) {
+        poolForm.setError('aiProvider', {
+          type: 'manual',
+          message: 'Provider nao esta mais habilitado no servidor',
+        });
+        return;
+      }
+    }
+
+    const aiModelTrimmed = data.aiModel?.trim();
     const body: CreatePoolInput = {
       name: data.name,
       description: data.description?.trim() ? data.description.trim() : null,
       strategy: data.strategy,
       isPublic: !!data.isPublic,
+      useAi: wantsAi,
+      aiProvider: wantsAi ? (data.aiProvider as WarmupAiProviderName) : null,
+      aiModel: wantsAi && aiModelTrimmed ? aiModelTrimmed : null,
+      aiTone: wantsAi ? (data.aiTone ?? 'casual') : null,
     };
     if (editingPool) {
       mutateUpdatePool.mutate({ id: editingPool.id, body });
@@ -548,10 +664,11 @@ export default function AdminWarmupPage() {
                             {pool.description}
                           </p>
                         )}
-                        <div className="flex items-center gap-2 mt-1.5">
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                           <Badge variant="outline" className="text-[10px] py-0">
                             {STRATEGY_LABELS[pool.strategy]}
                           </Badge>
+                          <AiSourceBadge pool={pool} />
                           {pool.isPublic && (
                             <Badge
                               variant="secondary"
@@ -842,6 +959,129 @@ export default function AdminWarmupPage() {
                 Moderada: D1=10, D7=40, D14=80, D21=180, D22+ estabiliza em 200
                 envios/dia.
               </p>
+            </div>
+
+            {/* T-023 — secao opcional de IA. Default unchecked. Desabilita
+                quando nenhum provider esta habilitado no servidor. */}
+            <div className="space-y-3 rounded-md border bg-muted/40 p-3">
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="pool-use-ai"
+                  checked={!!poolForm.watch('useAi')}
+                  disabled={!aiData?.anyEnabled}
+                  onCheckedChange={(checked) => {
+                    const enabled = checked === true;
+                    poolForm.setValue('useAi', enabled, {
+                      shouldValidate: true,
+                    });
+                    // Pre-seleciona o primeiro provider habilitado quando
+                    // o usuario marca o checkbox sem nenhum provider escolhido.
+                    if (
+                      enabled &&
+                      !poolForm.getValues('aiProvider') &&
+                      enabledAiProviders.length > 0
+                    ) {
+                      poolForm.setValue(
+                        'aiProvider',
+                        enabledAiProviders[0].name,
+                        { shouldValidate: true },
+                      );
+                    }
+                    poolForm.clearErrors('aiProvider');
+                  }}
+                />
+                <div className="space-y-0.5">
+                  <Label
+                    htmlFor="pool-use-ai"
+                    className="cursor-pointer text-sm font-medium"
+                  >
+                    Usar IA pra gerar mensagens (opcional)
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {aiData?.anyEnabled
+                      ? 'Quando ativo, o conteudo das conversas sinteticas e gerado por IA. Caso falhe, cai automaticamente nos templates do banco.'
+                      : 'Nenhum provedor de IA configurado. Configure OPENAI_API_KEY ou ANTHROPIC_API_KEY no backend para habilitar.'}
+                  </p>
+                </div>
+              </div>
+
+              {poolForm.watch('useAi') && aiData?.anyEnabled && (
+                <div className="space-y-3 pl-6">
+                  <div className="space-y-1">
+                    <Label>Provedor de IA</Label>
+                    <Select
+                      value={poolForm.watch('aiProvider') ?? ''}
+                      onValueChange={(v) => {
+                        poolForm.setValue(
+                          'aiProvider',
+                          v as WarmupAiProviderName,
+                          { shouldValidate: true },
+                        );
+                        poolForm.clearErrors('aiProvider');
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione um provedor" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {enabledAiProviders.map((p) => (
+                          <SelectItem key={p.name} value={p.name}>
+                            {PROVIDER_LABELS[p.name]} ({p.defaultModel})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {poolForm.formState.errors.aiProvider && (
+                      <p className="text-xs text-destructive">
+                        {poolForm.formState.errors.aiProvider.message}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label>Tom da conversa</Label>
+                    <Select
+                      value={poolForm.watch('aiTone') ?? 'casual'}
+                      onValueChange={(v) =>
+                        poolForm.setValue('aiTone', v as WarmupTone, {
+                          shouldValidate: true,
+                        })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(aiData?.supportedTones ?? [
+                          'casual',
+                          'formal',
+                          'gym',
+                          'clinic',
+                        ]).map((t) => (
+                          <SelectItem key={t} value={t}>
+                            {TONE_LABELS[t]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label>Modelo customizado (opcional)</Label>
+                    <Input
+                      {...poolForm.register('aiModel')}
+                      placeholder={
+                        enabledAiProviders.find(
+                          (p) => p.name === poolForm.watch('aiProvider'),
+                        )?.defaultModel ?? 'Padrao do provider'
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Em branco usa o modelo padrao do provider selecionado.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3">

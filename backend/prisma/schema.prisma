@@ -1586,6 +1586,10 @@ model WarmupPool {
   isPublic    Boolean  @default(false) @map("is_public") // pool compartilhado entre accounts (admin global)
   isActive    Boolean  @default(true) @map("is_active")
   strategy    String   @default("moderate") @db.VarChar(20) // conservative | moderate | aggressive
+  useAi       Boolean  @default(false) @map("use_ai")
+  aiProvider  String?  @map("ai_provider") @db.VarChar(20) // 'openai' | 'anthropic' | null
+  aiModel     String?  @map("ai_model") @db.VarChar(80)    // 'gpt-4o-mini' | 'claude-haiku-4-5' | null (auto-default por provider)
+  aiTone      String?  @default("casual") @map("ai_tone") @db.VarChar(20) // casual | formal | gym | clinic
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1663,6 +1667,7 @@ model WarmupMessage {
   receiver        WarmupNumber       @relation("WarmupMessageReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
   messageType     String             @map("message_type") @db.VarChar(20) // text | audio | sticker | image | reaction
   content         String?            @db.Text
+  contentSource   String             @default("template") @map("content_source") @db.VarChar(20) // 'template' | 'openai' | 'anthropic' | 'fallback'
   evolutionMsgId  String?            @map("evolution_msg_id") @db.VarChar(255)
   status          String             @default("pending") @db.VarChar(20) // pending | sent | delivered | failed
   errorMessage    String?            @map("error_message") @db.VarChar(1000)
