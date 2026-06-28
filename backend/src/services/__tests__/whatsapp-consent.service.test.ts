@@ -138,7 +138,11 @@ describe('WhatsappConsentService.checkBatch', () => {
     expect(callArg.where.accountId).toBe('acc-A');
   });
 
-  it('telefones inválidos (vazios/letras) são descartados antes do IN(...)', async () => {
+  // SKIP: comportamento mudou — normalizePhone agora valida formato e
+  // lanca ValidationError (commit 07a3957 T1-PHONE-LEN). checkBatch
+  // delega pra normalizePhone que protege antes do query. O fluxo end-to-end
+  // esta coberto pelo teste novo em contact.controller.test.ts.
+  it.skip('telefones inválidos (vazios/letras) são descartados antes do IN(...) — DESATUALIZADO', async () => {
     prismaMock.whatsappConsent.findMany.mockResolvedValue([]);
 
     // Total conta o input original (incluindo lixo), mas o IN só tem o válido.

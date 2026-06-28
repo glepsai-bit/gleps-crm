@@ -107,7 +107,11 @@ describe('ApiKeyService', () => {
       expect(storedHash).not.toBe(result.plaintextKey);
     });
 
-    it('passes accountId, name, createdById to prisma.create and forces scopes=[] (T-022 placeholder)', async () => {
+    // SKIP: comportamento mudou — apiKeyService.generate agora aceita
+    // scopes do caller (T-022 Missao 2 / commit 875867d). Cobertura real
+    // do novo comportamento esta em test/integration via supertest no
+    // controller integration-kanban (T4 do test suite).
+    it.skip('passes accountId, name, createdById to prisma.create and forces scopes=[] (T-022 placeholder — DESATUALIZADO)', async () => {
       prismaMock.apiKey.create.mockResolvedValue({
         id: 'uuid-4',
         name: 'Named Key',
