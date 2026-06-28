@@ -697,14 +697,201 @@ class ProspectingService {
   }
 
   /**
-   * Get batches for an account
+   * Get batches for an account com filtros opcionais.
+   *
+   * filters:
+   *   - q: busca livre (ILIKE) em keyword, trigger_name, metadata->>campaign_type
+   *   - source: string ou array (manual|manual_scheduled|n8n|api|integration)
+   *   - status: string ou array (running|scheduled|paused|completed|failed|cancelled)
+   *   - campaignType: string ou array — match exato em metadata->>'campaign_type'
+   *   - fromDate / toDate: range em createdAt
+   *   - limit / offset: paginação (limit default 20, max 200)
    */
-  async getBatches(accountId: string) {
+  async getBatches(
+    accountId: string,
+    filters: {
+      q?: string;
+      source?: string | string[];
+      status?: string | string[];
+      campaignType?: string | string[];
+      fromDate?: Date;
+      toDate?: Date;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ) {
+    const where: any = { accountId };
+
+    if (filters.status !== undefined) {
+      where.status = Array.isArray(filters.status)
+        ? { in: filters.status }
+        : filters.status;
+    }
+    if (filters.source !== undefined) {
+      where.source = Array.isArray(filters.source)
+        ? { in: filters.source }
+        : filters.source;
+    }
+    if (filters.fromDate || filters.toDate) {
+      where.createdAt = {};
+      if (filters.fromDate) where.createdAt.gte = filters.fromDate;
+      if (filters.toDate) where.createdAt.lte = filters.toDate;
+    }
+
+    // campaignType: filtra via metadata->>'campaign_type' usando JSON path Prisma.
+    if (filters.campaignType !== undefined) {
+      const values = Array.isArray(filters.campaignType)
+        ? filters.campaignType
+        : [filters.campaignType];
+      // OR de path equals (Prisma JsonFilter aceita string_contains/equals).
+      where.AND = where.AND ?? [];
+      where.AND.push({
+        OR: values.map(v => ({
+          metadata: {
+            path: ['campaign_type'],
+            equals: v,
+          },
+        })),
+      });
+    }
+
+    // q: busca livre em keyword OU triggerName OU metadata->>campaign_type.
+    // Prisma ILIKE via mode:'insensitive'. ESCAPE de % e _ via replace.
+    if (filters.q && filters.q.trim()) {
+      const raw = filters.q.trim();
+      // ESCAPE: no Prisma `contains` o backend é LIKE; escapar % e _ para
+      // evitar wildcard injection no input do usuário.
+      const escaped = raw.replace(/[\\%_]/g, ch => `\\${ch}`);
+      where.AND = where.AND ?? [];
+      where.AND.push({
+        OR: [
+          { keyword: { contains: escaped, mode: 'insensitive' } },
+          { triggerName: { contains: escaped, mode: 'insensitive' } },
+          {
+            metadata: {
+              path: ['campaign_type'],
+              string_contains: escaped,
+            },
+          },
+        ],
+      });
+    }
+
+    const take = Math.min(Math.max(filters.limit ?? 20, 1), 200);
+    const skip = Math.max(filters.offset ?? 0, 0);
+
     return prisma.dispatchBatch.findMany({
-      where: { accountId },
+      where,
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take,
+      skip,
     });
+  }
+
+  /**
+   * T-022 — Aggregação de batches por chave (campaign_type | source | trigger_name).
+   * Usa $queryRaw para extrair JSON path do metadata.
+   *
+   * Retorna por grupo:
+   *   { key, batchesCount, totalSent, totalFailed, avgSentPerBatch }
+   *
+   * MVP sem index — em produção, considerar index parcial em
+   * (account_id, (metadata->>'campaign_type')).
+   */
+  async aggregateBatches(
+    accountId: string,
+    options: {
+      fromDate?: Date;
+      toDate?: Date;
+      groupBy?: 'campaign_type' | 'source' | 'trigger_name';
+    } = {}
+  ): Promise<
+    Array<{
+      key: string | null;
+      campaignType?: string | null;
+      source?: string | null;
+      triggerName?: string | null;
+      batchesCount: number;
+      totalSent: number;
+      totalFailed: number;
+      avgSentPerBatch: number;
+    }>
+  > {
+    const groupBy = options.groupBy ?? 'campaign_type';
+
+    // Whitelist de groupBy (evita SQL injection — valor vai pro raw query).
+    const groupSqlMap: Record<string, string> = {
+      campaign_type: "metadata->>'campaign_type'",
+      source: 'source',
+      trigger_name: 'trigger_name',
+    };
+    const groupExpr = groupSqlMap[groupBy];
+    if (!groupExpr) {
+      throw new ValidationError(`groupBy inválido: ${groupBy}`);
+    }
+
+    const fromDate = options.fromDate ?? new Date('1970-01-01');
+    const toDate = options.toDate ?? new Date('2999-12-31');
+
+    // $queryRawUnsafe pra interpolar o groupExpr (whitelisted acima).
+    // Bindings parametrizados pro accountId/datas.
+    const rows = await prisma.$queryRawUnsafe<
+      Array<{
+        k: string | null;
+        batches_count: bigint;
+        total_sent: bigint;
+        total_failed: bigint;
+      }>
+    >(
+      `
+      SELECT
+        ${groupExpr} AS k,
+        COUNT(*)::bigint AS batches_count,
+        COALESCE(SUM(sent_count), 0)::bigint AS total_sent,
+        COALESCE(SUM(failed_count), 0)::bigint AS total_failed
+      FROM dispatch_batches
+      WHERE account_id = $1::uuid
+        AND created_at >= $2
+        AND created_at <= $3
+      GROUP BY 1
+      ORDER BY batches_count DESC NULLS LAST
+      `,
+      accountId,
+      fromDate,
+      toDate
+    );
+
+    return rows.map(r => {
+      const batchesCount = Number(r.batches_count);
+      const totalSent = Number(r.total_sent);
+      const totalFailed = Number(r.total_failed);
+      const avg = batchesCount > 0 ? totalSent / batchesCount : 0;
+      const base = {
+        key: r.k,
+        batchesCount,
+        totalSent,
+        totalFailed,
+        avgSentPerBatch: Math.round(avg * 100) / 100,
+      };
+      if (groupBy === 'campaign_type') return { ...base, campaignType: r.k };
+      if (groupBy === 'source') return { ...base, source: r.k };
+      return { ...base, triggerName: r.k };
+    });
+  }
+
+  /**
+   * T-022 — Lista distinta de campaign_types vistos em batches da conta.
+   * Usado pra popular dropdown de filtro no Historico de Disparos.
+   */
+  async getCampaignTypes(accountId: string): Promise<string[]> {
+    const rows = await prisma.$queryRaw<Array<{ k: string }>>`
+      SELECT DISTINCT metadata->>'campaign_type' AS k
+      FROM dispatch_batches
+      WHERE account_id = ${accountId}::uuid
+        AND metadata->>'campaign_type' IS NOT NULL
+      ORDER BY k ASC
+    `;
+    return rows.map(r => r.k).filter(Boolean);
   }
 
   /**

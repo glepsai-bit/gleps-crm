@@ -1,16 +1,41 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Zap, CheckCircle2, XCircle, Clock, Download, ArrowLeft, Phone, StopCircle, Ban, Eye } from 'lucide-react';
+import {
+  Zap, CheckCircle2, XCircle, Clock, Download, ArrowLeft, Phone, StopCircle, Ban, Eye, Search, Filter, X as XIcon,
+} from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
 import { useToast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
+import {
+  prospectingBackendService,
+  type DispatchBatchRow,
+  type BatchListFilters,
+} from '@/services/prospecting.backend.service';
+import {
+  extractCampaignType,
+  getCampaignTypeMeta,
+  getSourceMeta,
+} from './campaignTypeLookup';
 
 interface DispatchBatch {
   id: string;
@@ -23,6 +48,11 @@ interface DispatchBatch {
   delay_seconds: number;
   started_at: string;
   completed_at: string | null;
+  // T-022 — novos campos pra cards enriquecidos / filtros
+  source: string | null;
+  triggerName: string | null;
+  campaignType: string | null;
+  metadata: Record<string, unknown> | null;
 }
 
 interface DispatchLog {
@@ -36,8 +66,12 @@ interface DispatchLog {
   sent_at: string | null;
 }
 
-// Map backend camelCase to snake_case for consistency
+// Map backend camelCase/snake_case to flat shape do componente. Mantém
+// compat com o Supabase legado (snake_case puro) e com o Prisma JSON
+// (camelCase). T-022 adiciona source/triggerName/campaignType/metadata.
 function normalizeBatch(b: any): DispatchBatch {
+  const metadata: Record<string, unknown> | null =
+    b.metadata && typeof b.metadata === 'object' ? (b.metadata as Record<string, unknown>) : null;
   return {
     id: b.id,
     keyword: b.keyword ?? null,
@@ -47,8 +81,12 @@ function normalizeBatch(b: any): DispatchBatch {
     failed_count: b.failed_count ?? b.failedCount ?? 0,
     status: b.status,
     delay_seconds: b.delay_seconds ?? b.delaySeconds ?? 30,
-    started_at: b.started_at ?? b.startedAt,
+    started_at: b.started_at ?? b.startedAt ?? b.created_at ?? b.createdAt ?? new Date().toISOString(),
     completed_at: b.completed_at ?? b.completedAt ?? null,
+    source: b.source ?? null,
+    triggerName: b.trigger_name ?? b.triggerName ?? null,
+    campaignType: extractCampaignType(metadata),
+    metadata,
   };
 }
 
@@ -70,46 +108,146 @@ interface Props {
   activeBatchId?: string | null;
 }
 
+/* ============================================================
+ * Filtros UI (estado)
+ * ============================================================ */
+
+interface MonitorFilters {
+  q: string;
+  source: string[];
+  status: string[];
+  campaignType: string;   // single select
+  fromDate: string;
+  toDate: string;
+}
+
+const EMPTY_FILTERS: MonitorFilters = {
+  q: '',
+  source: [],
+  status: [],
+  campaignType: 'all',
+  fromDate: '',
+  toDate: '',
+};
+
+const SOURCE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'manual', label: 'Manual' },
+  { value: 'manual_scheduled', label: 'Agendado' },
+  { value: 'n8n', label: 'n8n' },
+  { value: 'api', label: 'API' },
+  { value: 'integration', label: 'Integração' },
+];
+
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: 'completed', label: 'Concluído' },
+  { value: 'cancelled', label: 'Cancelado' },
+  { value: 'failed', label: 'Falhou' },
+  // running/scheduled/paused ficam na aba Agendadas — não mostramos aqui
+  // por default, mas habilitamos no filtro pra quem quiser revisitar.
+  { value: 'running', label: 'Em andamento' },
+  { value: 'scheduled', label: 'Agendado' },
+  { value: 'paused', label: 'Pausado' },
+];
+
+function buildBackendFilters(f: MonitorFilters): BatchListFilters {
+  const out: BatchListFilters = {};
+  if (f.q.trim()) out.q = f.q.trim();
+  if (f.source.length > 0) out.source = f.source;
+  if (f.status.length > 0) out.status = f.status;
+  if (f.campaignType && f.campaignType !== 'all') out.campaignType = [f.campaignType];
+  if (f.fromDate) out.fromDate = f.fromDate;
+  if (f.toDate) {
+    // Inclui o dia inteiro: 23:59:59 do toDate.
+    out.toDate = `${f.toDate}T23:59:59.999Z`;
+  }
+  out.limit = 50;
+  return out;
+}
+
+function activeFilterCount(f: MonitorFilters): number {
+  let n = 0;
+  if (f.q.trim()) n += 1;
+  if (f.source.length > 0) n += 1;
+  if (f.status.length > 0) n += 1;
+  if (f.campaignType && f.campaignType !== 'all') n += 1;
+  if (f.fromDate) n += 1;
+  if (f.toDate) n += 1;
+  return n;
+}
+
+/* ============================================================
+ * Component
+ * ============================================================ */
+
 export function DispatchMonitor({ accountId, activeBatchId }: Props) {
   const { toast } = useToast();
-  const [batches, setBatches] = useState<DispatchBatch[]>([]);
+  const [filters, setFilters] = useState<MonitorFilters>(EMPTY_FILTERS);
   const [selectedBatch, setSelectedBatch] = useState<DispatchBatch | null>(null);
   // Auto-select roda APENAS uma vez por activeBatchId. Sem essa ref, o polling
   // de 3s re-disparava o auto-select e jogava o usuario de volta pro detalhe
   // mesmo depois dele clicar "Voltar" — bug visual "tela troca sozinha".
   const autoSelectedFor = useRef<string | null>(null);
   const [logs, setLogs] = useState<DispatchLog[]>([]);
-  const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
-  // NOTA: Retomar/pausar batches agora eh EXCLUSIVAMENTE pela aba "Agendadas"
-  // (AgendadasTab + novo state machine), que preserva a mensagem ORIGINAL da
-  // campanha. O handleResume legado daqui enviava texto hard-coded ('Ola {nome},
-  // tudo bem?'), trocando o conteudo da campanha por algo totalmente diferente
-  // — bug LGPD/marca (DM-9 / L3-001). Por isso o estado/botoes foram removidos.
+  // Fallback Supabase: state local quando NÃO usamos backend Express.
+  const [supabaseBatches, setSupabaseBatches] = useState<DispatchBatch[]>([]);
+  const [supabaseLoading, setSupabaseLoading] = useState(false);
 
-  const fetchBatches = useCallback(async () => {
-    if (!accountId) { setLoading(false); return; }
+  /* ---------------------- Query backend (com filtros) ---------------------- */
+  const backendFilters = useMemo(() => buildBackendFilters(filters), [filters]);
+  const backendBatchesQuery = useQuery<DispatchBatchRow[]>({
+    queryKey: ['prospecting-batches', backendFilters],
+    queryFn: () => prospectingBackendService.listBatches(backendFilters),
+    enabled: !!accountId && useBackend,
+    // 3s polling — mesmo intervalo do legado, mas via TanStack Query.
+    refetchInterval: selectedBatch ? false : 3000,
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
+
+  const campaignTypesQuery = useQuery<string[]>({
+    queryKey: ['prospecting-campaign-types', accountId],
+    queryFn: () => prospectingBackendService.getCampaignTypes(),
+    enabled: !!accountId && useBackend,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  /* ---------------------- Fallback Supabase ---------------------- */
+  const fetchSupabaseBatches = useCallback(async () => {
+    if (!accountId || useBackend) return;
+    setSupabaseLoading(true);
     try {
-      if (useBackend) {
-        const response = await apiClient.get<any>(API_ENDPOINTS.PROSPECTING.BATCHES);
-        const data = (response as any).data || response;
-        setBatches((Array.isArray(data) ? data : []).map(normalizeBatch));
-      } else {
-        const { data } = await supabase
-          .from('dispatch_batches')
-          .select('*')
-          .eq('account_id', accountId)
-          .order('created_at', { ascending: false })
-          .limit(20);
-        if (data) setBatches(data as DispatchBatch[]);
-      }
+      const { data } = await supabase
+        .from('dispatch_batches')
+        .select('*')
+        .eq('account_id', accountId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      setSupabaseBatches((data ?? []).map(normalizeBatch));
     } catch (err) {
-      console.error('Error loading batches:', err);
+      console.error('Error loading batches (supabase):', err);
     } finally {
-      setLoading(false);
+      setSupabaseLoading(false);
     }
   }, [accountId]);
 
+  useEffect(() => {
+    if (useBackend) return;
+    fetchSupabaseBatches();
+  }, [fetchSupabaseBatches]);
+
+  /* ---------------------- Batches normalizados ---------------------- */
+  const batches: DispatchBatch[] = useMemo(() => {
+    if (useBackend) {
+      return (backendBatchesQuery.data ?? []).map(normalizeBatch);
+    }
+    return supabaseBatches;
+  }, [backendBatchesQuery.data, supabaseBatches]);
+
+  const loading = useBackend ? backendBatchesQuery.isLoading : supabaseLoading;
+
+  /* ---------------------- Logs ---------------------- */
   const fetchLogs = useCallback(async (batchId: string) => {
     try {
       if (useBackend) {
@@ -129,12 +267,6 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     }
   }, []);
 
-  // Load batches
-  useEffect(() => {
-    setLoading(true);
-    fetchBatches();
-  }, [fetchBatches]);
-
   // Auto-select active batch — APENAS uma vez por activeBatchId.
   // Sem o guard de ref, o polling de 3s re-disparava esse effect e forcava
   // a navegacao pra tela de detalhe mesmo depois do usuario voltar pra lista.
@@ -148,37 +280,31 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     }
   }, [activeBatchId, batches]);
 
-  // Realtime or polling for batch updates
+  // Realtime Supabase (somente fallback)
   useEffect(() => {
-    if (!accountId) return;
+    if (useBackend || !accountId) return;
+    const channel = supabase
+      .channel('dispatch-batches-realtime')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'dispatch_batches',
+      }, () => {
+        // Mais simples: recarrega tudo. Volume é baixo (limit 20).
+        fetchSupabaseBatches();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [accountId, fetchSupabaseBatches]);
 
-    if (useBackend) {
-      // Poll every 3 seconds when there are running batches
-      const interval = setInterval(() => {
-        fetchBatches();
-        if (selectedBatch) fetchLogs(selectedBatch.id);
-      }, 3000);
-      return () => clearInterval(interval);
-    } else {
-      const channel = supabase
-        .channel('dispatch-batches-realtime')
-        .on('postgres_changes', {
-          event: '*',
-          schema: 'public',
-          table: 'dispatch_batches',
-        }, (payload) => {
-          const updated = payload.new as DispatchBatch;
-          setBatches(prev => {
-            const exists = prev.find(b => b.id === updated.id);
-            if (exists) return prev.map(b => b.id === updated.id ? updated : b);
-            return [updated, ...prev];
-          });
-          if (selectedBatch?.id === updated.id) setSelectedBatch(updated);
-        })
-        .subscribe();
-      return () => { supabase.removeChannel(channel); };
-    }
-  }, [accountId, selectedBatch?.id, fetchBatches, fetchLogs]);
+  // Poll logs em 3s quando há detalhe selecionado.
+  useEffect(() => {
+    if (!selectedBatch || !useBackend) return;
+    const interval = setInterval(() => {
+      fetchLogs(selectedBatch.id);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [selectedBatch?.id, fetchLogs]);
 
   // Load logs when batch selected
   useEffect(() => {
@@ -189,7 +315,6 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
   // DM-1: Resync selectedBatch quando o polling atualiza batches[]. Sem isso,
   // o usuario fica preso na detail view com contadores estaticos (0%/0 enviados)
   // mesmo quando o batch ja avancou no backend — bug "barra nao mexe".
-  // Comparamos campos relevantes pra evitar setState desnecessario em ref nova.
   useEffect(() => {
     if (!selectedBatch) return;
     const updated = batches.find(b => b.id === selectedBatch.id);
@@ -242,13 +367,12 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
         if (!data?.success) throw new Error('Falha ao cancelar');
       }
       toast({ title: 'Disparo cancelado', description: 'Os envios pendentes foram cancelados.' });
-      await fetchBatches();
-      // DM-7: forcar selectedBatch pra 'cancelled' imediatamente. Sem isso, o
-      // status local segue 'running' ate o proximo polling (3s) e o botao "Parar
-      // disparo" continua visivel/clicavel — UX confusa e potencial double-cancel.
-      // O useEffect de resync (acima) tambem cobre, mas aqui garantimos o estado
-      // certo na hora pro caso de a request de cancel ainda nao ter refletido
-      // no GET de batches (race).
+      if (useBackend) {
+        backendBatchesQuery.refetch();
+      } else {
+        fetchSupabaseBatches();
+      }
+      // DM-7: forcar selectedBatch pra 'cancelled' imediatamente.
       setSelectedBatch(prev => (prev && prev.id === batchId ? { ...prev, status: 'cancelled' } : prev));
     } catch (err: any) {
       toast({ title: 'Erro ao cancelar', description: err.message, variant: 'destructive' });
@@ -256,8 +380,6 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
       setCancelling(false);
     }
   };
-
-  // handleResume removido — ver nota no useState acima. Use a aba "Agendadas".
 
   const exportReport = () => {
     if (!selectedBatch || logs.length === 0) return;
@@ -267,7 +389,7 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
       l.error_message || '', l.sent_at ? new Date(l.sent_at).toLocaleTimeString('pt-BR') : '',
     ]);
     const csv = [headers.join(';'), ...rows.map(r => r.join(';'))].join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -284,9 +406,6 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
       case 'paused': return 'Pausado';
       case 'cancelled': return 'Cancelado';
       case 'failed': return 'Falhou';
-      // Nao mascarar status novos como "Falhou" — antes o default mostrava
-      // badge destructive vermelho em qualquer status desconhecido (ex: scheduled
-      // aparecia como "Falhou" na aba Disparos).
       default: return status;
     }
   };
@@ -305,12 +424,16 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
 
   const runningBatches = batches.filter(b => b.status === 'running');
 
-  // Detail view
+  /* ============================================================
+   * Detail view
+   * ============================================================ */
   if (selectedBatch) {
     const processed = selectedBatch.sent_count + selectedBatch.failed_count;
     const progress = selectedBatch.total_contacts > 0
       ? Math.round((processed / selectedBatch.total_contacts) * 100)
       : 0;
+    const sourceMeta = getSourceMeta(selectedBatch.source);
+    const campaignTypeMeta = getCampaignTypeMeta(selectedBatch.campaignType);
 
     return (
       <div className="space-y-4">
@@ -328,7 +451,7 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
                     onClick={() => setSelectedBatch(b)}
                   >
                     <Eye className="w-3 h-3 mr-1" />
-                    {b.keyword || 'Campanha'} ({b.sent_count}/{b.total_contacts})
+                    {b.keyword || b.triggerName || 'Campanha'} ({b.sent_count}/{b.total_contacts})
                   </Button>
                 ))}
               </div>
@@ -336,12 +459,19 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
           </Card>
         )}
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <Button variant="ghost" size="sm" onClick={() => setSelectedBatch(null)}>
             <ArrowLeft className="w-4 h-4 mr-1" />
             Voltar
           </Button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant={sourceMeta.variant} className={cn('text-xs', sourceMeta.badgeClass)}>
+              {sourceMeta.label}
+            </Badge>
+            <Badge variant="outline" className={cn('text-xs', campaignTypeMeta.badgeClass)}>
+              <span className="mr-1">{campaignTypeMeta.icon}</span>
+              {campaignTypeMeta.label}
+            </Badge>
             <Badge variant={getStatusVariant(selectedBatch.status)}>
               {getStatusLabel(selectedBatch.status)}
             </Badge>
@@ -356,15 +486,18 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
                 {cancelling ? 'Cancelando...' : 'Parar disparo'}
               </Button>
             )}
-            {/* Botao "Retomar disparo" removido — DM-9/L3-001: o handleResume
-                legado enviava mensagem hard-coded e quebrava a campanha original.
-                Use a aba "Agendadas" para retomar/pausar com mensagem preservada. */}
             <Button variant="outline" size="sm" onClick={exportReport}>
               <Download className="w-4 h-4 mr-1" />
               Exportar
             </Button>
           </div>
         </div>
+
+        {selectedBatch.triggerName && (
+          <div className="text-xs text-muted-foreground font-mono">
+            trigger: {selectedBatch.triggerName}
+          </div>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Card>
@@ -484,12 +617,150 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     );
   }
 
-  // Batch history list
+  /* ============================================================
+   * Filtros UI
+   * ============================================================ */
+  const filtersActive = activeFilterCount(filters);
+
+  const toggleArrayFilter = (key: 'source' | 'status', value: string) => {
+    setFilters((prev) => {
+      const current = new Set(prev[key]);
+      if (current.has(value)) current.delete(value);
+      else current.add(value);
+      return { ...prev, [key]: Array.from(current) };
+    });
+  };
+
+  const clearFilters = () => setFilters(EMPTY_FILTERS);
+
+  const filtersBar = (
+    <Card>
+      <CardContent className="py-3 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar (keyword, trigger, tipo)..."
+              className="pl-9 h-9"
+              value={filters.q}
+              onChange={(e) => setFilters((p) => ({ ...p, q: e.target.value }))}
+            />
+          </div>
+
+          {/* Source multi-select */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-9">
+                <Filter className="w-3.5 h-3.5 mr-1.5" />
+                Fonte{filters.source.length > 0 ? ` (${filters.source.length})` : ''}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-52 p-2">
+              <div className="space-y-1.5">
+                {SOURCE_OPTIONS.map((opt) => {
+                  const checked = filters.source.includes(opt.value);
+                  return (
+                    <Label
+                      key={opt.value}
+                      className="flex items-center gap-2 px-2 py-1.5 hover:bg-accent rounded cursor-pointer text-sm font-normal"
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={() => toggleArrayFilter('source', opt.value)}
+                      />
+                      {opt.label}
+                    </Label>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          {/* Status multi-select */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-9">
+                <Filter className="w-3.5 h-3.5 mr-1.5" />
+                Status{filters.status.length > 0 ? ` (${filters.status.length})` : ''}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-52 p-2">
+              <div className="space-y-1.5">
+                {STATUS_OPTIONS.map((opt) => {
+                  const checked = filters.status.includes(opt.value);
+                  return (
+                    <Label
+                      key={opt.value}
+                      className="flex items-center gap-2 px-2 py-1.5 hover:bg-accent rounded cursor-pointer text-sm font-normal"
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={() => toggleArrayFilter('status', opt.value)}
+                      />
+                      {opt.label}
+                    </Label>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          {/* Campaign type select */}
+          <Select
+            value={filters.campaignType}
+            onValueChange={(v) => setFilters((p) => ({ ...p, campaignType: v }))}
+          >
+            <SelectTrigger className="h-9 w-44">
+              <SelectValue placeholder="Tipo de campanha" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos os tipos</SelectItem>
+              {(campaignTypesQuery.data ?? []).map((t) => {
+                const meta = getCampaignTypeMeta(t);
+                return (
+                  <SelectItem key={t} value={t}>
+                    {meta.icon} {meta.label}
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+
+          {/* Date range — usa native date inputs (mais leve que DateRangePicker) */}
+          <Input
+            type="date"
+            className="h-9 w-[145px]"
+            value={filters.fromDate}
+            onChange={(e) => setFilters((p) => ({ ...p, fromDate: e.target.value }))}
+            aria-label="Data inicial"
+          />
+          <span className="text-xs text-muted-foreground">até</span>
+          <Input
+            type="date"
+            className="h-9 w-[145px]"
+            value={filters.toDate}
+            onChange={(e) => setFilters((p) => ({ ...p, toDate: e.target.value }))}
+            aria-label="Data final"
+          />
+
+          {filtersActive > 0 && (
+            <Button variant="ghost" size="sm" className="h-9" onClick={clearFilters}>
+              <XIcon className="w-3.5 h-3.5 mr-1" />
+              Limpar filtros ({filtersActive})
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+
+  /* ============================================================
+   * Loading / Empty
+   * ============================================================ */
   if (loading) {
-    // C2 — Skeleton cards (5) substituem o spinner "Carregando histórico..."
-    // pra dar feedback concreto de estrutura, não só atividade.
     return (
       <div className="space-y-3">
+        {filtersBar}
         <div className="flex items-center justify-between">
           <Skeleton className="h-6 w-44" />
         </div>
@@ -515,129 +786,204 @@ export function DispatchMonitor({ accountId, activeBatchId }: Props) {
     );
   }
 
-  if (batches.length === 0) {
+  if (batches.length === 0 && filtersActive === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Histórico de Disparos</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-            <Zap className="w-12 h-12 mb-4 opacity-30" />
-            <p className="text-sm font-medium">Nenhum disparo realizado ainda</p>
-            <p className="text-xs mt-1">Extraia leads e envie mensagens pela aba Extração</p>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Histórico de Disparos</h3>
-        {runningBatches.length > 0 && (
-          <Badge variant="secondary" className="animate-pulse">
-            {runningBatches.length} campanha(s) ativa(s)
-          </Badge>
-        )}
-      </div>
-
-      {runningBatches.length > 0 && (
-        <div className="space-y-2">
-          {runningBatches.map(batch => {
-            const processed = batch.sent_count + batch.failed_count;
-            const progress = batch.total_contacts > 0 ? Math.round((processed / batch.total_contacts) * 100) : 0;
-            return (
-              <Card
-                key={batch.id}
-                className="border-primary/30 bg-primary/5 cursor-pointer hover:shadow-md transition-shadow"
-                onClick={() => setSelectedBatch(batch)}
-              >
-                <CardContent className="pt-4 pb-3">
-                  <div className="flex items-start justify-between mb-2">
-                    <div>
-                      <p className="font-medium text-sm flex items-center gap-2">
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-                        </span>
-                        {batch.keyword || 'Disparo manual'}
-                        {batch.location && <span className="text-muted-foreground"> · 📍 {batch.location}</span>}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Iniciado {new Date(batch.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                      </p>
-                    </div>
-                    <div
-                      className="flex items-center gap-2"
-                      onClick={(e) => e.stopPropagation()}
-                      onPointerDown={(e) => e.stopPropagation()}
-                    >
-                      <Badge variant="secondary">Em andamento</Badge>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={(e) => { e.stopPropagation(); handleCancel(batch.id); }}
-                        disabled={cancelling}
-                      >
-                        <StopCircle className="w-3 h-3 mr-1" /> Parar
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-4 text-xs mb-2">
-                    <span className="text-green-600 font-medium">{batch.sent_count} enviados</span>
-                    {batch.failed_count > 0 && <span className="text-destructive font-medium">{batch.failed_count} erros</span>}
-                    <span className="text-muted-foreground">{batch.total_contacts} total</span>
-                  </div>
-                  <Progress value={progress} className="h-1.5" />
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Esconder scheduled/paused — esses estados pertencem a aba "Agendadas".
-          Sem esse filtro, agendamentos futuros aparecem na aba "Disparos" e
-          (com o fix de label/variant acima) ainda ficam visualmente duplicados. */}
-      {batches.filter(b => !['running', 'scheduled', 'paused'].includes(b.status)).map(batch => (
-        <Card
-          key={batch.id}
-          className="cursor-pointer hover:shadow-md transition-shadow"
-          onClick={() => setSelectedBatch(batch)}
-        >
-          <CardContent className="pt-4 pb-3">
-            <div className="flex items-start justify-between mb-2">
-              <div>
-                <p className="font-medium text-sm">
-                  {batch.keyword || 'Disparo manual'}
-                  {batch.location && <span className="text-muted-foreground"> · 📍 {batch.location}</span>}
-                </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {new Date(batch.started_at).toLocaleDateString('pt-BR')} {new Date(batch.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                </p>
-              </div>
-              <div
-                className="flex items-center gap-2"
-                onClick={(e) => e.stopPropagation()}
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                <Badge variant={getStatusVariant(batch.status)}>
-                  {getStatusLabel(batch.status)}
-                </Badge>
-                {/* Botao "Retomar" removido — ver nota em handleResume/useState. */}
-              </div>
-            </div>
-            <div className="flex items-center gap-4 text-xs">
-              <span className="text-green-600 font-medium">{batch.sent_count} enviados</span>
-              {batch.failed_count > 0 && <span className="text-destructive font-medium">{batch.failed_count} erros</span>}
-              <span className="text-muted-foreground">{batch.total_contacts} total</span>
+      <div className="space-y-3">
+        {filtersBar}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Histórico de Disparos</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+              <Zap className="w-12 h-12 mb-4 opacity-30" />
+              <p className="text-sm font-medium">Nenhum disparo realizado ainda</p>
+              <p className="text-xs mt-1">Extraia leads e envie mensagens pela aba Extração</p>
             </div>
           </CardContent>
         </Card>
+      </div>
+    );
+  }
+
+  /* ============================================================
+   * Listagem — cards enriquecidos
+   * ============================================================ */
+  // Quando filtros não estão ativos, escondemos scheduled/paused/running (a aba
+  // "Agendadas" cuida deles). Quando filtros estão ativos, respeitamos o que
+  // o backend devolver (ex: usuário marcou status=running de propósito).
+  const filteredBatches =
+    filters.status.length > 0
+      ? batches
+      : batches.filter((b) => !['scheduled', 'paused'].includes(b.status));
+
+  const visibleRunning = filteredBatches.filter((b) => b.status === 'running');
+  const visibleOthers = filteredBatches.filter((b) => b.status !== 'running');
+
+  return (
+    <div className="space-y-3">
+      {filtersBar}
+
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold">Histórico de Disparos</h3>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-xs">
+            {filteredBatches.length} disparo{filteredBatches.length === 1 ? '' : 's'}
+          </Badge>
+          {visibleRunning.length > 0 && (
+            <Badge variant="secondary" className="animate-pulse">
+              {visibleRunning.length} ativa{visibleRunning.length === 1 ? '' : 's'}
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {filteredBatches.length === 0 && filtersActive > 0 && (
+        <Card>
+          <CardContent className="py-10 flex flex-col items-center justify-center text-muted-foreground">
+            <Search className="w-10 h-10 mb-3 opacity-30" />
+            <p className="text-sm font-medium">Nenhum disparo bate com os filtros aplicados</p>
+            <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>
+              Limpar filtros
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {visibleRunning.length > 0 && (
+        <div className="space-y-2">
+          {visibleRunning.map((batch) => (
+            <BatchCard
+              key={batch.id}
+              batch={batch}
+              live
+              onSelect={() => setSelectedBatch(batch)}
+              onCancel={() => handleCancel(batch.id)}
+              cancelling={cancelling}
+              getStatusLabel={getStatusLabel}
+              getStatusVariant={getStatusVariant}
+            />
+          ))}
+        </div>
+      )}
+
+      {visibleOthers.map((batch) => (
+        <BatchCard
+          key={batch.id}
+          batch={batch}
+          onSelect={() => setSelectedBatch(batch)}
+          getStatusLabel={getStatusLabel}
+          getStatusVariant={getStatusVariant}
+        />
       ))}
     </div>
+  );
+}
+
+/* ============================================================
+ * BatchCard — header enriquecido (badges source/campaign_type + trigger)
+ * ============================================================ */
+
+interface BatchCardProps {
+  batch: DispatchBatch;
+  live?: boolean;
+  onSelect: () => void;
+  onCancel?: () => void;
+  cancelling?: boolean;
+  getStatusLabel: (status: string) => string;
+  getStatusVariant: (status: string) => 'default' | 'secondary' | 'destructive' | 'outline';
+}
+
+function BatchCard({
+  batch,
+  live = false,
+  onSelect,
+  onCancel,
+  cancelling,
+  getStatusLabel,
+  getStatusVariant,
+}: BatchCardProps) {
+  const sourceMeta = getSourceMeta(batch.source);
+  const campaignTypeMeta = getCampaignTypeMeta(batch.campaignType);
+  const processed = batch.sent_count + batch.failed_count;
+  const progress = batch.total_contacts > 0 ? Math.round((processed / batch.total_contacts) * 100) : 0;
+  const title = batch.keyword || batch.triggerName || 'Disparo manual';
+
+  return (
+    <Card
+      className={cn(
+        'cursor-pointer hover:shadow-md transition-shadow',
+        live && 'border-primary/30 bg-primary/5'
+      )}
+      onClick={onSelect}
+    >
+      <CardContent className="pt-4 pb-3">
+        <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              {live && (
+                <span className="relative flex h-2 w-2 flex-shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                </span>
+              )}
+              <p className="font-medium text-sm truncate">{title}</p>
+              <Badge variant={sourceMeta.variant} className={cn('text-[10px] py-0 h-5', sourceMeta.badgeClass)}>
+                {sourceMeta.label}
+              </Badge>
+              <Badge variant="outline" className={cn('text-[10px] py-0 h-5', campaignTypeMeta.badgeClass)}>
+                <span className="mr-1">{campaignTypeMeta.icon}</span>
+                {campaignTypeMeta.label}
+              </Badge>
+            </div>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <p className="text-xs text-muted-foreground">
+                {live
+                  ? `Iniciado ${new Date(batch.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
+                  : `${new Date(batch.started_at).toLocaleDateString('pt-BR')} ${new Date(batch.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`}
+              </p>
+              {batch.location && (
+                <p className="text-xs text-muted-foreground">📍 {batch.location}</p>
+              )}
+              {batch.triggerName && (
+                <span className="text-[10px] font-mono text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded">
+                  trigger: {batch.triggerName}
+                </span>
+              )}
+            </div>
+          </div>
+          <div
+            className="flex items-center gap-2 flex-shrink-0"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <Badge variant={live ? 'secondary' : getStatusVariant(batch.status)}>
+              {live ? 'Em andamento' : getStatusLabel(batch.status)}
+            </Badge>
+            {live && onCancel && (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={(e) => { e.stopPropagation(); onCancel(); }}
+                disabled={cancelling}
+              >
+                <StopCircle className="w-3 h-3 mr-1" /> Parar
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-4 text-xs mb-2 flex-wrap">
+          <span className="text-muted-foreground">
+            <strong className="text-foreground">{batch.total_contacts}</strong> contatos
+          </span>
+          <span className="text-green-600 font-medium">{batch.sent_count} enviados</span>
+          {batch.failed_count > 0 && (
+            <span className="text-destructive font-medium">{batch.failed_count} falhas</span>
+          )}
+        </div>
+        {live && <Progress value={progress} className="h-1.5" />}
+      </CardContent>
+    </Card>
   );
 }

@@ -158,6 +158,9 @@ export const API_ENDPOINTS = {
     AUDIENCES: '/api/prospecting/audiences',
     AUDIENCE: (id: string) => `/api/prospecting/audiences/${id}`,
     BATCHES_SCHEDULED: '/api/prospecting/batches/scheduled',
+    // T-022 — agregação / dropdown de campaign_types (vide prospecting.controller.ts)
+    BATCHES_AGGREGATE: '/api/prospecting/batches/aggregate',
+    BATCH_CAMPAIGN_TYPES: '/api/prospecting/batches/campaign-types',
     DISPATCH_START: '/api/dispatch/send-batch',
     BATCH_CANCEL: (id: string) => `/api/prospecting/batches/${id}`,
     BATCH_PAUSE: (id: string) => `/api/prospecting/batches/${id}/pause`,

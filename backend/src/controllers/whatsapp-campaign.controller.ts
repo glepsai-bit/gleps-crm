@@ -89,12 +89,19 @@ const sendBatchSchema = z
     { message: 'scheduledAt deve ser futuro', path: ['scheduledAt'] }
   );
 
+const stringOrArray = z.union([z.string(), z.array(z.string())]);
+
 const listBatchesSchema = z.object({
-  status: z.string().optional(),
-  source: z.string().optional(),
+  status: stringOrArray.optional(),
+  source: stringOrArray.optional(),
   triggerName: z.string().optional(),
   fromDate: z.string().optional(),
   toDate: z.string().optional(),
+  // T-022 — filtros extras
+  q: z.string().optional(),
+  campaignType: stringOrArray.optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
 });
 
 const batchIdParamSchema = z.string().uuid('ID deve ser UUID valido');
@@ -235,10 +242,14 @@ export class WhatsappCampaignController {
 
       const filters: ListBatchesFilters = {
         status: query.status,
-        source: query.source as CampaignSource | undefined,
+        source: query.source as CampaignSource | CampaignSource[] | undefined,
         triggerName: query.triggerName,
-        fromDate: parseDate(query.fromDate),
-        toDate: parseDate(query.toDate),
+        fromDate: parseDate(query.fromDate as string | undefined),
+        toDate: parseDate(query.toDate as string | undefined),
+        q: query.q,
+        campaignType: query.campaignType,
+        limit: query.limit,
+        offset: query.offset,
       };
 
       const result = await whatsappCampaignService.listBatches(accountId, filters);

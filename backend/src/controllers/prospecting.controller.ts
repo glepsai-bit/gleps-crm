@@ -38,6 +38,34 @@ const resumeSchema = z.object({
 // ZodError eh capturado pelo error.middleware e devolve 400 (nao 500).
 const batchIdParamSchema = z.string().uuid('ID deve ser UUID valido');
 
+// T-022 — filtros do GET /api/prospecting/batches
+// Aceita string|array para source/status/campaignType (Express parseia ?key=a&key=b como array)
+const stringOrArray = z.union([z.string(), z.array(z.string())]);
+
+const getBatchesQuerySchema = z.object({
+  q: z.string().optional(),
+  source: stringOrArray.optional(),
+  status: stringOrArray.optional(),
+  campaignType: stringOrArray.optional(),
+  fromDate: z.string().optional(),
+  toDate: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
+const aggregateQuerySchema = z.object({
+  fromDate: z.string().optional(),
+  toDate: z.string().optional(),
+  groupBy: z.enum(['campaign_type', 'source', 'trigger_name']).optional(),
+});
+
+function parseDateOrUndefined(value?: string): Date | undefined {
+  if (!value) return undefined;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d;
+}
+
 export class ProspectingController {
   async extractLeads(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -107,8 +135,50 @@ export class ProspectingController {
 
   async getBatches(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const batches = await prospectingService.getBatches(req.user!.accountId!);
+      const query = getBatchesQuerySchema.parse(req.query ?? {});
+      const batches = await prospectingService.getBatches(req.user!.accountId!, {
+        q: query.q,
+        source: query.source,
+        status: query.status,
+        campaignType: query.campaignType,
+        fromDate: parseDateOrUndefined(query.fromDate),
+        toDate: parseDateOrUndefined(query.toDate),
+        limit: query.limit,
+        offset: query.offset,
+      });
       res.json({ data: batches });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * T-022 — GET /api/prospecting/batches/aggregate
+   * Agrega batches por chave (campaign_type | source | trigger_name).
+   * Default groupBy=campaign_type.
+   */
+  async aggregateBatches(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const query = aggregateQuerySchema.parse(req.query ?? {});
+      const result = await prospectingService.aggregateBatches(req.user!.accountId!, {
+        fromDate: parseDateOrUndefined(query.fromDate),
+        toDate: parseDateOrUndefined(query.toDate),
+        groupBy: query.groupBy ?? 'campaign_type',
+      });
+      res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * T-022 — GET /api/prospecting/batches/campaign-types
+   * Lista distinta de campaign_types para popular dropdown de filtro UI.
+   */
+  async getCampaignTypes(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const types = await prospectingService.getCampaignTypes(req.user!.accountId!);
+      res.json({ data: types });
     } catch (error) {
       next(error);
     }

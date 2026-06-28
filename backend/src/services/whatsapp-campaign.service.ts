@@ -60,11 +60,16 @@ export interface SendBatchResult {
 }
 
 export interface ListBatchesFilters {
-  status?: string;
-  source?: CampaignSource;
+  status?: string | string[];
+  source?: CampaignSource | CampaignSource[] | string | string[];
   triggerName?: string;
   fromDate?: Date;
   toDate?: Date;
+  // T-022 — filtros extras de busca + paginação
+  q?: string;
+  campaignType?: string | string[];
+  limit?: number;
+  offset?: number;
 }
 
 // ============================================
@@ -993,8 +998,12 @@ class WhatsappCampaignService {
   async listBatches(accountId: string, filters: ListBatchesFilters = {}): Promise<DispatchBatch[]> {
     const where: any = { accountId };
 
-    if (filters.status) where.status = filters.status;
-    if (filters.source) where.source = filters.source;
+    if (filters.status !== undefined) {
+      where.status = Array.isArray(filters.status) ? { in: filters.status } : filters.status;
+    }
+    if (filters.source !== undefined) {
+      where.source = Array.isArray(filters.source) ? { in: filters.source } : filters.source;
+    }
     if (filters.triggerName) where.triggerName = filters.triggerName;
 
     if (filters.fromDate || filters.toDate) {
@@ -1003,10 +1012,49 @@ class WhatsappCampaignService {
       if (filters.toDate) where.createdAt.lte = filters.toDate;
     }
 
+    // T-022 — campaignType via metadata->>'campaign_type'
+    if (filters.campaignType !== undefined) {
+      const values = Array.isArray(filters.campaignType)
+        ? filters.campaignType
+        : [filters.campaignType];
+      where.AND = where.AND ?? [];
+      where.AND.push({
+        OR: values.map(v => ({
+          metadata: {
+            path: ['campaign_type'],
+            equals: v,
+          },
+        })),
+      });
+    }
+
+    // T-022 — q (busca livre) em keyword, triggerName, metadata->>campaign_type
+    if (filters.q && filters.q.trim()) {
+      const raw = filters.q.trim();
+      const escaped = raw.replace(/[\\%_]/g, ch => `\\${ch}`);
+      where.AND = where.AND ?? [];
+      where.AND.push({
+        OR: [
+          { keyword: { contains: escaped, mode: 'insensitive' } },
+          { triggerName: { contains: escaped, mode: 'insensitive' } },
+          {
+            metadata: {
+              path: ['campaign_type'],
+              string_contains: escaped,
+            },
+          },
+        ],
+      });
+    }
+
+    const take = Math.min(Math.max(filters.limit ?? 200, 1), 500);
+    const skip = Math.max(filters.offset ?? 0, 0);
+
     return prisma.dispatchBatch.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      take: 200,
+      take,
+      skip,
     });
   }
 

@@ -13,6 +13,7 @@ import { DispatchMonitor } from '@/components/extracao/DispatchMonitor';
 import { SaveAudienceDialog } from '@/components/extracao/SaveAudienceDialog';
 import { SavedAudiencesTab } from '@/components/extracao/SavedAudiencesTab';
 import { CampaignDashboard } from '@/components/extracao/CampaignDashboard';
+import { DispatchTypeDashboard } from '@/components/extracao/DispatchTypeDashboard';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -661,7 +662,7 @@ export default function AdminExtracaoPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} activationMode="manual" className="space-y-4">
-        <TabsList className="w-full max-w-2xl sm:grid sm:grid-cols-5">
+        <TabsList className="w-full max-w-3xl sm:grid sm:grid-cols-6">
           <TabsTrigger value="extracao" className="gap-1 text-xs sm:text-sm">
             <Search className="w-4 h-4" /> Extração
           </TabsTrigger>
@@ -676,6 +677,10 @@ export default function AdminExtracaoPage() {
           </TabsTrigger>
           <TabsTrigger value="dashboard" className="gap-1 text-xs sm:text-sm">
             <BarChart2 className="w-4 h-4" /> Dashboard
+          </TabsTrigger>
+          {/* T-022 — agregação por campaign_type / source / trigger_name */}
+          <TabsTrigger value="tipos" className="gap-1 text-xs sm:text-sm">
+            <BarChart2 className="w-4 h-4" /> Tipos
           </TabsTrigger>
         </TabsList>
 
@@ -756,6 +761,10 @@ export default function AdminExtracaoPage() {
 
         <TabsContent value="dashboard" className="space-y-4">
           <CampaignDashboard accountId={account?.id || ''} />
+        </TabsContent>
+
+        <TabsContent value="tipos" className="space-y-4">
+          <DispatchTypeDashboard accountId={account?.id || ''} />
         </TabsContent>
       </Tabs>
 
