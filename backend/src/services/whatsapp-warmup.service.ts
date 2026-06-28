@@ -22,6 +22,7 @@ import { NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { warmupContentGenerator } from './warmup-content-generator';
 import type { GeneratedContent } from './ai/types';
+import { resolveMediaPayload } from './warmup-media-loader';
 
 // ============================================
 // Types
@@ -52,6 +53,9 @@ interface PickContentResult {
   content: string;
   templateId?: string;
   source: GeneratedContent['source'];
+  mediaPath?: string;
+  mediaUrl?: string;
+  mediaMimeType?: string;
 }
 
 // ============================================
@@ -180,14 +184,15 @@ interface TypeWeights {
 }
 
 function getTypeWeightsForDay(day: number): TypeWeights {
-  // Fase 1 (D1-D3): apenas text greeting/response curtos
-  if (day <= 3) return { text: 100, reaction: 0, audio: 0, sticker: 0, image: 0 };
-  // Fase 2 (D4-D7): introduz reactions
-  if (day <= 7) return { text: 75, reaction: 25, audio: 0, sticker: 0, image: 0 };
-  // Fase 3 (D8-D14): introduz audio + sticker
-  if (day <= 14) return { text: 50, reaction: 25, audio: 15, sticker: 10, image: 0 };
-  // Fase 4 (D15+): introduz image, mistura plena
-  return { text: 40, reaction: 20, audio: 20, sticker: 10, image: 10 };
+  // V2 (T-023): media liberada a partir de D4 (chip aquecido o suficiente).
+  // Fase 1 (D1-D3): 90% text + 10% reaction (sem midia)
+  if (day <= 3) return { text: 90, reaction: 10, audio: 0, sticker: 0, image: 0 };
+  // Fase 2 (D4-D7): libera audio + image + sticker
+  if (day <= 7) return { text: 65, reaction: 10, audio: 15, sticker: 5, image: 5 };
+  // Fase 3 (D8-D14): mais midia
+  if (day <= 14) return { text: 50, reaction: 10, audio: 20, sticker: 10, image: 10 };
+  // Fase 4 (D15+): mistura plena
+  return { text: 45, reaction: 10, audio: 20, sticker: 12, image: 13 };
 }
 
 // ============================================
@@ -354,10 +359,13 @@ class WhatsappWarmupService {
           content: generated.content,
           templateId: generated.templateId,
           source: generated.source,
+          mediaPath: generated.mediaPath,
+          mediaUrl: generated.mediaUrl,
+          mediaMimeType: generated.mediaMimeType,
         };
 
-        // 8) Enviar via Evolution
-        const result = await this.sendViaEvolution(fresh, peer, content);
+        // 8) Enviar via Evolution (multi-tipo: text/audio/sticker/image/reaction)
+        const result = await this.sendViaEvolution(fresh, peer, content, conv.id);
 
         // 9) Persistir mensagem + contadores + quality
         await this.recordSend({
@@ -493,22 +501,124 @@ class WhatsappWarmupService {
   private async sendViaEvolution(
     sender: WarmupNumber,
     peer: WarmupNumber,
-    content: PickContentResult
+    content: PickContentResult,
+    conversationId?: string,
   ): Promise<{ success: boolean; evolutionMsgId?: string; error?: string }> {
     try {
-      // MVP: trata reaction/audio/sticker/image como texto para nao explodir
-      // no MVP (sendMedia/sendAudio pode ser plugado depois). Conteudo eh enviado
-      // como text para nao bloquear o ciclo de aquecimento.
-      const text = content.content;
-      const result = await evolutionService.sendText(sender.accountId, {
-        number: peer.phoneE164,
-        text,
-        instance: sender.evolutionInstance,
-      });
+      let result: { messageId: string; raw: any };
+
+      switch (content.type) {
+        case 'text': {
+          result = await evolutionService.sendText(sender.accountId, {
+            number: peer.phoneE164,
+            text: content.content,
+            instance: sender.evolutionInstance,
+          });
+          break;
+        }
+
+        case 'audio': {
+          const audioPayload = await resolveMediaPayload({
+            mediaUrl: content.mediaUrl,
+            mediaPath: content.mediaPath,
+          });
+          result = await evolutionService.sendAudio(sender.accountId, {
+            number: peer.phoneE164,
+            // sendAudio aceita URL OU data: URL — payload base64 raw vira data:audio
+            audioUrl: this.toEvolutionMediaPayload(audioPayload, content.mediaMimeType ?? 'audio/ogg'),
+            instance: sender.evolutionInstance,
+          });
+          break;
+        }
+
+        case 'sticker': {
+          const stickerPayload = await resolveMediaPayload({
+            mediaUrl: content.mediaUrl,
+            mediaPath: content.mediaPath,
+          });
+          result = await evolutionService.sendSticker(sender.accountId, {
+            number: peer.phoneE164,
+            sticker: stickerPayload,
+            instance: sender.evolutionInstance,
+          });
+          break;
+        }
+
+        case 'image': {
+          const imagePayload = await resolveMediaPayload({
+            mediaUrl: content.mediaUrl,
+            mediaPath: content.mediaPath,
+          });
+          result = await evolutionService.sendMedia(sender.accountId, {
+            number: peer.phoneE164,
+            mediaType: 'image',
+            mediaUrl: this.toEvolutionMediaPayload(imagePayload, content.mediaMimeType ?? 'image/jpeg'),
+            caption: content.content,
+            instance: sender.evolutionInstance,
+          });
+          break;
+        }
+
+        case 'reaction': {
+          // Reaction requer evolutionMsgId da ultima msg do peer.
+          // Sem peer msg id -> fallback text.
+          const lastPeerMsg = conversationId
+            ? await prisma.warmupMessage.findFirst({
+                where: {
+                  conversationId,
+                  senderId: peer.id,
+                  evolutionMsgId: { not: null },
+                },
+                orderBy: { createdAt: 'desc' },
+              })
+            : null;
+
+          if (lastPeerMsg?.evolutionMsgId) {
+            result = await evolutionService.sendReaction(sender.accountId, {
+              number: peer.phoneE164,
+              reaction: content.content,
+              reactionToMsgId: lastPeerMsg.evolutionMsgId,
+              instance: sender.evolutionInstance,
+            });
+          } else {
+            // Fallback: vira text — marcamos type='text' pra audit correto
+            result = await evolutionService.sendText(sender.accountId, {
+              number: peer.phoneE164,
+              text: content.content,
+              instance: sender.evolutionInstance,
+            });
+            content.type = 'text';
+          }
+          break;
+        }
+
+        default: {
+          // Fallback paranoico: trata tipo desconhecido como texto
+          result = await evolutionService.sendText(sender.accountId, {
+            number: peer.phoneE164,
+            text: content.content,
+            instance: sender.evolutionInstance,
+          });
+        }
+      }
+
       return { success: true, evolutionMsgId: result?.messageId };
     } catch (err: any) {
       return { success: false, error: err?.message ?? String(err) };
     }
+  }
+
+  /**
+   * Converte payload de midia (base64 raw OU URL) no formato esperado pelos
+   * sendMedia/sendAudio existentes da Evolution (URL http(s) OU data:...).
+   * Se ja eh URL/data: passa direto.
+   */
+  private toEvolutionMediaPayload(payload: string, mimeType: string): string {
+    if (/^https?:\/\//i.test(payload) || /^data:/i.test(payload)) {
+      return payload;
+    }
+    // base64 raw -> data URL
+    return `data:${mimeType};base64,${payload}`;
   }
 
   // ============================================

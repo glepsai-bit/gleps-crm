@@ -1699,19 +1699,34 @@ model WarmupDailyStats {
 }
 
 // WarmupTemplate: biblioteca de mensagens/reacoes (accountId null = seed global)
+//
+// V2 (media): para type in (audio, sticker, image), `content` segue obrigatorio
+// como descricao/caption curto, mas o arquivo real vive em mediaPath
+// (relativo a backend/uploads) OU mediaUrl (URL absoluta, override pra CDN).
+// Validacao runtime no service garante coerencia tipo<->mime.
 model WarmupTemplate {
-  id        String   @id @default(uuid()) @db.Uuid
-  accountId String?  @map("account_id") @db.Uuid
-  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  type      String   @db.VarChar(20) // text | audio | sticker | image | reaction
-  category  String   @db.VarChar(40) // greeting | response | smalltalk | reaction | media
-  content   String   @db.Text
-  weight    Int      @default(1)
-  language  String   @default("pt-BR") @db.VarChar(10)
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id              String   @id @default(uuid()) @db.Uuid
+  accountId       String?  @map("account_id") @db.Uuid
+  account         Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  type            String   @db.VarChar(20) // text | audio | sticker | image | reaction
+  category        String   @db.VarChar(40) // greeting | response | smalltalk | reaction | media
+  content         String   @db.Text
+  weight          Int      @default(1)
+  language        String   @default("pt-BR") @db.VarChar(10)
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // V2: midia (audio/sticker/image). Para type='text' ficam null.
+  mediaPath       String?  @map("media_path") @db.VarChar(500)        // ex: 'warmup/audio/<accountId>/abc.ogg' (relativo a backend/uploads)
+  mediaUrl        String?  @map("media_url") @db.VarChar(1000)        // URL absoluta opcional (override pra CDN/S3 futuro)
+  mediaMimeType   String?  @map("media_mime_type") @db.VarChar(120)   // 'audio/ogg', 'image/webp', etc
+  mediaSizeBytes  Int?     @map("media_size_bytes")
+  mediaDurationMs Int?     @map("media_duration_ms")                  // pra audios
+  fileName        String?  @map("file_name") @db.VarChar(255)
+  uploadedById    String?  @map("uploaded_by_id") @db.Uuid
 
   @@index([type, isActive])
   @@index([accountId])
+  @@index([accountId, type, isActive])
   @@map("warmup_templates")
 }

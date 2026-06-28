@@ -1,4 +1,5 @@
 import http from 'http';
+import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -356,6 +357,19 @@ async function bootstrap() {
       next();
     });
   }
+
+  // Servir arquivos estaticos de upload (warmup media: audio/sticker/image,
+  // e qualquer outro modulo que grave em backend/uploads). Caminho casado
+  // com mediaPath persistido em WarmupTemplate.mediaPath (relativo a
+  // backend/uploads). CORS ja configurado acima; cache curto pra permitir
+  // hot-reload de stickers.
+  app.use(
+    '/uploads',
+    express.static(path.resolve(process.cwd(), 'uploads'), {
+      maxAge: '1h',
+      fallthrough: true,
+    })
+  );
 
   // Health endpoint with build version
   app.get('/api/health', (_req, res) => {

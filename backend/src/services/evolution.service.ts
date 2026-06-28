@@ -42,6 +42,24 @@ export interface SendAudioInput {
   instance?: string | null;
 }
 
+export interface SendStickerInput {
+  number: string;
+  /** base64 (sem prefixo data:) OU URL http(s) — Evolution aceita ambos */
+  sticker: string;
+  instance?: string | null;
+}
+
+export interface SendReactionInput {
+  number: string;
+  /** Emoji unicode (ex: '👍') */
+  reaction: string;
+  /** evolutionMsgId da mensagem que sera reagida */
+  reactionToMsgId: string;
+  /** fromMe da mensagem original (default false — assumindo reacao na msg do peer) */
+  fromMe?: boolean;
+  instance?: string | null;
+}
+
 export interface SendResult {
   messageId: string;
   raw: any;
@@ -424,6 +442,88 @@ class EvolutionService {
 
     const messageId = this.extractMessageId(raw);
     logger.info('Evolution sendAudio ok', { accountId, number, messageId });
+
+    return { messageId, raw };
+  }
+
+  /**
+   * Send a WhatsApp sticker (WEBP <500KB) via Evolution API.
+   * `sticker` may be a public URL (http(s)://...), a data URL (data:image/webp;base64,...)
+   * ou base64 puro (sem prefixo).
+   */
+  async sendSticker(accountId: string, input: SendStickerInput): Promise<SendResult> {
+    if (!input.sticker) {
+      throw new ValidationError('sticker é obrigatório');
+    }
+
+    const config = await this.getAccountConfig(accountId, input.instance);
+    const number = this.normalizeNumber(input.number);
+
+    const body: Record<string, any> = {
+      number,
+      sticker: input.sticker,
+    };
+
+    const raw = await this.makeRequest<any>(
+      config,
+      `/message/sendSticker/${encodeURIComponent(config.instance)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+      60000
+    );
+
+    const messageId = this.extractMessageId(raw);
+    logger.info('Evolution sendSticker ok', { accountId, number, messageId });
+
+    return { messageId, raw };
+  }
+
+  /**
+   * Reage a uma mensagem existente com um emoji.
+   * Evolution endpoint: POST /message/sendReaction/:instance
+   *   body { reactionMessage: { key: { remoteJid, fromMe, id }, reaction: '<emoji>' } }
+   *
+   * `reactionToMsgId` = evolutionMsgId da msg que sera reagida (lookup em
+   * WarmupMessage.evolutionMsgId pelo caller).
+   */
+  async sendReaction(accountId: string, input: SendReactionInput): Promise<SendResult> {
+    if (!input.reaction) {
+      throw new ValidationError('reaction é obrigatório');
+    }
+    if (!input.reactionToMsgId) {
+      throw new ValidationError('reactionToMsgId é obrigatório');
+    }
+
+    const config = await this.getAccountConfig(accountId, input.instance);
+    const number = this.normalizeNumber(input.number);
+
+    // Evolution espera remoteJid no formato '<digits>@s.whatsapp.net'
+    const remoteJid = `${number}@s.whatsapp.net`;
+
+    const body: Record<string, any> = {
+      reactionMessage: {
+        key: {
+          remoteJid,
+          fromMe: input.fromMe ?? false,
+          id: input.reactionToMsgId,
+        },
+        reaction: input.reaction,
+      },
+    };
+
+    const raw = await this.makeRequest<any>(
+      config,
+      `/message/sendReaction/${encodeURIComponent(config.instance)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    );
+
+    const messageId = this.extractMessageId(raw);
+    logger.info('Evolution sendReaction ok', { accountId, number, messageId });
 
     return { messageId, raw };
   }

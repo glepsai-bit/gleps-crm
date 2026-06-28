@@ -228,6 +228,171 @@ describe('WarmupContentGenerator — propaga tone e model pro provider', () => {
   });
 });
 
+// ============================================
+// V2 — distribuicao por fase + fail-soft media + media fields
+// ============================================
+
+describe('WarmupContentGenerator V2 — distribuicao por fase do protocolo', () => {
+  it('D1-D3: nunca retorna audio/sticker/image (so text/reaction)', async () => {
+    const { pool, number } = await setupAccountAndPool({ useAi: false });
+    await prismaTest.warmupNumber.update({
+      where: { id: number.id },
+      data: { currentDay: 2 },
+    });
+    // Seed apenas templates text + reaction (sem midia disponivel)
+    await seedMinimalTextTemplate();
+    await prismaTest.warmupTemplate.create({
+      data: {
+        accountId: null,
+        type: 'reaction',
+        category: 'reaction',
+        content: '👍',
+        weight: 1,
+        language: 'pt-BR',
+        isActive: true,
+      },
+    });
+
+    // Roda 30x e confere que NUNCA aparece audio/sticker/image
+    const numFresh = await prismaTest.warmupNumber.findUnique({
+      where: { id: number.id },
+    });
+    for (let i = 0; i < 30; i++) {
+      const out = await warmupContentGenerator.pick(pool, null, numFresh!);
+      expect(['text', 'reaction']).toContain(out.type);
+    }
+  });
+
+  it('D4-D7: distribuicao tem audio + image + sticker (com templates seedados)', async () => {
+    const { pool, number } = await setupAccountAndPool({ useAi: false });
+    await prismaTest.warmupNumber.update({
+      where: { id: number.id },
+      data: { currentDay: 5 },
+    });
+    // Seed templates de todos os tipos (com media)
+    await seedMinimalTextTemplate();
+    for (const t of ['audio', 'sticker', 'image']) {
+      await prismaTest.warmupTemplate.create({
+        data: {
+          accountId: null,
+          type: t,
+          category: 'media',
+          content: `${t}-tpl`,
+          weight: 1,
+          language: 'pt-BR',
+          isActive: true,
+          mediaPath: `dummy/warmup/${t}/file.bin`,
+          mediaMimeType: t === 'audio' ? 'audio/ogg' : t === 'sticker' ? 'image/webp' : 'image/jpeg',
+        },
+      });
+    }
+
+    const numFresh = await prismaTest.warmupNumber.findUnique({
+      where: { id: number.id },
+    });
+
+    // Roda muitas iteracoes e coleta tipos vistos
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const out = await warmupContentGenerator.pick(pool, null, numFresh!);
+      seen.add(out.type);
+    }
+
+    // D4-D7 tem peso > 0 pra audio, sticker, image — em 200 amostras deve aparecer ao menos um de cada
+    expect(seen.has('audio')).toBe(true);
+    expect(seen.has('sticker') || seen.has('image')).toBe(true);
+    // text sempre aparece
+    expect(seen.has('text')).toBe(true);
+  });
+
+  it('fail-soft: se sorteia audio mas nao ha template audio, cai pra text', async () => {
+    const { pool, number } = await setupAccountAndPool({ useAi: false });
+    await prismaTest.warmupNumber.update({
+      where: { id: number.id },
+      data: { currentDay: 10 },
+    });
+    // Seed APENAS text (sem audio/sticker/image)
+    await seedMinimalTextTemplate('fallback-msg');
+
+    // Roda 50x — todos devem retornar text (nunca audio/sticker/image vazio)
+    const numFresh = await prismaTest.warmupNumber.findUnique({
+      where: { id: number.id },
+    });
+    for (let i = 0; i < 50; i++) {
+      const out = await warmupContentGenerator.pick(pool, null, numFresh!);
+      // Aceita text (fallback) ou reaction (se sorteia reaction sem template, retorna content vazio mas type=reaction)
+      // Garantia principal: NAO retorna audio/sticker/image
+      expect(['text', 'reaction']).toContain(out.type);
+    }
+  });
+
+  it('template midia com mediaPath -> GeneratedContent traz mediaPath/mediaMimeType', async () => {
+    const { pool, number } = await setupAccountAndPool({ useAi: false });
+    await prismaTest.warmupNumber.update({
+      where: { id: number.id },
+      data: { currentDay: 10 },
+    });
+
+    // Seed APENAS template audio (forca audio sempre que sorteia audio)
+    await prismaTest.warmupTemplate.create({
+      data: {
+        accountId: null,
+        type: 'audio',
+        category: 'media',
+        content: 'audio-1',
+        weight: 1,
+        language: 'pt-BR',
+        isActive: true,
+        mediaPath: 'acc/warmup/audio/test.ogg',
+        mediaMimeType: 'audio/ogg',
+        mediaSizeBytes: 1234,
+      },
+    });
+    // Tambem text como fallback (caso sorteie text)
+    await seedMinimalTextTemplate();
+
+    const numFresh = await prismaTest.warmupNumber.findUnique({
+      where: { id: number.id },
+    });
+
+    // Roda ate sortear audio
+    let audioOut: any = null;
+    for (let i = 0; i < 500; i++) {
+      const out = await warmupContentGenerator.pick(pool, null, numFresh!);
+      if (out.type === 'audio') {
+        audioOut = out;
+        break;
+      }
+    }
+    expect(audioOut).toBeTruthy();
+    expect(audioOut.mediaPath).toBe('acc/warmup/audio/test.ogg');
+    expect(audioOut.mediaMimeType).toBe('audio/ogg');
+  });
+});
+
+describe('WarmupContentGenerator V2 — resolveMediaPayload', () => {
+  it('prefere mediaUrl quando preenchido (URL absoluta)', async () => {
+    const { resolveMediaPayload } = await import('./warmup-media-loader');
+    const payload = await resolveMediaPayload({
+      mediaUrl: 'https://cdn.example.com/audio.ogg',
+      mediaPath: 'some/path/file.ogg',
+    });
+    expect(payload).toBe('https://cdn.example.com/audio.ogg');
+  });
+
+  it('path traversal -> throw', async () => {
+    const { readMediaAsBase64 } = await import('./warmup-media-loader');
+    await expect(readMediaAsBase64('../../../etc/passwd')).rejects.toThrow(
+      /Path traversal detectado/,
+    );
+  });
+
+  it('sem mediaPath e sem mediaUrl -> throw', async () => {
+    const { resolveMediaPayload } = await import('./warmup-media-loader');
+    await expect(resolveMediaPayload({})).rejects.toThrow(/Template sem media/);
+  });
+});
+
 describe('WarmupContentGenerator — fetchHistory', () => {
   it('mapeia mensagens passadas para sender me/peer corretamente', async () => {
     const { account, pool, number } = await setupAccountAndPool({

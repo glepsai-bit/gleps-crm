@@ -38,10 +38,17 @@ export type WarmupGeneratedType = 'text' | 'reaction' | 'audio' | 'sticker' | 'i
 export interface GeneratedContent {
   source: AiProviderName | 'template' | 'fallback';
   type: WarmupGeneratedType;
+  /** Texto puro (text), caption (image), placeholder (audio/sticker) ou emoji (reaction) */
   content: string;
   model?: string;
   cost?: GeneratedContentCost;
   templateId?: string;
+  /** V2: caminho relativo a UPLOADS_ROOT (preferido por padrao) */
+  mediaPath?: string;
+  /** V2: URL absoluta (override pra CDN/S3) */
+  mediaUrl?: string;
+  /** V2: mime type da midia (debug/logger) */
+  mediaMimeType?: string;
 }
 
 export interface AiProvider {

@@ -20,6 +20,23 @@ backend/.env
 backend/.env.*
 !backend/.env.example
 
+# Uploads runtime (midias do usuario — atachments, audios warmup, etc).
+# Persistido em volume em prod; nunca versionado.
+backend/uploads/*
+!backend/uploads/.gitkeep
+!backend/uploads/warmup/
+backend/uploads/warmup/*
+!backend/uploads/warmup/.gitkeep
+!backend/uploads/warmup/audio/
+!backend/uploads/warmup/sticker/
+!backend/uploads/warmup/image/
+backend/uploads/warmup/audio/*
+backend/uploads/warmup/sticker/*
+backend/uploads/warmup/image/*
+!backend/uploads/warmup/audio/.gitkeep
+!backend/uploads/warmup/sticker/.gitkeep
+!backend/uploads/warmup/image/.gitkeep
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

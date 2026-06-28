@@ -14,7 +14,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../services/evolution.service', () => ({
   evolutionService: {
     sendText: vi.fn(async () => ({ messageId: 'evo-warmup-test', raw: {} })),
+    sendAudio: vi.fn(async () => ({ messageId: 'evo-audio-test', raw: {} })),
+    sendSticker: vi.fn(async () => ({ messageId: 'evo-sticker-test', raw: {} })),
+    sendMedia: vi.fn(async () => ({ messageId: 'evo-media-test', raw: {} })),
+    sendReaction: vi.fn(async () => ({ messageId: 'evo-reaction-test', raw: {} })),
   },
+}));
+
+// Mock media loader pra nao precisar ler arquivo real do disco em testes
+vi.mock('../services/warmup-media-loader', () => ({
+  resolveMediaPayload: vi.fn(async (t: { mediaUrl?: string | null; mediaPath?: string | null }) => {
+    if (t.mediaUrl) return t.mediaUrl;
+    if (t.mediaPath) return 'BASE64-MOCK-PAYLOAD';
+    throw new Error('Template sem media');
+  }),
 }));
 
 import { prismaTest } from '../test/setup';
@@ -282,32 +295,32 @@ describe('isInsideWindow', () => {
   });
 });
 
-describe('getTypeWeightsForDay', () => {
-  it('D1-D3: apenas text', () => {
+describe('getTypeWeightsForDay (V2 — media liberada a partir D4)', () => {
+  it('D1-D3: text + reaction, SEM audio/sticker/image (chip fresco)', () => {
     const w = getTypeWeightsForDay(1);
     expect(w.text).toBeGreaterThan(0);
-    expect(w.reaction).toBe(0);
     expect(w.audio).toBe(0);
     expect(w.sticker).toBe(0);
     expect(w.image).toBe(0);
   });
 
-  it('D4-D7: text + reaction (sem audio/sticker/image)', () => {
+  it('D4-D7: introduz audio + image + sticker (media liberada)', () => {
     const w = getTypeWeightsForDay(5);
     expect(w.text).toBeGreaterThan(0);
     expect(w.reaction).toBeGreaterThan(0);
-    expect(w.audio).toBe(0);
-    expect(w.image).toBe(0);
+    expect(w.audio).toBeGreaterThan(0);
+    expect(w.sticker).toBeGreaterThan(0);
+    expect(w.image).toBeGreaterThan(0);
   });
 
-  it('D8-D14: introduz audio + sticker', () => {
+  it('D8-D14: mais midia (todos os tipos > 0)', () => {
     const w = getTypeWeightsForDay(10);
     expect(w.audio).toBeGreaterThan(0);
     expect(w.sticker).toBeGreaterThan(0);
-    expect(w.image).toBe(0);
+    expect(w.image).toBeGreaterThan(0);
   });
 
-  it('D15+: introduz image (mistura plena)', () => {
+  it('D15+: mistura plena (todos os tipos > 0)', () => {
     const w = getTypeWeightsForDay(20);
     expect(w.text).toBeGreaterThan(0);
     expect(w.reaction).toBeGreaterThan(0);
@@ -577,7 +590,7 @@ describe('whatsappWarmupService.tick', () => {
     expect((evolutionService.sendText as any)).not.toHaveBeenCalled();
   });
 
-  it('D1: gera apenas type=text greeting/response (sem audio/sticker)', async () => {
+  it('D1: gera apenas text/reaction (NUNCA audio/sticker/image)', async () => {
     await seedTemplates();
     const acc = await createAccount();
     const pool = await createPool(acc.id);
@@ -593,9 +606,9 @@ describe('whatsappWarmupService.tick', () => {
     rng.mockRestore();
 
     const msgs = await prismaTest.warmupMessage.findMany({});
-    // Como D1, todas as mensagens devem ser type=text
+    // V2 D1-D3: nunca midia (chip fresco). text e reaction sao OK.
     for (const m of msgs) {
-      expect(m.messageType).toBe('text');
+      expect(['text', 'reaction']).toContain(m.messageType);
     }
   });
 });
@@ -708,5 +721,222 @@ describe('whatsappWarmupService.tick — contentSource via providers IA', () => 
     const msgs = await prismaTest.warmupMessage.findMany({});
     expect(msgs.length).toBeGreaterThan(0);
     expect(msgs.every(m => m.contentSource === 'template')).toBe(true);
+  });
+});
+
+// ============================================
+// V2 — Multi-tipo (audio / sticker / image / reaction)
+// ============================================
+
+import { warmupContentGenerator } from './warmup-content-generator';
+
+describe('whatsappWarmupService.tick — V2 multi-tipo (audio/sticker/image/reaction)', () => {
+  async function setupTwoNumbersAtDay(
+    day: number,
+  ): Promise<{ accId: string; numAId: string; numBId: string; numA: any; numB: any }> {
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511V2-A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511V2-B' });
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+    // Pula pra fase desejada
+    await prismaTest.warmupNumber.update({
+      where: { id: numA.id },
+      data: { currentDay: day },
+    });
+    await prismaTest.warmupNumber.update({
+      where: { id: numB.id },
+      data: { currentDay: day },
+    });
+    return { accId: acc.id, numAId: numA.id, numBId: numB.id, numA, numB };
+  }
+
+  it('tick com generated.type=audio chama evolutionService.sendAudio', async () => {
+    const { numAId, numBId } = await setupTwoNumbersAtDay(10);
+
+    vi.spyOn(warmupContentGenerator, 'pick').mockResolvedValue({
+      source: 'template',
+      type: 'audio',
+      content: 'audio-template',
+      templateId: 'tpl-audio',
+      mediaPath: 'acc/warmup/audio/sample.ogg',
+      mediaMimeType: 'audio/ogg',
+    });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    expect((evolutionService.sendAudio as any)).toHaveBeenCalled();
+    // Garante que NAO virou text
+    expect((evolutionService.sendText as any)).not.toHaveBeenCalled();
+
+    const msgs = await prismaTest.warmupMessage.findMany({});
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs.some(m => m.messageType === 'audio')).toBe(true);
+  });
+
+  it('tick com generated.type=sticker chama evolutionService.sendSticker', async () => {
+    await setupTwoNumbersAtDay(10);
+
+    vi.spyOn(warmupContentGenerator, 'pick').mockResolvedValue({
+      source: 'template',
+      type: 'sticker',
+      content: 'sticker-template',
+      templateId: 'tpl-sticker',
+      mediaPath: 'acc/warmup/sticker/sample.webp',
+      mediaMimeType: 'image/webp',
+    });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    expect((evolutionService.sendSticker as any)).toHaveBeenCalled();
+    const msgs = await prismaTest.warmupMessage.findMany({});
+    expect(msgs.some(m => m.messageType === 'sticker')).toBe(true);
+  });
+
+  it('tick com generated.type=image chama evolutionService.sendMedia(mediaType=image)', async () => {
+    await setupTwoNumbersAtDay(20);
+
+    vi.spyOn(warmupContentGenerator, 'pick').mockResolvedValue({
+      source: 'template',
+      type: 'image',
+      content: 'caption opcional',
+      templateId: 'tpl-image',
+      mediaPath: 'acc/warmup/image/sample.jpg',
+      mediaMimeType: 'image/jpeg',
+    });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    expect((evolutionService.sendMedia as any)).toHaveBeenCalled();
+    const callArgs = (evolutionService.sendMedia as any).mock.calls[0][1];
+    expect(callArgs.mediaType).toBe('image');
+    expect(callArgs.caption).toBe('caption opcional');
+
+    const msgs = await prismaTest.warmupMessage.findMany({});
+    expect(msgs.some(m => m.messageType === 'image')).toBe(true);
+  });
+
+  it('tick com generated.type=reaction sem peer msg id: fallback sendText', async () => {
+    // Setup com SO 1 numero warming (numC fica em status=cold pra nao processar)
+    await seedTemplates();
+    const acc = await createAccount();
+    const pool = await createPool(acc.id);
+    const numA = await createNumber(pool.id, acc.id, { phone: '5511RX-A' });
+    const numB = await createNumber(pool.id, acc.id, { phone: '5511RX-B' });
+    await whatsappWarmupService.startNumber({ numberId: numA.id, accountId: acc.id });
+    await whatsappWarmupService.startNumber({ numberId: numB.id, accountId: acc.id });
+    await prismaTest.warmupNumber.update({
+      where: { id: numA.id },
+      data: { currentDay: 5 },
+    });
+    await prismaTest.warmupNumber.update({
+      where: { id: numB.id },
+      data: { currentDay: 5 },
+    });
+
+    // Pre-cria conversa com lastSenderId=A (pra B ceder turno) +
+    // msg do peer (B->A) SEM evolutionMsgId (null) — lookup vai falhar.
+    const [first, second] = [numA, numB].sort((x, y) => (x.id < y.id ? -1 : 1));
+    const conv = await prismaTest.warmupConversation.create({
+      data: {
+        poolId: pool.id,
+        numberAId: first.id,
+        numberBId: second.id,
+        lastSenderId: numA.id, // A foi ultimo -> A vai ceder turno
+        lastTurnAt: new Date('2026-01-15T14:55:00Z'),
+        isActive: true,
+      },
+    });
+    // Msg do peer (B) sem evolutionMsgId (null)
+    await prismaTest.warmupMessage.create({
+      data: {
+        conversationId: conv.id,
+        senderId: numB.id,
+        receiverId: numA.id,
+        messageType: 'text',
+        content: 'oi',
+        status: 'sent',
+        evolutionMsgId: null,
+      },
+    });
+    // E uma msg de A com evolutionMsgId valido, pra que B (que vai processar)
+    // poderia em tese reagir A SE existisse uma do peer (A) — mas regra do
+    // dispatcher reaction olha a msg do PEER. Como B vai processar, peer=A;
+    // entao precisamos garantir que A NAO tem msg com evolutionMsgId.
+    // Ja garantido acima: so existe a msg B->A com evolutionMsgId=null,
+    // e nada de A com evolutionMsgId. Entao B fallback tambem.
+
+    vi.spyOn(warmupContentGenerator, 'pick').mockResolvedValue({
+      source: 'template',
+      type: 'reaction',
+      content: '👍',
+      templateId: 'tpl-rxn',
+    });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    // Nenhum reaction enviado: B nao acha A com evolutionMsgId, A cede turno.
+    expect((evolutionService.sendReaction as any)).not.toHaveBeenCalled();
+    // Fallback executou sendText pra B (A cedeu turno)
+    expect((evolutionService.sendText as any)).toHaveBeenCalled();
+  });
+
+  it('tick com generated.type=reaction COM peer msg id: usa sendReaction', async () => {
+    const { numAId, numBId, numA, numB } = await setupTwoNumbersAtDay(5);
+
+    // Cria conversa + msg anterior do peer (B) que tem evolutionMsgId
+    const [first, second] = [numA, numB].sort((x, y) => (x.id < y.id ? -1 : 1));
+    const conv = await prismaTest.warmupConversation.create({
+      data: {
+        poolId: numA.poolId,
+        numberAId: first.id,
+        numberBId: second.id,
+        lastSenderId: numBId, // B foi ultimo sender -> A pode reagir
+        lastTurnAt: new Date('2026-01-15T14:55:00Z'),
+        isActive: true,
+      },
+    });
+    await prismaTest.warmupMessage.create({
+      data: {
+        conversationId: conv.id,
+        senderId: numBId,
+        receiverId: numAId,
+        messageType: 'text',
+        content: 'oi',
+        status: 'sent',
+        evolutionMsgId: 'evo-msg-anterior-do-peer-B',
+      },
+    });
+
+    vi.spyOn(warmupContentGenerator, 'pick').mockResolvedValue({
+      source: 'template',
+      type: 'reaction',
+      content: '👍',
+      templateId: 'tpl-rxn',
+    });
+
+    const rng = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const fakeNow = new Date('2026-01-15T15:00:00Z');
+    await whatsappWarmupService.tick(fakeNow);
+    rng.mockRestore();
+
+    expect((evolutionService.sendReaction as any)).toHaveBeenCalled();
+    const reactionArgs = (evolutionService.sendReaction as any).mock.calls[0][1];
+    expect(reactionArgs.reactionToMsgId).toBe('evo-msg-anterior-do-peer-B');
+    expect(reactionArgs.reaction).toBe('👍');
   });
 });

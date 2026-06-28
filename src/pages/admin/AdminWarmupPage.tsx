@@ -41,6 +41,8 @@ import warmupBackendService, {
   WarmupTone,
   WarmupAiProviderName,
   WarmupAiProvidersResponse,
+  WarmupMedia,
+  WarmupMediaType,
   CreatePoolInput,
   CreateNumberInput,
 } from '@/services/warmup.backend.service';
@@ -81,6 +83,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Tooltip as UiTooltip,
+  TooltipContent as UiTooltipContent,
+  TooltipProvider as UiTooltipProvider,
+  TooltipTrigger as UiTooltipTrigger,
+} from '@/components/ui/tooltip';
 import {
   Table,
   TableBody,
@@ -99,6 +108,11 @@ import {
   Pause,
   RotateCcw,
   BarChart3,
+  Mic,
+  Sticker,
+  Image as ImageIcon,
+  Upload,
+  Loader2,
 } from 'lucide-react';
 
 // ============================================
@@ -265,6 +279,10 @@ export default function AdminWarmupPage() {
 
   const [selectedPoolId, setSelectedPoolId] = useState<string | null>(null);
 
+  // T-023 V2 (Phase 4) — qual aba esta ativa no header da pagina.
+  // 'pools' = visao atual master-detail; 'media' = biblioteca de midias.
+  const [activeTab, setActiveTab] = useState<'pools' | 'media'>('pools');
+
   // Dialogs
   const [poolDialogOpen, setPoolDialogOpen] = useState(false);
   const [editingPool, setEditingPool] = useState<WarmupPool | null>(null);
@@ -321,6 +339,29 @@ export default function AdminWarmupPage() {
     () => (aiData?.providers ?? []).filter((p) => p.enabled),
     [aiData],
   );
+
+  // T-023 V2 (Phase 4) — biblioteca de midias da conta + globais. Usada
+  // tanto para a aba Midias quanto para mostrar contagens nos cards de pool
+  // ("12🔊 5🎴 8🖼️"). Mantemos uma unica query (sem filtro de type) e
+  // derivamos os subconjuntos via useMemo abaixo.
+  const { data: mediaList = [], isLoading: loadingMedia } = useQuery<
+    WarmupMedia[]
+  >({
+    queryKey: ['warmup-media'],
+    queryFn: () => warmupBackendService.listMedia(),
+    staleTime: 30 * 1000,
+  });
+
+  const mediaCounts = useMemo(() => {
+    const counts = { audio: 0, sticker: 0, image: 0 };
+    for (const m of mediaList) {
+      counts[m.type] += 1;
+    }
+    return counts;
+  }, [mediaList]);
+
+  const totalMediaCount =
+    mediaCounts.audio + mediaCounts.sticker + mediaCounts.image;
 
   const whatsappInstances = useMemo(
     () =>
@@ -612,11 +653,30 @@ export default function AdminWarmupPage() {
             escolhida, com pausas automáticas em caso de queda de qualidade.
           </p>
         </div>
-        <Button onClick={abrirCriarPool}>
-          <Plus className="w-4 h-4 mr-2" />
-          Novo pool
-        </Button>
+        {activeTab === 'pools' && (
+          <Button onClick={abrirCriarPool}>
+            <Plus className="w-4 h-4 mr-2" />
+            Novo pool
+          </Button>
+        )}
       </div>
+
+      {/* T-023 V2 (Phase 4) — abas Pools / Midias. A aba Estatisticas
+          fica pra V3 (issue futura). */}
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => setActiveTab(v as 'pools' | 'media')}
+      >
+        <TabsList>
+          <TabsTrigger value="pools">
+            Pools{pools.length > 0 ? ` (${pools.length})` : ''}
+          </TabsTrigger>
+          <TabsTrigger value="media">
+            Mídias{totalMediaCount > 0 ? ` (${totalMediaCount})` : ''}
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="pools" className="mt-4">
 
       <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 lg:gap-6">
         {/* ---------- Coluna esquerda: lista de pools ---------- */}
@@ -685,6 +745,15 @@ export default function AdminWarmupPage() {
                               Inativo
                             </Badge>
                           )}
+                          {/* T-023 V2 (Phase 4) — contagem agregada de
+                              midias da conta. Mostramos um unico badge
+                              com tooltip que detalha por tipo. Quando
+                              zero, badge cinza informando "so texto". */}
+                          <PoolMediaBadge
+                            audio={mediaCounts.audio}
+                            sticker={mediaCounts.sticker}
+                            image={mediaCounts.image}
+                          />
                         </div>
                       </div>
                       <div className="flex flex-col gap-1">
@@ -885,6 +954,17 @@ export default function AdminWarmupPage() {
           </CardContent>
         </Card>
       </div>
+
+        </TabsContent>
+
+        <TabsContent value="media" className="mt-4">
+          <WarmupMediaLibrary
+            mediaList={mediaList}
+            isLoading={loadingMedia}
+            mediaCounts={mediaCounts}
+          />
+        </TabsContent>
+      </Tabs>
 
       {/* ============ Dialog: criar / editar pool ============ */}
       <Dialog
@@ -1302,6 +1382,397 @@ export default function AdminWarmupPage() {
 
       {/* Suppress unused import warning for Progress (UI shadcn que pode ser usada futuramente) */}
       <Progress className="hidden" value={0} />
+    </div>
+  );
+}
+
+// ============================================
+// PoolMediaBadge — agregado de midias disponiveis na conta.
+// Mostra contagem por tipo com icone + tooltip explicando o impacto
+// quando nao ha midia configurada (sistema cai pra so-texto).
+// ============================================
+
+function PoolMediaBadge({
+  audio,
+  sticker,
+  image,
+}: {
+  audio: number;
+  sticker: number;
+  image: number;
+}) {
+  const total = audio + sticker + image;
+  const labelTooltip =
+    total === 0
+      ? 'Sem mídias cadastradas — o sistema usará apenas texto nas conversas.'
+      : `Mídias disponíveis para esta conta: ${audio} áudios, ${sticker} figurinhas, ${image} imagens. Distribuídas conforme a fase do protocolo.`;
+  return (
+    <UiTooltipProvider delayDuration={150}>
+      <UiTooltip>
+        <UiTooltipTrigger asChild>
+          <Badge
+            variant={total === 0 ? 'outline' : 'secondary'}
+            className="text-[10px] py-0 inline-flex items-center gap-1 cursor-help"
+            aria-label="Contagem de mídias da conta"
+          >
+            <Mic className="w-3 h-3" />
+            {audio}
+            <Sticker className="w-3 h-3 ml-1" />
+            {sticker}
+            <ImageIcon className="w-3 h-3 ml-1" />
+            {image}
+          </Badge>
+        </UiTooltipTrigger>
+        <UiTooltipContent side="bottom" className="max-w-xs">
+          {labelTooltip}
+        </UiTooltipContent>
+      </UiTooltip>
+    </UiTooltipProvider>
+  );
+}
+
+// ============================================
+// WarmupMediaLibrary (T-023 V2 / Phase 4)
+// 3 cards lado a lado (audio | sticker | image) com upload + listagem.
+// Validacao client-side de tamanho antes do upload. Apaga via AlertDialog.
+// ============================================
+
+type MediaCardConfig = {
+  type: WarmupMediaType;
+  label: string;
+  pluralLabel: string;
+  emoji: string;
+  icon: typeof Mic;
+  accept: string;
+  maxBytes: number;
+  helpText: string;
+};
+
+const MEDIA_CARDS: MediaCardConfig[] = [
+  {
+    type: 'audio',
+    label: 'Áudio',
+    pluralLabel: 'áudios',
+    emoji: '🔊',
+    icon: Mic,
+    accept: '.ogg,.mp3,.wav,.m4a,audio/*',
+    maxBytes: 1 * 1024 * 1024,
+    helpText: 'OGG, MP3, WAV ou M4A • até 1 MB • 3-8 s recomendado',
+  },
+  {
+    type: 'sticker',
+    label: 'Figurinha',
+    pluralLabel: 'figurinhas',
+    emoji: '🎴',
+    icon: Sticker,
+    accept: '.webp,image/webp',
+    maxBytes: 200 * 1024,
+    helpText: 'WebP • até 200 KB • figurinha WhatsApp 512×512',
+  },
+  {
+    type: 'image',
+    label: 'Imagem',
+    pluralLabel: 'imagens',
+    emoji: '🖼️',
+    icon: ImageIcon,
+    accept: '.jpg,.jpeg,.png,.webp,image/*',
+    maxBytes: 2 * 1024 * 1024,
+    helpText: 'JPG, PNG ou WebP • até 2 MB',
+  },
+];
+
+function formatBytes(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function WarmupMediaLibrary({
+  mediaList,
+  isLoading,
+  mediaCounts,
+}: {
+  mediaList: WarmupMedia[];
+  isLoading: boolean;
+  mediaCounts: { audio: number; sticker: number; image: number };
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const [deletingMedia, setDeletingMedia] = useState<WarmupMedia | null>(null);
+  const [uploadingType, setUploadingType] = useState<WarmupMediaType | null>(
+    null,
+  );
+
+  const mutateUpload = useMutation({
+    mutationFn: ({
+      file,
+      type,
+    }: {
+      file: File;
+      type: WarmupMediaType;
+    }) => warmupBackendService.uploadMedia(file, type),
+    onMutate: ({ type }) => {
+      setUploadingType(type);
+    },
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ['warmup-media'] });
+      toast({
+        title: 'Mídia adicionada',
+        description: created.fileName ?? created.id,
+      });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao enviar mídia',
+        description: err.message,
+        variant: 'destructive',
+      });
+    },
+    onSettled: () => {
+      setUploadingType(null);
+    },
+  });
+
+  const mutateDelete = useMutation({
+    mutationFn: (id: string) => warmupBackendService.deleteMedia(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['warmup-media'] });
+      toast({ title: 'Mídia removida.' });
+      setDeletingMedia(null);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: 'Erro ao remover mídia',
+        description: err.message,
+        variant: 'destructive',
+      });
+      setDeletingMedia(null);
+    },
+  });
+
+  const totalMedia =
+    mediaCounts.audio + mediaCounts.sticker + mediaCounts.image;
+
+  const handleFileSelected = (
+    config: MediaCardConfig,
+    fileList: FileList | null,
+    inputEl: HTMLInputElement,
+  ) => {
+    const file = fileList?.[0];
+    // Reseta o input pra permitir reupload do mesmo arquivo depois.
+    inputEl.value = '';
+    if (!file) return;
+
+    if (file.size > config.maxBytes) {
+      toast({
+        title: 'Arquivo muito grande',
+        description: `${config.label} aceita até ${formatBytes(config.maxBytes)}. Arquivo selecionado: ${formatBytes(file.size)}.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    mutateUpload.mutate({ file, type: config.type });
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Aviso UX explicando impacto de nao ter midias. */}
+      <div
+        className={
+          'rounded-md border p-4 text-sm ' +
+          (totalMedia === 0
+            ? 'border-yellow-500/40 bg-yellow-500/10 text-yellow-900 dark:text-yellow-100'
+            : 'border-muted bg-muted/40 text-muted-foreground')
+        }
+        role="status"
+      >
+        <p>
+          <strong>
+            {totalMedia === 0
+              ? 'Sem mídias configuradas.'
+              : `${totalMedia} mídia(s) disponível(is).`}
+          </strong>{' '}
+          {totalMedia === 0
+            ? 'O sistema usa apenas texto. Adicionar áudios curtos (3-8 s), figurinhas WhatsApp e imagens reduz o padrão de bot detectado pela Meta.'
+            : 'O cron de aquecimento alterna texto e mídia conforme a fase do protocolo (D4+ libera áudio; D8+ libera figurinha/imagem).'}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {MEDIA_CARDS.map((config) => {
+          const items = mediaList.filter((m) => m.type === config.type);
+          const Icon = config.icon;
+          const isUploadingThis =
+            uploadingType === config.type && mutateUpload.isPending;
+          return (
+            <Card key={config.type} className="flex flex-col">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Icon className="w-4 h-4" />
+                    {config.label}
+                    <span className="text-xs font-normal text-muted-foreground">
+                      ({items.length} {config.pluralLabel})
+                    </span>
+                  </CardTitle>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  {config.helpText}
+                </p>
+              </CardHeader>
+              <CardContent className="flex-1 space-y-3">
+                <div>
+                  <label
+                    htmlFor={`warmup-upload-${config.type}`}
+                    className={
+                      'inline-flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-sm cursor-pointer w-full justify-center transition-colors ' +
+                      (isUploadingThis
+                        ? 'opacity-60 cursor-wait'
+                        : 'hover:bg-muted/50')
+                    }
+                  >
+                    {isUploadingThis ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4" />
+                    )}
+                    {isUploadingThis ? 'Enviando...' : 'Adicionar'}
+                    <input
+                      id={`warmup-upload-${config.type}`}
+                      type="file"
+                      accept={config.accept}
+                      className="hidden"
+                      disabled={isUploadingThis}
+                      onChange={(e) =>
+                        handleFileSelected(
+                          config,
+                          e.target.files,
+                          e.currentTarget,
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+
+                {isLoading ? (
+                  <div className="space-y-2">
+                    {[1, 2].map((i) => (
+                      <Skeleton key={i} className="h-12 w-full" />
+                    ))}
+                  </div>
+                ) : items.length === 0 ? (
+                  <div className="text-center py-6 text-xs text-muted-foreground border border-dashed rounded">
+                    Nenhuma {config.label.toLowerCase()} ainda.
+                  </div>
+                ) : (
+                  <ul className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                    {items.map((m) => (
+                      <li
+                        key={m.id}
+                        className="rounded border p-2 text-xs flex flex-col gap-2"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p
+                              className="font-medium truncate"
+                              title={m.fileName ?? m.id}
+                            >
+                              {m.fileName ?? '(sem nome)'}
+                            </p>
+                            <p className="text-[10px] text-muted-foreground">
+                              {formatBytes(m.mediaSizeBytes)}
+                              {m.isGlobal && (
+                                <span className="ml-2">
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[9px] py-0"
+                                  >
+                                    Global
+                                  </Badge>
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-destructive hover:text-destructive shrink-0"
+                            onClick={() => setDeletingMedia(m)}
+                            aria-label={`Excluir ${m.fileName ?? m.id}`}
+                            disabled={m.isGlobal}
+                            title={
+                              m.isGlobal
+                                ? 'Mídias globais não podem ser removidas por admin'
+                                : 'Excluir mídia'
+                            }
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                        {/* Preview do conteudo */}
+                        {m.mediaUrl ? (
+                          config.type === 'audio' ? (
+                            <audio
+                              src={m.mediaUrl}
+                              controls
+                              preload="none"
+                              className="w-full h-8"
+                            />
+                          ) : (
+                            <img
+                              src={m.mediaUrl}
+                              alt={m.fileName ?? config.label}
+                              className="max-h-32 w-full object-contain bg-muted rounded"
+                              loading="lazy"
+                            />
+                          )
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      <AlertDialog
+        open={!!deletingMedia}
+        onOpenChange={(open) => {
+          if (!open) setDeletingMedia(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">
+              Excluir mídia?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              O arquivo <strong>{deletingMedia?.fileName ?? deletingMedia?.id}</strong>{' '}
+              será removido permanentemente e deixará de ser usado nas
+              conversas de aquecimento.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={mutateDelete.isPending}>
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={mutateDelete.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (deletingMedia) mutateDelete.mutate(deletingMedia.id);
+              }}
+            >
+              {mutateDelete.isPending ? 'Excluindo...' : 'Excluir'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -392,6 +392,11 @@ export const API_ENDPOINTS = {
     NUMBER_RESUME: (id: string) => `/api/warmup/numbers/${id}/resume`,
     NUMBER_STATS: (id: string) => `/api/warmup/numbers/${id}/stats`,
     AI_PROVIDERS: '/api/warmup/ai/providers',
+    // T-023 V2 (Phase 4) — biblioteca de midias (audio/sticker/image) usadas
+    // como conteudo nao-texto nas conversas de aquecimento.
+    MEDIA: '/api/warmup/media',
+    MEDIA_UPLOAD: '/api/warmup/media/upload',
+    MEDIA_DELETE: (id: string) => `/api/warmup/media/${id}`,
   },
 
   // ============= CHAT METRICS (T-022 — métricas do chat interno) =============

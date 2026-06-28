@@ -20,7 +20,9 @@
  */
 
 import { Router } from 'express';
+import multer from 'multer';
 import { warmupController } from '../controllers/warmup.controller';
+import { warmupMediaController } from '../controllers/warmup-media.controller';
 import {
   authenticate,
   requireAccountId,
@@ -32,6 +34,14 @@ const router = Router();
 router.use(authenticate);
 router.use(requireAccountId);
 router.use(requireRole('admin', 'super_admin'));
+
+// Multer: memoryStorage para validar MIME/tamanho no controller antes de
+// gravar no disco. Limite global de 2MB (maior tipo permitido = image),
+// validacao especifica por type acontece no controller.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
+});
 
 // ─── AI Providers ─────────────────────────────────────────────────────────
 router.get('/ai/providers', (req, res, next) =>
@@ -73,6 +83,17 @@ router.delete('/numbers/:id', (req, res, next) =>
 );
 router.get('/numbers/:id/stats', (req, res, next) =>
   warmupController.getNumberStats(req, res, next)
+);
+
+// ─── Media (audio/sticker/image) — Phase 3B ──────────────────────────────
+router.post('/media/upload', upload.single('file'), (req, res, next) =>
+  warmupMediaController.upload(req, res, next)
+);
+router.get('/media', (req, res, next) =>
+  warmupMediaController.list(req, res, next)
+);
+router.delete('/media/:id', (req, res, next) =>
+  warmupMediaController.delete(req, res, next)
 );
 
 export default router;
