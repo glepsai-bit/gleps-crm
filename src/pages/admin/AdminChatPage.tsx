@@ -124,9 +124,15 @@ export default function AdminChatPage() {
           BUG-CRIT-4: em <lg ocupa a largura inteira (w-full) e so aparece
           quando nao ha conversa selecionada. Em lg+ volta a ser uma coluna
           fixa de 320px sempre visivel. */}
+      {/* BUG-CHAT-OVERFLOW: `min-w-0 overflow-hidden` no aside impede que o
+          filho cresca ate o min-content (~412px) e estoure os 320px de
+          `lg:w-[320px]`, sobrepondo a thread do meio. O culpado eh o grid
+          2-colunas dos Selects do header (cada SelectTrigger ~190px). O
+          ConversationList ja foi atualizado para usar `w-full min-w-0`
+          como ultima linha de defesa. */}
       <aside
         className={cn(
-          'shrink-0 lg:w-[320px] lg:flex',
+          'shrink-0 min-w-0 overflow-hidden lg:w-[320px] lg:flex',
           // Mobile: lista ocupa tela inteira quando nada selecionado;
           // some quando ha conversa aberta (a thread toma o lugar).
           // Em lg+ o `lg:flex` acima reativa, mantendo lado a lado.
@@ -193,8 +199,10 @@ export default function AdminChatPage() {
       </main>
 
       {/* Coluna direita — desktop somente (em mobile o painel de contato vira
-          drawer acionado pelo botao "Contato" no header acima). */}
-      <aside className="hidden lg:flex w-[320px] shrink-0">
+          drawer acionado pelo botao "Contato" no header acima).
+          BUG-CHAT-OVERFLOW: `min-w-0 overflow-hidden` aplicado pelo mesmo
+          motivo do aside esquerdo — defesa contra crescimento do min-content. */}
+      <aside className="hidden lg:flex w-[320px] shrink-0 min-w-0 overflow-hidden">
         {selectedConversationQuery.data ? (
           <ContactSidePanel conversation={selectedConversationQuery.data} />
         ) : (

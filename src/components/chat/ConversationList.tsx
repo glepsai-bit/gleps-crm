@@ -458,7 +458,11 @@ export function ConversationList({
   }
 
   return (
-    <div className="flex h-full flex-col border-r border-border bg-card">
+    // BUG-CHAT-OVERFLOW: `w-full min-w-0` evita que o min-content do header
+    // (grid 2-col com Selects) estoure os 320px da coluna pai (aside no
+    // AdminChatPage). Sem isso, o card da conversa selecionada cresce para
+    // ~412px e sobrepoe a thread do meio com bg-primary/10.
+    <div className="flex h-full w-full min-w-0 flex-col border-r border-border bg-card">
       {/* Cabeçalho + busca */}
       <div className="border-b border-border p-3 space-y-2">
         <div className="flex items-center justify-between gap-2">
@@ -637,8 +641,14 @@ export function ConversationList({
         )}
       </div>
 
-      {/* Lista */}
-      <ScrollArea className="flex-1">
+      {/* Lista.
+          BUG-CHAT-OVERFLOW: o Viewport interno do Radix ScrollArea coloca um
+          wrapper `<div style="min-width:100%; display:table">`. Esse
+          `display:table` faz shrink-wrap pelo min-content do filho — entao,
+          mesmo com `min-w-0` em todos os ancestrais, o botao da conversa
+          consegue expandir o wrapper alem dos 320px da coluna. Forcamos
+          `block` para neutralizar o table-shrink-wrap. */}
+      <ScrollArea className="flex-1 [&>[data-radix-scroll-area-viewport]>div]:!block">
         {listQuery.isLoading ? (
           // C2 — Skeleton rows (5) imitando o card real (avatar + 2 linhas)
           // dão sensação concreta de "tem conteúdo vindo" em vez do spinner
@@ -691,7 +701,10 @@ export function ConversationList({
             />
           )
         ) : (
-          <div className="divide-y divide-border">
+          // BUG-CHAT-OVERFLOW: `min-w-0` impede que o min-content do card
+          // (avatar + badges) estoure a largura da coluna pai. Sem isso, o
+          // botao individual fica com ~411px mesmo dentro do aside de 320px.
+          <div className="divide-y divide-border min-w-0">
             {visibleConversations.map((conv) => {
               const isSelected = conv.id === selectedConversationId;
               const isOutOfFilter = Boolean((conv as Conversation & { __outOfFilter?: boolean }).__outOfFilter);

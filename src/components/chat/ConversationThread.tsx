@@ -757,21 +757,10 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
                 </div>
                 {group.items.map((msg) => {
                   const isCustomer = msg.senderType === 'customer';
-                  const isSystem = msg.senderType === 'system';
                   const isPrivate = msg.isPrivate;
                   const replyMsg = msg.replyToId
                     ? messages.find((m) => m.id === msg.replyToId)
                     : null;
-
-                  if (isSystem) {
-                    return (
-                      <div key={msg.id} className="flex justify-center">
-                        <div className="text-[11px] text-muted-foreground italic max-w-md text-center">
-                          {msg.content}
-                        </div>
-                      </div>
-                    );
-                  }
 
                   return (
                     <div
@@ -805,7 +794,11 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
                             )}
                           >
                             <p className="font-medium">
-                              {replyMsg.senderType === 'customer' ? 'Cliente' : 'Agente'}
+                              {replyMsg.senderType === 'customer'
+                                ? 'Cliente'
+                                : replyMsg.senderType === 'system'
+                                  ? 'Sistema'
+                                  : 'Agente'}
                             </p>
                             <p className="line-clamp-2">{replyMsg.content || '—'}</p>
                           </div>
