@@ -272,3 +272,136 @@ describe('csatService.parseCustomerResponse', () => {
     expect(reloaded?.customerCsat).toBe(3);
   });
 });
+
+describe('csatService.sendCsatNow — SLA v2.1', () => {
+  it('cria msg system + seta csatSentAt em ciclo elegivel', async () => {
+    const { account } = await createTestAccount();
+    const { conv, cycle } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: null,
+    });
+
+    const result = await csatService.sendCsatNow(conv.id, account.id);
+
+    expect(result.sent).toBe(true);
+    expect(result.cycleId).toBe(cycle.id);
+    expect(result.sentAt).toBeInstanceOf(Date);
+    expect(result.messageText).toMatch(/avalia/i);
+
+    // Cria msg system
+    expect(messageService.create).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(messageService.create).mock.calls[0];
+    expect(call[0]).toBe(account.id);
+    expect(call[1].senderType).toBe('system');
+    expect(call[1].conversationId).toBe(conv.id);
+    expect(call[1].metadata).toMatchObject({
+      csat_request: true,
+      cycleId: cycle.id,
+      source: 'csat_service.sendCsatNow',
+    });
+
+    // Persiste csatSentAt + csatRequested no cycle
+    const reloaded = await prismaTest.conversationCycle.findUnique({
+      where: { id: cycle.id },
+    });
+    expect(reloaded?.csatSentAt).not.toBeNull();
+    expect(reloaded?.csatRequested).toBe(true);
+  });
+
+  it('lanca ConflictError quando cycle ja tem csatSentAt setado', async () => {
+    const { account } = await createTestAccount();
+    const { conv } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: new Date(Date.now() - 10 * 60 * 1000), // ja enviado 10min atras
+    });
+
+    await expect(
+      csatService.sendCsatNow(conv.id, account.id)
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'CONFLICT',
+    });
+
+    // Nao chamou messageService.create
+    expect(messageService.create).not.toHaveBeenCalled();
+  });
+
+  it('com force=true reenvia mesmo se csatSentAt ja setado', async () => {
+    const { account } = await createTestAccount();
+    const { conv, cycle } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: new Date(Date.now() - 60 * 60 * 1000), // 1h atras
+    });
+
+    const result = await csatService.sendCsatNow(conv.id, account.id, {
+      force: true,
+    });
+
+    expect(result.sent).toBe(true);
+    expect(result.cycleId).toBe(cycle.id);
+    expect(messageService.create).toHaveBeenCalledTimes(1);
+
+    // Atualiza csatSentAt pro now (reenvio explicito)
+    const reloaded = await prismaTest.conversationCycle.findUnique({
+      where: { id: cycle.id },
+    });
+    expect(reloaded?.csatSentAt!.getTime()).toBeGreaterThan(
+      Date.now() - 5_000
+    );
+  });
+
+  it('com customMessage usa texto custom em vez do padrao', async () => {
+    const { account } = await createTestAccount();
+    const { conv } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: null,
+    });
+
+    const customText = 'De 1 a 5, como foi sua experiencia hoje?';
+    const result = await csatService.sendCsatNow(conv.id, account.id, {
+      customMessage: customText,
+    });
+
+    expect(result.messageText).toBe(customText);
+    const call = vi.mocked(messageService.create).mock.calls[0];
+    expect(call[1].content).toBe(customText);
+  });
+
+  it('lanca NotFoundError quando conversation nao existe ou eh de outra conta', async () => {
+    const { account } = await createTestAccount();
+    const fakeId = '00000000-0000-0000-0000-000000000000';
+
+    await expect(
+      csatService.sendCsatNow(fakeId, account.id)
+    ).rejects.toMatchObject({
+      statusCode: 404,
+    });
+
+    expect(messageService.create).not.toHaveBeenCalled();
+  });
+
+  it('lanca NotFoundError quando conversation existe mas nao tem cycle', async () => {
+    const { account } = await createTestAccount();
+    const inbox = await prismaTest.inbox.create({
+      data: {
+        accountId: account.id,
+        name: 'Inbox sem cycle',
+        channelType: 'whatsapp',
+        evolutionInstance: `inst-no-cycle-${Date.now()}`,
+      },
+    });
+    const conv = await prismaTest.conversation.create({
+      data: {
+        accountId: account.id,
+        inboxId: inbox.id,
+        status: 'open',
+      },
+    });
+
+    await expect(
+      csatService.sendCsatNow(conv.id, account.id)
+    ).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+});

@@ -18,6 +18,7 @@
  */
 
 import { prisma } from '../config/database';
+import { ConflictError, NotFoundError } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { messageService } from './message.service';
 
@@ -48,6 +49,26 @@ export interface ParseCsatResult {
   matched: boolean;
   rating: number | null;
   cycleId: string | null;
+}
+
+export interface SendCsatNowOptions {
+  /**
+   * Texto custom da pergunta. Se omitido, usa CSAT_MESSAGE_TEXT padrao.
+   */
+  customMessage?: string;
+  /**
+   * Forca reenvio mesmo se csatSentAt ja estiver setado. Util quando
+   * agente quer pedir avaliacao de novo (cliente nao respondeu na 1a vez).
+   * Sem force, ciclos ja perguntados retornam 409 ConflictError.
+   */
+  force?: boolean;
+}
+
+export interface SendCsatNowResult {
+  sent: true;
+  sentAt: Date;
+  cycleId: string;
+  messageText: string;
 }
 
 // ============================================
@@ -112,6 +133,102 @@ export function parseRatingFromText(text: string | null | undefined): number | n
 // ============================================
 
 class CsatService {
+  /**
+   * Envia CSAT IMEDIATO pra uma conversation especifica (sem esperar o cron
+   * de 15min). Usado quando o agente ou a IA querem capturar a avaliacao do
+   * cliente naquele momento — via botao "Pedir avaliacao" na UI ou via
+   * endpoint de integracao (n8n / IA externa).
+   *
+   * Comportamento:
+   *  - Busca o ConversationCycle aberto OU o mais recente da conversation.
+   *  - Se ja foi enviado (csatSentAt != null) e options.force !== true:
+   *    lanca ConflictError. Idempotencia explicita — agente reenvia so se
+   *    quiser de verdade.
+   *  - Cria Message do tipo system com o texto da pergunta (default ou
+   *    options.customMessage).
+   *  - Atualiza o cycle: csatRequested=true, csatSentAt=now.
+   *
+   * Diferente do cron sendPendingCsatMessages, este metodo:
+   *  - Nao aplica janela de 15min/24h (envio sob demanda).
+   *  - Lanca erro em vez de "skip" silencioso — caller precisa saber.
+   *  - Aceita force pra reenvio explicito.
+   */
+  async sendCsatNow(
+    conversationId: string,
+    accountId: string,
+    options: SendCsatNowOptions = {}
+  ): Promise<SendCsatNowResult> {
+    // Garante que a conversation existe e pertence a conta — senao 404.
+    const conversation = await prisma.conversation.findFirst({
+      where: { id: conversationId, accountId },
+      select: { id: true },
+    });
+    if (!conversation) {
+      throw new NotFoundError('Conversa');
+    }
+
+    // Preferencia: ciclo aberto. Fallback: ciclo mais recente (resolvido).
+    // openedAt desc cobre os 2 casos com 1 query — se houver aberto, vem 1o.
+    const cycle = await prisma.conversationCycle.findFirst({
+      where: { conversationId, accountId },
+      orderBy: [{ resolvedAt: 'desc' }, { openedAt: 'desc' }],
+    });
+
+    if (!cycle) {
+      throw new NotFoundError('ConversationCycle');
+    }
+
+    if (cycle.csatSentAt && !options.force) {
+      throw new ConflictError(
+        'CSAT ja foi enviado para este ciclo. Use force=true para reenviar.',
+        { cycleId: cycle.id, csatSentAt: cycle.csatSentAt.toISOString() }
+      );
+    }
+
+    const messageText =
+      options.customMessage && options.customMessage.trim().length > 0
+        ? options.customMessage
+        : CSAT_MESSAGE_TEXT;
+
+    const now = new Date();
+
+    await messageService.create(accountId, {
+      conversationId,
+      senderType: 'system',
+      senderId: null,
+      content: messageText,
+      contentType: 'text',
+      metadata: {
+        csat_request: true,
+        cycleId: cycle.id,
+        source: 'csat_service.sendCsatNow',
+        force: options.force === true ? true : undefined,
+      },
+    });
+
+    await prisma.conversationCycle.update({
+      where: { id: cycle.id },
+      data: {
+        csatRequested: true,
+        csatSentAt: now,
+      },
+    });
+
+    logger.info('[csat] sendCsatNow', {
+      accountId,
+      conversationId,
+      cycleId: cycle.id,
+      force: options.force === true,
+    });
+
+    return {
+      sent: true,
+      sentAt: now,
+      cycleId: cycle.id,
+      messageText,
+    };
+  }
+
   /**
    * Envia mensagem de CSAT pros ciclos elegiveis. Idempotente via guard
    * csatSentAt — nao envia 2x. Best-effort: erros individuais nao abortam

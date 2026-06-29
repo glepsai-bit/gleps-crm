@@ -19,6 +19,7 @@ import { integrationChatController } from '../controllers/integration-chat.contr
  *   POST   /conversations/:id/transfer
  *   POST   /conversations/:id/resolve
  *   POST   /conversations/:id/reopen
+ *   POST   /conversations/:id/send-csat
  *   PATCH  /conversations/:id/custom-attributes
  *   PATCH  /conversations/:id/priority
  *   POST   /conversations/:id/labels
@@ -134,6 +135,14 @@ router.post(
   integrationWriteLimiter,
   requireScope('chat:write'),
   (req, res, next) => integrationChatController.reopen(req, res, next)
+);
+
+// Send CSAT now (SLA v2.1) — dispara avaliacao imediata pro cliente
+router.post(
+  '/conversations/:id/send-csat',
+  integrationWriteLimiter,
+  requireScope('chat:write'),
+  (req, res, next) => integrationChatController.sendCsat(req, res, next)
 );
 
 // Custom attributes (PATCH)

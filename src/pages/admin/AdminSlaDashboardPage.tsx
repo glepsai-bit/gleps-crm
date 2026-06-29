@@ -27,6 +27,7 @@ import {
   CheckCircle2,
   Clock,
   Filter,
+  Info,
   ShieldCheck,
   Star,
   TrendingUp,
@@ -59,6 +60,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import {
   Select,
   SelectContent,
@@ -461,9 +468,36 @@ export default function AdminSlaDashboardPage() {
           <CardTitle className="text-base flex items-center gap-2">
             <Star className="w-4 h-4 text-amber-500" />
             Avaliação do cliente (CSAT)
+            {/* SLA v2.1 — esclarece que CSAT eh metrica oficial e separa da
+                "avaliacao interna" (auto-avaliacao do agente/IA no dialog de
+                resolve), que NAO entra nesses numeros. */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground"
+                    aria-label="Mais informações sobre CSAT"
+                  >
+                    <Info className="w-3.5 h-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  <p className="text-xs leading-relaxed">
+                    CSAT = avaliação do cliente (resposta 1-5 enviada por
+                    WhatsApp). É a métrica oficial de satisfação. A
+                    "Avaliação interna" no dialog de resolver é auxiliar
+                    (auto-avaliação do agente/IA) e <strong>não</strong>{' '}
+                    integra estas métricas.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </CardTitle>
           <CardDescription className="text-xs">
-            CSAT médio (1-5) e taxa de resposta no período.
+            CSAT médio (1-5) e taxa de resposta no período. A "avaliação
+            interna" registrada pelo agente/IA é apenas auxiliar e não conta
+            aqui.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

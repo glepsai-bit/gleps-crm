@@ -331,4 +331,133 @@ describe('SLAService.getDashboard — SLA v2', () => {
     expect(dash.aiVsHuman.ai.resolved).toBe(2);
     expect(dash.aiVsHuman.human.resolved).toBe(1);
   });
+
+  it('SLA v2.1: csatAvg IGNORA internalRating (auxiliar nao oficial)', async () => {
+    const { account } = await createTestAccount();
+    const inbox = await createInbox(account.id);
+
+    // 3 ciclos com internalRating BAIXO mas customerCsat ALTO — csatAvg do
+    // dashboard deve refletir SO customerCsat. Caso internalRating estivesse
+    // sendo misturado, a media puxaria pra baixo.
+    const samples = [
+      { internal: 1, customer: 5 },
+      { internal: 2, customer: 5 },
+      { internal: 1, customer: 4 },
+    ];
+    for (const s of samples) {
+      const conv = await prismaTest.conversation.create({
+        data: { accountId: account.id, inboxId: inbox.id, status: 'resolved' },
+      });
+      await prismaTest.conversationCycle.create({
+        data: {
+          accountId: account.id,
+          conversationId: conv.id,
+          openedAt: new Date(Date.now() - 60 * 1000),
+          resolvedAt: new Date(),
+          resolvedBy: 'human',
+          outcome: 'resolved',
+          internalRating: s.internal,
+          customerCsat: s.customer,
+          csatSentAt: new Date(),
+          durationSec: 60,
+        },
+      });
+    }
+
+    const from = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const to = new Date(Date.now() + 60 * 1000);
+    const dash = await slaService.getDashboard(account.id, { fromDate: from, toDate: to });
+
+    // csatAvg = AVG(customerCsat) = (5+5+4)/3 = 4.67 (round 100x)
+    expect(dash.csatAvg).toBe(4.67);
+    // internalRatingAvg eh exposto separado = (1+2+1)/3 = 1.33
+    expect(dash.internalRatingAvg).toBe(1.33);
+  });
+
+  it('SLA v2.1: aiVsHuman.csat usa SO customerCsat (nao internalRating)', async () => {
+    const { account } = await createTestAccount();
+    const inbox = await createInbox(account.id);
+
+    // IA: customerCsat=[5,5], internalRating=[1,1]
+    for (let i = 0; i < 2; i++) {
+      const conv = await prismaTest.conversation.create({
+        data: { accountId: account.id, inboxId: inbox.id, status: 'resolved' },
+      });
+      await prismaTest.conversationCycle.create({
+        data: {
+          accountId: account.id,
+          conversationId: conv.id,
+          openedAt: new Date(Date.now() - 60 * 1000),
+          resolvedAt: new Date(),
+          resolvedBy: 'ai',
+          outcome: 'resolved',
+          internalRating: 1,
+          customerCsat: 5,
+          csatSentAt: new Date(),
+          durationSec: 60,
+        },
+      });
+    }
+    // Humano: customerCsat=[3], internalRating=[5]
+    const convH = await prismaTest.conversation.create({
+      data: { accountId: account.id, inboxId: inbox.id, status: 'resolved' },
+    });
+    await prismaTest.conversationCycle.create({
+      data: {
+        accountId: account.id,
+        conversationId: convH.id,
+        openedAt: new Date(Date.now() - 60 * 1000),
+        resolvedAt: new Date(),
+        resolvedBy: 'human',
+        outcome: 'resolved',
+        internalRating: 5,
+        customerCsat: 3,
+        csatSentAt: new Date(),
+        durationSec: 60,
+      },
+    });
+
+    const from = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const to = new Date(Date.now() + 60 * 1000);
+    const dash = await slaService.getDashboard(account.id, { fromDate: from, toDate: to });
+
+    // aiVsHuman comparado por customerCsat (NAO internalRating)
+    expect(dash.aiVsHuman.ai.csat).toBe(5); // (5+5)/2
+    expect(dash.aiVsHuman.human.csat).toBe(3);
+  });
+
+  it('SLA v2.1: csatAvg null quando so ha internalRating (sem cliente respondendo)', async () => {
+    const { account } = await createTestAccount();
+    const inbox = await createInbox(account.id);
+
+    // 2 ciclos so com internalRating (cliente nao respondeu nada)
+    for (let i = 0; i < 2; i++) {
+      const conv = await prismaTest.conversation.create({
+        data: { accountId: account.id, inboxId: inbox.id, status: 'resolved' },
+      });
+      await prismaTest.conversationCycle.create({
+        data: {
+          accountId: account.id,
+          conversationId: conv.id,
+          openedAt: new Date(Date.now() - 60 * 1000),
+          resolvedAt: new Date(),
+          resolvedBy: 'human',
+          outcome: 'resolved',
+          internalRating: 5,
+          customerCsat: null,
+          csatSentAt: null,
+          durationSec: 60,
+        },
+      });
+    }
+
+    const from = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const to = new Date(Date.now() + 60 * 1000);
+    const dash = await slaService.getDashboard(account.id, { fromDate: from, toDate: to });
+
+    // SLA: sem customerCsat respondido = null (NAO usa internalRating)
+    expect(dash.csatAvg).toBeNull();
+    // Auxiliar internalRatingAvg eh = 5
+    expect(dash.internalRatingAvg).toBe(5);
+  });
 });

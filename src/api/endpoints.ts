@@ -446,6 +446,10 @@ export const API_ENDPOINTS = {
     CUSTOM_ATTRIBUTES: (id: string) =>
       `/api/conversations/${id}/custom-attributes`,
     MARK_READ: (id: string) => `/api/conversations/${id}/read`,
+    // SLA v2.1 — disparo IMEDIATO de pesquisa CSAT (sem aguardar o cron 15min).
+    // Body opcional: { customMessage?: string; force?: boolean }
+    // 409 se ja enviado e force !== true.
+    SEND_CSAT: (id: string) => `/api/conversations/${id}/send-csat`,
   },
 
   // ============= MESSAGES (T-022 — Chat interno) =============

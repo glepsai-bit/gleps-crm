@@ -560,9 +560,18 @@ class SLAService {
    *   - breachedFirstResponse / breachedResolution
    *   - avgFirstResponseSec / avgResolutionSec
    *   - outcomes: distribuicao por outcome
-   *   - csatAvg / csatResponseRate (ignora null)
-   *   - byAgent: ranking de agentes
-   *   - aiVsHuman: comparativo IA vs Humano
+   *   - csatAvg / csatResponseRate (SO customerCsat — ignora null)
+   *   - byAgent: ranking de agentes (csatAvg = AVG customerCsat)
+   *   - aiVsHuman: comparativo IA vs Humano (csat = AVG customerCsat)
+   *   - internalRatingAvg: AUXILIAR — media de internalRating (1-5) do
+   *     agente/IA. NAO eh metrica oficial de SLA; eh self-report e nao
+   *     reflete a satisfacao real do cliente. Exposto como sinal extra.
+   *
+   * IMPORTANTE — SLA v2.1:
+   *   Apenas customerCsat (resposta DO CLIENTE via WhatsApp) conta no SLA.
+   *   internalRating eh self-report do operador e fica como sinal auxiliar.
+   *   Para capturar customerCsat use o cron CSAT (15min apos resolve quando
+   *   sendCsatToCustomer=true) ou o endpoint send-csat (envio imediato).
    *
    * Usa ConversationCycle como fonte de verdade — cada ciclo open->resolved
    * conta. Reaberturas geram ciclos novos, preservando o historico.
@@ -580,6 +589,12 @@ class SLAService {
     outcomes: Record<string, number>;
     csatAvg: number | null;
     csatResponseRate: number;
+    /**
+     * AUXILIAR — nao integra o SLA oficial. Media do internalRating
+     * (self-report do agente/IA no resolve). Util pra cruzar com
+     * customerCsat e ver se o operador eh otimista demais / pessimista.
+     */
+    internalRatingAvg: number | null;
     byAgent: Array<{
       userId: string;
       name: string;
@@ -622,6 +637,9 @@ class SLAService {
         csatSentAt: true,
         slaBreached: true,
         durationSec: true,
+        // SLA v2.1 — AUXILIAR: lido so pra computar internalRatingAvg, NAO
+        // entra em csatAvg/byAgent/aiVsHuman (esses usam APENAS customerCsat).
+        internalRating: true,
       },
     });
 
@@ -679,7 +697,9 @@ class SLAService {
       outcomes[c.outcome] = (outcomes[c.outcome] ?? 0) + 1;
     }
 
-    // CSAT — ignora null (so conta resposta efetiva). csatResponseRate = respondidos / pedidos
+    // CSAT — APENAS customerCsat (resposta DO CLIENTE). internalRating fica
+    // de fora de proposito: ele eh auxiliar e exposto separadamente abaixo.
+    // csatResponseRate = respondidos / pedidos (csatSentAt setado).
     const csatValues = cycles
       .map((c) => c.customerCsat)
       .filter((v): v is number => v !== null && v !== undefined);
@@ -689,6 +709,14 @@ class SLAService {
       csatRequestedCount === 0
         ? 0
         : Math.round((csatValues.length / csatRequestedCount) * 1000) / 1000;
+
+    // AUXILIAR: media de internalRating (self-report agente/IA). Exposta
+    // separada pra dashboards quererem cruzar com customerCsat. NAO entra
+    // no SLA oficial nem no ranking de agentes.
+    const internalRatingValues = cycles
+      .map((c) => c.internalRating)
+      .filter((v): v is number => v !== null && v !== undefined);
+    const internalRatingAvg = avg(internalRatingValues);
 
     // By agent — apenas ciclos resolvidos por humano com resolvedByUserId
     const agentBuckets = new Map<
@@ -754,6 +782,7 @@ class SLAService {
       outcomes,
       csatAvg,
       csatResponseRate,
+      internalRatingAvg,
       byAgent,
       aiVsHuman: {
         ai: {

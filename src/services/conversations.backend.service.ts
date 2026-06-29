@@ -211,6 +211,23 @@ export interface ResolveConversationInput {
   sendCsatToCustomer?: boolean;
 }
 
+/**
+ * SLA v2.1 — payload do POST /conversations/:id/send-csat.
+ * customMessage: texto custom (opcional) — default vem do backend.
+ * force: reenviar mesmo se ja foi enviado (csatSentAt != null no ciclo).
+ */
+export interface SendCsatInput {
+  customMessage?: string;
+  force?: boolean;
+}
+
+export interface SendCsatResult {
+  sent: boolean;
+  sentAt: string;
+  cycleId: string;
+  messageText: string;
+}
+
 // ============================================
 // Helpers de envelope
 // ============================================
@@ -512,6 +529,31 @@ export const conversationsBackendService = {
       API_ENDPOINTS.CONVERSATIONS.MARK_READ(id)
     );
     return unwrapData<Conversation>(response);
+  },
+
+  /**
+   * POST /api/conversations/:id/send-csat
+   *
+   * SLA v2.1 — dispara pesquisa CSAT IMEDIATA (sem aguardar o cron de 15min).
+   * Usado pelo botao "Pedir avaliacao" no header da conversa ou por integracoes
+   * (IA / n8n). Se ja foi enviado e `options.force !== true`, o backend
+   * responde 409 — repassamos a Error para o caller tratar via toast.
+   */
+  async sendCsat(
+    conversationId: string,
+    options: SendCsatInput = {}
+  ): Promise<SendCsatResult> {
+    const payload: Record<string, unknown> = {};
+    if (options.customMessage && options.customMessage.trim()) {
+      payload.customMessage = options.customMessage.trim();
+    }
+    if (typeof options.force === 'boolean') {
+      payload.force = options.force;
+    }
+    const response = await apiClient.post<
+      DataEnvelope<SendCsatResult> | SendCsatResult
+    >(API_ENDPOINTS.CONVERSATIONS.SEND_CSAT(conversationId), payload);
+    return unwrapData<SendCsatResult>(response);
   },
 };
 

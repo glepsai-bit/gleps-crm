@@ -54,6 +54,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
@@ -96,6 +106,14 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
 
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [snoozeUntil, setSnoozeUntil] = useState('');
+
+  // SLA v2.1 — dialog "Pedir avaliacao ao cliente" (CSAT imediato). Sem
+  // depender do cron de 15min, dispara mensagem do tipo system pedindo nota
+  // 1-5 ao cliente. `csatForce` reabilita o botao quando o backend respondeu
+  // 409 (CSAT ja foi enviado pra esse ciclo) — exibe variante "Reenviar".
+  const [csatOpen, setCsatOpen] = useState(false);
+  const [csatCustomMessage, setCsatCustomMessage] = useState('');
+  const [csatForce, setCsatForce] = useState(false);
 
   // SLA v2 — dialog "Resolver com avaliacao". `resolveConfirm` agora alem de
   // marcar quem resolveu (ai|human) tambem abre o dialog que coleta outcome,
@@ -223,6 +241,34 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
       setSnoozeUntil('');
     },
     onError: (err) => handleMutationError(err, 'Erro ao adiar'),
+  });
+
+  // SLA v2.1 — dispara CSAT IMEDIATO. Idempotente: backend retorna 409
+  // quando csatSentAt do ciclo ja esta setado e force !== true. Nessa
+  // situacao a UI muda pra modo "Reenviar pesquisa?" e o usuario re-confirma
+  // com force=true ativo.
+  const sendCsatMutation = useMutation({
+    mutationFn: () =>
+      conversationsBackendService.sendCsat(conversationId, {
+        customMessage: csatCustomMessage.trim() || undefined,
+        force: csatForce || undefined,
+      }),
+    onSuccess: () => {
+      invalidate();
+      toast({
+        title: csatForce ? 'Pesquisa CSAT reenviada' : 'Pesquisa CSAT enviada',
+        description: 'O cliente recebera a mensagem agora.',
+      });
+      setCsatOpen(false);
+      setCsatCustomMessage('');
+      setCsatForce(false);
+    },
+    onError: (err) => {
+      // Mensagens do backend (incluindo ConflictError 409) chegam aqui.
+      // Mantemos o dialog aberto pra usuario poder marcar force e reenviar.
+      const message = err instanceof Error ? err.message : 'Erro ao enviar CSAT';
+      toast({ title: 'Erro', description: message, variant: 'destructive' });
+    },
   });
 
   // SLA v2 — payload completo: outcome obrigatorio + internalRating opcional
@@ -461,6 +507,21 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           >
             <Clock className="w-3.5 h-3.5 mr-2" />
             Adiar (snooze)
+          </DropdownMenuItem>
+          {/* SLA v2.1 — botao manual de CSAT (imediato). Visivel em qualquer
+              status (aberto ou resolvido), pois agente pode querer pedir
+              avaliacao em meio ao atendimento OU apos resolver, sem esperar
+              o cron de 15min. O backend trata idempotencia (force=true). */}
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.preventDefault();
+              setCsatForce(false);
+              setCsatCustomMessage('');
+              setCsatOpen(true);
+            }}
+          >
+            <Star className="w-3.5 h-3.5 mr-2" />
+            Pedir avaliação ao cliente
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           {isResolved ? (
@@ -711,7 +772,9 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
               </RadioGroup>
             </div>
 
-            {/* Internal rating (opcional) */}
+            {/* Internal rating (opcional) — SLA v2.1: NAO integra o SLA do
+                dashboard. Eh apenas auto-avaliacao do agente/IA. A metrica
+                oficial vem do CSAT do cliente (customerCsat). */}
             <div className="space-y-1">
               <Label className="text-xs font-medium">
                 Avaliação interna (opcional)
@@ -752,7 +815,7 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
                 )}
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Como foi a qualidade desse atendimento?
+                Não conta no SLA — para CSAT real use "Pedir avaliação ao cliente".
               </p>
             </div>
 
@@ -812,6 +875,97 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* SLA v2.1 — AlertDialog "Pedir avaliacao ao cliente" (CSAT IMEDIATO).
+          Dispara uma mensagem do tipo system pedindo nota 1-5. O cliente
+          responde por WhatsApp e o backend faz parse via webhook (csat
+          service onIncomingMessage). Sem aguardar o cron de 15min. */}
+      <AlertDialog
+        open={csatOpen}
+        onOpenChange={(open) => {
+          if (sendCsatMutation.isPending) return;
+          if (!open) {
+            setCsatOpen(false);
+            setCsatCustomMessage('');
+            setCsatForce(false);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Star className="w-4 h-4 text-amber-500" />
+              {csatForce
+                ? 'Reenviar pesquisa de avaliação?'
+                : 'Enviar pesquisa CSAT pro cliente agora?'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              O cliente recebera uma mensagem pedindo nota de 1 a 5. A
+              resposta entra automaticamente no dashboard de SLA como CSAT.
+              {csatForce && ' Use Reenviar somente se necessario — a pesquisa ja foi disparada neste ciclo.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="space-y-3 py-1">
+            <div className="space-y-1">
+              <Label htmlFor="csat-custom" className="text-xs font-medium">
+                Mensagem customizada (opcional)
+              </Label>
+              <Textarea
+                id="csat-custom"
+                value={csatCustomMessage}
+                onChange={(e) =>
+                  setCsatCustomMessage(e.target.value.slice(0, 1000))
+                }
+                rows={3}
+                maxLength={1000}
+                placeholder="Deixe em branco para usar a mensagem padrão."
+              />
+              <p className="text-[11px] text-muted-foreground text-right">
+                {csatCustomMessage.length}/1000
+              </p>
+            </div>
+
+            <div className="flex items-start gap-2 rounded-md border border-border p-3">
+              <Checkbox
+                id="csat-force"
+                checked={csatForce}
+                onCheckedChange={(v) => setCsatForce(v === true)}
+              />
+              <div className="grid gap-0.5">
+                <Label htmlFor="csat-force" className="cursor-pointer text-sm">
+                  Forçar reenvio
+                </Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Marque se a pesquisa ja foi enviada neste ciclo e voce quer
+                  reenviar mesmo assim.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={sendCsatMutation.isPending}>
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                // Como em outros AlertDialogs do projeto: evita auto-close
+                // antes da mutation responder; fecha em onSuccess/onError.
+                e.preventDefault();
+                sendCsatMutation.mutate();
+              }}
+              disabled={sendCsatMutation.isPending}
+            >
+              {sendCsatMutation.isPending
+                ? 'Enviando...'
+                : csatForce
+                  ? 'Reenviar'
+                  : 'Enviar'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

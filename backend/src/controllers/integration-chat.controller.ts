@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { prisma } from '../config/database';
 import { conversationService } from '../services/conversation.service';
+import { csatService } from '../services/csat.service';
 import { messageService, type MessageSenderType } from '../services/message.service';
 import { evolutionService } from '../services/evolution.service';
 import { NotFoundError, UnauthorizedError, ValidationError } from '../utils/errors';
@@ -94,8 +95,14 @@ const transferSchema = z
     message: 'Informe exatamente um entre toUserId OU toTeamId',
   });
 
-// SLA v2 — outcome obrigatorio, internalRating 1-5 opcional, sendCsat default true.
-// resolvedBy default 'ai' pra api-key (origem comum: n8n).
+// SLA v2 — outcome obrigatorio, sendCsat default true. resolvedBy default 'ai'
+// pra api-key (origem comum: n8n).
+//
+// SLA v2.1: internalRating eh DEPRECATED no contexto de SLA — eh auxiliar
+// (auto-avaliacao do agente/IA) e nao integra o dashboard de SLA. Mantemos
+// no schema por backcompat de integracoes n8n existentes, mas o controller
+// loga um warning. Para capturar avaliacao real DO CLIENTE use
+// POST /integrations/chat/conversations/:id/send-csat.
 const ALLOWED_OUTCOMES = [
   'resolved',
   'transferred',
@@ -108,9 +115,19 @@ const ALLOWED_OUTCOMES = [
 const resolveSchema = z.object({
   resolvedBy: z.enum(ALLOWED_RESOLVED_BY).optional(),
   outcome: z.enum(ALLOWED_OUTCOMES),
+  /**
+   * @deprecated SLA v2.1 — internalRating eh auxiliar (auto-avaliacao
+   * agente/IA) e nao integra o SLA. Use endpoint send-csat para CSAT real.
+   */
   internalRating: z.number().int().min(1).max(5).optional(),
   reason: z.string().trim().max(500).optional(),
   sendCsatToCustomer: z.boolean().default(true),
+});
+
+// Body do POST /integrations/chat/conversations/:id/send-csat
+const sendCsatSchema = z.object({
+  customMessage: z.string().min(1).max(1000).optional(),
+  force: z.boolean().optional(),
 });
 
 // Aceita ambos shapes — alinhado com o fix de customAttrsSchema em conversation.controller.
@@ -616,6 +633,20 @@ class IntegrationChatController {
 
       const resolvedBy = parsed.resolvedBy ?? 'ai';
 
+      // SLA v2.1 — internalRating DEPRECATED no contexto de SLA. Logamos
+      // warning pra deixar trilha em audits. Aceito sem erro por backcompat.
+      if (parsed.internalRating !== undefined) {
+        logger.warn(
+          '[integration-chat.resolve] internalRating recebido — campo auxiliar nao integra SLA. Use POST /integrations/chat/conversations/:id/send-csat para capturar avaliacao do cliente.',
+          {
+            accountId,
+            apiKeyId: req.apiKey?.id ?? null,
+            conversationId: id,
+            internalRating: parsed.internalRating,
+          }
+        );
+      }
+
       // Optional: nota interna automatica com o reason
       if (parsed.reason && parsed.reason.trim().length > 0) {
         try {
@@ -691,6 +722,48 @@ class IntegrationChatController {
       });
 
       res.status(200).json({ data: updated });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // ============================================
+  // POST /conversations/:id/send-csat (SLA v2.1)
+  // ============================================
+  /**
+   * Dispara CSAT IMEDIATO via API key (sem esperar o cron de 15min). Permite
+   * que a IA externa (n8n / agente) peca a avaliacao do cliente exatamente
+   * no momento certo — ex: logo apos confirmar uma reserva ou concluir o
+   * atendimento.
+   *
+   * Body:
+   *  - customMessage?: string  (texto custom da pergunta)
+   *  - force?: boolean         (reenvia mesmo se ja foi pedido)
+   *
+   * Retorna 409 se csatSentAt ja estiver setado e force !== true.
+   */
+  async sendCsat(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const accountId = requireAccountId(req);
+      const id = parseUuidParam(req.params.id);
+      const parsed = sendCsatSchema.parse(req.body ?? {});
+
+      await requireConversationInAccount(id, accountId);
+
+      const result = await csatService.sendCsatNow(id, accountId, {
+        customMessage: parsed.customMessage,
+        force: parsed.force,
+      });
+
+      logger.info('[integration-chat] sendCsat', {
+        accountId,
+        apiKeyId: req.apiKey?.id ?? null,
+        conversationId: id,
+        cycleId: result.cycleId,
+        force: parsed.force === true,
+      });
+
+      res.status(200).json({ data: result });
     } catch (error) {
       next(error);
     }

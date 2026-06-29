@@ -65,6 +65,11 @@ router.post('/:id/reopen', (req, res, next) =>
   conversationController.reopen(req, res, next)
 );
 
+// SLA v2.1 — dispara CSAT imediato (botao "Pedir avaliacao" na UI)
+router.post('/:id/send-csat', (req, res, next) =>
+  conversationController.sendCsat(req, res, next)
+);
+
 // ============================================
 // Labels
 // ============================================
