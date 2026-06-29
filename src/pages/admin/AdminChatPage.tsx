@@ -154,12 +154,20 @@ export default function AdminChatPage() {
           showThreadOnMobile ? 'flex' : 'hidden'
         )}
       >
-        {/* Mobile header (botao Contato a direita). O botao Conversas/voltar
-            fica dentro do header da propria ConversationThread via prop
-            `onBack` — assim a transicao volta-pra-lista vira parte do
-            cabecalho da conversa em si. */}
+        {/* Header com botao "Contato" a direita. Aparece em <xl (ate 1279px):
+            inclui mobile (<lg), tablet/laptop pequeno (lg..xl-1) onde o
+            painel de contato fixo nao cabe e vira drawer (Sheet).
+            BUG-CHAT-RESPONSIVE: antes era `lg:hidden` (so <1024). Em laptops
+            de 1024-1279 o aside direito de 320px tambem aparecia ao mesmo
+            tempo da lista (320) + sidebar nav (256), espremendo a thread
+            para ~113px de largura util — bubbles quebravam em colunas de
+            1-2 chars e davam a impressao de que "as mensagens sumiram".
+            Subindo o breakpoint do aside direito para xl (>=1280) e
+            mostrando o botao Contato ate xl-1 mantemos 2 colunas saudaveis
+            no laptop. O botao Conversas/voltar fica dentro do header da
+            propria ConversationThread via prop `onBack` (lg:hidden la). */}
         {selectedConversationId && (
-          <div className="lg:hidden flex items-center justify-end border-b border-border bg-card px-3 py-1">
+          <div className="xl:hidden flex items-center justify-end border-b border-border bg-card px-3 py-1">
             <Sheet open={mobileContactOpen} onOpenChange={setMobileContactOpen}>
               <SheetTrigger asChild>
                 <Button variant="ghost" size="sm" className="h-8">
@@ -198,11 +206,16 @@ export default function AdminChatPage() {
         )}
       </main>
 
-      {/* Coluna direita — desktop somente (em mobile o painel de contato vira
-          drawer acionado pelo botao "Contato" no header acima).
+      {/* Coluna direita — desktop largo somente (>=xl/1280px). Em mobile,
+          tablet e laptop pequeno (<1280) o painel de contato vira drawer
+          acionado pelo botao "Contato" no header acima.
+          BUG-CHAT-RESPONSIVE: antes era `lg:flex` (>=1024). Em 1024-1279
+          a soma 256 (nav) + 320 (lista) + 320 (este aside) deixava apenas
+          ~128px para a thread, esmagando os bubbles. Em xl (>=1280) ja sobra
+          espaco para 3 colunas confortaveis.
           BUG-CHAT-OVERFLOW: `min-w-0 overflow-hidden` aplicado pelo mesmo
           motivo do aside esquerdo — defesa contra crescimento do min-content. */}
-      <aside className="hidden lg:flex w-[320px] shrink-0 min-w-0 overflow-hidden">
+      <aside className="hidden xl:flex w-[320px] shrink-0 min-w-0 overflow-hidden">
         {selectedConversationQuery.data ? (
           <ContactSidePanel conversation={selectedConversationQuery.data} />
         ) : (
