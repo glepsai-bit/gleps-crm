@@ -1,7 +1,8 @@
 {
-  "name": "vite_react_shadcn_ts",
+  "name": "gleps-crm-frontend",
   "private": true,
   "version": "0.0.0",
+  "description": "Gleps CRM — frontend (Vite + React + TypeScript + shadcn/ui)",
   "type": "module",
   "scripts": {
     "dev": "vite",

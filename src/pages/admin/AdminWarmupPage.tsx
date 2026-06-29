@@ -978,7 +978,7 @@ export default function AdminWarmupPage() {
               <Label>Nome</Label>
               <Input
                 {...poolForm.register('name')}
-                placeholder="Ex: Pool comercial FitPark"
+                placeholder="Ex: Pool comercial Gleps"
               />
               {poolForm.formState.errors.name && (
                 <p className="text-xs text-destructive">

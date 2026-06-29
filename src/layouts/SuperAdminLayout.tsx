@@ -79,7 +79,7 @@ export default function SuperAdminLayout({ children }: SidebarLayoutProps) {
           </button>
           <div className="flex items-center gap-2">
             <Logo variant="icon" className="w-6 h-6 sm:w-7 sm:h-7 text-sidebar-foreground" />
-            <span className="font-semibold text-sidebar-foreground text-sm sm:text-base">FitPark Admin</span>
+            <span className="font-semibold text-sidebar-foreground text-sm sm:text-base">Gleps Admin</span>
           </div>
         </div>
         <ThemeToggle className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" />

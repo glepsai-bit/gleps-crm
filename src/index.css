@@ -7,8 +7,9 @@
 @tailwind utilities;
 
 /*
-  FITPARK DESIGN SYSTEM - Academia & Fitness
-  Verde energia / Laranja ação brand identity
+  GLEPS DESIGN SYSTEM
+  Roxo principal #5B3DF5 (HSL 250 90% 60% — contraste 6.12:1 vs branco, passa WCAG AA)
+  Roxo claro accent #8A6CFF (HSL 252 100% 71%)
 */
 
 @layer base {
@@ -28,11 +29,11 @@
     --text-secondary: 0 0% 30%;       /* #4D4D4D */
     --text-muted: 0 0% 55%;           /* #8C8C8C */
 
-    /* Primary - FitPark Verde (escurecido p/ WCAG AA: 5.11:1 com texto branco) */
-    --primary: 160 84% 27%;            /* #0B7F58 — contraste 5.11:1 vs #FFF */
+    /* Primary - Gleps Roxo (#5B3DF5 — contraste 6.12:1 com texto branco, WCAG AA) */
+    --primary: 250 90% 60%;            /* #5B3DF5 */
     --primary-foreground: 0 0% 100%;
-    --primary-hover: 160 84% 22%;      /* #096748 — variante hover ainda mais escura */
-    --primary-soft: 160 60% 95%;       /* #ECFDF5 — fundo claro mantido */
+    --primary-hover: 250 80% 50%;      /* variante hover mais escura */
+    --primary-soft: 252 100% 96%;      /* roxo muito claro p/ fundos */
 
     /* Secondary */
     --secondary: 210 40% 96%;
@@ -42,8 +43,8 @@
     --muted: 210 40% 96%;
     --muted-foreground: 0 0% 45%;     /* #737373 */
 
-    /* Accent - FitPark Laranja energia #F97316 */
-    --accent: 24 95% 53%;              /* #F97316 */
+    /* Accent - Gleps Roxo Claro #8A6CFF */
+    --accent: 252 100% 71%;            /* #8A6CFF */
     --accent-foreground: 0 0% 100%;
 
     /* Status Colors */
@@ -65,39 +66,39 @@
     /* Borders & Input */
     --border: 214 32% 91%;            /* #E2E8F0 */
     --input: 214 32% 91%;
-    --ring: 160 84% 27%;               /* alinhado ao novo --primary */
+    --ring: 250 90% 60%;               /* alinhado ao --primary roxo Gleps */
 
     /* Radius */
     --radius: 0.75rem;
 
     /* Chart Colors */
-    --chart-1: 160 84% 27%;            /* verde FitPark acessível */
+    --chart-1: 250 90% 60%;            /* roxo Gleps */
     --chart-2: 142 71% 45%;           /* #16A34A - verde */
     --chart-3: 38 92% 50%;            /* #F59E0B - amarelo */
     --chart-4: 0 72% 51%;             /* #DC2626 - vermelho */
     --chart-grid: 220 13% 91%;        /* #E5E7EB */
 
-    /* Sidebar - Deep dark com acento verde FitPark (item ativo usa --primary,
-       que agora é 27% — contraste 5.11:1 do texto branco sobre o verde) */
+    /* Sidebar - Preto profundo com acento roxo Gleps (item ativo usa --primary,
+       contraste 6.12:1 do texto branco sobre o roxo) */
     --sidebar-background: 0 0% 4%;    /* #0A0A0A */
     --sidebar-foreground: 0 0% 85%;   /* #D9D9D9 */
-    --sidebar-primary: 160 84% 27%;   /* verde FitPark acessível */
+    --sidebar-primary: 250 90% 60%;   /* roxo Gleps */
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 0 0% 10%;       /* #1A1A1A */
     --sidebar-accent-foreground: 0 0% 85%;
     --sidebar-border: 0 0% 10%;
-    --sidebar-ring: 160 84% 27%;
+    --sidebar-ring: 250 90% 60%;
     --sidebar-muted: 0 0% 40%;
 
     /* Kanban tokens */
-    --kanban-new: 160 84% 27%;         /* verde FitPark acessível */
+    --kanban-new: 250 90% 60%;         /* roxo Gleps */
     --kanban-contact: 260 60% 55%;
     --kanban-interested: 38 92% 50%;
     --kanban-qualified: 142 71% 45%;
     --kanban-converted: 280 67% 50%;
 
     /* Role colors */
-    --role-super-admin: 160 84% 27%;   /* verde FitPark acessível */
+    --role-super-admin: 250 90% 60%;   /* roxo Gleps */
     --role-admin: 0 0% 20%;
     --role-agent: 0 0% 40%;
 
@@ -121,8 +122,8 @@
     --popover: 0 0% 8%;
     --popover-foreground: 0 0% 93%;
 
-    /* Primary dark mode — mesmo verde acessível (5.11:1 com texto branco) */
-    --primary: 160 84% 27%;
+    /* Primary dark mode — mesmo roxo Gleps (6.12:1 com texto branco) */
+    --primary: 250 90% 60%;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 0 0% 12%;
@@ -131,7 +132,7 @@
     --muted: 0 0% 12%;
     --muted-foreground: 0 0% 50%;
 
-    --accent: 24 95% 53%;              /* #F97316 laranja FitPark */
+    --accent: 252 100% 71%;            /* #8A6CFF roxo claro Gleps */
     --accent-foreground: 0 0% 100%;
 
     --destructive: 0 63% 35%;
@@ -143,23 +144,23 @@
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 100%;
 
-    --info: 160 84% 27%;
+    --info: 250 90% 60%;
     --info-foreground: 0 0% 100%;
 
     --border: 0 0% 18%;
     --input: 0 0% 15%;
     --input-foreground: 0 0% 100%;
-    --ring: 160 84% 27%;
+    --ring: 250 90% 60%;
 
-    /* Sidebar - Deeper black com acento verde FitPark acessível */
+    /* Sidebar - Preto profundo com acento roxo Gleps */
     --sidebar-background: 0 0% 3%;
     --sidebar-foreground: 0 0% 80%;
-    --sidebar-primary: 160 84% 27%;
+    --sidebar-primary: 250 90% 60%;
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 0 0% 8%;
     --sidebar-accent-foreground: 0 0% 80%;
     --sidebar-border: 0 0% 8%;
-    --sidebar-ring: 160 84% 27%;
+    --sidebar-ring: 250 90% 60%;
     --sidebar-muted: 0 0% 40%;
 
     /* Gaps de token p/ dark mode (auditoria 2026-06-14) — tokens que ficavam
@@ -759,13 +760,13 @@
   animation: kanbanCardEnter 0.3s ease-out, glowPulse 2s ease-out;
 }
 
-/* Logo glow animation - for dark sidebar only */
+/* Logo glow animation - for dark sidebar only (Gleps roxo) */
 @keyframes logoGlow {
   0%, 100% {
-    filter: drop-shadow(0 0 8px hsl(160 84% 39% / 0.4));
+    filter: drop-shadow(0 0 8px hsl(250 90% 60% / 0.4));
   }
   50% {
-    filter: drop-shadow(0 0 16px hsl(160 84% 55% / 0.6));
+    filter: drop-shadow(0 0 16px hsl(252 100% 71% / 0.6));
   }
 }
 

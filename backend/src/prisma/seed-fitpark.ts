@@ -1,21 +1,26 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
+/**
+ * Seed Gleps (originalmente seed-fitpark.ts da Variação-FitPark).
+ * Mantido o nome de arquivo pra preservar histórico de import; identidade
+ * agora é 100% Gleps (admin@gleps.com.br, Account "Gleps").
+ */
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('Seed FitPark — estrutura sem dados fakes');
+  console.log('Seed Gleps — estrutura sem dados fakes');
 
   const superHash = await bcrypt.hash('Admin@123', 12);
   const adminHash = await bcrypt.hash('Admin@123', 12);
 
   // 1 super-admin
   const superAdmin = await prisma.user.upsert({
-    where: { email: 'superadmin@fitpark.com' },
+    where: { email: 'superadmin@gleps.com.br' },
     update: { passwordHash: superHash, status: 'active' },
     create: {
-      email: 'superadmin@fitpark.com',
-      nome: 'Super Admin FitPark',
+      email: 'superadmin@gleps.com.br',
+      nome: 'Super Admin Gleps',
       passwordHash: superHash,
       role: 'super_admin',
       status: 'active',
@@ -31,7 +36,7 @@ async function main() {
     update: {},
     create: {
       id: accountId,
-      nome: 'FitPark Academia',
+      nome: 'Gleps',
       plano: 'Premium',
       status: 'active',
       limiteUsuarios: 50,
@@ -50,11 +55,11 @@ async function main() {
     create: { accountId, name: 'Funil Principal', slug: 'principal', isDefault: true },
   });
   const stages = [
-    { name: 'Novo Lead', slug: 'novo-lead', color: '#10B981', ordem: 0 },
-    { name: 'Em Contato', slug: 'em-contato', color: '#F97316', ordem: 1 },
-    { name: 'Avaliação Agendada', slug: 'avaliacao-agendada', color: '#3B82F6', ordem: 2 },
-    { name: 'Matrícula', slug: 'matricula', color: '#10B981', ordem: 3 },
-    { name: 'Aluno Ativo', slug: 'aluno-ativo', color: '#22C55E', ordem: 4 },
+    { name: 'Novo Lead', slug: 'novo-lead', color: '#5B3DF5', ordem: 0 },
+    { name: 'Em Contato', slug: 'em-contato', color: '#8A6CFF', ordem: 1 },
+    { name: 'Reunião Agendada', slug: 'reuniao-agendada', color: '#3B82F6', ordem: 2 },
+    { name: 'Proposta Enviada', slug: 'proposta-enviada', color: '#5B3DF5', ordem: 3 },
+    { name: 'Cliente Ativo', slug: 'cliente-ativo', color: '#22C55E', ordem: 4 },
     { name: 'Inativo', slug: 'inativo', color: '#EF4444', ordem: 5 },
   ];
   for (const s of stages) {
@@ -68,11 +73,11 @@ async function main() {
 
   // 1 admin pra conta
   const admin = await prisma.user.upsert({
-    where: { email: 'admin@fitpark.com' },
+    where: { email: 'admin@gleps.com.br' },
     update: { passwordHash: adminHash, status: 'active', accountId },
     create: {
-      email: 'admin@fitpark.com',
-      nome: 'Admin FitPark',
+      email: 'admin@gleps.com.br',
+      nome: 'Admin Gleps',
       passwordHash: adminHash,
       role: 'admin',
       status: 'active',
@@ -83,8 +88,8 @@ async function main() {
   console.log('Admin conta:', admin.email);
 
   console.log('\nLOGIN:');
-  console.log('  Super Admin: superadmin@fitpark.com / Admin@123');
-  console.log('  Admin Conta: admin@fitpark.com / Admin@123');
+  console.log('  Super Admin: superadmin@gleps.com.br / Admin@123');
+  console.log('  Admin Conta: admin@gleps.com.br / Admin@123');
 }
 
 main()

@@ -43,7 +43,7 @@ export const INBOUND_HANDLERS: { value: InboundHandler; label: string; descricao
   },
   {
     value: 'pacto_sync',
-    label: 'Sincronizar com Pacto (FitPark)',
+    label: 'Sincronizar com Pacto',
     descricao:
       'Recebe eventos do sistema Pacto (alunos, check-ins, contratos) via n8n e atualiza contatos e tags do CRM automaticamente.',
   },

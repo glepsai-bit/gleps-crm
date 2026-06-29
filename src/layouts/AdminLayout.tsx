@@ -257,7 +257,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           <div className="flex items-center gap-2">
             <Logo variant="icon" className="w-6 h-6 sm:w-7 sm:h-7 text-sidebar-foreground" />
             <span className="font-semibold text-sidebar-foreground truncate max-w-[120px] xs:max-w-[150px] sm:max-w-[180px] text-sm sm:text-base">
-              FitPark
+              Gleps
             </span>
           </div>
         </div>

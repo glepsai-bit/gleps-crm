@@ -114,9 +114,9 @@ export default function LoginPage() {
               className="h-16 w-auto text-white logo-glow"
             />
           </div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">FitPark</h1>
+          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">Gleps CRM</h1>
           <p className="text-muted-foreground">
-            Atendimento &amp; <span className="text-primary font-medium">Gestão de Alunos</span>
+            Atendimento &amp; <span className="text-primary font-medium">Gestão de Leads</span>
           </p>
         </div>
 

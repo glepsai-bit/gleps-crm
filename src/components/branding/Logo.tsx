@@ -6,13 +6,13 @@ interface LogoProps {
 }
 
 /**
- * Logo FitPark — inline SVG, sem dependência de arquivo externo.
- * variant="full"  → haltere + wordmark "FitPark"
- * variant="icon"  → apenas o haltere (sidebar recolhida, favicon 32px)
+ * Logo Gleps — inline SVG, sem dependência de arquivo externo.
+ * variant="full"  → ícone "g" geométrico + wordmark "Gleps"
+ * variant="icon"  → apenas o ícone "g" (sidebar recolhida, favicon 32px)
  *
  * Usa currentColor para herdar a cor do contexto (branco na sidebar escura,
- * verde primário onde preferir). Para usar a cor verde da marca, aplique
- * a classe `text-primary` ou `text-[#10B981]` via className.
+ * roxo primário onde preferir). Para usar a cor roxa da marca, aplique
+ * a classe `text-primary` ou `text-[#5B3DF5]` via className.
  */
 export function Logo({ variant = 'full', className }: LogoProps) {
   if (variant === 'icon') {
@@ -21,20 +21,25 @@ export function Logo({ variant = 'full', className }: LogoProps) {
         xmlns="http://www.w3.org/2000/svg"
         viewBox="0 0 32 32"
         fill="none"
-        aria-label="FitPark"
+        aria-label="Gleps"
         role="img"
         className={cn('h-8 w-8', className)}
       >
-        {/* Left weight */}
-        <rect x="1" y="9" width="6" height="14" rx="2" fill="currentColor" />
-        {/* Left connector */}
-        <rect x="7" y="12" width="4" height="8" rx="1" fill="currentColor" opacity="0.8" />
-        {/* Center bar */}
-        <rect x="11" y="14" width="10" height="4" rx="1" fill="currentColor" />
-        {/* Right connector */}
-        <rect x="21" y="12" width="4" height="8" rx="1" fill="currentColor" opacity="0.8" />
-        {/* Right weight */}
-        <rect x="25" y="9" width="6" height="14" rx="2" fill="currentColor" />
+        {/* Quadrado arredondado roxo (preenchimento) */}
+        <rect x="1" y="1" width="30" height="30" rx="7" fill="currentColor" />
+        {/* Letra "g" estilizada em contraste — usa white para herdar fundo */}
+        <text
+          x="16"
+          y="23"
+          fontFamily="'Inter', 'Helvetica Neue', Arial, sans-serif"
+          fontWeight="800"
+          fontSize="20"
+          fill="white"
+          textAnchor="middle"
+          letterSpacing="-0.5"
+        >
+          g
+        </text>
       </svg>
     );
   }
@@ -43,28 +48,31 @@ export function Logo({ variant = 'full', className }: LogoProps) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 200 48"
+      viewBox="0 0 180 48"
       fill="none"
-      aria-label="FitPark"
+      aria-label="Gleps"
       role="img"
       className={cn('h-10 w-auto', className)}
     >
-      {/* Dumbbell icon */}
-      <g transform="translate(0, 4)">
-        {/* Left weight */}
-        <rect x="2" y="10" width="8" height="20" rx="2" fill="currentColor" />
-        {/* Left connector */}
-        <rect x="10" y="16" width="6" height="8" rx="1" fill="currentColor" opacity="0.7" />
-        {/* Center bar */}
-        <rect x="16" y="18" width="20" height="4" rx="1" fill="currentColor" />
-        {/* Right connector */}
-        <rect x="36" y="16" width="6" height="8" rx="1" fill="currentColor" opacity="0.7" />
-        {/* Right weight */}
-        <rect x="42" y="10" width="8" height="20" rx="2" fill="currentColor" />
+      {/* Mark — quadrado arredondado com "g" */}
+      <g transform="translate(0, 6)">
+        <rect x="0" y="0" width="36" height="36" rx="8" fill="currentColor" />
+        <text
+          x="18"
+          y="26"
+          fontFamily="'Inter', 'Helvetica Neue', Arial, sans-serif"
+          fontWeight="800"
+          fontSize="24"
+          fill="white"
+          textAnchor="middle"
+          letterSpacing="-0.5"
+        >
+          g
+        </text>
       </g>
-      {/* FitPark wordmark */}
+      {/* Wordmark "Gleps" */}
       <text
-        x="60"
+        x="48"
         y="34"
         fontFamily="'Inter', 'Helvetica Neue', Arial, sans-serif"
         fontWeight="800"
@@ -72,7 +80,7 @@ export function Logo({ variant = 'full', className }: LogoProps) {
         fill="currentColor"
         letterSpacing="-0.5"
       >
-        FitPark
+        Gleps
       </text>
     </svg>
   );
