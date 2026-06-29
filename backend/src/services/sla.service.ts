@@ -366,43 +366,86 @@ class SLAService {
   async checkBreaches(now: Date = new Date()): Promise<CheckBreachesResult> {
     let detected = 0;
 
+    // BUG-030: filtra accounts suspensas/inativas. Antes, o cron continuava
+    // emitindo sla.breached + webhooks pra contas paused/canceladas.
     const conversations = await prisma.conversation.findMany({
       where: {
         status: 'open',
         slaPolicyId: { not: null },
         slaPolicy: { active: true },
+        account: { status: 'active' },
       },
       include: { slaPolicy: true },
+      take: 5000, // hard cap pra cron nao travar em conta gigante
     });
 
     for (const conversation of conversations) {
       const policy = conversation.slaPolicy;
       if (!policy) continue;
 
-      // SLA v2 — pausa quando aguarda cliente: se a ultima mensagem foi do
-      // agente/IA, o cronometro NAO conta enquanto espera o cliente. Soma
-      // segundos uteis ate a ultima msg do cliente (ou ate agora se cliente
-      // foi o ultimo a falar).
-      let effectiveEnd: Date = now;
+      // SLA v2 — pausa quando aguarda cliente.
+      //
+      // BUG-011: o calculo anterior era simplista (snapshot da ultima msg do
+      // agente). Em conversa com varias trocas:
+      //   cliente=10h, agente=10h05, cliente=14h, agente=14h05
+      // o elapsed acabava computando 4h05 quando o tempo REAL de espera do
+      // cliente foi 10min. Resultado: breaches falsos OU mascarados.
+      //
+      // Agora caminhamos cronologicamente pelas mensagens publicas e SOMAMOS
+      // somente as janelas em que o cliente esta aguardando (de uma msg
+      // customer ate a primeira resposta agent/ai_bot subsequente).
+      let elapsedSec: number;
+
       if (policy.pauseWhenWaitingCustomer) {
-        const lastMsg = await prisma.message.findFirst({
+        const messages = await prisma.message.findMany({
           where: { conversationId: conversation.id, isPrivate: false },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { createdAt: 'asc' },
           select: { senderType: true, createdAt: true },
         });
-        if (lastMsg && lastMsg.senderType !== 'customer') {
-          // Cronometro pausa neste ponto — usa createdAt da ultima msg como fim
-          effectiveEnd = lastMsg.createdAt;
-        }
-      }
 
-      // SLA v2 — horario comercial: usa calculateBusinessElapsedSec quando
-      // businessHoursStart/End configurados, senao elapsed puro.
-      const elapsedSec = calculateBusinessElapsedSec(
-        conversation.createdAt,
-        effectiveEnd,
-        policy
-      );
+        // Janela inicial: desde a abertura ate a 1a msg (modela "cliente
+        // ja esperando" no instante do open). Se nao houver mensagem
+        // ainda, contamos createdAt..now (cliente aguardando resposta).
+        let totalSec = 0;
+        let waitStart: Date | null = conversation.createdAt;
+        for (const msg of messages) {
+          if (msg.senderType === 'customer') {
+            // Cliente falou — comeca/retoma janela de espera.
+            if (waitStart === null) {
+              waitStart = msg.createdAt;
+            }
+            // Se ja estava aberta (sequencia de msgs do cliente), mantem.
+          } else if (
+            msg.senderType === 'agent' ||
+            msg.senderType === 'ai_bot' ||
+            msg.senderType === 'system'
+          ) {
+            // Resposta do nosso lado — fecha a janela.
+            if (waitStart !== null) {
+              totalSec += calculateBusinessElapsedSec(
+                waitStart,
+                msg.createdAt,
+                policy
+              );
+              waitStart = null;
+            }
+          }
+        }
+        // Se ainda esta esperando (cliente foi o ultimo a falar / nunca
+        // respondemos), conta ate agora.
+        if (waitStart !== null) {
+          totalSec += calculateBusinessElapsedSec(waitStart, now, policy);
+        }
+        elapsedSec = totalSec;
+      } else {
+        // SLA v2 — horario comercial: usa calculateBusinessElapsedSec quando
+        // businessHoursStart/End configurados, senao elapsed puro.
+        elapsedSec = calculateBusinessElapsedSec(
+          conversation.createdAt,
+          now,
+          policy
+        );
+      }
 
       // first_response: ainda nao houve primeira resposta e estourou o prazo
       if (

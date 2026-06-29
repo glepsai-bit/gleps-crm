@@ -411,6 +411,29 @@ class WhatsappWarmupService {
 
     // upsert atomico evita duplicacao se 2 ticks rodarem em paralelo
     const prevDate = new Date(`${lastDate}T12:00:00Z`);
+
+    // BUG-006: failedSends antes era hardcoded 0, transformando o safeguard
+    // 'zero falhas 3 dias' em no-op (auto-promocao acontecia ate em chips com
+    // falhas reais). Calculamos agora a partir de WarmupMessage do dia local
+    // anterior (UTC simplificado — janela [lastDate, lastDate+1d]).
+    let failedPrev = 0;
+    try {
+      const dayStart = new Date(`${lastDate}T00:00:00Z`);
+      const dayEnd = new Date(`${lastDate}T23:59:59.999Z`);
+      failedPrev = await prisma.warmupMessage.count({
+        where: {
+          senderId: num.id,
+          status: 'failed',
+          createdAt: { gte: dayStart, lte: dayEnd },
+        },
+      });
+    } catch (err: any) {
+      logger.warn('[warmup] rollover failedSends count failed', {
+        numberId: num.id,
+        error: err?.message ?? String(err),
+      });
+    }
+
     try {
       await prisma.warmupDailyStats.upsert({
         where: { numberId_date: { numberId: num.id, date: prevDate } },
@@ -421,13 +444,14 @@ class WhatsappWarmupService {
           plannedSends: plannedPrev,
           actualSends: num.dailyEnviadasHoje,
           actualReceives: num.dailyRecebidasHoje,
-          failedSends: 0,
+          failedSends: failedPrev,
           qualityEnd: num.qualityScore,
           statusEnd: num.status,
         },
         update: {
           actualSends: num.dailyEnviadasHoje,
           actualReceives: num.dailyRecebidasHoje,
+          failedSends: failedPrev,
           qualityEnd: num.qualityScore,
           statusEnd: num.status,
         },

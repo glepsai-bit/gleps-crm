@@ -33,6 +33,32 @@ import {
   isAnyProviderEnabled,
 } from '../services/ai/registry';
 
+// ─── Helpers de serializacao ────────────────────────────────────────────────
+
+/**
+ * Converte o dailyEnvioPlan persistido (array zero-indexed: plan[day-1] =
+ * envio do dia `day`) para o shape que a UI consome: Record<string,number>
+ * 1-indexed (ex: { '1': 10, '2': 12, ... }).
+ *
+ * BUG-007 + BUG-008: antes, listNumbers nao retornava dailyEnvioPlan e o
+ * frontend lia n.dailyEnvioPlan[String(currentDay)] -> undefined (badge
+ * '/planejado' vazio). Alem disso, o off-by-one entre array vs Record
+ * mostraria o dia errado quando o campo aparecesse. Aqui resolvemos os dois
+ * problemas de uma vez.
+ */
+function serializeDailyEnvioPlan(
+  plan: unknown
+): Record<string, number> | null {
+  if (!Array.isArray(plan)) return null;
+  const out: Record<string, number> = {};
+  plan.forEach((v, idx) => {
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      out[String(idx + 1)] = v;
+    }
+  });
+  return out;
+}
+
 // ─── Schemas ─────────────────────────────────────────────────────────────────
 
 const strategyEnum = z.enum(['conservative', 'moderate', 'aggressive']);
@@ -53,8 +79,15 @@ const createPoolSchema = z
     useAi: z.boolean().default(false),
     aiProvider: aiProviderEnum.optional().nullable(),
     aiModel: z.string().trim().min(1).max(100).optional().nullable(),
-    aiTone: aiToneEnum.default('casual'),
+    // BUG-005: aiTone era enum obrigatorio mesmo com useAi=false.
+    // Frontend envia {useAi:false, aiTone:null} e batia em 400.
+    // Agora aceita null/undefined e default 'casual' so quando necessario.
+    aiTone: aiToneEnum.nullable().optional(),
   })
+  .transform((data) => ({
+    ...data,
+    aiTone: data.aiTone ?? 'casual',
+  }))
   .superRefine((data, ctx) => {
     if (data.useAi && !data.aiProvider) {
       ctx.addIssue({
@@ -74,7 +107,7 @@ const updatePoolSchema = z
     useAi: z.boolean().optional(),
     aiProvider: aiProviderEnum.optional().nullable(),
     aiModel: z.string().trim().min(1).max(100).optional().nullable(),
-    aiTone: aiToneEnum.optional(),
+    aiTone: aiToneEnum.nullable().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.useAi === true && data.aiProvider === null) {
@@ -445,6 +478,11 @@ class ApiWarmupController {
           qualityScore: n.qualityScore,
           dailyEnviadasHoje: n.dailyEnviadasHoje,
           dailyRecebidasHoje: n.dailyRecebidasHoje,
+          // BUG-007 + BUG-008: expor dailyEnvioPlan como Record<string,number>
+          // alinhado com a UI (n.dailyEnvioPlan[String(n.currentDay)]).
+          // Backend persiste como array zero-indexed (plan[day-1]); aqui
+          // convertimos para 1-indexed assim a UI nao precisa fazer off-by-one.
+          dailyEnvioPlan: serializeDailyEnvioPlan(n.dailyEnvioPlan),
           startedAt: n.startedAt?.toISOString() ?? null,
           lastActivityAt: n.lastActivityAt?.toISOString() ?? null,
           pausedReason: n.pausedReason,
@@ -567,6 +605,33 @@ class ApiWarmupController {
       });
       if (!number) throw new NotFoundError('Number');
 
+      // BUG-039: race em N starts paralelos reiniciava currentDay=1 e zerava
+      // contadores em chips ja warming, corrompendo o protocolo (chip cold
+      // de novo violando quotas de aquecimento). Agora:
+      //  - cold        -> inicia normalmente.
+      //  - paused      -> use o endpoint /resume (mantem currentDay).
+      //  - warming/warm-> retorna 200 idempotente sem alterar estado.
+      //  - banned/error-> 409 (precisa intervencao manual).
+      if (number.status === 'warming' || number.status === 'warm') {
+        res.status(200).json({
+          data: {
+            id: number.id,
+            status: number.status,
+            currentDay: number.currentDay,
+            startedAt: number.startedAt?.toISOString() ?? null,
+            dailyEnvioPlan: number.dailyEnvioPlan,
+            idempotent: true,
+          },
+        });
+        return;
+      }
+      if (number.status !== 'cold') {
+        throw new ConflictError(
+          `Number nao pode iniciar a partir de status='${number.status}'. Use /resume para retomar.`,
+          { numberId: id, status: number.status }
+        );
+      }
+
       const strategy = (number.pool?.strategy ?? 'moderate') as
         | 'conservative'
         | 'moderate'
@@ -574,8 +639,10 @@ class ApiWarmupController {
 
       const plan = generateDailyPlan(strategy);
 
-      const updated = await prisma.warmupNumber.update({
-        where: { id },
+      // Claim atomico — apenas 1 start vence. Se outro processo levou status
+      // pra warming antes do update, count=0 e retornamos 200 idempotente.
+      const claim = await prisma.warmupNumber.updateMany({
+        where: { id, accountId, status: 'cold' },
         data: {
           status: 'warming',
           currentDay: 1,
@@ -585,6 +652,23 @@ class ApiWarmupController {
           dailyRecebidasHoje: 0,
           pausedReason: null,
         },
+      });
+      if (claim.count === 0) {
+        const after = await prisma.warmupNumber.findUnique({ where: { id } });
+        res.status(200).json({
+          data: {
+            id: after?.id,
+            status: after?.status,
+            currentDay: after?.currentDay,
+            startedAt: after?.startedAt?.toISOString() ?? null,
+            dailyEnvioPlan: after?.dailyEnvioPlan,
+            idempotent: true,
+          },
+        });
+        return;
+      }
+      const updated = await prisma.warmupNumber.findUniqueOrThrow({
+        where: { id },
       });
 
       logger.info('[warmup] number started', {

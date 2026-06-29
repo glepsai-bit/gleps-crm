@@ -251,10 +251,13 @@ export class EvolutionController {
       const secretConfigured = Boolean(
         account.evolutionWebhookSecret && account.evolutionWebhookSecret.trim() !== ''
       );
+      // BUG-015: antes o default permissivo so pulava HMAC quando
+      // NODE_ENV='development'. Se o operador esquecesse NODE_ENV=production
+      // no EasyPanel (ou usasse 'staging'), o webhook aceitava qualquer call
+      // sem auth. Agora o default eh SEGURO: se o secret esta configurado,
+      // exigimos HMAC SEMPRE — opt-out explicito via EVOLUTION_HMAC_REQUIRED=false.
       const hmacRequired =
-        secretConfigured &&
-        (env.EVOLUTION_HMAC_REQUIRED === 'true' ||
-          (isProduction && env.EVOLUTION_HMAC_REQUIRED !== 'false'));
+        secretConfigured && env.EVOLUTION_HMAC_REQUIRED !== 'false';
 
       // -------- Modo 1: IP allow-list (se configurada) --------
       const ipAllowed = this.isIpAllowed(req);

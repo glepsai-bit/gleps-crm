@@ -10,17 +10,23 @@ async function main() {
   const adminPasswordHash = await bcrypt.hash('Admin@123', 12);
 
   // ── Always ensure critical super admin users exist (idempotent) ──
+  // BUG-035: removido 'admin@mychooice.com' (brand legado). Continua
+  // existindo no DB se ja criado, mas nao eh recriado em novos deploys.
   const criticalAdmins = [
     { email: 'superadmin@sistema.com', nome: 'Super Admin' },
     { email: 'admin@gleps.com.br', nome: 'Admin GLEPS' },
     { email: 'glepsai@gmail.com', nome: 'GLEPS AI Admin' },
-    { email: 'admin@mychooice.com', nome: 'Admin MyChooice' },
   ];
 
   for (const admin of criticalAdmins) {
+    // BUG-016: antes o update incluia passwordHash, o que RESETAVA a senha
+    // do admin a 'Admin@123' a cada redeploy mesmo se ja tivessem trocado
+    // pelo painel. Agora so reativa o usuario (status='active') e nao toca
+    // em passwordHash existente. Senha padrao continua sendo aplicada
+    // apenas no create (primeiro boot).
     await prisma.user.upsert({
       where: { email: admin.email },
-      update: { passwordHash: adminPasswordHash, status: 'active' },
+      update: { status: 'active' },
       create: {
         email: admin.email,
         nome: admin.nome,

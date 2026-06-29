@@ -72,6 +72,72 @@ const EXT_BY_MIME: Record<string, string> = {
   'image/png': 'png',
 };
 
+// BUG-009: validacao por MAGIC BYTES (defesa contra MIME spoofing).
+//
+// Antes, a validacao usava apenas file.mimetype (vindo do header
+// Content-Type, fornecido pelo cliente). Atacante poderia enviar .exe/.html
+// declarando audio/ogg, passar pelo gate ALLOWED_MIME, ficar acessivel via
+// /uploads/ e ser re-enviado via Evolution (risco de flag do chip pela Meta).
+//
+// Agora inspecionamos os primeiros bytes (assinatura binaria) e exigimos
+// que batam com o MIME declarado.
+const MAGIC_BY_MIME: Record<string, (buf: Buffer) => boolean> = {
+  // OGG: "OggS" nos primeiros 4 bytes
+  'audio/ogg': (buf) =>
+    buf.length >= 4 && buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53,
+  // MP3: ID3 ou frame sync 0xFFFB/0xFFF3/0xFFF2
+  'audio/mpeg': (buf) =>
+    (buf.length >= 3 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) ||
+    (buf.length >= 2 &&
+      buf[0] === 0xff &&
+      (buf[1] === 0xfb || buf[1] === 0xf3 || buf[1] === 0xf2)),
+  // WAV: "RIFF....WAVE"
+  'audio/wav': (buf) =>
+    buf.length >= 12 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x41 &&
+    buf[10] === 0x56 &&
+    buf[11] === 0x45,
+  // MP4/M4A: ftyp atom em offset 4
+  'audio/mp4': (buf) =>
+    buf.length >= 12 && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70,
+  // WEBP: "RIFF....WEBP"
+  'image/webp': (buf) =>
+    buf.length >= 12 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50,
+  // JPEG: FF D8 FF
+  'image/jpeg': (buf) =>
+    buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff,
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  'image/png': (buf) =>
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a,
+};
+
+function verifyMagicBytes(buf: Buffer, declaredMime: string): boolean {
+  const verifier = MAGIC_BY_MIME[declaredMime];
+  if (!verifier) return false;
+  return verifier(buf);
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
@@ -157,6 +223,17 @@ class WarmupMediaController {
         throw new ValidationError(
           `MIME type "${file.mimetype}" nao permitido para ${type}`,
           { allowed: allowedMimes }
+        );
+      }
+
+      // 1.5) BUG-009: valida MAGIC BYTES (defesa contra MIME spoofing).
+      // file.mimetype eh declarado pelo cliente; sem essa checagem, um .exe
+      // declarado como audio/ogg passaria, ficaria acessivel em /uploads e
+      // poderia flag o chip via Evolution.
+      if (!verifyMagicBytes(file.buffer, file.mimetype)) {
+        throw new ValidationError(
+          `Conteudo do arquivo nao bate com o MIME declarado "${file.mimetype}"`,
+          { declaredMime: file.mimetype }
         );
       }
 
@@ -298,7 +375,8 @@ class WarmupMediaController {
         },
       });
 
-      if (!template) throw new NotFoundError('Template');
+      // BUG-047: era 'Template' (label generico). Agora reflete o recurso real.
+      if (!template) throw new NotFoundError('Midia');
 
       // Remove o arquivo do disco (best-effort).
       if (template.mediaPath) {

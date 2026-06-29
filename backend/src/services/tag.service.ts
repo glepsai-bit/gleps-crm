@@ -353,7 +353,7 @@ class TagService {
   }
 
   /**
-   * @deprecated REMOVED — sync de labels externos foi removido na variante FitPark.
+   * @deprecated REMOVED — sync de labels externos foi descontinuado.
    * Mantido como stub para não quebrar a rota POST /tags/sync-labels.
    */
   async syncAllLabels(_accountId: string) {
@@ -361,7 +361,8 @@ class TagService {
       synced: 0,
       failed: 0,
       details: [] as Array<{ tagId: string; tagName: string; slug: string; labelId?: number; error?: string }>,
-      deprecated: 'REMOVED — sync de labels externos não está mais disponível nesta variante (FitPark).',
+      // BUG-035: removido "(FitPark)" do payload exposto — brand legado.
+      deprecated: 'REMOVED — sync de labels externos foi descontinuado.',
     };
   }
 }

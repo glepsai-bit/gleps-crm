@@ -40,7 +40,10 @@ const DialogContent = React.forwardRef<
         // arredondar), desktop (>=sm) = centralizado com max-h-[90vh].
         // Flex coluna + overflow-hidden permitem que DialogHeader/DialogFooter
         // fiquem fixos (shrink-0) e só o corpo role (flex-1 overflow-y-auto).
-        "fixed left-[50%] top-[50%] z-50 flex flex-col translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background shadow-lg duration-200 overflow-hidden",
+        // BUG-017: era bg-background, indistinguivel do body em dark mode.
+        // Troca para bg-popover (elevacao acima do body) — bate com Sheet,
+        // Popover, DropdownMenu e demais surfaces flutuantes.
+        "fixed left-[50%] top-[50%] z-50 flex flex-col translate-x-[-50%] translate-y-[-50%] gap-4 border bg-popover text-popover-foreground shadow-lg duration-200 overflow-hidden",
         "w-full max-w-full h-[100dvh] max-h-[100dvh] rounded-none p-4",
         "sm:w-[calc(100%-2rem)] sm:max-w-lg sm:h-auto sm:max-h-[90vh] sm:rounded-lg sm:p-6",
         "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]",

@@ -18,8 +18,9 @@
  */
 
 import { prisma } from '../config/database';
-import { ConflictError, NotFoundError } from '../utils/errors';
+import { ConflictError, NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { evolutionService } from './evolution.service';
 import { messageService } from './message.service';
 
 // ============================================
@@ -104,10 +105,22 @@ export function parseRatingFromText(text: string | null | undefined): number | n
     return Number(slashMatch[1]);
   }
 
-  // Match "nota X" ou "X estrelas"
-  const notaMatch = normalized.match(/\b([1-5])\s*(estrelas?|pontos?)?\b/);
+  // BUG-012: regex notaMatch precisava de prefixo OU sufixo obrigatorio.
+  // Antes, '(estrelas?|pontos?)?' opcional fazia qualquer digito 1-5 isolado
+  // virar CSAT — 'tenho 5 anos', 'sou cliente ha 3 anos', 'meu CEP eh 04567'
+  // (captura 4) poluiam a metrica oficial com noise massivo.
+  //
+  // Agora exige UMA destas formas:
+  //   - prefixo: "nota X", "avalio X", "avaliacao X", "voto X", "dou X"
+  //   - sufixo: "X estrelas", "X pontos", "X de 5", "X*"
+  const notaMatchPrefix = normalized.match(
+    /\b(?:nota|avalio|avalia[cç][aã]o|voto|dou)\s+([1-5])\b/
+  );
+  const notaMatchSuffix = normalized.match(
+    /\b([1-5])\s*(?:estrelas?|pontos?|de\s*5|\*)/
+  );
 
-  // Heuristica por palavra-chave (apenas se nao tiver numero ambiguo)
+  // Heuristica por palavra-chave (independente do regex numerico).
   if (/\bp[eé]ssimo\b/.test(normalized) || /\bruim\b/.test(normalized)) {
     return 1;
   }
@@ -121,8 +134,11 @@ export function parseRatingFromText(text: string | null | undefined): number | n
     return 3;
   }
 
-  if (notaMatch) {
-    return Number(notaMatch[1]);
+  if (notaMatchPrefix) {
+    return Number(notaMatchPrefix[1]);
+  }
+  if (notaMatchSuffix) {
+    return Number(notaMatchSuffix[1]);
   }
 
   return null;
@@ -159,9 +175,14 @@ class CsatService {
     options: SendCsatNowOptions = {}
   ): Promise<SendCsatNowResult> {
     // Garante que a conversation existe e pertence a conta — senao 404.
+    // Tambem traz channelType + telefone para validar PRE-dispatch (BUG-025).
     const conversation = await prisma.conversation.findFirst({
       where: { id: conversationId, accountId },
-      select: { id: true },
+      select: {
+        id: true,
+        contact: { select: { telefone: true } },
+        inbox: { select: { channelType: true, evolutionInstance: true } },
+      },
     });
     if (!conversation) {
       throw new NotFoundError('Conversa');
@@ -178,6 +199,23 @@ class CsatService {
       throw new NotFoundError('ConversationCycle');
     }
 
+    // Validacao de pre-dispatch (BUG-025): CSAT so faz sentido quando temos
+    // canal WhatsApp + telefone do contato. Fora disso, falha clara em vez
+    // de aceitar silenciosamente e gerar Message orfa que ninguem recebe.
+    if (conversation.inbox?.channelType !== 'whatsapp') {
+      throw new ValidationError(
+        'CSAT atualmente so eh suportado em inboxes WhatsApp',
+        { channelType: conversation.inbox?.channelType ?? null }
+      );
+    }
+    const phone = conversation.contact?.telefone ?? '';
+    if (!phone) {
+      throw new ValidationError(
+        'Contato sem telefone — nao eh possivel enviar CSAT',
+        { conversationId }
+      );
+    }
+
     if (cycle.csatSentAt && !options.force) {
       throw new ConflictError(
         'CSAT ja foi enviado para este ciclo. Use force=true para reenviar.',
@@ -192,7 +230,45 @@ class CsatService {
 
     const now = new Date();
 
-    await messageService.create(accountId, {
+    // BUG-004: race condition. Antes era check-then-act puro: 5x POST paralelo
+    // criavam 5 messages duplicadas (cliente recebia spam = risco de ban
+    // WhatsApp). Solucao: claim atomico via updateMany condicional. Apenas a
+    // primeira transacao consegue setar csatSentAt; as demais retornam count=0
+    // e batem na branch de ConflictError (igual ao caller manual sem force).
+    //
+    // Quando force=true, o claim usa o csatSentAt anterior na clausula where
+    // pra ainda garantir mutual exclusion entre N retentativas paralelas.
+    const expectedCsatSentAt = cycle.csatSentAt ?? null;
+    const claim = await prisma.conversationCycle.updateMany({
+      where: {
+        id: cycle.id,
+        csatSentAt: options.force ? expectedCsatSentAt : null,
+      },
+      data: {
+        csatRequested: true,
+        csatSentAt: now,
+      },
+    });
+
+    if (claim.count === 0) {
+      // Outro processo ja venceu o claim — devolve 409 conflict (mesma
+      // semantica do guard idempotente acima).
+      const fresh = await prisma.conversationCycle.findUnique({
+        where: { id: cycle.id },
+        select: { csatSentAt: true },
+      });
+      throw new ConflictError(
+        'CSAT ja foi enviado para este ciclo (claim concorrente).',
+        {
+          cycleId: cycle.id,
+          csatSentAt: fresh?.csatSentAt?.toISOString() ?? null,
+        }
+      );
+    }
+
+    // Cria a Message (depois do claim — assim, se a Evolution falhar, ainda
+    // mantemos rastreio do que tentamos enviar pelo audit do chat).
+    const message = await messageService.create(accountId, {
       conversationId,
       senderType: 'system',
       senderId: null,
@@ -206,13 +282,45 @@ class CsatService {
       },
     });
 
-    await prisma.conversationCycle.update({
-      where: { id: cycle.id },
-      data: {
-        csatRequested: true,
-        csatSentAt: now,
-      },
-    });
+    // BUG-001: dispatch via Evolution. Antes, este metodo so persistia
+    // Message — o WhatsApp nunca recebia a pergunta, csatAvg ficava
+    // ETERNAMENTE null. Padrao copiado de integration-chat.controller.ts.
+    //
+    // Estrategia: dispatch best-effort. Se falhar, o claim ja foi feito
+    // (csatSentAt setado), entao o cron NAO vai re-tentar em loop
+    // (BUG-002 safeguard). Operador/agente refaz manualmente via force=true
+    // se quiser reenviar.
+    try {
+      const dispatch = await evolutionService.sendText(accountId, {
+        number: phone,
+        text: messageText,
+        instance: conversation.inbox.evolutionInstance ?? null,
+      });
+      if (dispatch.messageId) {
+        try {
+          await prisma.message.update({
+            where: { id: message.id },
+            data: { externalId: dispatch.messageId, status: 'sent' },
+          });
+        } catch {
+          /* nao bloqueia — message ja existe */
+        }
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.warn('[csat] dispatch Evolution falhou em sendCsatNow', {
+        accountId,
+        conversationId,
+        cycleId: cycle.id,
+        messageId: message.id,
+        error: errMsg,
+      });
+      try {
+        await messageService.markFailed(message.id, accountId, errMsg);
+      } catch {
+        /* ignore — message ja persistida */
+      }
+    }
 
     logger.info('[csat] sendCsatNow', {
       accountId,
@@ -259,7 +367,7 @@ class CsatService {
         conversation: {
           include: {
             contact: { select: { telefone: true } },
-            inbox: { select: { channelType: true } },
+            inbox: { select: { channelType: true, evolutionInstance: true } },
           },
         },
       },
@@ -269,12 +377,29 @@ class CsatService {
       try {
         // CSAT so faz sentido pra WhatsApp (ou outros canais conversacionais).
         // Sem inbox/contact nao da pra mandar mensagem — skip.
-        if (!cycle.conversation?.contact?.telefone) {
+        const phone = cycle.conversation?.contact?.telefone;
+        const channelType = cycle.conversation?.inbox?.channelType;
+        const evolutionInstance = cycle.conversation?.inbox?.evolutionInstance ?? null;
+        if (!phone || channelType !== 'whatsapp') {
           result.skipped += 1;
           continue;
         }
 
-        await messageService.create(cycle.accountId, {
+        // BUG-002 + BUG-004: claim atomico via updateMany. Marca csatSentAt
+        // ANTES do dispatch — assim, se Evolution falhar (rate-limit/instancia
+        // caida), o cron NAO re-tenta a cada 5min (ate 287x/24h = spam ao
+        // cliente). Re-tentativa eh manual via "Pedir avaliacao" no UI.
+        const claim = await prisma.conversationCycle.updateMany({
+          where: { id: cycle.id, csatSentAt: null },
+          data: { csatSentAt: now },
+        });
+        if (claim.count === 0) {
+          // Outro tick concorrente venceu o claim — pula sem incrementar nada.
+          result.skipped += 1;
+          continue;
+        }
+
+        const message = await messageService.create(cycle.accountId, {
           conversationId: cycle.conversationId,
           senderType: 'system',
           senderId: null,
@@ -287,12 +412,46 @@ class CsatService {
           },
         });
 
-        await prisma.conversationCycle.update({
-          where: { id: cycle.id },
-          data: { csatSentAt: now },
-        });
-
-        result.sent += 1;
+        // BUG-001: dispatch real via Evolution. Best-effort — falha so
+        // marca o status pra failed; csatSentAt ja foi claimado, entao nao
+        // re-tenta (BUG-002).
+        try {
+          const dispatch = await evolutionService.sendText(cycle.accountId, {
+            number: phone,
+            text: CSAT_MESSAGE_TEXT,
+            instance: evolutionInstance,
+          });
+          if (dispatch.messageId) {
+            try {
+              await prisma.message.update({
+                where: { id: message.id },
+                data: { externalId: dispatch.messageId, status: 'sent' },
+              });
+            } catch {
+              /* ignore */
+            }
+          }
+          result.sent += 1;
+        } catch (dispatchErr) {
+          const errMsg =
+            dispatchErr instanceof Error
+              ? dispatchErr.message
+              : String(dispatchErr);
+          logger.warn('[csat] dispatch Evolution falhou em sendPending', {
+            cycleId: cycle.id,
+            conversationId: cycle.conversationId,
+            messageId: message.id,
+            error: errMsg,
+          });
+          try {
+            await messageService.markFailed(message.id, cycle.accountId, errMsg);
+          } catch {
+            /* ignore */
+          }
+          // BUG-002: contabiliza como failed mas NAO reverte csatSentAt — o
+          // cron nao re-tenta. Operador re-envia manualmente via UI/API.
+          result.failed += 1;
+        }
       } catch (err) {
         result.failed += 1;
         logger.warn('[csat] falha ao enviar mensagem', {

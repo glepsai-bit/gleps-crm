@@ -223,9 +223,11 @@ export function CampaignDashboard({ accountId }: Props) {
               <Zap className="w-10 h-10 mb-3 opacity-30" />
               <p className="text-sm font-medium">Nenhuma campanha encontrada</p>
               <p className="text-xs mt-1 text-center">
+                {/* BUG-038: copy interno "backend ainda implementando" vazava
+                    para producao. Trocado por mensagem neutra. */}
                 {sourceFiltro !== 'todas' || triggerFiltro
                   ? 'Tente ajustar os filtros'
-                  : 'Backend ainda implementando os filtros de campanhas'}
+                  : 'Nenhum disparo no periodo selecionado'}
               </p>
             </div>
           ) : (

@@ -37,6 +37,7 @@ vi.mock('./message.service', () => ({
       metadata: input.metadata ?? {},
       createdAt: new Date(),
     })),
+    markFailed: vi.fn(async (id: string) => ({ id, status: 'failed' })),
   },
 }));
 
@@ -44,9 +45,16 @@ import { prismaTest } from '../test/setup';
 import { createTestAccount } from '../test/helpers';
 import { csatService, parseRatingFromText } from './csat.service';
 import { messageService } from './message.service';
+import { evolutionService } from './evolution.service';
 
 beforeEach(() => {
   vi.mocked(messageService.create).mockClear();
+  vi.mocked(messageService.markFailed).mockClear();
+  vi.mocked(evolutionService.sendText).mockClear();
+  vi.mocked(evolutionService.sendText).mockResolvedValue({
+    messageId: 'mock-msg-id',
+    raw: {},
+  } as any);
 });
 
 async function createConvWithCycle(
@@ -130,6 +138,26 @@ describe('parseRatingFromText', () => {
     expect(parseRatingFromText('')).toBeNull();
     expect(parseRatingFromText(null)).toBeNull();
     expect(parseRatingFromText('quero falar com humano')).toBeNull();
+  });
+
+  // BUG-012: regex estrito — qualquer digito 1-5 isolado NAO deve virar CSAT.
+  it('BUG-012: nao reconhece digito 1-5 em frase casual (anti falso positivo)', () => {
+    expect(parseRatingFromText('foram 3 horas esperando')).toBeNull();
+    expect(parseRatingFromText('sou cliente ha 5 anos')).toBeNull();
+    expect(parseRatingFromText('preciso 2 reservas pra hoje')).toBeNull();
+    expect(parseRatingFromText('meu CEP eh 04567')).toBeNull();
+  });
+
+  it('BUG-012: aceita avaliacao quando ha prefixo claro', () => {
+    expect(parseRatingFromText('nota 4')).toBe(4);
+    expect(parseRatingFromText('avalio 5')).toBe(5);
+    expect(parseRatingFromText('dou 3')).toBe(3);
+  });
+
+  it('BUG-012: aceita avaliacao quando ha sufixo claro', () => {
+    expect(parseRatingFromText('5 estrelas')).toBe(5);
+    expect(parseRatingFromText('3 pontos')).toBe(3);
+    expect(parseRatingFromText('4 de 5')).toBe(4);
   });
 });
 
@@ -403,5 +431,107 @@ describe('csatService.sendCsatNow — SLA v2.1', () => {
     ).rejects.toMatchObject({
       statusCode: 404,
     });
+  });
+
+  // BUG-001: dispatch via Evolution. Antes, sendCsatNow so persistia Message.
+  it('BUG-001: dispara via evolutionService.sendText (Evolution real)', async () => {
+    const { account } = await createTestAccount();
+    const { conv } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: null,
+    });
+
+    await csatService.sendCsatNow(conv.id, account.id);
+
+    expect(evolutionService.sendText).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(evolutionService.sendText).mock.calls[0];
+    expect(call[0]).toBe(account.id);
+    expect(call[1].number).toBe('5534993383017');
+    expect(call[1].text).toMatch(/avalia/i);
+  });
+
+  // BUG-025: validacao de pre-dispatch.
+  it('BUG-025: rejeita CSAT em inbox nao-whatsapp', async () => {
+    const { account } = await createTestAccount();
+    const inbox = await prismaTest.inbox.create({
+      data: {
+        accountId: account.id,
+        name: 'Inbox email',
+        channelType: 'email',
+        evolutionInstance: null,
+      },
+    });
+    const contact = await prismaTest.contact.create({
+      data: { accountId: account.id, nome: 'X', telefone: '5534993383017' },
+    });
+    const conv = await prismaTest.conversation.create({
+      data: {
+        accountId: account.id,
+        inboxId: inbox.id,
+        contactId: contact.id,
+        status: 'resolved',
+      },
+    });
+    await prismaTest.conversationCycle.create({
+      data: {
+        accountId: account.id,
+        conversationId: conv.id,
+        openedAt: new Date(),
+        resolvedAt: new Date(),
+        resolvedBy: 'human',
+        outcome: 'resolved',
+        csatRequested: true,
+      },
+    });
+
+    await expect(
+      csatService.sendCsatNow(conv.id, account.id)
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(evolutionService.sendText).not.toHaveBeenCalled();
+  });
+
+  // BUG-004: race condition. 5 calls paralelas -> apenas 1 dispatcha.
+  it('BUG-004: race protection — 5 calls paralelas geram apenas 1 dispatch', async () => {
+    const { account } = await createTestAccount();
+    const { conv } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 60 * 60 * 1000,
+      csatSentAt: null,
+    });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () =>
+        csatService.sendCsatNow(conv.id, account.id)
+      )
+    );
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(4);
+    // Apenas 1 dispatch real para o cliente — sem spam WhatsApp.
+    expect(evolutionService.sendText).toHaveBeenCalledTimes(1);
+  });
+});
+
+// BUG-002: cron sendPendingCsatMessages claim antes do dispatch.
+describe('csatService.sendPendingCsatMessages — BUG-002 (no retry storm)', () => {
+  it('marca csatSentAt MESMO quando Evolution falha (evita retry storm)', async () => {
+    vi.mocked(evolutionService.sendText).mockRejectedValueOnce(
+      new Error('evolution_429_rate_limit')
+    );
+
+    const { account } = await createTestAccount();
+    const { cycle } = await createConvWithCycle(account.id, {
+      resolvedAtAgoMs: 30 * 60 * 1000,
+    });
+
+    const result = await csatService.sendPendingCsatMessages();
+    expect(result.failed).toBe(1);
+
+    const reloaded = await prismaTest.conversationCycle.findUnique({
+      where: { id: cycle.id },
+    });
+    // Mesmo com falha, csatSentAt foi setado — cron nao re-tenta em loop.
+    expect(reloaded?.csatSentAt).not.toBeNull();
   });
 });

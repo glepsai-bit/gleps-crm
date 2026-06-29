@@ -398,14 +398,29 @@ async function bootstrap() {
   );
 
   // Health endpoint with build version
-  app.get('/api/health', (_req, res) => {
-    res.json({
-      status: 'ok',
+  // BUG-014: antes nao pingava Postgres — Docker/EasyPanel nunca restartava
+  // em outage de DB (parcial silenciosa). Agora roda SELECT 1 com timeout
+  // curto. Se DB falhar, retorna 503 e o orquestrador reinicia.
+  app.get('/api/health', async (_req, res) => {
+    const baseInfo = {
       version: process.env.BUILD_VERSION || 'dev',
       syncStrategy: 'create-or-update-v2',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
-    });
+    };
+
+    const pingPromise = prisma.$queryRaw`SELECT 1`;
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('db_ping_timeout')), 2000)
+    );
+
+    try {
+      await Promise.race([pingPromise, timeoutPromise]);
+      res.json({ status: 'ok', db: 'ok', ...baseInfo });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      res.status(503).json({ status: 'degraded', db: 'down', error: errMsg, ...baseInfo });
+    }
   });
 
   // API routes

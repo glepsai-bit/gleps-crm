@@ -16,6 +16,26 @@ import { logger } from '../utils/logger';
 // Validation schemas
 // ============================================
 
+// BUG-010: validador de UUID para parametros de rota JWT. Antes, vários
+// endpoints faziam `req.params.id as string` cru, fazendo qualquer string
+// invalida virar PrismaClientKnownRequestError + 500 (com stack trace em
+// dev). Agora retornamos 400 ValidationError consistente.
+const routeUuidSchema = z.string().uuid({ message: 'id invalido' });
+
+function requireUuidParam(
+  value: string | string[] | undefined,
+  label = 'id'
+): string {
+  const v = typeof value === 'string' ? value : '';
+  const parsed = routeUuidSchema.safeParse(v);
+  if (!parsed.success) {
+    throw new ValidationError(`${label} invalido`, {
+      issues: parsed.error.issues,
+    });
+  }
+  return parsed.data;
+}
+
 const ALLOWED_STATUSES = ['open', 'pending', 'resolved', 'snoozed'] as const;
 const ALLOWED_PRIORITIES = ['urgent', 'high', 'medium', 'low'] as const;
 const ALLOWED_RESOLVED_BY = ['ai', 'human', 'timeout'] as const;
@@ -408,7 +428,7 @@ export class ConversationController {
    */
   async sendCsat(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const id = req.params.id as string;
+      const id = requireUuidParam(req.params.id, 'conversationId');
       const parsed = sendCsatSchema.parse(req.body ?? {});
       const accountId = getAccountId(req);
 
@@ -438,7 +458,7 @@ export class ConversationController {
    */
   async reopen(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const id = req.params.id as string;
+      const id = requireUuidParam(req.params.id, 'conversationId');
       await conversationService.ensureConversationAccess(id, getAccountId(req), getActor(req));
       const data = await conversationService.reopen(id, getAccountId(req), req.user!.id);
       res.json({ data });

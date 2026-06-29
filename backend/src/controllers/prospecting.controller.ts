@@ -42,22 +42,40 @@ const batchIdParamSchema = z.string().uuid('ID deve ser UUID valido');
 // Aceita string|array para source/status/campaignType (Express parseia ?key=a&key=b como array)
 const stringOrArray = z.union([z.string(), z.array(z.string())]);
 
-const getBatchesQuerySchema = z.object({
-  q: z.string().optional(),
-  source: stringOrArray.optional(),
-  status: stringOrArray.optional(),
-  campaignType: stringOrArray.optional(),
-  fromDate: z.string().optional(),
-  toDate: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
-  offset: z.coerce.number().int().min(0).optional(),
-});
+// BUG-013: range validation — antes, toDate < fromDate passava silenciosamente
+// e a UI mostrava "nenhum dado" sem feedback. Agora rejeitamos com 400 claro.
+const dateRangeRefine = (data: { fromDate?: string; toDate?: string }) => {
+  if (!data.fromDate || !data.toDate) return true;
+  const from = new Date(data.fromDate);
+  const to = new Date(data.toDate);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return true;
+  return from.getTime() <= to.getTime();
+};
+const dateRangeMessage: { message: string; path: (string | number)[] } = {
+  message: 'fromDate deve ser <= toDate',
+  path: ['toDate'],
+};
 
-const aggregateQuerySchema = z.object({
-  fromDate: z.string().optional(),
-  toDate: z.string().optional(),
-  groupBy: z.enum(['campaign_type', 'source', 'trigger_name']).optional(),
-});
+const getBatchesQuerySchema = z
+  .object({
+    q: z.string().optional(),
+    source: stringOrArray.optional(),
+    status: stringOrArray.optional(),
+    campaignType: stringOrArray.optional(),
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    offset: z.coerce.number().int().min(0).optional(),
+  })
+  .refine(dateRangeRefine, dateRangeMessage);
+
+const aggregateQuerySchema = z
+  .object({
+    fromDate: z.string().optional(),
+    toDate: z.string().optional(),
+    groupBy: z.enum(['campaign_type', 'source', 'trigger_name']).optional(),
+  })
+  .refine(dateRangeRefine, dateRangeMessage);
 
 function parseDateOrUndefined(value?: string): Date | undefined {
   if (!value) return undefined;

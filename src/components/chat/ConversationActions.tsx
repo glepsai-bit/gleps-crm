@@ -719,9 +719,21 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
               </Label>
               <RadioGroup
                 value={resolveOutcome}
-                onValueChange={(v) =>
-                  setResolveOutcome(v as ConversationOutcome)
-                }
+                onValueChange={(v) => {
+                  const next = v as ConversationOutcome;
+                  setResolveOutcome(next);
+                  // BUG-027: outcomes negativos NAO devem pedir CSAT por
+                  // default (cliente recebia avaliacao apos spam/abandono =
+                  // ruido na metrica + UX ruim). Agente pode reativar
+                  // manualmente se quiser mesmo assim.
+                  if (
+                    next === 'spam' ||
+                    next === 'abandoned' ||
+                    next === 'unable_to_resolve'
+                  ) {
+                    setResolveSendCsat(false);
+                  }
+                }}
                 className="grid grid-cols-1 gap-1.5"
               >
                 <Label
