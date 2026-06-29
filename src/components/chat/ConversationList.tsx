@@ -18,6 +18,7 @@ import {
   BookmarkPlus,
   AlertCircle,
   Inbox as InboxIcon,
+  Phone,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -136,9 +137,25 @@ function relativeTime(iso: string | null | undefined): string {
   return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
 
-function getInitials(name: string | null | undefined): string {
-  if (!name) return '?';
-  return name
+/**
+ * Retorna as iniciais para o AvatarFallback OU `null` indicando que o caller
+ * deve renderizar um ícone (Phone) em vez de iniciais.
+ *
+ * BUG-CHAT-AVATAR-DIGIT: quando o contato não tem nome (só telefone), o nome
+ * exibido cai para o telefone — e `getInitials('5534...')` virava o caractere
+ * "5" no avatar, o que parece bug visual. Sinalizamos null para o caller
+ * usar `<Phone />` como fallback semântico.
+ */
+function getContactInitials(
+  name: string | null | undefined,
+  telefone?: string | null
+): string | null {
+  const trimmed = name?.trim();
+  // Sem nome OU nome igual ao telefone OU nome começa com dígito → ícone.
+  if (!trimmed) return null;
+  if (telefone && trimmed === telefone) return null;
+  if (/^\d/.test(trimmed)) return null;
+  return trimmed
     .split(' ')
     .map((part) => part[0])
     .filter(Boolean)
@@ -679,6 +696,10 @@ export function ConversationList({
               const isSelected = conv.id === selectedConversationId;
               const isOutOfFilter = Boolean((conv as Conversation & { __outOfFilter?: boolean }).__outOfFilter);
               const contactName = conv.contact?.nome || conv.contact?.telefone || 'Sem nome';
+              const avatarInitials = getContactInitials(
+                conv.contact?.nome,
+                conv.contact?.telefone
+              );
               const snippet = lastMessageSnippet(conv);
               const lastUpdate = relativeTime(conv.updatedAt);
 
@@ -703,7 +724,7 @@ export function ConversationList({
                         isSelected ? 'bg-primary/20 dark:bg-primary/25' : 'bg-primary/10'
                       )}
                     >
-                      {getInitials(contactName)}
+                      {avatarInitials ?? <Phone className="w-4 h-4" />}
                     </AvatarFallback>
                   </Avatar>
 

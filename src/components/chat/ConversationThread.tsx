@@ -22,6 +22,7 @@ import {
   CornerUpLeft,
   Loader2,
   ArrowLeft,
+  Phone,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -62,9 +63,21 @@ const PRIORITY_LABEL: Record<Conversation['priority'], string> = {
   low: 'Baixa',
 };
 
-function getInitials(name: string | null | undefined): string {
-  if (!name) return '?';
-  return name
+/**
+ * Iniciais para o avatar do header de conversa. Retorna `null` quando o nome
+ * é apenas o telefone (contato sem identificação) — nesse caso o caller deve
+ * renderizar um ícone `<Phone />` em vez de exibir o primeiro dígito do
+ * telefone como "inicial" (BUG-CHAT-AVATAR-DIGIT).
+ */
+function getContactInitials(
+  name: string | null | undefined,
+  telefone?: string | null
+): string | null {
+  const trimmed = name?.trim();
+  if (!trimmed) return null;
+  if (telefone && trimmed === telefone) return null;
+  if (/^\d/.test(trimmed)) return null;
+  return trimmed
     .split(' ')
     .map((p) => p[0])
     .filter(Boolean)
@@ -613,6 +626,10 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
 
   const contactName =
     conversation.contact?.nome || conversation.contact?.telefone || 'Sem nome';
+  const headerAvatarInitials = getContactInitials(
+    conversation.contact?.nome,
+    conversation.contact?.telefone
+  );
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
@@ -636,7 +653,7 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
           )}
           <Avatar className="h-9 w-9 shrink-0">
             <AvatarFallback className="text-sm bg-primary/10 text-primary">
-              {getInitials(contactName)}
+              {headerAvatarInitials ?? <Phone className="w-4 h-4" />}
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1">

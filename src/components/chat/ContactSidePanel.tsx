@@ -17,6 +17,7 @@ import {
   MessageSquare,
   ShoppingCart,
   Loader2,
+  ChevronRight,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -26,6 +27,11 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import {
   Select,
   SelectContent,
@@ -58,6 +64,32 @@ function formatCurrency(value: number | string | null | undefined): string {
     style: 'currency',
     currency: 'BRL',
   }).format(n);
+}
+
+/**
+ * Chaves de atributos usadas internamente pelo backend/IA/CSAT que NÃO devem
+ * aparecer na lista padrão de "Outros (sem definição)" — quando vazavam ali,
+ * o painel do contato virava um dump técnico. Ficam escondidas atrás do
+ * collapsible "Dados do sistema" para debug.
+ */
+const SYSTEM_ATTR_KEYS = new Set<string>([
+  'ai_handled',
+  'ai_handled_at',
+  'human_active',
+  'human_intervened',
+  'human_intervened_at',
+  'resolved_by_attr',
+  'resolved_by_human',
+  'resolved_by_ai',
+  'csat_request',
+  'csat_sent_at',
+  'csat_response_at',
+]);
+
+function isSystemKey(k: string): boolean {
+  if (SYSTEM_ATTR_KEYS.has(k)) return true;
+  // Qualquer chave com prefixo técnico também é considerada interna.
+  return /^(sys_|_internal|debug_)/i.test(k);
 }
 
 function formatDate(iso: string | null | undefined): string {
@@ -292,15 +324,28 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
       <ScrollArea className="flex-1">
         <div className="p-3 space-y-4">
           {/* Dados do contato */}
-          {contact ? (
+          {contact ? (() => {
+            // BUG-CHAT-DUP-PHONE: quando o contato não tem nome definido, o
+            // fallback original era usar o próprio telefone como displayName.
+            // Isso fazia o telefone aparecer DUAS vezes (linha do título +
+            // linha do ícone Phone). Detectamos o caso comparando nome ↔
+            // telefone e omitimos a linha redundante.
+            const trimmedName = contact.nome?.trim();
+            const displayName =
+              trimmedName && trimmedName !== contact.telefone
+                ? trimmedName
+                : contact.telefone || contact.email || 'Contato sem identificação';
+            const showPhoneRow =
+              Boolean(contact.telefone) && contact.telefone !== displayName;
+            return (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <UserIcon className="w-3.5 h-3.5 text-muted-foreground" />
                 <p className="text-sm font-medium text-foreground truncate">
-                  {contact.nome || contact.telefone || contact.email || 'Contato sem identificação'}
+                  {displayName}
                 </p>
               </div>
-              {contact.telefone && (
+              {showPhoneRow && (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Phone className="w-3 h-3" />
                   <a
@@ -332,7 +377,8 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
                 Abrir contato completo
               </Button>
             </div>
-          ) : (
+            );
+          })() : (
             <p className="text-xs text-muted-foreground">
               Conversa sem contato vinculado.
             </p>
@@ -474,15 +520,26 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
               // valores avulsos (gravados via API/webhook/n8n) ficavam invisíveis.
               // Agora mostramos também as chaves "extras" como read-only com um
               // hint pro usuário criar a definição se quiser editar via UI.
+              //
+              // BUG-CHAT-SYS-ATTR: chaves de sistema (ai_handled, csat_*,
+              // human_*, resolved_by_*) eram tratadas como "extras" e
+              // poluíam o painel com dados internos. Agora filtramos via
+              // `isSystemKey()` e expomos num <Collapsible> separado.
               const definedKeys = new Set(attrDefs.map((d) => d.key));
+              const isVisibleValue = (v: unknown) =>
+                v !== null && v !== undefined && v !== '';
               const extraEntries = Object.entries(values).filter(
                 ([k, v]) =>
-                  !definedKeys.has(k) &&
-                  v !== null &&
-                  v !== undefined &&
-                  v !== ''
+                  !definedKeys.has(k) && isVisibleValue(v) && !isSystemKey(k)
               );
-              if (attrDefs.length === 0 && extraEntries.length === 0) {
+              const systemEntries = Object.entries(values).filter(
+                ([k, v]) => isSystemKey(k) && isVisibleValue(v)
+              );
+              if (
+                attrDefs.length === 0 &&
+                extraEntries.length === 0 &&
+                systemEntries.length === 0
+              ) {
                 return (
                   <p className="text-xs text-muted-foreground">
                     Nenhum atributo customizado configurado.
@@ -524,6 +581,31 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
                         </div>
                       ))}
                     </div>
+                  )}
+                  {systemEntries.length > 0 && (
+                    <Collapsible className="pt-1">
+                      <CollapsibleTrigger className="group flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors">
+                        <ChevronRight className="w-3 h-3 transition-transform group-data-[state=open]:rotate-90" />
+                        Dados do sistema ({systemEntries.length})
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="space-y-1 pt-1">
+                        {systemEntries.map(([key, val]) => (
+                          <div
+                            key={key}
+                            className="font-mono text-[10px] text-muted-foreground border border-dashed border-border rounded px-2 py-1 break-all"
+                            title={`${key}: ${String(val)}`}
+                          >
+                            <span className="text-foreground/70">{key}</span>
+                            <span className="mx-1">:</span>
+                            <span>
+                              {typeof val === 'object'
+                                ? JSON.stringify(val)
+                                : String(val)}
+                            </span>
+                          </div>
+                        ))}
+                      </CollapsibleContent>
+                    </Collapsible>
                   )}
                 </div>
               );
@@ -573,22 +655,66 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
             ) : (
               <div className="space-y-1">
                 {contactSales.slice(0, 5).map((rawSale) => {
+                  // BUG-CHAT-SALES-LABEL: antes mostravamos só o status cru
+                  // (ex.: "pending · R$10,00"), o que não dava contexto algum
+                  // sobre o que tinha sido vendido. Agora resolvemos um título
+                  // legível a partir do primeiro item (produto.nome), com
+                  // fallback para descricao/contagem de itens.
                   const sale = rawSale as {
                     id: string;
                     status?: string;
+                    descricao?: string | null;
                     total?: number | string | null;
                     valor?: number | string | null;
+                    produto?: { nome?: string | null } | null;
+                    product?: { nome?: string | null } | null;
+                    items?: Array<{
+                      product?: { nome?: string | null } | null;
+                      produto?: { nome?: string | null } | null;
+                    }>;
                   };
+
+                  const itemsArr = Array.isArray(sale.items) ? sale.items : [];
+                  const firstItemName =
+                    itemsArr[0]?.product?.nome ?? itemsArr[0]?.produto?.nome ?? null;
+                  const extraItemsSuffix =
+                    itemsArr.length > 1 ? ` +${itemsArr.length - 1}` : '';
+
+                  const productLabel =
+                    sale.produto?.nome ||
+                    sale.product?.nome ||
+                    (firstItemName ? `${firstItemName}${extraItemsSuffix}` : null) ||
+                    sale.descricao ||
+                    'Venda';
+
+                  const STATUS_PT: Record<string, string> = {
+                    pending: 'Pendente',
+                    paid: 'Paga',
+                    refunded: 'Estornada',
+                    partial_refund: 'Estorno parcial',
+                  };
+                  const statusLabel = sale.status
+                    ? STATUS_PT[sale.status] ?? sale.status
+                    : null;
+
                   return (
                   <div
                     key={sale.id}
                     className="flex items-center justify-between gap-2 rounded border border-border bg-background px-2 py-1.5 text-xs"
+                    title={`${productLabel}${statusLabel ? ` · ${statusLabel}` : ''}`}
                   >
                     <div className="flex items-center gap-1.5 min-w-0">
                       <ShoppingCart className="w-3 h-3 text-muted-foreground shrink-0" />
-                      <span className="truncate">
-                        {sale.status || 'sale'}
-                      </span>
+                      <div className="min-w-0 flex flex-col leading-tight">
+                        <span className="truncate text-foreground">
+                          {productLabel}
+                        </span>
+                        {statusLabel && (
+                          <span className="truncate text-[10px] text-muted-foreground">
+                            {statusLabel}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <span className="font-medium shrink-0">
                       {formatCurrency(sale.total ?? sale.valor)}
