@@ -107,13 +107,11 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md space-y-6 animate-fade-in">
         {/* Logo/Brand */}
         <div className="text-center space-y-3">
-          {/* Chip escuro: logo branco sobre fundo escuro funciona nos 2 temas */}
-          <div className="inline-flex items-center justify-center mb-2 rounded-2xl bg-sidebar px-8 py-4 shadow-lg">
-            <Logo
-              variant="full"
-              className="h-16 w-auto text-white logo-glow"
-            />
-          </div>
+          <Logo
+            variant="icon"
+            className="h-24 w-24 mx-auto mb-2 rounded-2xl logo-glow"
+          />
+
           <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">Gleps CRM</h1>
           <p className="text-muted-foreground">
             Atendimento &amp; <span className="text-primary font-medium">Gestão de Leads</span>
