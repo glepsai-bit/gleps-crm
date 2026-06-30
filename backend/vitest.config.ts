@@ -39,6 +39,9 @@ export default defineConfig({
       EVOLUTION_API_URL: 'http://mock-evolution.test',
       EVOLUTION_API_KEY: 'test-evolution-key',
       RAPIDAPI_KEY: 'test-rapidapi-key',
+      // T-026: chave hex de 64 chars (32 bytes) — apenas pra testes.
+      ENCRYPTION_KEY:
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     },
   },
   resolve: {

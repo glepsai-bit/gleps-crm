@@ -49,8 +49,17 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .optional(),
 
-  // RapidAPI (for prospecting)
+  // RapidAPI (for prospecting) — sem fallback hardcoded.
+  // Se ausente, prospecting endpoints retornam 503 (fail-loud) — não há mais
+  // chave embutida no código.
   RAPIDAPI_KEY: z.string().optional(),
+
+  // Encryption key for sensitive fields at rest (AES-256-GCM).
+  // Formato: hex (64 chars = 32 bytes) ou base64 (32 bytes decoded).
+  // Em produção é OBRIGATÓRIA — usada para criptografar Google OAuth tokens
+  // e outros segredos persistidos. Em dev/test pode ser omitida (operações
+  // que dependem dela falham com mensagem clara).
+  ENCRYPTION_KEY: z.string().optional(),
 
   // Logging
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -77,3 +86,24 @@ export const env = parsed.data;
 
 export const isProduction = env.NODE_ENV === 'production';
 export const isDevelopment = env.NODE_ENV === 'development';
+
+// Hard validation pós-parse: em produção a chave de criptografia é obrigatória.
+// Mensagem dura aqui evita silencioso fallback pra plaintext em campos sensíveis.
+if (isProduction) {
+  const key = (env.ENCRYPTION_KEY || '').trim();
+  const validHex = /^[0-9a-fA-F]{64}$/.test(key);
+  let validBase64 = false;
+  if (!validHex && key) {
+    try {
+      validBase64 = Buffer.from(key, 'base64').length === 32;
+    } catch {
+      validBase64 = false;
+    }
+  }
+  if (!validHex && !validBase64) {
+    console.error(
+      '❌ ENCRYPTION_KEY ausente ou inválida em produção. Esperado: hex 64 chars (preferido) ou base64 de 32 bytes.'
+    );
+    process.exit(1);
+  }
+}

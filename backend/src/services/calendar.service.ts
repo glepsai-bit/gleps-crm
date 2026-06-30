@@ -3,6 +3,7 @@ import { CalendarEventType, CalendarEventStatus } from '@prisma/client';
 import { PaginationParams, DateRangeFilter } from '../types';
 import { NotFoundError, AppError } from '../utils/errors';
 import { getPaginationMeta } from '../utils/helpers';
+import { encrypt, decrypt } from '../utils/encryption';
 
 export interface CreateCalendarEventInput {
   accountId: string;
@@ -354,21 +355,24 @@ class CalendarService {
     });
     const userInfo: any = await userInfoResponse.json();
 
-    // Upsert by userId (each user has their own token)
+    // Upsert by userId (each user has their own token).
+    // T-026: tokens criptografados em repouso via AES-256-GCM (encrypt()).
+    const encAccess = encrypt(tokens.access_token);
+    const encRefresh = tokens.refresh_token ? encrypt(tokens.refresh_token) : undefined;
     await prisma.googleCalendarToken.upsert({
       where: { userId },
       create: {
         accountId,
         userId,
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token,
+        accessToken: encAccess,
+        refreshToken: encRefresh ?? '',
         expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
         connectedEmail: userInfo.email,
         calendarId: 'primary',
       },
       update: {
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token || undefined,
+        accessToken: encAccess,
+        refreshToken: encRefresh,
         expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
         connectedEmail: userInfo.email,
       },
@@ -427,9 +431,11 @@ class CalendarService {
     const token = await prisma.googleCalendarToken.findUnique({ where: { userId } });
     if (!token) throw new Error('Google Calendar não conectado');
 
-    let accessToken = token.accessToken;
+    // T-026: decrypt() é compat-plaintext — registros não migrados ainda funcionam.
+    let accessToken = decrypt(token.accessToken);
+    const refreshTokenPlain = decrypt(token.refreshToken);
     if (token.expiresAt < new Date()) {
-      accessToken = await this.refreshGoogleToken(accountId, userId, token.refreshToken);
+      accessToken = await this.refreshGoogleToken(accountId, userId, refreshTokenPlain);
     }
 
     const now = new Date();
@@ -528,7 +534,8 @@ class CalendarService {
     await prisma.googleCalendarToken.update({
       where: { userId },
       data: {
-        accessToken: tokens.access_token,
+        // T-026: novo accessToken também persistido criptografado.
+        accessToken: encrypt(tokens.access_token),
         expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
       },
     });

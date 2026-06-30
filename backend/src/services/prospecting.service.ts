@@ -15,12 +15,29 @@ type DispatchConfig = EvolutionDispatchConfig;
 
 const RAPIDAPI_HOST = 'maps-data.p.rapidapi.com';
 
-// Fallback hardcoded para produção (VPS/EasyPanel pode injetar env vazias).
-// Mantido alinhado ao padrão de "production-config-hardening".
-const RAPIDAPI_KEY_FALLBACK = '135d71789fmsh285761fddf395b1p1eb3e3jsn35a4433e1377';
-
+/**
+ * Resolve a RAPIDAPI_KEY exclusivamente do ambiente (sem fallback hardcoded).
+ * O fallback histórico foi removido em T-026 — repositório público e a chave
+ * embutida em código é vetor de leak permanente. Se ausente, callers devem
+ * abortar com 503 (`ensureRapidApiKey`).
+ */
 function getRapidApiKey(): string {
-  return (env.RAPIDAPI_KEY || process.env.RAPIDAPI_KEY || RAPIDAPI_KEY_FALLBACK || '').trim();
+  return (env.RAPIDAPI_KEY || process.env.RAPIDAPI_KEY || '').trim();
+}
+
+/**
+ * Fail-loud: lança erro 503 se a key não estiver configurada.
+ * Usar antes de qualquer chamada outbound à RapidAPI.
+ */
+function ensureRapidApiKey(): string {
+  const key = getRapidApiKey();
+  if (!key) {
+    throw Object.assign(
+      new Error('Prospecting indisponível: RAPIDAPI_KEY não configurada no ambiente.'),
+      { statusCode: 503, code: 'PROSPECTING_NOT_CONFIGURED' }
+    );
+  }
+  return key;
 }
 
 interface GeocodingResponse {
@@ -106,8 +123,7 @@ class ProspectingService {
    *  4) Conta uso apenas se houver leads.
    */
   async extractLeads(accountId: string, nicho: string, localizacao: string) {
-    const rapidApiKey = getRapidApiKey();
-    if (!rapidApiKey) throw new Error('RAPIDAPI_KEY not configured');
+    const rapidApiKey = ensureRapidApiKey();
 
     // Check monthly quota
     const currentMonth = new Date().toISOString().slice(0, 7);
