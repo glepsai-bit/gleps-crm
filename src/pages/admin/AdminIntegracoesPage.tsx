@@ -26,6 +26,12 @@ import {
   type InboundIntegration,
   type InboundHandler,
 } from '@/services/inbound-integrations.backend.service';
+import {
+  accountIntegrationsBackendService,
+  INTEGRATIONS_SENTINEL,
+  type IntegrationProvider,
+  type IntegrationsView,
+} from '@/services/account-integrations.backend.service';
 import { useAuth } from '@/contexts/AuthContext';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -83,6 +89,8 @@ import {
   ScrollText,
   FlaskConical,
   Pencil,
+  Sparkles,
+  Eraser,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { safeFormatDateBR } from '@/utils/dateUtils';
@@ -972,6 +980,281 @@ function AbaLogs() {
 }
 
 // ---------------------------------------------------------------------------
+// Aba: IA (chaves OpenAI / Anthropic) — T-025
+// ---------------------------------------------------------------------------
+
+interface ProviderCardProps {
+  provider: IntegrationProvider;
+  titulo: string;
+  descricao: string;
+  placeholderFormato: string;
+  configurado: boolean;
+  inputValue: string;
+  onInputChange: (v: string) => void;
+  onSave: () => void;
+  onClear: () => void;
+  onTest: () => void;
+  saving: boolean;
+  clearing: boolean;
+  testing: boolean;
+  dirty: boolean;
+}
+
+function AIProviderCard({
+  provider,
+  titulo,
+  descricao,
+  placeholderFormato,
+  configurado,
+  inputValue,
+  onInputChange,
+  onSave,
+  onClear,
+  onTest,
+  saving,
+  clearing,
+  testing,
+  dirty,
+}: ProviderCardProps) {
+  const inputId = `ai-${provider}-key`;
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-muted-foreground" />
+          {titulo}
+          {configurado ? (
+            <Badge
+              className="bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
+              variant="outline"
+            >
+              Configurada
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-muted-foreground">
+              Nao configurada
+            </Badge>
+          )}
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">{descricao}</p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor={inputId}>Chave de API</Label>
+          <Input
+            id={inputId}
+            type="password"
+            autoComplete="off"
+            placeholder={configurado ? '•••• configurada' : placeholderFormato}
+            value={inputValue}
+            onChange={(e) => onInputChange(e.target.value)}
+            aria-label={`Chave ${titulo}`}
+          />
+          <p className="text-xs text-muted-foreground">
+            {configurado
+              ? 'Deixe em branco para manter a chave atual. Digite uma nova chave para substituir.'
+              : 'Cole sua chave de API para habilitar o provider.'}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            onClick={onSave}
+            disabled={saving || !dirty || inputValue.trim() === ''}
+            className="gap-2"
+          >
+            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+            Salvar
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onTest}
+            disabled={testing || !configurado}
+            className="gap-2"
+            title={!configurado ? 'Salve a chave antes de testar' : 'Testar conexao'}
+          >
+            {testing ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <FlaskConical className="w-4 h-4" />
+            )}
+            Testar
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={onClear}
+            disabled={clearing || !configurado}
+            className="gap-2 text-destructive hover:text-destructive"
+          >
+            {clearing ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Eraser className="w-4 h-4" />
+            )}
+            Limpar
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AbaIA() {
+  const queryClient = useQueryClient();
+  const [openaiInput, setOpenaiInput] = useState('');
+  const [anthropicInput, setAnthropicInput] = useState('');
+
+  const { data, isLoading } = useQuery<IntegrationsView>({
+    queryKey: ['admin-integrations-ai'],
+    queryFn: () => accountIntegrationsBackendService.getIntegrations(),
+  });
+
+  const openaiConfigurado = data?.openaiApiKey === INTEGRATIONS_SENTINEL;
+  const anthropicConfigurado = data?.anthropicApiKey === INTEGRATIONS_SENTINEL;
+
+  function invalidate() {
+    queryClient.invalidateQueries({ queryKey: ['admin-integrations-ai'] });
+  }
+
+  const saveOpenaiMutation = useMutation({
+    mutationFn: () =>
+      accountIntegrationsBackendService.updateIntegrations({ openaiApiKey: openaiInput.trim() }),
+    onSuccess: () => {
+      toast.success('Chave OpenAI atualizada');
+      setOpenaiInput('');
+      invalidate();
+    },
+    onError: (err: unknown) => {
+      toast.error('Erro ao salvar OpenAI: ' + ((err as { message?: string })?.message ?? 'desconhecido'));
+    },
+  });
+
+  const clearOpenaiMutation = useMutation({
+    mutationFn: () =>
+      accountIntegrationsBackendService.updateIntegrations({ openaiApiKey: null }),
+    onSuccess: () => {
+      toast.success('Chave OpenAI removida');
+      setOpenaiInput('');
+      invalidate();
+    },
+    onError: (err: unknown) => {
+      toast.error('Erro ao remover OpenAI: ' + ((err as { message?: string })?.message ?? 'desconhecido'));
+    },
+  });
+
+  const testOpenaiMutation = useMutation({
+    mutationFn: () => accountIntegrationsBackendService.testProvider('openai'),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success(`OpenAI: ${res.message || 'conexao OK'}`);
+      } else {
+        toast.error(`OpenAI: ${res.message || 'falha no teste'}`);
+      }
+    },
+    onError: (err: unknown) => {
+      toast.error('Erro ao testar OpenAI: ' + ((err as { message?: string })?.message ?? 'desconhecido'));
+    },
+  });
+
+  const saveAnthropicMutation = useMutation({
+    mutationFn: () =>
+      accountIntegrationsBackendService.updateIntegrations({
+        anthropicApiKey: anthropicInput.trim(),
+      }),
+    onSuccess: () => {
+      toast.success('Chave Anthropic atualizada');
+      setAnthropicInput('');
+      invalidate();
+    },
+    onError: (err: unknown) => {
+      toast.error('Erro ao salvar Anthropic: ' + ((err as { message?: string })?.message ?? 'desconhecido'));
+    },
+  });
+
+  const clearAnthropicMutation = useMutation({
+    mutationFn: () =>
+      accountIntegrationsBackendService.updateIntegrations({ anthropicApiKey: null }),
+    onSuccess: () => {
+      toast.success('Chave Anthropic removida');
+      setAnthropicInput('');
+      invalidate();
+    },
+    onError: (err: unknown) => {
+      toast.error('Erro ao remover Anthropic: ' + ((err as { message?: string })?.message ?? 'desconhecido'));
+    },
+  });
+
+  const testAnthropicMutation = useMutation({
+    mutationFn: () => accountIntegrationsBackendService.testProvider('anthropic'),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success(`Anthropic: ${res.message || 'conexao OK'}`);
+      } else {
+        toast.error(`Anthropic: ${res.message || 'falha no teste'}`);
+      }
+    },
+    onError: (err: unknown) => {
+      toast.error('Erro ao testar Anthropic: ' + ((err as { message?: string })?.message ?? 'desconhecido'));
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-40 w-full" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Configure as chaves de API dos provedores de IA usados pela sua conta. As chaves ficam
+        armazenadas com seguranca e nunca sao exibidas apos serem salvas — somente o status
+        (configurada / nao configurada).
+      </p>
+
+      <AIProviderCard
+        provider="openai"
+        titulo="OpenAI"
+        descricao="Usada por modelos GPT (transcricao de audio, IA conversacional, embeddings)."
+        placeholderFormato="sk-..."
+        configurado={openaiConfigurado}
+        inputValue={openaiInput}
+        onInputChange={setOpenaiInput}
+        onSave={() => saveOpenaiMutation.mutate()}
+        onClear={() => clearOpenaiMutation.mutate()}
+        onTest={() => testOpenaiMutation.mutate()}
+        saving={saveOpenaiMutation.isPending}
+        clearing={clearOpenaiMutation.isPending}
+        testing={testOpenaiMutation.isPending}
+        dirty={openaiInput.trim().length > 0}
+      />
+
+      <AIProviderCard
+        provider="anthropic"
+        titulo="Anthropic (Claude)"
+        descricao="Usada por modelos Claude (analise, sumarizacao, respostas longas)."
+        placeholderFormato="sk-ant-..."
+        configurado={anthropicConfigurado}
+        inputValue={anthropicInput}
+        onInputChange={setAnthropicInput}
+        onSave={() => saveAnthropicMutation.mutate()}
+        onClear={() => clearAnthropicMutation.mutate()}
+        onTest={() => testAnthropicMutation.mutate()}
+        saving={saveAnthropicMutation.isPending}
+        clearing={clearAnthropicMutation.isPending}
+        testing={testAnthropicMutation.isPending}
+        dirty={anthropicInput.trim().length > 0}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Página raiz
 // ---------------------------------------------------------------------------
 
@@ -992,7 +1275,7 @@ export default function AdminIntegracoesPage() {
       </div>
 
       <Tabs defaultValue="saida">
-        <TabsList className="w-full sm:grid sm:grid-cols-3">
+        <TabsList className="w-full sm:grid sm:grid-cols-4">
           <TabsTrigger value="saida" className="gap-2">
             <Webhook className="w-4 h-4" />
             Webhooks de saída
@@ -1000,6 +1283,10 @@ export default function AdminIntegracoesPage() {
           <TabsTrigger value="entrada" className="gap-2">
             <Plug className="w-4 h-4" />
             Webhooks de entrada
+          </TabsTrigger>
+          <TabsTrigger value="ia" className="gap-2">
+            <Sparkles className="w-4 h-4" />
+            IA
           </TabsTrigger>
           <TabsTrigger value="logs" className="gap-2">
             <ScrollText className="w-4 h-4" />
@@ -1013,6 +1300,10 @@ export default function AdminIntegracoesPage() {
 
         <TabsContent value="entrada" className="mt-4">
           <AbaWebhooksEntrada />
+        </TabsContent>
+
+        <TabsContent value="ia" className="mt-4">
+          <AbaIA />
         </TabsContent>
 
         <TabsContent value="logs" className="mt-4">

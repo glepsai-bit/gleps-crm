@@ -64,6 +64,7 @@ import AdminCannedResponsesPage from "./pages/admin/AdminCannedResponsesPage";
 import AdminSLAPoliciesPage from "./pages/admin/AdminSLAPoliciesPage";
 import AdminSlaDashboardPage from "./pages/admin/AdminSlaDashboardPage";
 import AdminCustomAttributesPage from "./pages/admin/AdminCustomAttributesPage";
+import AdminAgentesPage from "./pages/admin/AdminAgentesPage";
 
 // CRITICAL #3: QueryClient com handlers default de erro (toast em 5xx/network).
 // Detalhes em src/lib/query-client.ts.
@@ -152,6 +153,9 @@ const App = () => (
             <Route path="/admin/sla-policies" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminSLAPoliciesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/sla/dashboard" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminSlaDashboardPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/custom-attributes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminCustomAttributesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+
+            {/* T-024 — Equipe (admin gerencia agentes da própria conta) */}
+            <Route path="/admin/agentes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminAgentesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
 
             {/* Agent Routes */}
             <Route path="/agent" element={<ProtectedRoute allowedRoles={['agent', 'admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminKanbanPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />

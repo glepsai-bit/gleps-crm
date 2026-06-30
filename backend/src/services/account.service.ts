@@ -9,6 +9,7 @@ const SENSITIVE_KEYS = [
   'evolutionApiKey',
   'evolutionWebhookSecret',
   'openaiApiKey',
+  'anthropicApiKey',
   'sendgridApiKey',
   'googleClientSecret',
 ] as const;

@@ -50,6 +50,7 @@ import {
   Clock,
   Settings2,
   Flame,
+  UserCog,
 } from 'lucide-react';
 import { Logo } from '@/components/branding/Logo';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -63,34 +64,21 @@ import {
 } from '@/components/ui/breadcrumb';
 
 // ============================================
-// Mapa de títulos por rota (B5 — breadcrumbs/título no header)
-// Solução pragmática: título claro na página + breadcrumb com pai quando aplicável.
+// Mapa de títulos por rota — esvaziado (BUG-ADMIN-PAGE-HEADER)
+//
+// Cada pagina admin renderiza seu PROPRIO header com titulo + acoes (ver
+// AdminAgentesPage, AdminKanbanPage, etc). Manter aqui um titulo duplicado
+// no AdminLayout causava:
+//   1. Barra extra "Atendimento"/"Equipe"/"Kanban"/etc consumindo altura
+//      util sem informacao nova (sidebar ja mostra item ativo).
+//   2. Em paginas como /admin/chat, espremia o layout fullscreen.
+//   3. Duplicidade visual confusa quando a pagina ja tem seu header.
+//
+// Mantemos o componente PageTitleHeader e o mapa para futura reutilizacao
+// (ex: paginas que NAO tem header proprio, ou pra breadcrumb hierarquico).
+// Para reativar em uma rota, basta adicionar a entrada aqui.
 // ============================================
-const routeTitles: Record<string, { title: string; parent?: { label: string; href: string } }> = {
-  '/admin/chat': { title: 'Atendimento' },
-  '/admin/chat/dashboard': {
-    title: 'Dashboard do Chat',
-    parent: { label: 'Atendimento', href: '/admin/chat' },
-  },
-  '/admin/kanban': { title: 'Funil de Vendas' },
-  '/admin/leads': { title: 'Leads' },
-  '/admin/agenda': { title: 'Agenda' },
-  '/admin/sales': { title: 'Vendas' },
-  '/admin/finance': { title: 'Financeiro' },
-  '/admin/products': { title: 'Produtos' },
-  '/admin/prospeccao': { title: 'Prospecção' },
-  '/admin/emails': { title: 'E-mails' },
-  '/admin/whatsapp-templates': { title: 'Templates WhatsApp' },
-  '/admin/warmup': { title: 'Aquecimento de Chips' },
-  '/admin/inboxes': { title: 'Inboxes' },
-  '/admin/teams': { title: 'Times' },
-  '/admin/canned-responses': { title: 'Respostas Rápidas' },
-  '/admin/sla-policies': { title: 'Políticas de SLA' },
-  '/admin/sla/dashboard': { title: 'SLA Dashboard' },
-  '/admin/custom-attributes': { title: 'Atributos Customizados' },
-  '/admin/opt-outs': { title: 'Opt-outs WhatsApp' },
-  '/admin/integracoes': { title: 'Integrações' },
-};
+const routeTitles: Record<string, { title: string; parent?: { label: string; href: string } }> = {};
 
 function PageTitleHeader({ pathname }: { pathname: string }) {
   const entry = routeTitles[pathname];
@@ -141,6 +129,7 @@ const adminNavItems = [
   { title: 'Aquecimento', href: '/admin/warmup', icon: Flame },
   // Config do Chat (uso ocasional)
   { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox },
+  { title: 'Equipe', href: '/admin/agentes', icon: UserCog },
   { title: 'Times', href: '/admin/teams', icon: Users },
   { title: 'Respostas Rápidas', href: '/admin/canned-responses', icon: Zap },
   { title: 'SLA', href: '/admin/sla-policies', icon: Clock },
@@ -452,10 +441,15 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </div>
       </aside>
 
-      {/* Main Content - usa token de tema (claro/escuro) */}
+      {/* Main Content - usa token de tema (claro/escuro).
+          BUG-CHAT-GAP-DIREITA: `overflow-x-hidden` impede que qualquer pagina
+          interna (ex: chat com calc(100vh-Xrem) levemente errado) cause
+          scrollbar VERTICAL no body, que comeria 15px de largura util e
+          deixaria gap a direita do painel Contato. overflow-x apenas — overflow-y
+          permanece auto pra paginas longas (kanban, leads, etc). */}
       <main
         className={cn(
-          'transition-all duration-300 min-h-screen bg-background',
+          'transition-all duration-300 min-h-screen bg-background overflow-x-hidden',
           collapsed ? 'lg:pl-[72px]' : 'lg:pl-64',
           'pt-14 sm:pt-16 lg:pt-0'
         )}

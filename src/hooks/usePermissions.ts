@@ -43,6 +43,8 @@ const adminOnlyRoutes = new Set<string>([
   '/admin/sla-policies',
   '/admin/sla/dashboard',
   '/admin/custom-attributes',
+  // T-024 — admin gerencia agentes da propria conta
+  '/admin/agentes',
 ]);
 
 export function usePermissions() {

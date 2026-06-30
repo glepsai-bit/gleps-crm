@@ -46,6 +46,20 @@ export const API_ENDPOINTS = {
     UPDATE_PERMISSIONS: (id: string) => `/api/users/${id}/permissions`,
   },
 
+  // ============= ADMIN USERS (T-024 — admin de conta gerencia equipe) =============
+  // Rota dedicada ao admin de conta gerenciar agentes/admins da PROPRIA tenancy.
+  // SEMPRE escopada por accountId do JWT no backend. Nunca expõe role='super_admin'.
+  // Auth: authenticate + requireAdmin + requireAccountId. DELETE exige header
+  // X-Confirm-Password (verifyPassword middleware) com a senha do requester.
+  ADMIN_USERS: {
+    LIST: '/api/admin/users',
+    GET: (id: string) => `/api/admin/users/${id}`,
+    CREATE: '/api/admin/users',
+    UPDATE: (id: string) => `/api/admin/users/${id}`,
+    DELETE: (id: string) => `/api/admin/users/${id}`,
+    LIMITS: '/api/admin/users/limits',
+  },
+
   // ============= CONTACTS SERVICE =============
   CONTACTS: {
     LIST: '/api/contacts',

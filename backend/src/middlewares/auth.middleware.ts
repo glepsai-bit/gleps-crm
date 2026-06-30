@@ -239,6 +239,57 @@ export function requireAccountId(
 }
 
 /**
+ * Middleware to ensure that a target user (identified by route param) belongs
+ * to the same account as the requester. Super admins bypass the check.
+ *
+ * On mismatch returns 404 to avoid leaking the existence of users in other
+ * tenants. On missing target also 404.
+ */
+export function requireSameAccountUser(paramName: string = 'id') {
+  return async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      if (!req.user) {
+        return next(new UnauthorizedError());
+      }
+
+      // Super admin bypass — pode acessar qualquer conta
+      if (req.user.role === 'super_admin') {
+        return next();
+      }
+
+      const targetId = req.params[paramName] as string | undefined;
+      if (!targetId) {
+        res.status(400).json({
+          error: { code: 'VALIDATION_ERROR', message: `Parâmetro :${paramName} ausente` },
+        });
+        return;
+      }
+
+      const target = await prisma.user.findUnique({
+        where: { id: targetId },
+        select: { id: true, accountId: true, role: true },
+      });
+
+      // Trate "not found" e "outra conta" iguais para nao vazar existencia
+      if (!target || target.accountId !== req.user.accountId) {
+        res.status(404).json({
+          error: { code: 'NOT_FOUND', message: 'Usuário não encontrado' },
+        });
+        return;
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+/**
  * Middleware to ensure user can only access their own account's data
  */
 export function requireSameAccount(

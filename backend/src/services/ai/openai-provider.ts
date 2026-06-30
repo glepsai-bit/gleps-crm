@@ -39,6 +39,34 @@ export class OpenAIProvider implements AiProvider {
     return this.client !== null;
   }
 
+  /**
+   * T-025: testa uma API key arbitraria sem persistir.
+   * Faz uma chamada minima (models.list com limit) para validar autenticacao.
+   * NUNCA loga a chave; mensagens de erro vem do provider e sao seguras
+   * (OpenAI nao ecoa a chave no payload de erro).
+   */
+  async testConnection(apiKey: string): Promise<{ ok: boolean; message: string }> {
+    if (!apiKey || apiKey.trim() === '') {
+      return { ok: false, message: 'Chave vazia' };
+    }
+    try {
+      const tempClient = new OpenAI({
+        apiKey: apiKey.trim(),
+        timeout: env.WARMUP_AI_TIMEOUT_MS,
+      });
+      // Endpoint barato e suportado em todas as contas: models.list
+      await tempClient.models.list();
+      return { ok: true, message: 'Conexao OpenAI OK' };
+    } catch (err: any) {
+      const status = err?.status ?? err?.statusCode;
+      const msg = err?.message ?? String(err);
+      if (status === 401) return { ok: false, message: 'Chave invalida (401)' };
+      if (status === 403) return { ok: false, message: 'Chave sem permissao (403)' };
+      if (status === 429) return { ok: false, message: 'Rate limit atingido (429)' };
+      return { ok: false, message: `Falha na conexao: ${msg.slice(0, 200)}` };
+    }
+  }
+
   async generate(ctx: ContentContext, model?: string): Promise<GeneratedContent | null> {
     if (!this.client) return null;
     const useModel = model ?? this.defaultModel;

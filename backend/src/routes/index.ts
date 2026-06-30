@@ -7,6 +7,8 @@ import productRoutes from './product.routes';
 import tagRoutes, { funnelRouter } from './tag.routes';
 import saleRoutes from './sale.routes';
 import dashboardRoutes, { adminRouter } from './dashboard.routes';
+import adminUserRoutes from './admin-user.routes';
+import accountIntegrationsRoutes from './account-integrations.routes';
 import financeRoutes from './finance.routes';
 import insightsRoutes from './insights.routes';
 import calendarRoutes from './calendar.routes';
@@ -95,6 +97,14 @@ router.use('/tags', tagRoutes);
 router.use('/funnels', funnelRouter);
 router.use('/sales', saleRoutes);
 router.use('/dashboard', dashboardRoutes);
+// T-024: rota dedicada ao admin de conta gerenciar agentes da PROPRIA tenancy.
+// DEVE ser registrada ANTES de /admin (adminRouter do dashboard) para evitar
+// que o catch-all de /admin/* engula /admin/users.
+router.use('/admin/users', adminUserRoutes);
+// T-025: self-service de chaves de IA por admin de conta. Registrado ANTES
+// de /admin (adminRouter do dashboard) para evitar que o catch-all engula
+// /admin/integrations/*.
+router.use('/admin/integrations', accountIntegrationsRoutes);
 router.use('/admin', adminRouter);
 router.use('/finance', financeRoutes);
 router.use('/insights', insightsRoutes);

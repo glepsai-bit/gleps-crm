@@ -39,6 +39,37 @@ export class AnthropicProvider implements AiProvider {
     return this.client !== null;
   }
 
+  /**
+   * T-025: testa uma API key arbitraria sem persistir.
+   * Anthropic SDK nao tem endpoint "list models" publico, entao mandamos uma
+   * mensagem minima ao haiku com max_tokens=1 (custo desprezivel, < 0.0001 USD).
+   * NUNCA loga a chave.
+   */
+  async testConnection(apiKey: string): Promise<{ ok: boolean; message: string }> {
+    if (!apiKey || apiKey.trim() === '') {
+      return { ok: false, message: 'Chave vazia' };
+    }
+    try {
+      const tempClient = new Anthropic({
+        apiKey: apiKey.trim(),
+        timeout: env.WARMUP_AI_TIMEOUT_MS,
+      });
+      await tempClient.messages.create({
+        model: env.ANTHROPIC_MODEL,
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      return { ok: true, message: 'Conexao Anthropic OK' };
+    } catch (err: any) {
+      const status = err?.status ?? err?.statusCode;
+      const msg = err?.message ?? String(err);
+      if (status === 401) return { ok: false, message: 'Chave invalida (401)' };
+      if (status === 403) return { ok: false, message: 'Chave sem permissao (403)' };
+      if (status === 429) return { ok: false, message: 'Rate limit atingido (429)' };
+      return { ok: false, message: `Falha na conexao: ${msg.slice(0, 200)}` };
+    }
+  }
+
   async generate(ctx: ContentContext, model?: string): Promise<GeneratedContent | null> {
     if (!this.client) return null;
     const useModel = model ?? this.defaultModel;

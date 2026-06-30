@@ -86,6 +86,11 @@ export const ErrorCodes = {
   // Validation
   EMAIL_IN_USE: 'Email já cadastrado',
   USER_LIMIT_EXCEEDED: 'Limite de usuários da conta excedido',
+  AGENT_LIMIT_EXCEEDED: 'Limite de agentes do plano atingido',
+  CANNOT_DELETE_SELF: 'Não é possível excluir a própria conta',
+  CANNOT_MANAGE_SUPER_ADMIN: 'Apenas Super Admin pode gerenciar Super Admins',
+  CANNOT_MANAGE_OTHER_ADMIN: 'Apenas Super Admin pode gerenciar outros Admins',
+  CANNOT_REMOVE_LAST_ADMIN: 'Não é possível remover o último Admin da conta',
   CONTACT_HAS_SALES: 'Contato possui vendas e não pode ser excluído',
   TAG_HAS_LEADS: 'Tag possui leads e não pode ser excluída',
   PRODUCT_HAS_SALES: 'Produto possui vendas e não pode ser excluído',
