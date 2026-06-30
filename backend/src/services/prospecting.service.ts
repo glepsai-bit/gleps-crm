@@ -1,14 +1,22 @@
 import { prisma } from '../config/database';
 import { env } from '../config/env';
 import { evolutionService } from './evolution.service';
+import { systemSettingsService } from './system-settings.service';
 import { whatsappConsentService } from './whatsapp-consent.service';
 import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
-import { NotFoundError, ValidationError } from '../utils/errors';
+import { AppError, NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
 interface EvolutionDispatchConfig {
   transport: 'evolution';
   accountId: string;
+  /**
+   * T-022 — Mapa inbox_id (string|number) -> Inbox.evolutionInstance.
+   * Preenchido em dispatch() carregando os Inboxes do DB. Permite que
+   * sendViaTransport passe `instance` per-Inbox para evolutionService,
+   * em vez de cair no fallback Account.evolutionInstance.
+   */
+  inboxInstanceMap: Map<string, string>;
 }
 
 type DispatchConfig = EvolutionDispatchConfig;
@@ -281,23 +289,63 @@ class ProspectingService {
 
   /**
    * Resolve dispatch transport para o account.
-   * FitPark — somente Evolution. Se não configurada, exige setup global.
+   *
+   * FitPark — somente Evolution. Modelo atual:
+   *  - Credenciais (baseUrl + apiKey): override per-account ACEITA STANDALONE,
+   *    com fallback para singleton global em SystemSettings se ausente.
+   *  - Instância: per-Inbox (passada via inboxInstanceMap em sendViaTransport).
+   *
+   * Bug fix 2026-06-30: anteriormente o erro era 503 e a mensagem só apontava
+   * para a configuração global, mesmo com per-account override completo sendo
+   * suficiente. Agora:
+   *   1) per-account override (baseUrl + apiKey) é aceito standalone;
+   *   2) só faz fallback para global se o override estiver ausente/incompleto;
+   *   3) erro final passa a ser 422 (cliente precisa configurar) e a mensagem
+   *      lista AMBOS os caminhos válidos (per-account OU global) + o que falta.
+   *
+   * @param inboxInstanceMap - map de inbox_id -> Inbox.evolutionInstance (validado
+   *   em dispatch()). Não usado aqui, apenas anexado ao DispatchConfig.
    */
-  private async resolveDispatchConfig(accountId: string): Promise<DispatchConfig> {
+  private async resolveDispatchConfig(
+    accountId: string,
+    inboxInstanceMap: Map<string, string>
+  ): Promise<DispatchConfig> {
     const account = await prisma.account.findUnique({
       where: { id: accountId },
       select: {
         evolutionBaseUrl: true,
         evolutionApiKey: true,
-        evolutionInstance: true,
       },
     });
 
-    if (account?.evolutionBaseUrl && account?.evolutionApiKey && account?.evolutionInstance) {
-      return { transport: 'evolution', accountId };
+    // 1) Override per-account (enterprise) — aceito standalone.
+    const hasAccountOverride = Boolean(account?.evolutionBaseUrl && account?.evolutionApiKey);
+    if (hasAccountOverride) {
+      return { transport: 'evolution', accountId, inboxInstanceMap };
     }
 
-    throw new Error('Configure Evolution global em /super-admin/system-settings');
+    // 2) Fallback para singleton global de SystemSettings.
+    const globalConfig = await systemSettingsService.getEvolutionConfig();
+    if (globalConfig) {
+      return { transport: 'evolution', accountId, inboxInstanceMap };
+    }
+
+    // 3) Nem per-account NEM global configurados — erro amigável 422 (não 500/503)
+    //    listando o que falta + os dois caminhos válidos pra resolver.
+    const missing: string[] = [];
+    if (!account?.evolutionBaseUrl) missing.push('URL base do Evolution');
+    if (!account?.evolutionApiKey) missing.push('API Key do Evolution');
+    const missingLabel = missing.length > 0 ? ` (faltando: ${missing.join(', ')})` : '';
+
+    throw new AppError(
+      `Evolution não configurado${missingLabel}. ` +
+        'Configure em Configurações da Conta (URL + API Key) para uso enterprise per-account, ' +
+        'OU peça ao super-admin para configurar globalmente em /super-admin/system-settings. ' +
+        'A Instância (evolutionInstance) é definida por Inbox, não aqui.',
+      422,
+      'EVOLUTION_NOT_CONFIGURED',
+      { missing }
+    );
   }
 
   /**
@@ -315,7 +363,64 @@ class ProspectingService {
       throw new ValidationError('Pelo menos 1 mensagem é obrigatória');
     }
 
-    const config = await this.resolveDispatchConfig(accountId);
+    // T-022 — Carrega Inboxes do DB e valida que: existem, são da conta,
+    // estão ativos, e têm evolutionInstance configurado. Anteriormente o
+    // dispatch ignorava completamente os Inboxes do payload e caía em
+    // Account.evolutionInstance (legacy), causando 500 em prod quando
+    // a conta não tinha esse override mesmo com a Inbox conectada.
+    const inboxIdStrings = Array.from(
+      new Set(inboxAssignments.map(a => String(a.inbox_id)))
+    );
+    // Apenas IDs no formato UUID podem ser buscados em prisma.inbox (Inbox.id
+    // é UUID). IDs numéricos (path legacy) ficam fora do lookup — esses
+    // dispatches caem no fallback Account.evolutionInstance via evolutionService.
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const uuidIds = inboxIdStrings.filter(id => uuidRegex.test(id));
+
+    const inboxInstanceMap = new Map<string, string>();
+    if (uuidIds.length > 0) {
+      const dbInboxes = await prisma.inbox.findMany({
+        where: { accountId, id: { in: uuidIds } },
+        select: { id: true, name: true, evolutionInstance: true, active: true },
+      });
+
+      const foundIds = new Set(dbInboxes.map(i => i.id));
+      const missing = uuidIds.filter(id => !foundIds.has(id));
+      if (missing.length > 0) {
+        const missingNames = inboxAssignments
+          .filter(a => missing.includes(String(a.inbox_id)))
+          .map(a => a.inbox_name);
+        throw new AppError(
+          `Inbox(es) não encontrada(s): ${missingNames.join(', ')}. Recarregue a página e tente novamente.`,
+          404,
+          'INBOX_NOT_FOUND'
+        );
+      }
+
+      const inactive = dbInboxes.filter(i => !i.active);
+      if (inactive.length > 0) {
+        throw new AppError(
+          `Inbox(es) inativa(s): ${inactive.map(i => i.name).join(', ')}. Reative em Configurações > Inboxes.`,
+          422,
+          'INBOX_INACTIVE'
+        );
+      }
+
+      const noInstance = dbInboxes.filter(i => !i.evolutionInstance);
+      if (noInstance.length > 0) {
+        throw new AppError(
+          `Inbox(es) sem WhatsApp conectado: ${noInstance.map(i => i.name).join(', ')}. Conecte primeiro em Configurações > Inboxes.`,
+          422,
+          'INBOX_NOT_CONNECTED'
+        );
+      }
+
+      for (const inbox of dbInboxes) {
+        inboxInstanceMap.set(inbox.id, inbox.evolutionInstance!);
+      }
+    }
+
+    const config = await this.resolveDispatchConfig(accountId, inboxInstanceMap);
 
     const totalContacts = inboxAssignments.reduce((sum, a) => sum + a.contacts.length, 0);
     const delayMs = Math.max((delaySeconds || 30) * 1000, 5000);
@@ -588,7 +693,29 @@ class ProspectingService {
       data: { status: 'pending', errorMessage: null },
     });
 
-    const config = await this.resolveDispatchConfig(accountId);
+    // Reconstroi o inboxInstanceMap a partir dos inboxNames dos logs pendentes.
+    // DispatchLog.inboxId é Int? — UUIDs do CRM gravam null, então o lookup
+    // precisa ser feito por nome (único por conta em prisma.inbox).
+    const pendingInboxNames = Array.from(
+      new Set(pendingLogs.map((l: any) => l.inboxName).filter(Boolean) as string[])
+    );
+    const inboxInstanceMap = new Map<string, string>();
+    if (pendingInboxNames.length > 0) {
+      const dbInboxes = await prisma.inbox.findMany({
+        where: { accountId, name: { in: pendingInboxNames } },
+        select: { id: true, name: true, evolutionInstance: true },
+      });
+      for (const inbox of dbInboxes) {
+        if (inbox.evolutionInstance) {
+          // Indexa por id E por name — processResume identifica o canal pelo
+          // inboxName (já que log.inboxId é null para UUIDs).
+          inboxInstanceMap.set(inbox.id, inbox.evolutionInstance);
+          inboxInstanceMap.set(inbox.name, inbox.evolutionInstance);
+        }
+      }
+    }
+
+    const config = await this.resolveDispatchConfig(accountId, inboxInstanceMap);
 
     const delayMs = Math.max((delaySeconds || batch.delaySeconds || 30) * 1000, 5000);
 
@@ -674,7 +801,10 @@ class ProspectingService {
           continue;
         }
 
-        await this.sendViaTransport(config, contact, log.inboxId ?? '', message);
+        // log.inboxId é null para UUIDs (schema legado). O inboxInstanceMap é
+        // indexado por inbox.name também (ver resumeBatch acima), então passar
+        // log.inboxName resolve a instance per-Inbox no sendViaTransport.
+        await this.sendViaTransport(config, contact, log.inboxName ?? log.inboxId ?? '', message);
         whatsappRateLimitService.record(config.accountId, normalized);
 
         sentCount++;
@@ -1083,17 +1213,23 @@ class ProspectingService {
 
   /**
    * Envia uma mensagem para um contato via Evolution.
-   * FitPark — REMOVED legacy external provider; inboxId é ignorado pelo Evolution.
+   *
+   * T-022 — Quando inboxId mapeia para um Inbox.evolutionInstance no
+   * `config.inboxInstanceMap`, passa esse instance per-Inbox para a
+   * Evolution. Caso contrário (path legacy / inboxId numérico), cai no
+   * fallback Account.evolutionInstance dentro do evolutionService.
    */
   private async sendViaTransport(
     config: DispatchConfig,
     contact: Contact,
-    _inboxId: string | number,
+    inboxId: string | number,
     message: string
   ) {
+    const instance = config.inboxInstanceMap.get(String(inboxId)) ?? null;
     await evolutionService.sendText(config.accountId, {
       number: contact.telefone,
       text: message,
+      instance,
     });
   }
 

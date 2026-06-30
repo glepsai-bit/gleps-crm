@@ -27,41 +27,28 @@ if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
     exit 1
 fi
 
-# ---- 1.5. RESET TOTAL DO BANCO (uma vez, automatico) ----
-# Heuristica: detecta se a tabela `_system_meta` existe E tem entry
-# `reset_version` = REQUIRED_RESET_VERSION. Se NAO tiver, dropa schema,
-# re-aplica migrations, cria UM super_admin e grava a versao. Proximo
-# redeploy: tabela ja tem a entry, pula tudo e segue boot normal.
+# ---- 1.5. RESET TOTAL DO BANCO ----
+# DESABILITADO 2026-06-30: o reset baseado em REQUIRED_RESET_VERSION causou
+# problemas em deploys de produção (perda de dados em redeploys e quando o
+# marker _system_meta não conseguia ser gravado, causando reset em loop).
 #
-# Pra forcar novo reset em futuro: incrementar REQUIRED_RESET_VERSION abaixo.
-# Customizar super_admin via SUPER_ADMIN_EMAIL/PASSWORD/NAME (defaults
-# admin@gleps.com.br / Admin@123 / Super Admin).
-REQUIRED_RESET_VERSION=2
+# A partir de agora o reset SÓ acontece se a env var RESET_DB_FORCE=YES estiver
+# definida explicitamente. Em uso normal este bloco é noop e a inicialização
+# segue direto para migrations (passo 2). O marker _system_meta continua a
+# ser respeitado pelo passo 3 (skip seed legado).
+#
+# Para forçar um reset manual em situação extrema:
+#   RESET_DB_FORCE=YES <comando de boot>
 SKIP_MIGRATE=no
+REQUIRED_RESET_VERSION=2
 
-NEEDS_RESET=$(node -e "
-  const { PrismaClient } = require('@prisma/client');
-  (async () => {
-    const prisma = new PrismaClient();
-    try {
-      const tableExists = await prisma.\$queryRawUnsafe(
-        \"SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '_system_meta' LIMIT 1;\"
-      );
-      if (!Array.isArray(tableExists) || tableExists.length === 0) {
-        console.log('YES'); return;
-      }
-      const rows = await prisma.\$queryRawUnsafe(
-        \"SELECT value FROM _system_meta WHERE key = 'reset_version' LIMIT 1;\"
-      );
-      const current = Array.isArray(rows) && rows[0] ? String(rows[0].value) : '';
-      console.log(current === '${REQUIRED_RESET_VERSION}' ? 'NO' : 'YES');
-    } catch (e) {
-      console.log('YES');
-    } finally {
-      await prisma.\$disconnect();
-    }
-  })();
-" 2>/dev/null | tail -1)
+if [ "${RESET_DB_FORCE:-NO}" = "YES" ]; then
+    NEEDS_RESET=YES
+    echo "⚠️  RESET_DB_FORCE=YES detectado — reset MANUAL será executado."
+else
+    NEEDS_RESET=NO
+    echo "ℹ️  Auto-reset desabilitado (RESET_DB_FORCE != YES). Seguindo direto pra migrations."
+fi
 
 if [ "$NEEDS_RESET" = "YES" ]; then
     echo ""
