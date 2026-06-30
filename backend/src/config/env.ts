@@ -87,23 +87,34 @@ export const env = parsed.data;
 export const isProduction = env.NODE_ENV === 'production';
 export const isDevelopment = env.NODE_ENV === 'development';
 
-// Hard validation pós-parse: em produção a chave de criptografia é obrigatória.
-// Mensagem dura aqui evita silencioso fallback pra plaintext em campos sensíveis.
+// Soft validation: ENCRYPTION_KEY eh OPCIONAL. So eh USADA para criptografar
+// tokens OAuth do Google Calendar (T-026). Se ausente, o app sobe normalmente
+// e SOMENTE o fluxo OAuth do Calendar vai falhar — com erro claro na hora
+// (utils/encryption.ts ja lanca se chave faltar e algo tentar criptografar).
+//
+// Antes essa validacao matava o processo em prod (process.exit(1)), o que
+// derrubava o backend inteiro mesmo pra quem nao usa Calendar. Trocado por
+// warning visivel no log.
 if (isProduction) {
   const key = (env.ENCRYPTION_KEY || '').trim();
-  const validHex = /^[0-9a-fA-F]{64}$/.test(key);
-  let validBase64 = false;
-  if (!validHex && key) {
-    try {
-      validBase64 = Buffer.from(key, 'base64').length === 32;
-    } catch {
-      validBase64 = false;
-    }
-  }
-  if (!validHex && !validBase64) {
-    console.error(
-      '❌ ENCRYPTION_KEY ausente ou inválida em produção. Esperado: hex 64 chars (preferido) ou base64 de 32 bytes.'
+  if (!key) {
+    console.warn(
+      '⚠️  ENCRYPTION_KEY ausente em producao. App sobe normalmente, mas OAuth do Google Calendar vai falhar ate a chave ser configurada. Veja backend/.env.example.'
     );
-    process.exit(1);
+  } else {
+    const validHex = /^[0-9a-fA-F]{64}$/.test(key);
+    let validBase64 = false;
+    if (!validHex) {
+      try {
+        validBase64 = Buffer.from(key, 'base64').length === 32;
+      } catch {
+        validBase64 = false;
+      }
+    }
+    if (!validHex && !validBase64) {
+      console.warn(
+        '⚠️  ENCRYPTION_KEY presente mas com formato invalido (esperado hex 64 chars ou base64 32 bytes). Tokens OAuth do Google Calendar vao falhar.'
+      );
+    }
   }
 }
