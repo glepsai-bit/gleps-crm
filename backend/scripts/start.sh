@@ -36,7 +36,7 @@ fi
 # Pra forcar novo reset em futuro: incrementar REQUIRED_RESET_VERSION abaixo.
 # Customizar super_admin via SUPER_ADMIN_EMAIL/PASSWORD/NAME (defaults
 # admin@gleps.com.br / Admin@123 / Super Admin).
-REQUIRED_RESET_VERSION=1
+REQUIRED_RESET_VERSION=2
 SKIP_MIGRATE=no
 
 NEEDS_RESET=$(node -e "
@@ -195,7 +195,31 @@ fi
 fi
 
 # ---- 3. Executar seed (se habilitado) ----
-if [ "${RUN_SEED:-true}" = "true" ]; then
+# Se ja temos marker de reset gravado, NUNCA rodamos o seed legado (que
+# cria 3 super_admins + Account demo "Clinica Vida Plena" e contamina o
+# banco apos o reset). O marker eh prova de que o reset oficial cuidou
+# da criacao do super_admin unico.
+HAS_RESET_MARKER=$(node -e "
+  const { PrismaClient } = require('@prisma/client');
+  (async () => {
+    const prisma = new PrismaClient();
+    try {
+      const rows = await prisma.\$queryRawUnsafe(
+        \"SELECT value FROM public._system_meta WHERE key = 'reset_version' LIMIT 1;\"
+      );
+      console.log(Array.isArray(rows) && rows.length > 0 ? 'YES' : 'NO');
+    } catch (e) {
+      console.log('NO');
+    } finally {
+      await prisma.\$disconnect();
+    }
+  })();
+" 2>/dev/null | tail -1)
+
+if [ "$HAS_RESET_MARKER" = "YES" ]; then
+    echo ""
+    echo "⏭️  Seed legado pulado (marker _system_meta detectado — super_admin ja criado pelo reset)"
+elif [ "${RUN_SEED:-true}" = "true" ]; then
     echo ""
     echo "🌱 Executando seed..."
     node dist/prisma/seed.js || echo "⚠️ Seed falhou (pode já ter sido executado)"
