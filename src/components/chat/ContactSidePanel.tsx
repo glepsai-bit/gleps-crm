@@ -18,6 +18,7 @@ import {
   ShoppingCart,
   Loader2,
   ChevronRight,
+  X,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -27,6 +28,13 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
 import {
   Collapsible,
   CollapsibleContent,
@@ -55,6 +63,17 @@ import { tokenManager } from '@/api/client';
 
 interface ContactSidePanelProps {
   conversation: Conversation;
+  onClose?: () => void;
+}
+
+function getInitials(name: string | null | undefined): string | null {
+  const trimmed = name?.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return null;
+  const first = parts[0]?.[0] ?? '';
+  const last = parts.length > 1 ? parts[parts.length - 1][0] ?? '' : '';
+  return (first + last).toUpperCase() || null;
 }
 
 function formatCurrency(value: number | string | null | undefined): string {
@@ -99,7 +118,7 @@ function formatDate(iso: string | null | undefined): string {
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
+export function ContactSidePanel({ conversation, onClose }: ContactSidePanelProps) {
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -316,204 +335,240 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
   }
 
   return (
-    <div className="flex h-full flex-col border-l border-border bg-card">
-      <div className="border-b border-border p-3">
-        <h2 className="text-sm font-semibold text-foreground">Contato</h2>
-      </div>
-
+    // BUG-CHAT-FAIXA-PRETA-DIREITA: `w-full` eh OBRIGATORIO porque o pai
+    // (aside.xl:flex) eh flex container — sem w-full o div encolhe pro
+    // tamanho do conteudo (~270px) e deixa uma faixa preta de ~50px
+    // entre o painel e a borda direita. O placeholder vazio ja tinha
+    // w-full, por isso aparecia OK; aqui faltava.
+    <div className="flex h-full w-full flex-col border-l border-border bg-card">
+      {/* WAVE 1.3 — Header novo: Avatar + nome + telefone + acoes rapidas
+          (Phone/Mail). X fecha o drawer mobile (so quando onClose definido). */}
+      {(() => {
+        // BUG-CHAT-DUP-PHONE: quando o contato não tem nome definido, o
+        // fallback original era usar o próprio telefone como displayName.
+        const trimmedName = contact?.nome?.trim();
+        const displayName =
+          trimmedName && trimmedName !== contact?.telefone
+            ? trimmedName
+            : contact?.telefone || contact?.email || 'Contato sem identificação';
+        const initials = getInitials(trimmedName);
+        const phone = contact?.telefone || null;
+        const email = contact?.email || null;
+        return (
+          <div className="relative flex flex-col items-center gap-2 border-b border-border p-4 text-center">
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Fechar"
+                className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+            <Avatar className="h-16 w-16">
+              <AvatarFallback className="bg-primary/10 text-primary text-lg">
+                {initials ?? <Phone className="h-5 w-5" />}
+              </AvatarFallback>
+            </Avatar>
+            <p className="w-full truncate text-sm font-semibold text-foreground">
+              {displayName}
+            </p>
+            {/* NIT-1314-01: so renderiza linha de telefone se nao for o mesmo
+                valor ja exibido como displayName (caso contato sem nome). */}
+            {phone && phone !== displayName && (
+              <p className="text-xs text-muted-foreground truncate w-full">
+                {phone}
+              </p>
+            )}
+            <div className="flex items-center gap-2 pt-1">
+              <Button
+                asChild={Boolean(phone)}
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                disabled={!phone}
+                title={phone ? `Ligar para ${phone}` : 'Sem telefone'}
+              >
+                {phone ? (
+                  <a href={`tel:${phone}`} aria-label="Ligar">
+                    <Phone className="h-4 w-4" />
+                  </a>
+                ) : (
+                  <Phone className="h-4 w-4" />
+                )}
+              </Button>
+              <Button
+                asChild={Boolean(email)}
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                disabled={!email}
+                title={email ? `Enviar e-mail para ${email}` : 'Sem e-mail'}
+              >
+                {email ? (
+                  <a href={`mailto:${email}`} aria-label="Enviar e-mail">
+                    <Mail className="h-4 w-4" />
+                  </a>
+                ) : (
+                  <Mail className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+        );
+      })()}
       <ScrollArea className="flex-1">
-        <div className="p-3 space-y-4">
-          {/* Dados do contato */}
-          {contact ? (() => {
-            // BUG-CHAT-DUP-PHONE: quando o contato não tem nome definido, o
-            // fallback original era usar o próprio telefone como displayName.
-            // Isso fazia o telefone aparecer DUAS vezes (linha do título +
-            // linha do ícone Phone). Detectamos o caso comparando nome ↔
-            // telefone e omitimos a linha redundante.
-            const trimmedName = contact.nome?.trim();
-            const displayName =
-              trimmedName && trimmedName !== contact.telefone
-                ? trimmedName
-                : contact.telefone || contact.email || 'Contato sem identificação';
-            const showPhoneRow =
-              Boolean(contact.telefone) && contact.telefone !== displayName;
-            return (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <UserIcon className="w-3.5 h-3.5 text-muted-foreground" />
-                <p className="text-sm font-medium text-foreground truncate">
-                  {displayName}
-                </p>
-              </div>
-              {showPhoneRow && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Phone className="w-3 h-3" />
-                  <a
-                    href={`tel:${contact.telefone}`}
-                    className="hover:text-foreground truncate"
-                  >
-                    {contact.telefone}
-                  </a>
-                </div>
-              )}
-              {contact.email && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Mail className="w-3 h-3" />
-                  <a
-                    href={`mailto:${contact.email}`}
-                    className="hover:text-foreground truncate"
-                  >
-                    {contact.email}
-                  </a>
-                </div>
-              )}
+        <div className="p-2 space-y-1">
+          {contact && (
+            <div className="px-3 pt-2 pb-1">
               <Button
                 variant="outline"
                 size="sm"
-                className="w-full mt-2 h-7 text-xs"
+                className="w-full h-7 text-xs"
                 onClick={() => contactId && navigate(`/admin/leads?contactId=${contactId}`)}
               >
                 <ExternalLink className="w-3 h-3 mr-1.5" />
                 Abrir contato completo
               </Button>
             </div>
-            );
-          })() : (
-            <p className="text-xs text-muted-foreground">
+          )}
+          {!contact && (
+            <p className="px-3 text-xs text-muted-foreground">
               Conversa sem contato vinculado.
             </p>
           )}
 
-          <Separator />
-
-          {/* Assignee + status (presença em tempo real) */}
-          {conversation.assignee && (
-            <>
-              <div className="space-y-2">
-                <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+          <Accordion
+            type="multiple"
+            defaultValue={['responsavel', 'tags-conv', 'atributos']}
+            className="w-full"
+          >
+            {/* Responsavel */}
+            {conversation.assignee && (
+              <AccordionItem value="responsavel">
+                <AccordionTrigger className="text-xs font-semibold uppercase text-muted-foreground px-3 py-2 hover:no-underline">
                   Responsável
-                </h3>
-                <div className="flex items-center gap-2 text-xs">
-                  <span
-                    className={`w-2 h-2 rounded-full ${STATUS_DOT_COLOR[assigneeStatus]}`}
-                    title={STATUS_LABEL[assigneeStatus]}
-                  />
-                  <span className="text-foreground truncate">
-                    {conversation.assignee.nome || conversation.assignee.email}
-                  </span>
-                  <Badge
-                    variant="outline"
-                    className="ml-auto text-[9px] py-0 px-1 h-4"
-                  >
-                    {STATUS_LABEL[assigneeStatus]}
-                  </Badge>
-                </div>
-              </div>
-              <Separator />
-            </>
-          )}
-
-          {/* Tags da conversa (labels) — refletem ConversationLabel; alimentam
-              o Kanban via sync espelho (CHAT-TAG-SYNC-1/2). */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase">
-              Tags da conversa
-            </h3>
-            {(() => {
-              const conversationLabels = Array.isArray(conversation.labels)
-                ? conversation.labels
-                : [];
-              if (conversationLabels.length === 0) {
-                return (
-                  <p className="text-xs text-muted-foreground">
-                    Sem tags nesta conversa
-                  </p>
-                );
-              }
-              return (
-                <div className="flex flex-wrap gap-1">
-                  {conversationLabels.map((label) => (
+                </AccordionTrigger>
+                <AccordionContent className="px-3 pb-3">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span
+                      className={`w-2 h-2 rounded-full ${STATUS_DOT_COLOR[assigneeStatus]}`}
+                      title={STATUS_LABEL[assigneeStatus]}
+                    />
+                    <span className="text-foreground truncate">
+                      {conversation.assignee.nome || conversation.assignee.email}
+                    </span>
                     <Badge
-                      key={label.id}
-                      variant="secondary"
-                      className="text-[10px] py-0 px-1.5 h-5"
-                      style={{
-                        borderColor: label.tag?.color || undefined,
-                      }}
+                      variant="outline"
+                      className="ml-auto text-[9px] py-0 px-1 h-4"
                     >
-                      {label.tag?.name || '—'}
+                      {STATUS_LABEL[assigneeStatus]}
                     </Badge>
-                  ))}
-                </div>
-              );
-            })()}
-          </div>
-
-          <Separator />
-
-          {/* Tags do contato — agregadas de todas as conversas/histórico do
-              contato. Pode ou não conter as mesmas tags acima dependendo do
-              modo de sync ativo. */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase">
-              Tags do contato
-            </h3>
-            {contactTags.length === 0 ? (
-              <p className="text-xs text-muted-foreground">Sem tags</p>
-            ) : (
-              <div className="flex flex-wrap gap-1">
-                {contactTags.map((rawLt) => {
-                  const lt = rawLt as {
-                    id: string;
-                    name?: string;
-                    color?: string;
-                    tag?: { name?: string; color?: string };
-                  };
-                  return (
-                  <Badge
-                    key={lt.id}
-                    variant="secondary"
-                    className="text-[10px] py-0 px-1.5 h-5"
-                    style={{
-                      borderColor: lt.tag?.color || lt.color || undefined,
-                    }}
-                  >
-                    {lt.tag?.name || lt.name || '—'}
-                  </Badge>
-                  );
-                })}
-              </div>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
             )}
-          </div>
 
-          <Separator />
+            {/* Tags da conversa */}
+            <AccordionItem value="tags-conv">
+              <AccordionTrigger className="text-xs font-semibold uppercase text-muted-foreground px-3 py-2 hover:no-underline">
+                Tags da conversa
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3">
+                {(() => {
+                  const conversationLabels = Array.isArray(conversation.labels)
+                    ? conversation.labels
+                    : [];
+                  if (conversationLabels.length === 0) {
+                    return (
+                      <p className="text-xs text-muted-foreground">
+                        Sem tags nesta conversa
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="flex flex-wrap gap-1">
+                      {conversationLabels.map((label) => (
+                        <Badge
+                          key={label.id}
+                          variant="secondary"
+                          className="text-[10px] py-0 px-1.5 h-5"
+                          style={{
+                            borderColor: label.tag?.color || undefined,
+                          }}
+                        >
+                          {label.tag?.name || '—'}
+                        </Badge>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </AccordionContent>
+            </AccordionItem>
 
-          {/* Custom Attributes */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-muted-foreground uppercase">
+            {/* Tags do contato */}
+            <AccordionItem value="tags-contato">
+              <AccordionTrigger className="text-xs font-semibold uppercase text-muted-foreground px-3 py-2 hover:no-underline">
+                Tags do contato
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3">
+                {contactTags.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Sem tags</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {contactTags.map((rawLt) => {
+                      const lt = rawLt as {
+                        id: string;
+                        name?: string;
+                        color?: string;
+                        tag?: { name?: string; color?: string };
+                      };
+                      return (
+                        <Badge
+                          key={lt.id}
+                          variant="secondary"
+                          className="text-[10px] py-0 px-1.5 h-5"
+                          style={{
+                            borderColor: lt.tag?.color || lt.color || undefined,
+                          }}
+                        >
+                          {lt.tag?.name || lt.name || '—'}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                )}
+              </AccordionContent>
+            </AccordionItem>
+
+            {/* Atributos */}
+            <AccordionItem value="atributos">
+              <AccordionTrigger className="text-xs font-semibold uppercase text-muted-foreground px-3 py-2 hover:no-underline">
                 Atributos
-              </h3>
-              {dirty && (
-                <Button
-                  size="sm"
-                  variant="default"
-                  className="h-6 px-2 text-xs"
-                  onClick={() => setAttrsMutation.mutate()}
-                  disabled={setAttrsMutation.isPending}
-                >
-                  {setAttrsMutation.isPending ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <>
-                      <Save className="w-3 h-3 mr-1" />
-                      Salvar
-                    </>
-                  )}
-                </Button>
-              )}
-            </div>
-            {(() => {
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3">
+                {dirty && (
+                  <div className="flex justify-end pb-2">
+                    <Button
+                      size="sm"
+                      variant="default"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setAttrsMutation.mutate()}
+                      disabled={setAttrsMutation.isPending}
+                    >
+                      {setAttrsMutation.isPending ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <>
+                          <Save className="w-3 h-3 mr-1" />
+                          Salvar
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                )}
+                {(() => {
               // CHAT-CUSTOMATTR-005: PATCH /conversations/:id/custom-attributes
               // persiste qualquer chave no JSON `customAttributes`. Antes, a UI
               // só renderizava chaves declaradas em /api/custom-attributes —
@@ -607,54 +662,54 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
                       </CollapsibleContent>
                     </Collapsible>
                   )}
-                </div>
-              );
-            })()}
-          </div>
-
-          <Separator />
-
-          {/* Histórico de conversas */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase">
-              Últimas conversas
-            </h3>
-            {historyConversations.length === 0 ? (
-              <p className="text-xs text-muted-foreground">Sem histórico</p>
-            ) : (
-              <div className="space-y-1">
-                {historyConversations.slice(0, 5).map((c) => (
-                  <div
-                    key={c.id}
-                    className="flex items-center justify-between gap-2 rounded border border-border bg-background px-2 py-1.5 text-xs"
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <MessageSquare className="w-3 h-3 text-muted-foreground shrink-0" />
-                      <span className="truncate capitalize">
-                        {c.inbox?.channelType || 'canal'}
-                      </span>
                     </div>
-                    <span className="text-[10px] text-muted-foreground shrink-0">
-                      {formatDate(c.updatedAt)}
-                    </span>
+                  );
+                })()}
+              </AccordionContent>
+            </AccordionItem>
+
+            {/* Histórico de conversas */}
+            <AccordionItem value="historico">
+              <AccordionTrigger className="text-xs font-semibold uppercase text-muted-foreground px-3 py-2 hover:no-underline">
+                Últimas conversas
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3">
+                {historyConversations.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Sem histórico</p>
+                ) : (
+                  <div className="space-y-1">
+                    {historyConversations.slice(0, 5).map((c) => (
+                      <div
+                        key={c.id}
+                        className="flex items-center justify-between gap-2 rounded border border-border bg-background px-2 py-1.5 text-xs"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <MessageSquare className="w-3 h-3 text-muted-foreground shrink-0" />
+                          <span className="truncate capitalize">
+                            {c.inbox?.channelType || 'canal'}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground shrink-0">
+                          {formatDate(c.updatedAt)}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
+                )}
+              </AccordionContent>
+            </AccordionItem>
 
-          <Separator />
-
-          {/* Vendas recentes */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase">
-              Vendas recentes
-            </h3>
-            {contactSales.length === 0 ? (
-              <p className="text-xs text-muted-foreground">Sem vendas registradas</p>
-            ) : (
-              <div className="space-y-1">
-                {contactSales.slice(0, 5).map((rawSale) => {
+            {/* Vendas recentes */}
+            <AccordionItem value="vendas">
+              <AccordionTrigger className="text-xs font-semibold uppercase text-muted-foreground px-3 py-2 hover:no-underline">
+                Vendas recentes
+              </AccordionTrigger>
+              <AccordionContent className="px-3 pb-3">
+                {contactSales.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Sem vendas registradas</p>
+                ) : (
+                  <div className="space-y-1">
+                    {contactSales.slice(0, 5).map((rawSale) => {
                   // BUG-CHAT-SALES-LABEL: antes mostravamos só o status cru
                   // (ex.: "pending · R$10,00"), o que não dava contexto algum
                   // sobre o que tinha sido vendido. Agora resolvemos um título
@@ -719,12 +774,14 @@ export function ContactSidePanel({ conversation }: ContactSidePanelProps) {
                     <span className="font-medium shrink-0">
                       {formatCurrency(sale.total ?? sale.valor)}
                     </span>
+                      </div>
+                      );
+                    })}
                   </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                )}
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
         </div>
       </ScrollArea>
     </div>

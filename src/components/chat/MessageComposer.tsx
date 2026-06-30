@@ -32,16 +32,16 @@ import {
   useState,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Paperclip, Send, Smile, Lock, Loader2, X } from 'lucide-react';
+import { Paperclip, Send, Smile, Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -577,6 +577,28 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         isPrivate && 'bg-yellow-50 dark:bg-yellow-950/30'
       )}
     >
+      {/* WAVE 1.4 — Tabs Responder / Nota interna substituem o toggle "Privada".
+          O state `isPrivate` continua sendo a fonte de verdade — apenas a UI muda. */}
+      <Tabs
+        value={isPrivate ? 'private' : 'reply'}
+        onValueChange={(v) => setIsPrivate(v === 'private')}
+      >
+        <TabsList className="h-8 bg-transparent border-b border-border rounded-none w-full justify-start p-0">
+          <TabsTrigger
+            value="reply"
+            className="text-xs h-8 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+          >
+            Responder
+          </TabsTrigger>
+          <TabsTrigger
+            value="private"
+            className="text-xs h-8 rounded-none border-b-2 border-transparent data-[state=active]:border-yellow-500 data-[state=active]:text-yellow-700 dark:data-[state=active]:text-yellow-300 data-[state=active]:bg-yellow-50 dark:data-[state=active]:bg-yellow-950/30 data-[state=active]:shadow-none"
+          >
+            Nota interna
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
       {/* Anexos pendentes */}
       {pending.length > 0 && (
         <div className="flex flex-wrap gap-2">
@@ -702,23 +724,6 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
             </PopoverContent>
           </Popover>
 
-          <Button
-            type="button"
-            variant={isPrivate ? 'default' : 'ghost'}
-            size="sm"
-            className="h-7 px-2"
-            onClick={() => setIsPrivate((v) => !v)}
-            title="Alternar nota interna"
-          >
-            <Lock className="w-3.5 h-3.5 mr-1" />
-            <span className="text-xs">Privada</span>
-          </Button>
-
-          {isPrivate && (
-            <Badge variant="outline" className="text-[10px] py-0 h-5 border-yellow-500 text-yellow-700 dark:text-yellow-300">
-              Nota interna
-            </Badge>
-          )}
         </div>
 
         <Button

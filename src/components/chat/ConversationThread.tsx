@@ -651,16 +651,25 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
               <ArrowLeft className="h-4 w-4" />
             </Button>
           )}
-          <Avatar className="h-9 w-9 shrink-0">
-            <AvatarFallback className="text-sm bg-primary/10 text-primary">
+          {/* Onda 1.2 (layout Chatwoot-style): avatar h-10 (era h-9), nome
+              em destaque + canal em LINHA PROPRIA abaixo (era inline com
+              demais badges). Status/prioridade/assignee continuam como
+              metadata mas em linha separada do canal. */}
+          <Avatar className="h-10 w-10 shrink-0">
+            <AvatarFallback className="text-base bg-primary/10 text-primary">
               {headerAvatarInitials ?? <Phone className="w-4 h-4" />}
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold truncate text-foreground">
+            <p className="text-sm font-semibold truncate text-foreground leading-tight">
               {contactName}
             </p>
-            <div className="flex items-center gap-1 overflow-hidden text-[11px] text-muted-foreground min-w-0">
+            {conversation.inbox?.name && (
+              <p className="text-[11px] text-muted-foreground truncate capitalize leading-tight">
+                {conversation.inbox.name}
+              </p>
+            )}
+            <div className="flex items-center gap-1 overflow-hidden text-[11px] text-muted-foreground min-w-0 mt-0.5">
               <Badge
                 variant="outline"
                 className={cn('text-[10px] py-0 px-1 h-4 border-0 shrink-0', STATUS_COLOR[conversation.status])}
@@ -675,18 +684,12 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
                   <span className="shrink-0 truncate max-w-[80px]">{conversation.assignee.nome}</span>
                 </>
               )}
-              {conversation.inbox?.name && (
-                <>
-                  <span className="shrink-0">•</span>
-                  <span className="truncate min-w-0 capitalize">{conversation.inbox.name}</span>
-                </>
-              )}
             </div>
           </div>
         </div>
 
         <div className="shrink-0">
-          <ConversationActions conversation={conversation} />
+          <ConversationActions conversation={conversation} renderResolveOutside />
         </div>
       </div>
 

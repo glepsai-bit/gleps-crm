@@ -15,7 +15,8 @@ import { useQuery } from '@tanstack/react-query';
 import { MessageSquare, User } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { conversationsBackendService } from '@/services/conversations.backend.service';
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
+import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ConversationList } from '@/components/chat/ConversationList';
@@ -118,24 +119,34 @@ export default function AdminChatPage() {
   const showListOnMobile = !selectedConversationId;
   const showThreadOnMobile = Boolean(selectedConversationId);
 
+  // BUG-CHAT-GAP-DIREITA (Chatwoot-style fix, T-022/4):
+  //
+  // Bug reportado pelo user multiplas vezes: painel direito 'Contato' deixava
+  // espaco branco a direita do viewport. Causa raiz: container raiz era
+  // `<div className="flex h-[calc(100vh-2rem)] overflow-hidden">` SEM
+  // `w-full`. Em DIVs block isso normalmente herda 100% do pai, MAS qualquer
+  // intermediario (PageTitleHeader, animation transition do AdminLayout,
+  // padding herdado) podia desalinhar a largura final.
+  //
+  // Fix Chatwoot-style:
+  //  1. `w-full` explicito no container raiz (defesa contra herancas)
+  //  2. CSS Grid 3-colunas (auto 1fr auto) em vez de flex — grid forca
+  //     a soma 100% sempre, sem ambiguidade de min-content
+  //  3. `min-w-0` em todas colunas pra impedir overflow-to-right
+  //
+  // Em <xl reduz pra grid 2-col (lista + thread); em <lg vira 1-col fluido
+  // controlado pelas classes `hidden`/`flex` ja existentes.
   return (
-    <div className="flex h-[calc(100vh-4rem)] lg:h-[calc(100vh-2rem)] overflow-hidden">
+    <div className="grid w-full h-[calc(100vh-4rem)] lg:h-dvh overflow-hidden grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_320px]">
       {/* Coluna esquerda — lista de conversas.
           BUG-CRIT-4: em <lg ocupa a largura inteira (w-full) e so aparece
           quando nao ha conversa selecionada. Em lg+ volta a ser uma coluna
-          fixa de 320px sempre visivel. */}
-      {/* BUG-CHAT-OVERFLOW: `min-w-0 overflow-hidden` no aside impede que o
-          filho cresca ate o min-content (~412px) e estoure os 320px de
-          `lg:w-[320px]`, sobrepondo a thread do meio. O culpado eh o grid
-          2-colunas dos Selects do header (cada SelectTrigger ~190px). O
-          ConversationList ja foi atualizado para usar `w-full min-w-0`
-          como ultima linha de defesa. */}
+          fixa de 320px sempre visivel.
+          BUG-CHAT-GAP-DIREITA: removido `lg:w-[320px]` — a largura agora vem
+          do grid-template-columns do pai (mais robusto). */}
       <aside
         className={cn(
-          'shrink-0 min-w-0 overflow-hidden lg:w-[320px] lg:flex',
-          // Mobile: lista ocupa tela inteira quando nada selecionado;
-          // some quando ha conversa aberta (a thread toma o lugar).
-          // Em lg+ o `lg:flex` acima reativa, mantendo lado a lado.
+          'min-w-0 overflow-hidden lg:flex lg:w-[320px]',
           showListOnMobile ? 'flex w-full' : 'hidden'
         )}
       >
@@ -176,8 +187,17 @@ export default function AdminChatPage() {
                 </Button>
               </SheetTrigger>
               <SheetContent side="right" className="p-0 w-[320px]">
+                {/* NIT-1314-02: DialogTitle obrigatorio pra acessibilidade (Radix
+                    requirement). VisuallyHidden esconde visualmente mas mantem
+                    no screen reader. Sem isso, console emite warning a11y. */}
+                <VisuallyHidden>
+                  <SheetTitle>Detalhes do contato</SheetTitle>
+                </VisuallyHidden>
                 {selectedConversationQuery.data && (
-                  <ContactSidePanel conversation={selectedConversationQuery.data} />
+                  <ContactSidePanel
+                    conversation={selectedConversationQuery.data}
+                    onClose={() => setMobileContactOpen(false)}
+                  />
                 )}
               </SheetContent>
             </Sheet>
@@ -215,7 +235,7 @@ export default function AdminChatPage() {
           espaco para 3 colunas confortaveis.
           BUG-CHAT-OVERFLOW: `min-w-0 overflow-hidden` aplicado pelo mesmo
           motivo do aside esquerdo — defesa contra crescimento do min-content. */}
-      <aside className="hidden xl:flex w-[320px] shrink-0 min-w-0 overflow-hidden">
+      <aside className="hidden xl:flex xl:w-[320px] min-w-0 overflow-hidden">
         {selectedConversationQuery.data ? (
           <ContactSidePanel conversation={selectedConversationQuery.data} />
         ) : (

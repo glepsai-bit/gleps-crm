@@ -186,9 +186,20 @@
     @apply border-border;
   }
 
+  /*
+    BUG-CHAT-GAP-DIREITA (defesa global):
+    overflow-x:hidden no body como rede ultima de seguranca contra
+    qualquer filho que rompa a largura horizontal (ex: PRE long, code
+    blocks, container nao escapando do viewport).
+
+    NOTA: NAO usar `scrollbar-gutter: stable` aqui — ele RESERVA 15px
+    permanentes pro scrollbar mesmo quando ele nao esta visivel,
+    criando exatamente o gap que queremos eliminar.
+  */
   body {
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "rlig" 1, "calt" 1;
+    overflow-x: hidden;
   }
 }
 

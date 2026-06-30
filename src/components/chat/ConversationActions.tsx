@@ -91,9 +91,19 @@ const PRIORITY_LABEL: Record<ConversationPriority, string> = {
 
 interface ConversationActionsProps {
   conversation: Conversation;
+  /**
+   * Onda 1.2 (layout Chatwoot-style): quando true e status === 'open',
+   * renderiza um botao verde "Resolver" SEMPRE VISIVEL antes do menu "...".
+   * O item de menu permanece como backup. Reusa o mesmo setResolveConfirm
+   * que abre o dialog com outcome obrigatorio + CSAT.
+   */
+  renderResolveOutside?: boolean;
 }
 
-export function ConversationActions({ conversation }: ConversationActionsProps) {
+export function ConversationActions({
+  conversation,
+  renderResolveOutside = false,
+}: ConversationActionsProps) {
   const { toast } = useToast();
   const { user, account } = useAuth();
   const queryClient = useQueryClient();
@@ -481,6 +491,21 @@ export function ConversationActions({ conversation }: ConversationActionsProps) 
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {/* Onda 1.2: botao verde "Resolver" destacado, sempre visivel para
+          conversas abertas. Item no menu "..." continua existindo como
+          backup. Mesma callback setResolveConfirm('human') — abre o mesmo
+          dialog com outcome obrigatorio. */}
+      {renderResolveOutside && !isResolved && (
+        <Button
+          size="sm"
+          className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
+          onClick={() => setResolveConfirm('human')}
+        >
+          <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+          Resolver
+        </Button>
+      )}
 
       {/* Menu adicional */}
       <DropdownMenu>

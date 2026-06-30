@@ -19,6 +19,7 @@ import {
   AlertCircle,
   Inbox as InboxIcon,
   Phone,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -51,6 +52,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -422,6 +424,18 @@ export function ConversationList({
     return c;
   }, [filters]);
 
+  // Onda 1.1: subset dos filtros que ficam dentro do dropdown "Filtros
+  // avancados" (badge no ícone SlidersHorizontal). status/assignee/search
+  // ficam visiveis fora e nao contam aqui.
+  const advancedActiveCount = useMemo(() => {
+    let c = 0;
+    if (filters.teamId !== 'all') c += 1;
+    if (filters.inboxId !== 'all') c += 1;
+    if (filters.priority !== 'all') c += 1;
+    if (filters.labelId !== 'all') c += 1;
+    return c;
+  }, [filters]);
+
   function handleSaveView() {
     const name = newViewName.trim();
     if (!name) {
@@ -524,109 +538,145 @@ export function ConversationList({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <Select
-            value={filters.status}
-            onValueChange={(v) =>
-              setFilters((f) => ({ ...f, status: v as StatusFilter }))
+        {/* Onda 1.1 (layout Chatwoot-style): tabs assignee + status pills +
+            dropdown filtros avancados. Substitui o grid 2-col de 6 selects
+            empilhados — mesma state shape (filters/setFilters), so reorganiza
+            visualmente. */}
+        <Tabs
+          value={filters.assignee}
+          onValueChange={(v) =>
+            setFilters((f) => ({ ...f, assignee: v as AssigneeFilter }))
+          }
+        >
+          <TabsList className="grid grid-cols-3 w-full h-8">
+            <TabsTrigger value="me" className="text-[11px] h-7">
+              Minhas
+            </TabsTrigger>
+            <TabsTrigger value="unassigned" className="text-[11px] h-7">
+              Não atribuídas
+            </TabsTrigger>
+            <TabsTrigger value="all" className="text-[11px] h-7">
+              Todas
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+          {(['open', 'pending', 'resolved', 'snoozed', 'all'] as StatusFilter[]).map(
+            (s) => {
+              const active = filters.status === s;
+              const label =
+                s === 'all'
+                  ? 'Todas'
+                  : STATUS_LABEL[s as ConversationStatus];
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setFilters((f) => ({ ...f, status: s }))}
+                  className={cn(
+                    'shrink-0 h-6 px-2 text-[10px] rounded-full border transition-colors',
+                    active
+                      ? 'bg-primary/10 text-primary border-primary/30'
+                      : 'border-transparent text-muted-foreground hover:bg-muted/60'
+                  )}
+                >
+                  {label}
+                </button>
+              );
             }
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos status</SelectItem>
-              <SelectItem value="open">Aberta</SelectItem>
-              <SelectItem value="pending">Pendente</SelectItem>
-              <SelectItem value="resolved">Resolvida</SelectItem>
-              <SelectItem value="snoozed">Adiada</SelectItem>
-            </SelectContent>
-          </Select>
+          )}
 
-          <Select
-            value={filters.assignee}
-            onValueChange={(v) =>
-              setFilters((f) => ({ ...f, assignee: v as AssigneeFilter }))
-            }
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Atribuição" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos agentes</SelectItem>
-              <SelectItem value="me">Atribuídas a mim</SelectItem>
-              <SelectItem value="unassigned">Não atribuídas</SelectItem>
-            </SelectContent>
-          </Select>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 ml-auto shrink-0 relative"
+                title="Filtros avançados"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                {advancedActiveCount > 0 && (
+                  <span className="absolute -top-1 -right-1 text-[9px] bg-primary text-primary-foreground rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-1">
+                    {advancedActiveCount}
+                  </span>
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64 p-2 space-y-2">
+              <DropdownMenuLabel className="text-[10px] uppercase tracking-wide text-muted-foreground px-1 py-0">
+                Filtros avançados
+              </DropdownMenuLabel>
+              <Select
+                value={filters.teamId}
+                onValueChange={(v) => setFilters((f) => ({ ...f, teamId: v }))}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Time" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos times</SelectItem>
+                  {teams.map((team) => (
+                    <SelectItem key={team.id} value={team.id}>
+                      {team.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-          <Select
-            value={filters.teamId}
-            onValueChange={(v) => setFilters((f) => ({ ...f, teamId: v }))}
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Time" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos times</SelectItem>
-              {teams.map((team) => (
-                <SelectItem key={team.id} value={team.id}>
-                  {team.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              <Select
+                value={filters.inboxId}
+                onValueChange={(v) => setFilters((f) => ({ ...f, inboxId: v }))}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Canal" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos canais</SelectItem>
+                  {inboxes.map((inbox) => (
+                    <SelectItem key={inbox.id} value={inbox.id}>
+                      {inbox.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-          <Select
-            value={filters.inboxId}
-            onValueChange={(v) => setFilters((f) => ({ ...f, inboxId: v }))}
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Canal" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos canais</SelectItem>
-              {inboxes.map((inbox) => (
-                <SelectItem key={inbox.id} value={inbox.id}>
-                  {inbox.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              <Select
+                value={filters.priority}
+                onValueChange={(v) =>
+                  setFilters((f) => ({ ...f, priority: v as PriorityFilter }))
+                }
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Prioridade" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas prioridades</SelectItem>
+                  <SelectItem value="urgent">Urgente</SelectItem>
+                  <SelectItem value="high">Alta</SelectItem>
+                  <SelectItem value="medium">Média</SelectItem>
+                  <SelectItem value="low">Baixa</SelectItem>
+                </SelectContent>
+              </Select>
 
-          <Select
-            value={filters.priority}
-            onValueChange={(v) =>
-              setFilters((f) => ({ ...f, priority: v as PriorityFilter }))
-            }
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Prioridade" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todas prioridades</SelectItem>
-              <SelectItem value="urgent">Urgente</SelectItem>
-              <SelectItem value="high">Alta</SelectItem>
-              <SelectItem value="medium">Média</SelectItem>
-              <SelectItem value="low">Baixa</SelectItem>
-            </SelectContent>
-          </Select>
-
-          <Select
-            value={filters.labelId}
-            onValueChange={(v) => setFilters((f) => ({ ...f, labelId: v }))}
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Tag" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todas tags</SelectItem>
-              {tags.map((tag) => (
-                <SelectItem key={tag.id} value={tag.id}>
-                  {tag.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              <Select
+                value={filters.labelId}
+                onValueChange={(v) => setFilters((f) => ({ ...f, labelId: v }))}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Tag" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas tags</SelectItem>
+                  {tags.map((tag) => (
+                    <SelectItem key={tag.id} value={tag.id}>
+                      {tag.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {activeFiltersCount > 0 && (
