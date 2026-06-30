@@ -483,7 +483,7 @@ export function ConversationList({
           <h2 className="text-sm font-semibold text-foreground">
             Conversas {total > 0 && <span className="text-muted-foreground">({total})</span>}
           </h2>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-7 w-7" title="Visões salvas">
@@ -548,20 +548,37 @@ export function ConversationList({
             setFilters((f) => ({ ...f, assignee: v as AssigneeFilter }))
           }
         >
-          <TabsList className="grid grid-cols-3 w-full h-8">
-            <TabsTrigger value="me" className="text-[11px] h-7">
-              Minhas
+          <TabsList className="grid grid-cols-3 w-full h-8 gap-0.5">
+            <TabsTrigger
+              value="me"
+              className="text-[11px] h-7 px-1 min-w-0 truncate"
+              title="Minhas conversas"
+            >
+              <span className="truncate">Minhas</span>
             </TabsTrigger>
-            <TabsTrigger value="unassigned" className="text-[11px] h-7">
-              Não atribuídas
+            <TabsTrigger
+              value="unassigned"
+              className="text-[11px] h-7 px-1 min-w-0 truncate"
+              title="Não atribuídas"
+            >
+              <span className="truncate">Não atrib.</span>
             </TabsTrigger>
-            <TabsTrigger value="all" className="text-[11px] h-7">
-              Todas
+            <TabsTrigger
+              value="all"
+              className="text-[11px] h-7 px-1 min-w-0 truncate"
+              title="Todas as conversas"
+            >
+              <span className="truncate">Todas</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
 
-        <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+        {/* QA-UI (painel 360px): trocado overflow-x-auto por flex-wrap pra
+            evitar que pills sejam cortadas ou que o pill ativo "salte" sobre
+            os vizinhos quando o scroll horizontal era quase invisivel. Usa
+            transition-colors (nao transition-all) pra impedir transform/scale
+            jump no estado active. */}
+        <div className="flex items-center flex-wrap gap-1.5 pb-0.5">
           {(['open', 'pending', 'resolved', 'snoozed', 'all'] as StatusFilter[]).map(
             (s) => {
               const active = filters.status === s;
@@ -575,9 +592,9 @@ export function ConversationList({
                   type="button"
                   onClick={() => setFilters((f) => ({ ...f, status: s }))}
                   className={cn(
-                    'shrink-0 h-6 px-2 text-[10px] rounded-full border transition-colors',
+                    'shrink-0 h-6 px-2.5 text-[11px] rounded-full border transition-colors',
                     active
-                      ? 'bg-primary/10 text-primary border-primary/30'
+                      ? 'bg-primary/15 text-primary border-primary font-medium'
                       : 'border-transparent text-muted-foreground hover:bg-muted/60'
                   )}
                 >

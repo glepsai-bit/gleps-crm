@@ -137,7 +137,7 @@ export default function AdminChatPage() {
   // Em <xl reduz pra grid 2-col (lista + thread); em <lg vira 1-col fluido
   // controlado pelas classes `hidden`/`flex` ja existentes.
   return (
-    <div className="grid w-full h-[calc(100vh-4rem)] lg:h-dvh overflow-hidden grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_320px]">
+    <div className="grid w-full h-[calc(100vh-4rem)] lg:h-dvh overflow-hidden grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)_320px]">
       {/* Coluna esquerda — lista de conversas.
           BUG-CRIT-4: em <lg ocupa a largura inteira (w-full) e so aparece
           quando nao ha conversa selecionada. Em lg+ volta a ser uma coluna
@@ -146,7 +146,7 @@ export default function AdminChatPage() {
           do grid-template-columns do pai (mais robusto). */}
       <aside
         className={cn(
-          'min-w-0 overflow-hidden lg:flex lg:w-[320px]',
+          'min-w-0 overflow-hidden lg:flex lg:w-[360px]',
           showListOnMobile ? 'flex w-full' : 'hidden'
         )}
       >
