@@ -1144,13 +1144,18 @@ function AbaIA() {
     },
   });
 
+  // T-025/BUG-02: o backend SEMPRE responde 200 ao test/:provider, com
+  // {ok:true|false, message}. Sem checar res.ok explicitamente o toast nao
+  // aparecia (success path silenciava o erro). Agora garantimos toast em
+  // qualquer caminho, com fallback de mensagem se o backend nao enviar.
   const testOpenaiMutation = useMutation({
     mutationFn: () => accountIntegrationsBackendService.testProvider('openai'),
     onSuccess: (res) => {
-      if (res.ok) {
-        toast.success(`OpenAI: ${res.message || 'conexao OK'}`);
+      const msg = res?.message?.trim();
+      if (res?.ok) {
+        toast.success(`OpenAI: ${msg || 'conexao OK'}`);
       } else {
-        toast.error(`OpenAI: ${res.message || 'falha no teste'}`);
+        toast.error(`OpenAI: ${msg || 'falha no teste (chave invalida ou expirada)'}`);
       }
     },
     onError: (err: unknown) => {
@@ -1186,13 +1191,15 @@ function AbaIA() {
     },
   });
 
+  // T-025/BUG-02 (idem testOpenaiMutation): toast garantido em ok=false.
   const testAnthropicMutation = useMutation({
     mutationFn: () => accountIntegrationsBackendService.testProvider('anthropic'),
     onSuccess: (res) => {
-      if (res.ok) {
-        toast.success(`Anthropic: ${res.message || 'conexao OK'}`);
+      const msg = res?.message?.trim();
+      if (res?.ok) {
+        toast.success(`Anthropic: ${msg || 'conexao OK'}`);
       } else {
-        toast.error(`Anthropic: ${res.message || 'falha no teste'}`);
+        toast.error(`Anthropic: ${msg || 'falha no teste (chave invalida ou expirada)'}`);
       }
     },
     onError: (err: unknown) => {

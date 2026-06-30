@@ -49,19 +49,28 @@ const adminOnlyRoutes = new Set<string>([
 
 export function usePermissions() {
   const { user } = useAuth();
-  
+
+  // T-025/BUG-01 (PERMS-JWT-ADMIN): super_admin e admin tem acesso TOTAL ao
+  // proprio painel. O JWT pode trazer user.permissions=['dashboard'] (default
+  // do schema) quando o admin foi criado sem ajuste manual, mas isso NAO deve
+  // bloquear a UI — o isolamento por conta ja eh garantido pelo backend
+  // (requireAccountId). A checagem granular de permissions so se aplica a
+  // role='agent'. Mantemos esse bypass explicito como contrato.
+  const isAdminLike = user?.role === 'super_admin' || user?.role === 'admin';
+
   const hasPermission = (permission: AgentPermission): boolean => {
-    // Super Admin and Admin have all permissions
-    if (user?.role === 'super_admin' || user?.role === 'admin') {
+    // Super Admin and Admin have all permissions (bypass JWT permissions array)
+    if (isAdminLike) {
       return true;
     }
     // Agents check their permissions array
     return user?.permissions?.includes(permission) ?? false;
   };
-  
+
   const canAccessRoute = (route: string): boolean => {
-    // Super Admin and Admin can access all routes
-    if (user?.role === 'super_admin' || user?.role === 'admin') {
+    // Super Admin and Admin can access all routes — bypass total, sem olhar
+    // adminOnlyRoutes nem permissions. (granular continua so para agent)
+    if (isAdminLike) {
       return true;
     }
 
@@ -98,7 +107,7 @@ export function usePermissions() {
 
   const getFirstAllowedRoute = (): string => {
     // Super Admin and Admin default to dashboard
-    if (user?.role === 'super_admin' || user?.role === 'admin') {
+    if (isAdminLike) {
       return '/admin';
     }
 

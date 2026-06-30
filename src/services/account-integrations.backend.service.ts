@@ -66,6 +66,11 @@ class AccountIntegrationsBackendService {
   }
 
   async testProvider(provider: IntegrationProvider): Promise<TestProviderResult> {
+    // T-025/BUG-03: existe APENAS um endpoint para teste de provider.
+    // Os paths legados (POST /api/admin/integrations/ai/test sem provider e
+    // POST /api/admin/integrations/ai/:provider/test) NAO devem ser
+    // chamados — qualquer 403 visto nesses paths em DevTools eh cache do
+    // browser ou interceptor de extensao, nao codigo daqui.
     const resp = await apiClient.post<unknown>(
       `/api/admin/integrations/ai/test/${provider}`,
       {}

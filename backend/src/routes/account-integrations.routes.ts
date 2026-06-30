@@ -15,6 +15,11 @@ import { accountIntegrationsController } from '../controllers/account-integratio
 
 const router = Router();
 
+// T-025/BUG-04: authz uniforme — GET, PATCH e POST /test/:provider TODOS
+// passam por requireAdmin (admin OU super_admin). requireAccountId garante
+// isolamento por tenant (admin so mexe nas integracoes da PROPRIA conta).
+// NAO usar requireSuperAdmin aqui — admin precisa ter autonomia full sobre
+// chaves de IA da propria account; super_admin ja eh coberto por requireAdmin.
 router.use(authenticate);
 router.use(requireAdmin);
 router.use(requireAccountId);
