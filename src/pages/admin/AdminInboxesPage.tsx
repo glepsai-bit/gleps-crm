@@ -979,7 +979,12 @@ function DeleteInboxDialog({
     staleTime: 0,
   });
 
-  const nameMatches = !!inbox && typedName === inbox.name;
+  // BUG-INBOX-DELETE-002: comparacao antes era `typedName === inbox.name`
+  // strict, mas inbox.name pode ter espaco trailing/leading invisivel (ex:
+  // "Teste 03 " vs user digitando "Teste 03"). User reportou: "so na Teste
+  // 03 falha, outras excluiram normal". trim() em ambos os lados resolve
+  // sem perder seguranca — usuario ainda precisa digitar o nome inteiro.
+  const nameMatches = !!inbox && typedName.trim() === inbox.name.trim();
   const canConfirm = nameMatches && !isLoadingDeps && !isDeleting;
 
   return (
@@ -1032,7 +1037,7 @@ function DeleteInboxDialog({
                 >
                   Digite o nome do inbox para confirmar:{' '}
                   <span className="font-mono text-foreground">
-                    {inbox?.name}
+                    {inbox?.name?.trim()}
                   </span>
                 </Label>
                 <Input
@@ -1041,7 +1046,7 @@ function DeleteInboxDialog({
                   autoFocus
                   value={typedName}
                   onChange={(e) => setTypedName(e.target.value)}
-                  placeholder={inbox?.name ?? ''}
+                  placeholder={inbox?.name?.trim() ?? ''}
                   disabled={isDeleting}
                   aria-label="Confirmar nome do inbox para exclusão"
                 />
