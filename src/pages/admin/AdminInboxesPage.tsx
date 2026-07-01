@@ -992,7 +992,7 @@ function DeleteInboxDialog({
       <AlertDialogContent className="sm:max-w-md">
         <AlertDialogHeader>
           <AlertDialogTitle className="text-destructive">
-            Excluir inbox VAI APAGAR:
+            Excluir esta inbox vai apagar:
           </AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="space-y-3 pt-2">
@@ -1023,7 +1023,7 @@ function DeleteInboxDialog({
                 </ul>
               )}
               <p className="text-sm font-semibold text-destructive">
-                Esta ação eh IRREVERSÍVEL.
+                Esta ação é IRREVERSÍVEL.
               </p>
               <div className="space-y-1.5">
                 <Label
