@@ -4,6 +4,8 @@ import { evolutionService } from './evolution.service';
 import { systemSettingsService } from './system-settings.service';
 import { whatsappConsentService } from './whatsapp-consent.service';
 import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
+import { conversationService } from './conversation.service';
+import { messageService } from './message.service';
 import { AppError, NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -1226,10 +1228,132 @@ class ProspectingService {
     message: string
   ) {
     const instance = config.inboxInstanceMap.get(String(inboxId)) ?? null;
-    await evolutionService.sendText(config.accountId, {
+    const evolutionResult = await evolutionService.sendText(config.accountId, {
       number: contact.telefone,
       text: message,
       instance,
+    });
+
+    // BUG-CHAT-001 — Antes deste fix, dispatches SO' apareciam no /admin/chat
+    // depois que o cliente respondia (webhook Evolution inbound criava a
+    // Conversation). Envio outbound-only ficava invisivel — bug reportado
+    // pelo user: "envio pra 5534993383017 mas conversa nao aparece no chat".
+    // Solucao: apos evolutionService.sendText, cria/reusa Conversation +
+    // persiste Message (senderType='agent'). O findOrCreateForCustomer eh
+    // idempotente pelo externalId (remoteJid), entao dispatches subsequentes
+    // pro mesmo contato+inbox reutilizam a mesma Conversation, e quando o
+    // cliente responder o webhook Evolution encontra a conversa ja criada.
+    // Best-effort: falha aqui NAO propaga — dispatch ja teve sucesso na
+    // Evolution, e persistir Msg no CRM eh um efeito colateral pra UI.
+    try {
+      await this.persistOutboundConversation({
+        accountId: config.accountId,
+        contact,
+        inboxKey: String(inboxId),
+        content: message,
+        evolutionMsgId: evolutionResult?.messageId,
+      });
+    } catch (err: any) {
+      logger.warn('[dispatch] persistOutboundConversation falhou (best-effort)', {
+        accountId: config.accountId,
+        phone: contact.telefone,
+        inboxKey: String(inboxId),
+        error: err?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
+   * BUG-CHAT-001 — Persiste Conversation + Message no CRM para que dispatches
+   * outbound-only apareçam no /admin/chat.
+   *
+   * Resolve inbox UUID a partir de: (a) inboxKey ja UUID; (b) inboxKey =
+   * Inbox.name (path resume); (c) skip se nada bater.
+   *
+   * externalId eh construido no mesmo formato do webhook inbound
+   * ('<phone>@s.whatsapp.net') para garantir que resposta do cliente reuse
+   * a mesma Conversation via findOrCreateForCustomer.
+   */
+  private async persistOutboundConversation(args: {
+    accountId: string;
+    contact: Contact;
+    inboxKey: string;
+    content: string;
+    evolutionMsgId?: string;
+  }): Promise<void> {
+    const { accountId, contact, inboxKey, content, evolutionMsgId } = args;
+
+    if (!contact?.telefone) return;
+
+    // Resolve o UUID do Inbox no CRM. inboxKey pode ser UUID direto ou nome.
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let inbox: { id: string } | null = null;
+    if (uuidRegex.test(inboxKey)) {
+      inbox = await prisma.inbox.findFirst({
+        where: { id: inboxKey, accountId },
+        select: { id: true },
+      });
+    }
+    if (!inbox && inboxKey) {
+      inbox = await prisma.inbox.findFirst({
+        where: { accountId, name: inboxKey },
+        select: { id: true },
+      });
+    }
+    if (!inbox) {
+      // Fallback: pega primeiro Inbox ativo com Evolution — dispatch legacy
+      // que usa inbox_id numerico cai aqui. Melhor persistir sob QUALQUER
+      // inbox valido do que perder a conversa.
+      inbox = await prisma.inbox.findFirst({
+        where: { accountId, active: true, evolutionInstance: { not: null } },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      });
+    }
+    if (!inbox) {
+      logger.debug('[dispatch] sem Inbox valida para persistir conversa outbound', {
+        accountId,
+        inboxKey,
+      });
+      return;
+    }
+
+    // Normaliza telefone pro mesmo formato usado no webhook Evolution
+    // (so digitos, sem +/mask). remoteJid = '<digits>@s.whatsapp.net'.
+    let normalizedPhone: string;
+    try {
+      normalizedPhone = whatsappConsentService.normalizePhone(contact.telefone);
+    } catch {
+      // Telefone invalido — dispatch ja saiu, mas nao da pra persistir sem phone valido.
+      return;
+    }
+    const externalId = `${normalizedPhone}@s.whatsapp.net`;
+
+    // Cria/reusa a conversa. findOrCreateForCustomer eh idempotente por
+    // (accountId, inboxId, externalId) — proximo dispatch pro mesmo contato
+    // no mesmo inbox reusa a Conversation. Se o cliente responder, o webhook
+    // Evolution tambem casa aqui.
+    const conversation = await conversationService.findOrCreateForCustomer(
+      accountId,
+      inbox.id,
+      {
+        externalId,
+        contactPhone: normalizedPhone,
+        contactName: contact.nome ?? null,
+      }
+    );
+
+    // Persiste a Message outbound (senderType='agent'). O messageService.create
+    // cuida do increment de contadores + first response cycle.
+    await messageService.create(accountId, {
+      conversationId: conversation.id,
+      senderType: 'agent',
+      content,
+      contentType: 'text',
+      externalId: evolutionMsgId ?? null,
+      metadata: {
+        source: 'dispatch',
+      },
     });
   }
 

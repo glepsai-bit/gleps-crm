@@ -292,6 +292,14 @@ class WhatsappWarmupService {
     let skipped = 0;
     let failed = 0;
 
+    // BUG-WARMUP-001: log agregador — se tick termina com sent=0 mas checked>0,
+    // usuario precisa saber POR QUE. Coletamos razoes por number pra emitir
+    // resumo unico ao final (ex.: '[warmup-tick] checked=3 sent=0 razoes: window=1, no-partner=2').
+    const skipReasons: Record<string, number> = {};
+    const bump = (key: string) => {
+      skipReasons[key] = (skipReasons[key] ?? 0) + 1;
+    };
+
     for (const num of numbers) {
       try {
         const tz = num.account?.timezone || DEFAULT_TZ;
@@ -303,12 +311,23 @@ class WhatsappWarmupService {
         const fresh = await prisma.warmupNumber.findUnique({ where: { id: num.id } });
         if (!fresh || fresh.status !== 'warming') {
           skipped++;
+          bump('not-warming');
+          continue;
+        }
+
+        // BUG-WARMUP-002: se pool.isActive=false, respeita — nao envia (mesmo
+        // que status='warming'). Anteriormente ignorava esse flag, o que
+        // permitia envios de pool desativada.
+        if (num.pool && num.pool.isActive === false) {
+          skipped++;
+          bump('pool-inactive');
           continue;
         }
 
         // 2) Janela horaria
         if (!isInsideWindow(now, tz)) {
           skipped++;
+          bump('window');
           continue;
         }
 
@@ -316,16 +335,35 @@ class WhatsappWarmupService {
         const planArr = (fresh.dailyEnvioPlan as unknown as number[] | null) ?? [];
         const dayIdx = Math.max(fresh.currentDay - 1, 0);
         const plannedToday = planArr[dayIdx] ?? 0;
+
+        // BUG-WARMUP-003 (raiz do "nada envia"): antes usavamos
+        // Math.floor(plannedToday * elapsed) como cota parcial. Isso trava o
+        // 1o envio no inicio da janela: em D1 (plannedToday=10) as 08:15,
+        // elapsed=~0.02 → target=0 → dailyEnviadasHoje(0) >= 0 → SKIP.
+        // A cota so libera 1 envio quando plannedToday * elapsed >= 1
+        // (~72min em D1, ~1h em D2). Usuario clica "iniciar" e nao ve
+        // NENHUMA mensagem por 1h+. Correcao: usa Math.ceil e garante
+        // pelo menos 1 envio permitido assim que entra na janela e ha plano.
         const elapsed = windowElapsedFraction(now, tz);
-        const targetUpToNow = Math.floor(plannedToday * elapsed);
-        if (fresh.dailyEnviadasHoje >= targetUpToNow || fresh.dailyEnviadasHoje >= plannedToday) {
+        let targetUpToNow = Math.ceil(plannedToday * elapsed);
+        if (plannedToday > 0 && elapsed > 0 && targetUpToNow < 1) {
+          targetUpToNow = 1;
+        }
+        if (fresh.dailyEnviadasHoje >= plannedToday) {
           skipped++;
+          bump('cota-cheia');
+          continue;
+        }
+        if (fresh.dailyEnviadasHoje >= targetUpToNow) {
+          skipped++;
+          bump('cota-parcial');
           continue;
         }
 
         // 4) Jitter 50%
         if (Math.random() < JITTER_SKIP_PROB) {
           skipped++;
+          bump('jitter');
           continue;
         }
 
@@ -333,6 +371,7 @@ class WhatsappWarmupService {
         const peer = await this.pickPeer(fresh);
         if (!peer) {
           skipped++;
+          bump('no-partner');
           continue;
         }
         const conv = await this.getOrCreateConversation(fresh, peer);
@@ -340,6 +379,7 @@ class WhatsappWarmupService {
         // 6) Alternancia: se o ultimo sender foi este numero, ceder turno
         if (conv.lastSenderId === fresh.id) {
           skipped++;
+          bump('turn');
           continue;
         }
 
@@ -352,6 +392,14 @@ class WhatsappWarmupService {
         if (!generated.content) {
           // Sem template/conteudo disponivel — skip do tick
           skipped++;
+          bump('no-template');
+          logger.warn('[warmup-tick] sem template disponivel', {
+            numberId: fresh.id,
+            poolId: fresh.poolId,
+            currentDay: fresh.currentDay,
+            requestedType: generated.type,
+            hint: 'rode seed-warmup ou cadastre WarmupTemplate isActive=true type=text',
+          });
           continue;
         }
         const content: PickContentResult = {
@@ -384,11 +432,24 @@ class WhatsappWarmupService {
         await this.applyHealthChecks(fresh.id, now);
       } catch (err: any) {
         failed++;
+        bump('exception');
         logger.error('[warmup] tick error', {
           numberId: num.id,
           error: err?.message ?? String(err),
         });
       }
+    }
+
+    // BUG-WARMUP-001: se houver numbers ativos e nenhuma msg saiu, emite
+    // resumo claro com razao(oes) predominante(s) — usuario nao precisa
+    // ler codigo pra debugar por que "nada enviou".
+    if (numbers.length > 0 && sent === 0) {
+      const reasons = Object.entries(skipReasons)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ');
+      logger.info(
+        `[warmup-tick] checked=${numbers.length} sent=0 razoes: ${reasons || 'nenhuma'}`
+      );
     }
 
     return { checked: numbers.length, sent, skipped, failed };
