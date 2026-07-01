@@ -480,11 +480,16 @@ export default function AdminInboxesPage() {
         : null;
     const businessHours = businessHoursToBackend(data.businessHours);
 
+    // BUG-INBOX-DELETE-002 (prevenção na raiz): trim() no submit pra evitar
+    // que espaços trailing/leading acidentais fiquem gravados em inbox.name.
+    // Sem isso, o dialog de exclusão exigiria o nome com o espaço invisível.
+    const trimmedName = data.name.trim();
+
     if (editingInbox) {
       mutateEditar.mutate({
         id: editingInbox.id,
         body: {
-          name: data.name,
+          name: trimmedName,
           channelType: data.channelType,
           evolutionInstance,
           greeting,
@@ -497,7 +502,7 @@ export default function AdminInboxesPage() {
       autoConnectAfterCreateRef.current =
         isWhatsapp && !!data.connectNow;
       mutateCriar.mutate({
-        name: data.name,
+        name: trimmedName,
         channelType: data.channelType,
         evolutionInstance,
         greeting,
@@ -983,8 +988,14 @@ function DeleteInboxDialog({
   // strict, mas inbox.name pode ter espaco trailing/leading invisivel (ex:
   // "Teste 03 " vs user digitando "Teste 03"). User reportou: "so na Teste
   // 03 falha, outras excluiram normal". trim() em ambos os lados resolve
-  // sem perder seguranca — usuario ainda precisa digitar o nome inteiro.
+  // sem perder seguranca — usuario ainda precisa digitar o nome inteiro,
+  // case-sensitive. Não usar toLowerCase — perde intenção do usuário.
   const nameMatches = !!inbox && typedName.trim() === inbox.name.trim();
+  // Botão "Excluir" fica disabled quando:
+  //   - nameMatches=false → usuário ainda não confirmou o nome exato
+  //   - isLoadingDeps=true → useQuery de dependências ainda em voo
+  //     (evita clicar antes de saber o impacto real da exclusão)
+  //   - isDeleting=true → mutation já em curso (previne duplo submit)
   const canConfirm = nameMatches && !isLoadingDeps && !isDeleting;
 
   return (
