@@ -1228,23 +1228,39 @@ class ProspectingService {
     message: string
   ) {
     const instance = config.inboxInstanceMap.get(String(inboxId)) ?? null;
-    const evolutionResult = await evolutionService.sendText(config.accountId, {
-      number: contact.telefone,
-      text: message,
-      instance,
-    });
 
-    // BUG-CHAT-001 — Antes deste fix, dispatches SO' apareciam no /admin/chat
-    // depois que o cliente respondia (webhook Evolution inbound criava a
-    // Conversation). Envio outbound-only ficava invisivel — bug reportado
-    // pelo user: "envio pra 5534993383017 mas conversa nao aparece no chat".
-    // Solucao: apos evolutionService.sendText, cria/reusa Conversation +
-    // persiste Message (senderType='agent'). O findOrCreateForCustomer eh
-    // idempotente pelo externalId (remoteJid), entao dispatches subsequentes
-    // pro mesmo contato+inbox reutilizam a mesma Conversation, e quando o
-    // cliente responder o webhook Evolution encontra a conversa ja criada.
-    // Best-effort: falha aqui NAO propaga — dispatch ja teve sucesso na
-    // Evolution, e persistir Msg no CRM eh um efeito colateral pra UI.
+    // BUG-CHAT-001 + BUG-DISPATCH-CHAT-002 — Persiste Conversation + Message
+    // no CRM SEMPRE, INDEPENDENTE de sendText succeed/fail:
+    //  - sendText OK => Message status='sent'
+    //  - sendText FALHA (Evolution 400/timeout/desconectado) => Message
+    //    status='failed', com metadata.error pra usuario ver e re-enfileirar
+    //
+    // Antes: sendText lancava -> try/catch NAO cobria porque estava so em
+    // volta de persistOutboundConversation -> exception se propagava e
+    // conversa NUNCA era criada. Bug reportado pelo user 2026-07-01:
+    // "dispatch retorna 200 mas conversa nao aparece no chat quando
+    // WhatsApp esta desconectado".
+    let evolutionResult: Awaited<ReturnType<typeof evolutionService.sendText>> | null = null;
+    let sendError: Error | null = null;
+    try {
+      evolutionResult = await evolutionService.sendText(config.accountId, {
+        number: contact.telefone,
+        text: message,
+        instance,
+      });
+    } catch (err: any) {
+      sendError = err instanceof Error ? err : new Error(String(err));
+      logger.warn('[dispatch] evolutionService.sendText falhou — Message sera persistida como failed', {
+        accountId: config.accountId,
+        phone: contact.telefone,
+        inboxKey: String(inboxId),
+        error: sendError.message,
+      });
+    }
+
+    // Persiste Conversation + Message SEMPRE. findOrCreateForCustomer eh
+    // idempotente (accountId, inboxId, externalId) — dispatches subsequentes
+    // reutilizam a mesma Conversation, e webhook inbound tambem casa.
     try {
       await this.persistOutboundConversation({
         accountId: config.accountId,
@@ -1252,6 +1268,8 @@ class ProspectingService {
         inboxKey: String(inboxId),
         content: message,
         evolutionMsgId: evolutionResult?.messageId,
+        status: sendError ? 'failed' : 'sent',
+        errorMessage: sendError?.message,
       });
     } catch (err: any) {
       logger.warn('[dispatch] persistOutboundConversation falhou (best-effort)', {
@@ -1261,6 +1279,10 @@ class ProspectingService {
         error: err?.message ?? String(err),
       });
     }
+
+    // Re-lanca o erro do sendText pra processDispatch marcar o DispatchLog
+    // como failed. A persistencia da Conversation ja foi feita acima.
+    if (sendError) throw sendError;
   }
 
   /**
@@ -1280,8 +1302,15 @@ class ProspectingService {
     inboxKey: string;
     content: string;
     evolutionMsgId?: string;
+    /**
+     * BUG-DISPATCH-CHAT-002: status da Message no CRM. 'sent' quando Evolution
+     * aceitou; 'failed' quando Evolution retornou erro (400/timeout/etc).
+     * Default 'sent' pra retrocompat.
+     */
+    status?: 'sent' | 'failed';
+    errorMessage?: string;
   }): Promise<void> {
-    const { accountId, contact, inboxKey, content, evolutionMsgId } = args;
+    const { accountId, contact, inboxKey, content, evolutionMsgId, status = 'sent', errorMessage } = args;
 
     if (!contact?.telefone) return;
 
@@ -1345,14 +1374,17 @@ class ProspectingService {
 
     // Persiste a Message outbound (senderType='agent'). O messageService.create
     // cuida do increment de contadores + first response cycle.
+    // BUG-DISPATCH-CHAT-002: status refletindo sucesso/falha do envio Evolution.
     await messageService.create(accountId, {
       conversationId: conversation.id,
       senderType: 'agent',
       content,
       contentType: 'text',
       externalId: evolutionMsgId ?? null,
+      status,
       metadata: {
         source: 'dispatch',
+        ...(errorMessage ? { error: errorMessage } : {}),
       },
     });
   }

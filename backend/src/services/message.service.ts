@@ -56,6 +56,13 @@ export interface CreateMessageInput {
   attachments?: CreateAttachmentInput[];
   externalId?: string | null;
   metadata?: Record<string, unknown>;
+  /**
+   * BUG-DISPATCH-CHAT-002: dispatch outbound pode falhar no envio (Evolution
+   * desconectado). Nesse caso ainda queremos persistir a Message no CRM com
+   * status='failed' pra usuario ver o historico + tentar reenvio. Default
+   * 'sent' preserva retrocompat com todos callers antigos.
+   */
+  status?: MessageStatus;
 }
 
 export interface SearchOptions {
@@ -271,7 +278,7 @@ class MessageService {
           content: input.content ?? null,
           contentType,
           isPrivate: input.isPrivate ?? false,
-          status: 'sent',
+          status: input.status ?? 'sent',
           externalId: input.externalId ?? null,
           replyToId: input.replyToId ?? null,
           metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
