@@ -90,6 +90,26 @@ function isAbsoluteHttp(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
 
+/**
+ * WhatsApp CDN (mmg.whatsapp.net) serve mídia end-to-end encrypted. Um GET
+ * direto retorna bytes cifrados — o browser não decodifica. Precisamos pedir
+ * pra Evolution descriptografar via chat/getBase64FromMediaMessage. Detecta
+ * pelo host clássico (mmg.whatsapp.net), pelo path .enc, ou pelo params
+ * `mms3=true` que a Evolution encaminha em `mediaUrl` de messages.upsert.
+ */
+function isWhatsAppCdn(url: string): boolean {
+  if (!/^https?:\/\//i.test(url)) return false;
+  try {
+    const u = new URL(url);
+    if (/(^|\.)whatsapp\.net$/i.test(u.hostname)) return true;
+    if (u.pathname.endsWith('.enc')) return true;
+    if (u.searchParams.get('mms3') === 'true') return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function decodeDataUrl(url: string): { mimeType: string; bytes: Buffer } | null {
   // data:audio/ogg;base64,XXXX
   const match = url.match(/^data:([^;]+)(;base64)?,(.+)$/i);
@@ -213,7 +233,17 @@ class AttachmentStorageService {
         sourceUrl: true,
         fileUrl: true,
         mimeType: true,
-        message: { select: { conversation: { select: { accountId: true } } } },
+        message: {
+          select: {
+            externalId: true,
+            conversation: {
+              select: {
+                accountId: true,
+                inbox: { select: { evolutionInstance: true } },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -265,6 +295,25 @@ class AttachmentStorageService {
         if (!decoded) throw new Error('data URL malformado');
         bytes = decoded.bytes;
         mimeType = mimeType || decoded.mimeType;
+      } else if (isWhatsAppCdn(sourceUrl)) {
+        // WhatsApp CDN entrega arquivo criptografado end-to-end (magic bytes
+        // aleatórios). Precisamos pedir a Evolution que descriptografe usando
+        // a mediaKey armazenada pelo Baileys — endpoint chat/getBase64FromMediaMessage.
+        const messageKeyId = att.message?.externalId;
+        const instance = att.message?.conversation?.inbox?.evolutionInstance ?? null;
+        if (!messageKeyId) {
+          throw new Error('WhatsApp CDN sem message externalId — nao da pra descriptografar');
+        }
+        const { evolutionService } = await import('./evolution.service');
+        const decrypted = await evolutionService.getBase64FromMediaMessage(accountId, {
+          instance,
+          messageKeyId,
+        });
+        if (!decrypted) {
+          throw new Error('Evolution getBase64FromMediaMessage devolveu vazio');
+        }
+        bytes = Buffer.from(decrypted.base64, 'base64');
+        mimeType = mimeType || decrypted.mimetype || null;
       } else if (isAbsoluteHttp(sourceUrl)) {
         const fetched = await this.fetchFromHttp(accountId, sourceUrl);
         bytes = fetched.bytes;

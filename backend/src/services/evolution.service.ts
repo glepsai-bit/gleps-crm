@@ -565,6 +565,60 @@ class EvolutionService {
   }
 
   /**
+   * Baixa mídia de uma mensagem WhatsApp descriptografando via Evolution.
+   *
+   * Bug áudio (2026-07-03): o backend estava fazendo GET direto no `sourceUrl`
+   * do webhook — que aponta pra `https://mmg.whatsapp.net/.../file.enc`. Esse
+   * arquivo é end-to-end encrypted; o download bruto retorna bytes cifrados
+   * (magic `89 64 9b b4` em vez de `4F 67 67 53` = `OggS`). O `<audio>` do
+   * browser falha com `DEMUXER_ERROR_COULD_NOT_OPEN`.
+   *
+   * A rota `chat/getBase64FromMediaMessage/:instance` da Evolution API pega a
+   * mediaKey guardada internamente pela instância (Baileys) e devolve o
+   * conteúdo já descriptografado em base64. Só precisamos do `key.id` da
+   * mensagem original — o resto (remoteJid, fromMe, mediaKey) a Evolution
+   * recupera do próprio store.
+   *
+   * Retorna null se a Evolution não conseguir localizar a mensagem (ex: chip
+   * foi reconectado depois e Baileys perdeu o store); nesse caso caímos no
+   * fetch direto (que pelo menos preserva os bytes cifrados pra debug).
+   */
+  async getBase64FromMediaMessage(
+    accountId: string,
+    input: { instance?: string | null; messageKeyId: string; convertToMp4?: boolean }
+  ): Promise<{ base64: string; mimetype?: string | null } | null> {
+    if (!input.messageKeyId) {
+      throw new ValidationError('messageKeyId é obrigatório');
+    }
+    const config = await this.getAccountConfig(accountId, input.instance);
+    try {
+      const raw = await this.makeRequest<any>(
+        config,
+        `/chat/getBase64FromMediaMessage/${encodeURIComponent(config.instance)}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            message: { key: { id: input.messageKeyId } },
+            convertToMp4: input.convertToMp4 === true,
+          }),
+        }
+      );
+      const base64 = raw?.base64 || raw?.data?.base64;
+      if (typeof base64 !== 'string' || base64.length === 0) return null;
+      const mimetype = raw?.mimetype || raw?.data?.mimetype || null;
+      return { base64, mimetype };
+    } catch (err) {
+      logger.warn('[evolution] getBase64FromMediaMessage falhou', {
+        accountId,
+        instance: config.instance,
+        messageKeyId: input.messageKeyId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
    * Get pairing QR code / pairing code for the Evolution instance.
    * `instanceOverride` permite consultar uma instance específica de um Inbox.
    */
