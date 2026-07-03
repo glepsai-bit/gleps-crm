@@ -354,17 +354,18 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             <DropdownMenuTrigger asChild>
               <button
                 className={cn(
-                  'w-full flex items-center gap-3 p-2 rounded-lg hover:bg-sidebar-accent transition-colors',
+                  'w-full flex items-center gap-3 p-2 rounded-lg hover:bg-sidebar-accent transition-colors min-w-0 overflow-hidden',
                   collapsed && 'justify-center'
                 )}
+                title={user?.nome}
               >
-                <Avatar className="h-9 w-9 border-2 border-sidebar-primary">
+                <Avatar className="h-9 w-9 border-2 border-sidebar-primary shrink-0">
                   <AvatarFallback className="bg-sidebar-primary text-sidebar-primary-foreground text-sm">
                     {user ? getInitials(user.nome) : 'AD'}
                   </AvatarFallback>
                 </Avatar>
                 {!collapsed && (
-                  <div className="flex-1 text-left">
+                  <div className="flex-1 min-w-0 text-left">
                     <p className="text-sm font-medium text-sidebar-foreground truncate">
                       {user?.nome}
                     </p>

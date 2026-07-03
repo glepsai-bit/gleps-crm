@@ -687,16 +687,18 @@ export default function AdminChatDashboardPage() {
         <KpiCard
           icon={<Clock className="w-4 h-4" />}
           label="1ª resposta (média)"
-          value={isLoading ? null : metrics?.avgFirstResponseMin ?? null}
+          value={metrics?.avgFirstResponseMin ?? null}
           formatter={(v) => formatMin(v as number | null)}
           tone="primary"
+          isLoading={isLoading}
         />
         <KpiCard
           icon={<Clock className="w-4 h-4" />}
           label="Resolução (média)"
-          value={isLoading ? null : metrics?.avgResolutionMin ?? null}
+          value={metrics?.avgResolutionMin ?? null}
           formatter={(v) => formatMin(v as number | null)}
           tone="primary"
+          isLoading={isLoading}
         />
         <KpiCard
           icon={<AlertTriangle className="w-4 h-4" />}
@@ -1252,6 +1254,11 @@ interface KpiCardProps {
   formatter?: (v: number | null) => string;
   /** Quando informado, renderiza o card clicável (hover/cursor). */
   onClick?: () => void;
+  /**
+   * Distingue "carregando" de "sem dados". Quando true, mostra skeleton.
+   * Quando false e value=null, mostra "—" (ex: 0 conversas resolvidas → média indefinida).
+   */
+  isLoading?: boolean;
 }
 
 function KpiCard({
@@ -1262,6 +1269,7 @@ function KpiCard({
   tone = 'primary',
   formatter,
   onClick,
+  isLoading: isLoadingProp,
 }: KpiCardProps) {
   const toneClasses: Record<NonNullable<KpiCardProps['tone']>, string> = {
     primary: 'bg-primary/10 text-primary',
@@ -1270,15 +1278,16 @@ function KpiCard({
     destructive: 'bg-destructive/10 text-destructive',
   };
 
-  // C2 — Loading: mostra skeleton em vez de '—' enquanto value === null.
-  // O '—' (em-dash) confundia usuários ("os dados estão zerados?").
-  const isLoading = value === null;
-  const display =
-    value === null
-      ? null
-      : formatter
-      ? formatter(value)
-      : new Intl.NumberFormat('pt-BR').format(value);
+  // Loading explícito via prop; se não informado, fallback para value === null (compat).
+  // Isso distingue "carregando" (skeleton) de "sem dados" (mostra "—" via formatter).
+  const isLoading = isLoadingProp ?? value === null;
+  const display = isLoading
+    ? null
+    : formatter
+    ? formatter(value)
+    : value === null
+    ? '—'
+    : new Intl.NumberFormat('pt-BR').format(value);
 
   const clickableProps = onClick
     ? {
