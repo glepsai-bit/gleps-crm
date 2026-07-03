@@ -33,6 +33,26 @@ server {
         proxy_send_timeout 120s;
     }
 
+    # Socket.IO (WebSocket) — precisa vir ANTES do catch-all `location /`,
+    # senao o handshake `/socket.io/?EIO=...` cai no SPA fallback e o nginx
+    # devolve index.html no lugar do upgrade. Sem este bloco o chat perde
+    # tempo real (message:created, conversation:updated, typing, etc).
+    # Como VITE_API_URL=/api (relativo), o socket.io-client resolve para
+    # window.location.origin + '/socket.io/' e precisa deste proxy.
+    location /socket.io/ {
+        proxy_pass http://${BACKEND_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
     # Static files caching
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
         expires 1y;

@@ -573,7 +573,7 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
   return (
     <div
       className={cn(
-        'border-t border-border bg-card p-3 space-y-2 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_-2px_8px_rgba(0,0,0,0.3)] focus-within:border-t-primary/40 transition-colors',
+        'shrink-0 border-t border-border bg-card p-3 space-y-2 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_-2px_8px_rgba(0,0,0,0.3)] focus-within:border-t-primary/40 transition-colors',
         isPrivate && 'bg-yellow-50 dark:bg-yellow-950/30'
       )}
     >

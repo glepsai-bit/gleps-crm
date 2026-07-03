@@ -584,7 +584,11 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
   // botao no topo carrega +50. Mensagens novas (socket/optimistic) sempre
   // aparecem porque pegamos as ultimas N do array. Virtualizacao real
   // (react-window) fica como follow-up.
-  const PAGE_SIZE = 50;
+  // Bumped from 50 -> 200 apos QA D2: com 50, threads medias (100-200 msgs)
+  // exigiam clicar "Carregar mais" logo apos auto-scroll pousar no fim, mas o
+  // botao ficava fora do viewport (topo). Com 200 cobrimos a maioria das
+  // conversas sem pagineacao visivel. Virtualizacao real fica como follow-up.
+  const PAGE_SIZE = 200;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
 
   // Reset paginacao ao trocar de conversa — sem isso, abrir uma conversa

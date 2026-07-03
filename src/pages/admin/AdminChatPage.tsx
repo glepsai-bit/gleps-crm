@@ -161,7 +161,7 @@ export default function AdminChatPage() {
           (a lista ocupa a tela inteira). Em lg+ esta sempre presente. */}
       <main
         className={cn(
-          'flex-1 flex-col min-w-0 lg:flex',
+          'flex-1 flex-col min-w-0 min-h-0 overflow-hidden lg:flex',
           showThreadOnMobile ? 'flex' : 'hidden'
         )}
       >
