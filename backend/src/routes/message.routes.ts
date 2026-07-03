@@ -67,6 +67,43 @@ jwtRouter.get('/messages/search', (req, res, next) =>
 );
 
 // ============================================
+// CHAT-REPLY-EDIT-DEL — edit + soft delete outbound (janela 15 min)
+// ============================================
+// Reutilizamos o `messageLimiter` no PATCH porque um agente rebelde pode
+// spammar edições no mesmo ritmo que criações. DELETE fica sem limiter próprio
+// (evento raro, e o service já enforça janela + ownership).
+
+jwtRouter.patch('/messages/:id', messageLimiter, (req, res, next) =>
+  messageController.update(req, res, next)
+);
+
+jwtRouter.delete('/messages/:id', (req, res, next) =>
+  messageController.remove(req, res, next)
+);
+
+// ============================================
+// CHAT-REACTIONS — reactions de agente em qualquer mensagem
+// ============================================
+// GET não precisa de rate-limit (leitura). POST/DELETE pegam o mesmo
+// `messageLimiter` — igual a POST /messages, evita spray de reactions.
+
+jwtRouter.get('/messages/:id/reactions', (req, res, next) =>
+  messageController.listReactions(req, res, next)
+);
+
+jwtRouter.post(
+  '/messages/:id/reactions',
+  messageLimiter,
+  (req, res, next) => messageController.addReaction(req, res, next)
+);
+
+jwtRouter.delete(
+  '/messages/:id/reactions/:emoji',
+  messageLimiter,
+  (req, res, next) => messageController.removeReaction(req, res, next)
+);
+
+// ============================================
 // API Key Router — integrações externas (n8n, agente IA)
 //
 // Mountar em '/integrations/chat'.

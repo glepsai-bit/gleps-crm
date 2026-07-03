@@ -260,6 +260,7 @@ model User {
   cannedResponsesCreated     CannedResponse[]
   teamMemberships            TeamMember[]
   mentions                   Mention[]
+  messageReactions           MessageReaction[]
   readReceipts               ReadReceipt[]
   availability               AgentAvailability?
   cyclesResolved             ConversationCycle[]       @relation("CycleResolver")
@@ -1383,11 +1384,13 @@ model Message {
   replies        Message[]    @relation("MessageReply")
   deliveredAt    DateTime?    @map("delivered_at") @db.Timestamptz
   readAt         DateTime?    @map("read_at") @db.Timestamptz
+  deletedAt      DateTime?    @map("deleted_at") @db.Timestamptz
   metadata       Json?        @default("{}")
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
 
   attachments  Attachment[]
   readReceipts ReadReceipt[]
+  reactions    MessageReaction[]
 
   // SE-H2: idempotência de Evolution messages.upsert. Postgres permite múltiplos NULLs
   // num UNIQUE comum, então mensagens sem externalId (ex: notas internas) seguem livres,
@@ -1399,7 +1402,24 @@ model Message {
   @@index([senderType])
   @@index([externalId])
   @@index([createdAt])
+  @@index([deletedAt])
   @@map("messages")
+}
+
+model MessageReaction {
+  id                String   @id @default(uuid()) @db.Uuid
+  messageId         String   @map("message_id") @db.Uuid
+  message           Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId            String?  @map("user_id") @db.Uuid // null quando reacao do cliente WhatsApp
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  externalContactId String?  @map("external_contact_id") @db.VarChar(120) // remoteJid do cliente
+  emoji             String   @db.VarChar(20)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@index([userId])
+  @@map("message_reactions")
 }
 
 model Attachment {

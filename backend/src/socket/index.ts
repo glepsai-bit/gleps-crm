@@ -385,6 +385,51 @@ export function emitMessageCreated(
 }
 
 /**
+ * CHAT-REPLY-EDIT-DEL: emite que uma mensagem existente foi mutada
+ * (edit de conteúdo ou soft delete). Vai pra sala da conversa — todos os
+ * agentes com a thread aberta atualizam o cache no mesmo tick, sem F5.
+ *
+ * Payload leva a mensagem completa (com `content`, `deletedAt`, `metadata`),
+ * pra que o frontend aplique PATCH direto no cache do thread sem precisar
+ * refetch de /conversations/:id.
+ */
+export function emitMessageUpdated(
+  accountId: string,
+  conversationId: string,
+  message: unknown
+): void {
+  if (!chatNs || !accountId || !conversationId) return;
+  chatNs.to(roomConv(accountId, conversationId)).emit('message:updated', {
+    conversationId,
+    message,
+  });
+}
+
+/**
+ * CHAT-REACTIONS FURO 2: emite atualização de reactions agregadas de uma
+ * mensagem (após addReaction / removeReaction / recordCustomerReaction).
+ *
+ * Todos os clientes conectados na sala da conversa recebem o aggregate
+ * atualizado (mesmo shape retornado em list/get) e trocam as pills sem
+ * refetch. Sem este evento, dois agentes vendo a mesma thread ficavam
+ * dessincronizados — o agente B só descobria que o agente A reagiu
+ * após F5. Idem pro emoji do cliente WhatsApp vindo via webhook.
+ */
+export function emitMessageReactionUpdated(
+  accountId: string,
+  conversationId: string,
+  messageId: string,
+  reactions: unknown
+): void {
+  if (!chatNs || !accountId || !conversationId || !messageId) return;
+  chatNs.to(roomConv(accountId, conversationId)).emit('message:reaction:updated', {
+    conversationId,
+    messageId,
+    reactions,
+  });
+}
+
+/**
  * Emite que a conversa foi atualizada (status, prioridade, label etc).
  * Vai pra sala da conversa E pra sala da conta (lista de conversas).
  */

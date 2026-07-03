@@ -169,15 +169,48 @@ describe('evolutionService.sendReaction', () => {
     ).rejects.toThrow(/reactionToMsgId é obrigatório/);
   });
 
-  it('throws se reaction vazia', async () => {
+  it('throws se reaction undefined', async () => {
     const acc = await createAccountWithEvolution();
     await expect(
       evolutionService.sendReaction(acc.id, {
         number: '5534993383017',
-        reaction: '',
+        // @ts-expect-error — testando contrato: undefined não é aceito
+        reaction: undefined,
         reactionToMsgId: 'msg-id',
       }),
     ).rejects.toThrow(/reaction é obrigatório/);
+  });
+
+  it('throws se reaction null', async () => {
+    const acc = await createAccountWithEvolution();
+    await expect(
+      evolutionService.sendReaction(acc.id, {
+        number: '5534993383017',
+        // @ts-expect-error — testando contrato: null não é aceito
+        reaction: null,
+        reactionToMsgId: 'msg-id',
+      }),
+    ).rejects.toThrow(/reaction é obrigatório/);
+  });
+
+  it('accepts empty string as unreact (remove reaction)', async () => {
+    const acc = await createAccountWithEvolution();
+    const fetchMock = mockFetchOnce({ key: { id: 'evo-unreact-id-1' } });
+
+    const out = await evolutionService.sendReaction(acc.id, {
+      number: '5534993383017',
+      reaction: '',
+      reactionToMsgId: 'msg-id-anterior',
+    });
+
+    expect(out.messageId).toBe('evo-unreact-id-1');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toContain('/message/sendReaction/inst-test');
+    const body = JSON.parse((opts as any).body);
+    expect(body.reactionMessage).toBeDefined();
+    expect(body.reactionMessage.reaction).toBe('');
+    expect(body.reactionMessage.key.id).toBe('msg-id-anterior');
   });
 });
 

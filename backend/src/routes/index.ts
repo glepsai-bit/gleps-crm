@@ -49,6 +49,7 @@ import chatMetricsRoutes from './chat-metrics.routes';
 import agentAvailabilityRoutes from './agent-availability.routes';
 import attachmentRoutes from './attachment.routes';
 import warmupRoutes from './warmup.routes';
+import mentionRoutes from './mention.routes';
 import { Router as LeadTagRouter } from 'express';
 import { contactController } from '../controllers/contact.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
@@ -186,6 +187,9 @@ router.use('/chat', chatMetricsRoutes);
 router.use('/availability', agentAvailabilityRoutes);
 // Bug A: media proxy (audio/image/video baixados da Evolution)
 router.use('/attachments', attachmentRoutes);
+
+// T-022 Sprint 4 — histórico de menções (hidrata o sino do AdminLayout)
+router.use('/mentions', mentionRoutes);
 
 // T-023 — WhatsApp Warmup (aquecimento de chips Evolution)
 router.use('/warmup', warmupRoutes);

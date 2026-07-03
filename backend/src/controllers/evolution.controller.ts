@@ -732,6 +732,45 @@ export class EvolutionController {
   }
 
   /**
+   * CHAT-REACTIONS: extrai reactionMessage do payload MESSAGES_UPSERT.
+   *
+   * Formatos aceitos (Evolution v2 / Baileys):
+   *   1. `message.reactionMessage` = { key: { id, remoteJid, fromMe }, text: '👍' }
+   *   2. `messageContextInfo.reactionMessage` (formato antigo, ainda aparece
+   *      em alguns clients — igual estrutura).
+   *
+   * Retorna `null` quando não é reaction. Quando `text === ''`, o cliente
+   * removeu a reaction — repassamos emoji vazio pro service tratar.
+   */
+  private extractReactionPayload(
+    rawMessage: any
+  ): { targetKeyId: string; emoji: string } | null {
+    if (!rawMessage || typeof rawMessage !== 'object') return null;
+
+    const candidates: any[] = [
+      rawMessage.reactionMessage,
+      rawMessage.messageContextInfo?.reactionMessage,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== 'object') continue;
+      const targetKeyId: string | undefined =
+        candidate.key?.id || candidate.targetMessageKey?.id || candidate.id;
+      if (!targetKeyId) continue;
+      // text pode ser '' (unreact) — preservamos.
+      const emoji: string =
+        typeof candidate.text === 'string'
+          ? candidate.text
+          : typeof candidate.emoji === 'string'
+            ? candidate.emoji
+            : '';
+      return { targetKeyId, emoji };
+    }
+
+    return null;
+  }
+
+  /**
    * Processa um evento `messages.upsert` da Evolution e cria a Message correspondente,
    * abrindo/reabrindo a Conversation conforme necessário.
    * Idempotente: se já existe Message com o mesmo externalId na conversa, faz skip.
@@ -851,6 +890,44 @@ export class EvolutionController {
     }
 
     const { content, contentType, attachments } = this.extractMessagePayload(data?.message);
+
+    // CHAT-REACTIONS: MESSAGES_UPSERT com reactionMessage vem SEM content nem
+    // mídia — o payload real fica em message.reactionMessage. Tratamos antes
+    // do skip pra registrar reactions vindas do cliente WhatsApp.
+    const reactionPayload = this.extractReactionPayload(data?.message);
+    if (reactionPayload) {
+      // FURO 1: quando o agente reage pelo CRM, o backend chama sendReaction
+      // via Evolution e o Baileys ecoa esse evento de volta como messages.upsert
+      // com key.fromMe=true. Se registrarmos aqui, a reaction fica duplicada
+      // (uma vinda do POST /messages/:id/reactions, outra vinda deste webhook)
+      // e a atribuicao passa a apontar pro contato em vez do agente. Guard:
+      // reactions com fromMe=true ja foram persistidas pelo endpoint HTTP —
+      // basta ignorar o eco.
+      if (fromMe) {
+        logger.debug('[evolution-webhook] reaction fromMe=true — skip (eco do sendReaction)', {
+          accountId,
+          conversationId: conversation.id,
+          targetExternalId: reactionPayload.targetKeyId,
+        });
+        return;
+      }
+      try {
+        await messageService.recordCustomerReaction({
+          accountId,
+          targetExternalId: reactionPayload.targetKeyId,
+          externalContactId: remoteJid,
+          emoji: reactionPayload.emoji,
+        });
+      } catch (err) {
+        logger.warn('[evolution-webhook] falha ao registrar customer reaction', {
+          accountId,
+          conversationId: conversation.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      // Não persiste a reaction como "Message" — ela vive só em MessageReaction.
+      return;
+    }
 
     // Sem content e sem attachments → nada útil pra persistir (ex: reactions, status updates).
     if ((!content || content.trim() === '') && attachments.length === 0) {

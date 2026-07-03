@@ -1,13 +1,28 @@
-import type { Message, Prisma } from '@prisma/client';
+import type { Message, MessageReaction, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
-import { NotFoundError, ValidationError } from '../utils/errors';
+import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { escapeLike } from '../utils/helpers';
 import { logger } from '../utils/logger';
 import { eventService } from './event.service';
 import { webhookOutboundService } from './webhook-outbound.service';
-import { emitMessageCreated } from '../socket';
+import {
+  emitMessageCreated,
+  emitMessageUpdated,
+  emitMessageReactionUpdated,
+} from '../socket';
 import { conversationCycleService } from './conversation-cycle.service';
 import { attachmentStorageService } from './attachment-storage.service';
+import { evolutionService } from './evolution.service';
+
+// ============================================
+// Regras de edição/deleção outbound
+// ============================================
+// WhatsApp permite editar mensagens até 15 min após o envio. Passa disso, a
+// Evolution devolve erro. Aplicamos a mesma janela para o delete-for-everyone
+// (na prática o WhatsApp permite ~2h para delete, mas manter regra unificada
+// simplifica a UI e cobre o pior caso).
+export const OUTBOUND_EDIT_WINDOW_MS = 15 * 60 * 1000;
+export const OUTBOUND_DELETE_WINDOW_MS = 15 * 60 * 1000;
 
 // ============================================
 // Types
@@ -80,6 +95,68 @@ const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
 const DEFAULT_SEARCH_LIMIT = 50;
 const MAX_SEARCH_LIMIT = 200;
+
+// ============================================
+// CHAT-REACTIONS FURO 2: aggregate shape + include
+// ============================================
+// Retornado embutido em cada Message via `list`/`get` (hidratação inicial)
+// e emitido pelo evento socket `message:reaction:updated` (sincronização
+// entre agentes/tabs). Sempre 1 entry por emoji distinto — `byMe` é
+// derivado no frontend a partir do userIds/currentUserId.
+export interface MessageReactionAggregate {
+  emoji: string;
+  count: number;
+  userIds: string[];
+  externalContactIds: string[];
+}
+
+/**
+ * Prisma include compartilhado por list()/get() — traz o mínimo necessário
+ * pra agregar os pills sem inflar payload. Não incluímos `user`/`externalContact`
+ * relations aqui: o frontend só precisa dos ids pra decidir byMe/render.
+ */
+const REACTIONS_INCLUDE = {
+  reactions: {
+    select: {
+      id: true,
+      emoji: true,
+      userId: true,
+      externalContactId: true,
+      createdAt: true,
+    },
+  },
+} satisfies Prisma.MessageInclude;
+
+/**
+ * Agrupa uma lista plana de MessageReaction (raw do Prisma) por emoji e
+ * retorna o shape consumido pelo frontend. Idempotente: entrada vazia
+ * devolve array vazio; ordem preservada por primeira ocorrência do emoji.
+ */
+export function aggregateMessageReactions(
+  reactions: Array<Pick<MessageReaction, 'emoji' | 'userId' | 'externalContactId'>>
+): MessageReactionAggregate[] {
+  if (!Array.isArray(reactions) || reactions.length === 0) return [];
+  const byEmoji = new Map<string, MessageReactionAggregate>();
+  for (const r of reactions) {
+    const existing =
+      byEmoji.get(r.emoji) ?? {
+        emoji: r.emoji,
+        count: 0,
+        userIds: [] as string[],
+        externalContactIds: [] as string[],
+      };
+    existing.count += 1;
+    if (r.userId) {
+      if (!existing.userIds.includes(r.userId)) existing.userIds.push(r.userId);
+    } else if (r.externalContactId) {
+      if (!existing.externalContactIds.includes(r.externalContactId)) {
+        existing.externalContactIds.push(r.externalContactId);
+      }
+    }
+    byEmoji.set(r.emoji, existing);
+  }
+  return Array.from(byEmoji.values());
+}
 
 const VALID_SENDER_TYPES: MessageSenderType[] = [
   'customer',
@@ -167,7 +244,10 @@ class MessageService {
     // Evolution+webhook+backend roda em ms — mensagens criadas no mesmo tick
     // (typical em respostas IA com múltiplas partes) ficavam fora de ordem.
     // Ordenar id ASC como segundo critério garante determinismo no FE.
-    return prisma.message.findMany({
+    // CHAT-REACTIONS FURO 2: incluímos reactions e devolvemos agregado por
+    // emoji embutido em cada Message. Sem isso, F5 zerava as pills até o
+    // usuário reagir de novo.
+    const rows = await prisma.message.findMany({
       where,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit,
@@ -176,8 +256,14 @@ class MessageService {
         sender: {
           select: { id: true, nome: true, email: true },
         },
+        ...REACTIONS_INCLUDE,
       },
     });
+
+    return rows.map((m) => ({
+      ...m,
+      reactions: aggregateMessageReactions(m.reactions ?? []),
+    })) as unknown as Message[];
   }
 
   /**
@@ -195,6 +281,8 @@ class MessageService {
         sender: {
           select: { id: true, nome: true, email: true },
         },
+        // CHAT-REACTIONS FURO 2: mesma agregação de list() para consistência.
+        ...REACTIONS_INCLUDE,
       },
     });
 
@@ -202,7 +290,12 @@ class MessageService {
       throw new NotFoundError('Mensagem');
     }
 
-    return message;
+    return {
+      ...message,
+      reactions: aggregateMessageReactions(
+        (message as unknown as { reactions?: MessageReaction[] }).reactions ?? []
+      ),
+    } as unknown as Message;
   }
 
   // ============================================
@@ -707,6 +800,555 @@ class MessageService {
         },
       },
     });
+  }
+
+  // ============================================
+  // CHAT-REPLY-EDIT-DEL: edit outbound (15min window)
+  // ============================================
+
+  /**
+   * Edita o conteúdo de uma mensagem outbound do próprio agente.
+   *
+   * Regras:
+   *  - Autor: senderId === userId (self-only) e senderType === 'agent'.
+   *  - Janela: createdAt > now - 15min (mesmo limite do WhatsApp).
+   *  - Não editável: mensagem sem externalId (nunca chegou ao WhatsApp),
+   *    privada (nota interna), ou já deletada.
+   *  - Best-effort no provider: se Evolution falhar, a edição local ainda
+   *    persiste — a UI mostra o novo texto e a discrepância só existe
+   *    no WhatsApp remoto (o agente pode retry via nova edição).
+   */
+  async editMessage(
+    id: string,
+    accountId: string,
+    userId: string,
+    newContent: string
+  ): Promise<Message> {
+    if (!newContent || newContent.trim() === '') {
+      throw new ValidationError('content é obrigatório');
+    }
+    if (newContent.length > 4096) {
+      throw new ValidationError('Mensagem muito longa (max 4096 caracteres)');
+    }
+
+    const existing = await prisma.message.findFirst({
+      where: { id, conversation: { accountId } },
+      include: {
+        conversation: {
+          include: {
+            contact: { select: { telefone: true } },
+            inbox: { select: { channelType: true, evolutionInstance: true } },
+          },
+        },
+      },
+    });
+    if (!existing) throw new NotFoundError('Mensagem');
+
+    if (existing.deletedAt) {
+      throw new ValidationError('Mensagem apagada não pode ser editada');
+    }
+    if (existing.isPrivate) {
+      throw new ValidationError('Nota interna não pode ser editada por aqui');
+    }
+    if (existing.senderType !== 'agent') {
+      throw new ForbiddenError('Apenas mensagens enviadas por agente podem ser editadas');
+    }
+    if (existing.senderId !== userId) {
+      throw new ForbiddenError('Apenas o autor da mensagem pode editá-la');
+    }
+    const ageMs = Date.now() - existing.createdAt.getTime();
+    if (ageMs > OUTBOUND_EDIT_WINDOW_MS) {
+      throw new ValidationError(
+        'Janela de edição expirada (15 minutos após o envio)'
+      );
+    }
+
+    // Update local (metadata.edited=true / editedAt=now).
+    const baseMetadata =
+      existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+        ? (existing.metadata as Record<string, unknown>)
+        : {};
+    const nowIso = new Date().toISOString();
+    const nextMetadata: Prisma.InputJsonValue = {
+      ...baseMetadata,
+      edited: true,
+      editedAt: nowIso,
+      previousContent:
+        typeof baseMetadata.previousContent === 'string'
+          ? baseMetadata.previousContent // preserva a versão original mais antiga
+          : existing.content ?? null,
+    };
+
+    const updated = await prisma.message.update({
+      where: { id: existing.id },
+      data: {
+        content: newContent,
+        metadata: nextMetadata,
+      },
+      include: { attachments: true },
+    });
+
+    // CHAT-REPLY-EDIT-DEL: notifica todos os agentes com a thread aberta.
+    // Emitimos ANTES da propagação Evolution — a UI reflete o estado local
+    // no mesmo tick, e uma eventual falha na Evolution (best-effort abaixo)
+    // não bloqueia o realtime.
+    emitMessageUpdated(accountId, existing.conversationId, updated);
+
+    // Best-effort: propaga edit pra Evolution se a msg tem externalId real
+    // (não pending) e o canal é WhatsApp.
+    const phone = existing.conversation.contact?.telefone ?? '';
+    const externalId = existing.externalId ?? '';
+    const isPending = externalId.startsWith('pending:');
+    if (
+      externalId &&
+      !isPending &&
+      phone &&
+      existing.conversation.inbox?.channelType === 'whatsapp'
+    ) {
+      try {
+        await evolutionService.updateMessage(accountId, {
+          number: phone,
+          keyId: externalId,
+          fromMe: true,
+          text: newContent,
+          instance: existing.conversation.inbox.evolutionInstance ?? null,
+        });
+      } catch (err) {
+        logger.warn('[message] falha ao propagar edit para Evolution', {
+          messageId: existing.id,
+          accountId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return updated;
+  }
+
+  // ============================================
+  // CHAT-REPLY-EDIT-DEL: soft delete outbound
+  // ============================================
+
+  /**
+   * Soft-delete de mensagem outbound do próprio agente.
+   *  - content = NULL, deletedAt = now (UI mostra "Mensagem apagada").
+   *  - Regras de ownership idênticas ao edit.
+   *  - Best-effort: chama Evolution deleteMessageForEveryone se a msg tem
+   *    externalId; falha aqui não bloqueia o soft delete local.
+   */
+  async softDeleteMessage(
+    id: string,
+    accountId: string,
+    userId: string
+  ): Promise<Message> {
+    const existing = await prisma.message.findFirst({
+      where: { id, conversation: { accountId } },
+      include: {
+        conversation: {
+          include: {
+            contact: { select: { telefone: true } },
+            inbox: { select: { channelType: true, evolutionInstance: true } },
+          },
+        },
+      },
+    });
+    if (!existing) throw new NotFoundError('Mensagem');
+
+    if (existing.deletedAt) {
+      // Idempotente — devolve mesma msg.
+      return existing;
+    }
+    if (existing.isPrivate) {
+      throw new ValidationError('Nota interna não pode ser deletada por aqui');
+    }
+    if (existing.senderType !== 'agent') {
+      throw new ForbiddenError('Apenas mensagens enviadas por agente podem ser deletadas');
+    }
+    if (existing.senderId !== userId) {
+      throw new ForbiddenError('Apenas o autor da mensagem pode deletá-la');
+    }
+    const ageMs = Date.now() - existing.createdAt.getTime();
+    if (ageMs > OUTBOUND_DELETE_WINDOW_MS) {
+      throw new ValidationError(
+        'Janela de delete-for-everyone expirada (15 minutos após o envio)'
+      );
+    }
+
+    const baseMetadata =
+      existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+        ? (existing.metadata as Record<string, unknown>)
+        : {};
+    const now = new Date();
+    const nextMetadata: Prisma.InputJsonValue = {
+      ...baseMetadata,
+      deletedBy: userId,
+      previousContent:
+        typeof baseMetadata.previousContent === 'string'
+          ? baseMetadata.previousContent
+          : existing.content ?? null,
+    };
+
+    const updated = await prisma.message.update({
+      where: { id: existing.id },
+      data: {
+        content: null,
+        deletedAt: now,
+        metadata: nextMetadata,
+      },
+      include: { attachments: true },
+    });
+
+    // CHAT-REPLY-EDIT-DEL: notifica todos os agentes com a thread aberta
+    // para que a mensagem apagada apareça como "Mensagem apagada" sem F5.
+    emitMessageUpdated(accountId, existing.conversationId, updated);
+
+    const phone = existing.conversation.contact?.telefone ?? '';
+    const externalId = existing.externalId ?? '';
+    const isPending = externalId.startsWith('pending:');
+    if (
+      externalId &&
+      !isPending &&
+      phone &&
+      existing.conversation.inbox?.channelType === 'whatsapp'
+    ) {
+      try {
+        await evolutionService.deleteMessageForEveryone(accountId, {
+          keyId: externalId,
+          number: phone,
+          fromMe: true,
+          instance: existing.conversation.inbox.evolutionInstance ?? null,
+        });
+      } catch (err) {
+        logger.warn('[message] falha ao propagar delete para Evolution', {
+          messageId: existing.id,
+          accountId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return updated;
+  }
+
+  // ============================================
+  // CHAT-REACTIONS: agent reage a msg com emoji
+  // ============================================
+
+  /**
+   * CHAT-REACTIONS FURO 2: helper interno que consulta o estado atual de
+   * reactions da mensagem e emite `message:reaction:updated` na sala da
+   * conversa. Best-effort: qualquer erro é apenas logado — a persistência
+   * já ocorreu no caller e não deve ser abortada por falha de broadcast.
+   */
+  private async emitReactionUpdate(
+    accountId: string,
+    conversationId: string,
+    messageId: string
+  ): Promise<void> {
+    try {
+      const rows = await prisma.messageReaction.findMany({
+        where: { messageId },
+        select: {
+          emoji: true,
+          userId: true,
+          externalContactId: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+      const aggregate = aggregateMessageReactions(rows);
+      emitMessageReactionUpdated(accountId, conversationId, messageId, aggregate);
+    } catch (err) {
+      logger.debug('[message] socket emit message:reaction:updated falhou', {
+        messageId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Cria/atualiza reaction do usuário atual na mensagem, e propaga p/ Evolution.
+   * Retorna a reaction persistida.
+   *
+   * Idempotente por @@unique([messageId, userId, emoji]): se já existe, o
+   * upsert atualiza createdAt e devolve — evita 409 do Postgres.
+   *
+   * Best-effort: falha no provider NÃO desfaz a reaction local (UI mostra,
+   * o WhatsApp remoto perde — melhor que fingir 500 pro agente).
+   */
+  async addReaction(
+    messageId: string,
+    accountId: string,
+    userId: string,
+    emoji: string
+  ): Promise<MessageReaction> {
+    const emojiTrim = (emoji || '').trim();
+    if (!emojiTrim) {
+      throw new ValidationError('emoji é obrigatório');
+    }
+    if (emojiTrim.length > 16) {
+      throw new ValidationError('emoji muito longo (max 16 caracteres)');
+    }
+
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, conversation: { accountId } },
+      include: {
+        conversation: {
+          include: {
+            contact: { select: { telefone: true } },
+            inbox: { select: { channelType: true, evolutionInstance: true } },
+          },
+        },
+      },
+    });
+    if (!message) throw new NotFoundError('Mensagem');
+    if (message.deletedAt) {
+      throw new ValidationError('Mensagem apagada não pode receber reactions');
+    }
+
+    const reaction = await prisma.messageReaction.upsert({
+      where: {
+        messageId_userId_emoji: {
+          messageId: message.id,
+          userId,
+          emoji: emojiTrim,
+        },
+      },
+      create: {
+        messageId: message.id,
+        userId,
+        emoji: emojiTrim,
+      },
+      update: {
+        createdAt: new Date(),
+      },
+    });
+
+    // Best-effort Evolution propagation.
+    const phone = message.conversation.contact?.telefone ?? '';
+    const externalId = message.externalId ?? '';
+    const isPending = externalId.startsWith('pending:');
+    if (
+      externalId &&
+      !isPending &&
+      phone &&
+      message.conversation.inbox?.channelType === 'whatsapp'
+    ) {
+      try {
+        await evolutionService.sendReaction(accountId, {
+          number: phone,
+          reaction: emojiTrim,
+          reactionToMsgId: externalId,
+          // A msg reagida foi enviada por nós se senderType!=='customer'.
+          fromMe: message.senderType !== 'customer',
+          instance: message.conversation.inbox.evolutionInstance ?? null,
+        });
+      } catch (err) {
+        logger.warn('[message] falha ao propagar reaction para Evolution', {
+          messageId: message.id,
+          accountId,
+          emoji: emojiTrim,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // CHAT-REACTIONS FURO 2: broadcast pra todos os agentes com a thread aberta.
+    await this.emitReactionUpdate(accountId, message.conversationId, message.id);
+
+    return reaction;
+  }
+
+  /**
+   * Remove reaction do usuário atual na mensagem. Idempotente: se não existe,
+   * retorna null sem erro. Evolution propaga vazio via sendReaction('', ...)
+   * (WhatsApp interpreta como remoção da reaction).
+   */
+  async removeReaction(
+    messageId: string,
+    accountId: string,
+    userId: string,
+    emoji: string
+  ): Promise<{ removed: boolean }> {
+    const emojiTrim = (emoji || '').trim();
+    if (!emojiTrim) {
+      throw new ValidationError('emoji é obrigatório');
+    }
+
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, conversation: { accountId } },
+      include: {
+        conversation: {
+          include: {
+            contact: { select: { telefone: true } },
+            inbox: { select: { channelType: true, evolutionInstance: true } },
+          },
+        },
+      },
+    });
+    if (!message) throw new NotFoundError('Mensagem');
+
+    const deleted = await prisma.messageReaction.deleteMany({
+      where: {
+        messageId: message.id,
+        userId,
+        emoji: emojiTrim,
+      },
+    });
+
+    // Propaga "sem reaction" pro WhatsApp — envia string vazia (padrão Baileys).
+    const phone = message.conversation.contact?.telefone ?? '';
+    const externalId = message.externalId ?? '';
+    const isPending = externalId.startsWith('pending:');
+    if (
+      deleted.count > 0 &&
+      externalId &&
+      !isPending &&
+      phone &&
+      message.conversation.inbox?.channelType === 'whatsapp'
+    ) {
+      try {
+        await evolutionService.sendReaction(accountId, {
+          number: phone,
+          reaction: '',
+          reactionToMsgId: externalId,
+          fromMe: message.senderType !== 'customer',
+          instance: message.conversation.inbox.evolutionInstance ?? null,
+        });
+      } catch (err) {
+        logger.warn('[message] falha ao remover reaction no Evolution', {
+          messageId: message.id,
+          accountId,
+          emoji: emojiTrim,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // CHAT-REACTIONS FURO 2: emite mesmo quando deleted.count === 0 é possivel
+    // que outra tab do mesmo user já tenha removido; sincronizamos igual pra
+    // manter o cache dos clientes consistente sem custo extra relevante.
+    if (deleted.count > 0) {
+      await this.emitReactionUpdate(accountId, message.conversationId, message.id);
+    }
+
+    return { removed: deleted.count > 0 };
+  }
+
+  /**
+   * Lista reactions de uma mensagem (agrupadas pelo caller se necessário).
+   * Escopado por accountId via conversation.
+   */
+  async listReactions(
+    messageId: string,
+    accountId: string
+  ): Promise<MessageReaction[]> {
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, conversation: { accountId } },
+      select: { id: true },
+    });
+    if (!message) throw new NotFoundError('Mensagem');
+
+    return prisma.messageReaction.findMany({
+      where: { messageId: message.id },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        user: { select: { id: true, nome: true, email: true } },
+      },
+    });
+  }
+
+  /**
+   * CHAT-REACTIONS webhook: registra reaction vinda do CLIENTE via
+   * MESSAGES_UPSERT com envelope reactionMessage. userId=NULL,
+   * externalContactId=remoteJid.
+   *
+   * Idempotente: usa índice único parcial em (messageId, externalContactId, emoji)
+   * — se já existe, faz nada. Se emoji vazio (WhatsApp manda emoji='' para "unreact"),
+   * remove a reaction existente daquele contato nessa msg.
+   */
+  async recordCustomerReaction(input: {
+    accountId: string;
+    targetExternalId: string;
+    externalContactId: string;
+    emoji: string;
+  }): Promise<void> {
+    const emojiTrim = (input.emoji || '').trim();
+    // Localiza a Message pelo externalId + accountId. Selecionamos
+    // conversationId pra poder emitir socket na sala da conversa após
+    // persistir (CHAT-REACTIONS FURO 2).
+    const message = await prisma.message.findFirst({
+      where: {
+        externalId: input.targetExternalId,
+        conversation: { accountId: input.accountId },
+      },
+      select: { id: true, conversationId: true },
+    });
+    if (!message) {
+      logger.debug('[message.service] customer reaction sem msg alvo — skip', {
+        externalId: input.targetExternalId,
+        accountId: input.accountId,
+      });
+      return;
+    }
+
+    if (!emojiTrim) {
+      // unreact: apaga o que houver desse contato na msg.
+      const removed = await prisma.messageReaction.deleteMany({
+        where: {
+          messageId: message.id,
+          userId: null,
+          externalContactId: input.externalContactId,
+        },
+      });
+      if (removed.count > 0) {
+        await this.emitReactionUpdate(
+          input.accountId,
+          message.conversationId,
+          message.id
+        );
+      }
+      return;
+    }
+
+    // upsert com base no índice único parcial (messageId, externalContactId, emoji).
+    // findFirst → create/skip pra não depender de índice único no Prisma client.
+    const existing = await prisma.messageReaction.findFirst({
+      where: {
+        messageId: message.id,
+        userId: null,
+        externalContactId: input.externalContactId,
+        emoji: emojiTrim,
+      },
+      select: { id: true },
+    });
+    if (existing) return;
+
+    // Antes de criar novo emoji, apaga reactions anteriores do MESMO contato
+    // nessa msg — WhatsApp só permite 1 reaction por remetente por msg.
+    await prisma.messageReaction.deleteMany({
+      where: {
+        messageId: message.id,
+        userId: null,
+        externalContactId: input.externalContactId,
+      },
+    });
+
+    await prisma.messageReaction.create({
+      data: {
+        messageId: message.id,
+        userId: null,
+        externalContactId: input.externalContactId,
+        emoji: emojiTrim,
+      },
+    });
+
+    // CHAT-REACTIONS FURO 2: broadcast pro frontend (agentes com a thread
+    // aberta veem o novo emoji do cliente aparecer sem F5).
+    await this.emitReactionUpdate(
+      input.accountId,
+      message.conversationId,
+      message.id
+    );
   }
 }
 

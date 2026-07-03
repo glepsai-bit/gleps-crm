@@ -42,6 +42,71 @@ export interface SendAudioInput {
   instance?: string | null;
 }
 
+/**
+ * Envio de texto citando (reply nativo do WhatsApp) uma msg anterior.
+ * `quotedKey` identifica a msg citada; `quotedText` é o trecho de fallback
+ * que aparece no bubble de quote quando a Evolution não consegue rehidratar
+ * o conteúdo original a partir do id.
+ */
+export interface SendTextWithQuoteInput {
+  number: string;
+  text: string;
+  quotedKey: {
+    id: string;
+    remoteJid: string;
+    fromMe: boolean;
+  };
+  quotedText?: string;
+  delay?: number;
+  instance?: string | null;
+}
+
+/**
+ * Edição de mensagem outbound existente. Só faz sentido para msgs próprias
+ * (fromMe=true, default). A janela de 15 min do WhatsApp é validada no caller
+ * (message.service), não aqui.
+ */
+export interface UpdateMessageInput {
+  number: string;
+  keyId: string;
+  remoteJid?: string;
+  fromMe?: boolean;
+  text: string;
+  instance?: string | null;
+}
+
+/**
+ * Delete-for-everyone (revoke) de uma msg WhatsApp.
+ * Requer `keyId` + (`remoteJid` OU `number` para derivar remoteJid).
+ * `participant` é usado apenas em grupos (jid do autor original).
+ */
+export interface DeleteMessageInput {
+  keyId: string;
+  remoteJid?: string;
+  number?: string;
+  fromMe?: boolean;
+  participant?: string;
+  instance?: string | null;
+}
+
+export interface DeleteMessageResult {
+  ok: boolean;
+  raw: any;
+}
+
+/**
+ * Envio de audio PTT (push-to-talk) via /message/sendWhatsAppAudio.
+ * Diferente de `SendAudioInput` (que aceita URL), aqui é sempre base64 puro
+ * (sem prefixo data:) e força `encoding: true` para renderizar como bubble
+ * de áudio nativo no cliente.
+ */
+export interface SendWhatsAppAudioInput {
+  number: string;
+  audioBase64: string;
+  delay?: number;
+  instance?: string | null;
+}
+
 export interface SendStickerInput {
   number: string;
   /** base64 (sem prefixo data:) OU URL http(s) — Evolution aceita ambos */
@@ -406,6 +471,236 @@ class EvolutionService {
   }
 
   /**
+   * Envia texto citando (reply nativo do WhatsApp) uma mensagem anterior.
+   * Evolution endpoint: POST /message/sendText/:instance
+   *   body { number, text, quoted: { key: { id, remoteJid, fromMe }, message: { conversation } }, delay? }
+   *
+   * O caller deve montar `quotedKey` a partir de `Message.externalId` +
+   * `Message.externalMetadata` (participant/remoteJid/fromMe capturados no webhook
+   * MESSAGES_UPSERT). Para msg citada do próprio agente, `quotedKey.fromMe=true`.
+   */
+  async sendTextWithQuote(
+    accountId: string,
+    input: SendTextWithQuoteInput
+  ): Promise<SendResult> {
+    if (!input.text || input.text.trim() === '') {
+      throw new ValidationError('text é obrigatório');
+    }
+    if (!input.quotedKey || !input.quotedKey.id) {
+      throw new ValidationError('quotedKey.id é obrigatório');
+    }
+    if (!input.quotedKey.remoteJid) {
+      throw new ValidationError('quotedKey.remoteJid é obrigatório');
+    }
+
+    const config = await this.getAccountConfig(accountId, input.instance);
+    const number = this.normalizeNumber(input.number);
+
+    const body: Record<string, any> = {
+      number,
+      text: input.text,
+      quoted: {
+        key: {
+          id: input.quotedKey.id,
+          remoteJid: input.quotedKey.remoteJid,
+          fromMe: input.quotedKey.fromMe,
+        },
+        message: {
+          conversation: input.quotedText ?? '',
+        },
+      },
+    };
+
+    if (typeof input.delay === 'number') {
+      body.delay = input.delay;
+    }
+
+    const raw = await this.makeRequest<any>(
+      config,
+      `/message/sendText/${encodeURIComponent(config.instance)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    );
+
+    const messageId = this.extractMessageId(raw);
+    logger.info('Evolution sendTextWithQuote ok', {
+      accountId,
+      number,
+      messageId,
+      quotedId: input.quotedKey.id,
+    });
+
+    return { messageId, raw };
+  }
+
+  /**
+   * Edita o conteúdo textual de uma mensagem outbound previamente enviada.
+   * Evolution endpoint: POST /message/updateMessage/:instance
+   *   body { number, key: { id, remoteJid, fromMe }, text }
+   *
+   * WhatsApp permite edição até ~15 min após o envio — essa regra fica no
+   * message.service (caller), não aqui. O `messageId` retornado é o próprio
+   * `keyId` de entrada (edit não gera novo id).
+   */
+  async updateMessage(
+    accountId: string,
+    input: UpdateMessageInput
+  ): Promise<SendResult> {
+    if (!input.keyId) {
+      throw new ValidationError('keyId é obrigatório');
+    }
+    if (!input.text || input.text.trim() === '') {
+      throw new ValidationError('text é obrigatório');
+    }
+
+    const config = await this.getAccountConfig(accountId, input.instance);
+    const number = this.normalizeNumber(input.number);
+    const remoteJid = input.remoteJid || `${number}@s.whatsapp.net`;
+
+    const body: Record<string, any> = {
+      number,
+      key: {
+        id: input.keyId,
+        remoteJid,
+        fromMe: input.fromMe ?? true,
+      },
+      text: input.text,
+    };
+
+    const raw = await this.makeRequest<any>(
+      config,
+      `/message/updateMessage/${encodeURIComponent(config.instance)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }
+    );
+
+    const messageId = this.extractMessageId(raw) || input.keyId;
+    logger.info('Evolution updateMessage ok', {
+      accountId,
+      number,
+      messageId,
+    });
+
+    return { messageId, raw };
+  }
+
+  /**
+   * Revoga (delete-for-everyone) uma mensagem WhatsApp para todos os participantes.
+   * Evolution endpoint: DELETE /chat/deleteMessageForEveryone/:instance
+   *   body { id, remoteJid, fromMe, participant? }
+   *
+   * Diferente dos outros métodos, o path é `/chat/...` (não `/message/...`).
+   * O caller (message.service) deve fazer o soft delete local (content=NULL,
+   * deletedAt=now) antes ou depois de chamar este método.
+   */
+  async deleteMessageForEveryone(
+    accountId: string,
+    input: DeleteMessageInput
+  ): Promise<DeleteMessageResult> {
+    if (!input.keyId) {
+      throw new ValidationError('keyId é obrigatório');
+    }
+    if (!input.remoteJid && !input.number) {
+      throw new ValidationError('remoteJid ou number é obrigatório');
+    }
+
+    const config = await this.getAccountConfig(accountId, input.instance);
+    const remoteJid =
+      input.remoteJid ||
+      `${this.normalizeNumber(input.number!)}@s.whatsapp.net`;
+
+    const body: Record<string, any> = {
+      id: input.keyId,
+      remoteJid,
+      fromMe: input.fromMe ?? true,
+    };
+
+    if (input.participant) {
+      body.participant = input.participant;
+    }
+
+    const raw = await this.makeRequest<any>(
+      config,
+      `/chat/deleteMessageForEveryone/${encodeURIComponent(config.instance)}`,
+      {
+        method: 'DELETE',
+        body: JSON.stringify(body),
+      }
+    );
+
+    let ok = true;
+    if (raw && typeof raw === 'object') {
+      const hasError =
+        (raw.error !== undefined && raw.error !== false && raw.error !== null) ||
+        raw.success === false ||
+        raw.ok === false;
+      if (hasError) ok = false;
+    }
+
+    logger.info('Evolution deleteMessageForEveryone ok', {
+      accountId,
+      remoteJid,
+      keyId: input.keyId,
+      ok,
+    });
+
+    return { ok, raw };
+  }
+
+  /**
+   * Envia áudio PTT (push-to-talk) via /message/sendWhatsAppAudio.
+   *
+   * Coexiste com `sendAudio` (que aceita URL http(s) ou data:); esta variante
+   * é otimizada para o fluxo Mic-Recording do agente: recebe base64 puro
+   * (sem prefixo `data:`) e força `encoding: true` para o WhatsApp renderizar
+   * como bubble de áudio nativo (com waveform + play). Aceita `delay` opcional.
+   */
+  async sendWhatsAppAudio(
+    accountId: string,
+    input: SendWhatsAppAudioInput
+  ): Promise<SendResult> {
+    if (!input.audioBase64) {
+      throw new ValidationError('audioBase64 é obrigatório');
+    }
+
+    const config = await this.getAccountConfig(accountId, input.instance);
+    const number = this.normalizeNumber(input.number);
+
+    const body: Record<string, any> = {
+      number,
+      audio: input.audioBase64,
+      encoding: true,
+    };
+
+    if (typeof input.delay === 'number') {
+      body.delay = input.delay;
+    }
+
+    const raw = await this.makeRequest<any>(
+      config,
+      `/message/sendWhatsAppAudio/${encodeURIComponent(config.instance)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+      60000
+    );
+
+    const messageId = this.extractMessageId(raw);
+    logger.info('Evolution sendWhatsAppAudio ok', {
+      accountId,
+      number,
+      messageId,
+    });
+
+    return { messageId, raw };
+  }
+
+  /**
    * Send a WhatsApp audio message (PTT-style) via Evolution API.
    * `audioUrl` may be a public URL or base64-encoded payload.
    */
@@ -489,7 +784,9 @@ class EvolutionService {
    * WarmupMessage.evolutionMsgId pelo caller).
    */
   async sendReaction(accountId: string, input: SendReactionInput): Promise<SendResult> {
-    if (!input.reaction) {
+    // reaction === '' é válido — WhatsApp interpreta como REMOÇÃO da reaction
+    // anterior. Só bloqueamos `undefined` / `null` (payload malformado).
+    if (input.reaction === undefined || input.reaction === null) {
       throw new ValidationError('reaction é obrigatório');
     }
     if (!input.reactionToMsgId) {

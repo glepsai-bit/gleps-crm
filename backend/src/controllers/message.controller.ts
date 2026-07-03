@@ -90,6 +90,20 @@ const searchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 });
 
+// CHAT-REPLY-EDIT-DEL: body do PATCH /messages/:id — só aceita content.
+const editMessageBodySchema = z.object({
+  content: z
+    .string()
+    .min(1, 'content é obrigatório')
+    .max(MAX_MESSAGE_CONTENT_LEN, 'Mensagem muito longa (max 4096 caracteres)'),
+});
+
+// CHAT-REACTIONS: body do POST /messages/:id/reactions.
+// Emoji unicode livre — validação estrita fica no service (16 chars max).
+const reactionBodySchema = z.object({
+  emoji: z.string().min(1, 'emoji é obrigatório').max(16, 'emoji muito longo'),
+});
+
 const integrationSenderTypeEnum = z.enum(['ai_bot', 'integration']);
 
 // BE-CTRL-H2: integrações (ai_bot/n8n) também não podem forjar system_note
@@ -220,10 +234,15 @@ export class MessageController {
       // shouldDispatch=true ⇒ reserva slot; false ⇒ mantém null.
       // BE-CTRL-H2: contentType já está restrito a text|media|audio|document
       // pelo agentContentTypeEnum, então system_note/template não chegam aqui.
+      //
+      // CHAT-MIC-RECORDING: audio-only (sem content) também dispara — o
+      // agente pode mandar só o PTT. Extendemos o gate pra cobrir esse caso.
+      const hasContentDispatch =
+        typeof parsed.content === 'string' && parsed.content.trim() !== '';
+      const hasAttachmentDispatch =
+        Array.isArray(parsed.attachments) && parsed.attachments.length > 0;
       const shouldDispatch =
-        !isPrivate &&
-        typeof parsed.content === 'string' &&
-        parsed.content.trim() !== '';
+        !isPrivate && (hasContentDispatch || hasAttachmentDispatch);
 
       const pendingExternalId = shouldDispatch
         ? `pending:${randomUUID()}`
@@ -292,11 +311,107 @@ export class MessageController {
             // Per-Inbox: respeitar a instância do Inbox da conversa para não
             // cair no fallback Account.evolutionInstance (que pode estar null
             // ou apontar para outro número).
-            const result = await evolutionService.sendText(accountId, {
-              number: phone,
-              text: parsed.content as string,
-              instance: conversation.inbox.evolutionInstance ?? null,
-            });
+            const instance = conversation.inbox.evolutionInstance ?? null;
+
+            // CHAT-REPLY: resolve quoted a partir do replyToId (a msg citada
+            // precisa ter externalId REAL — pending não vale, WhatsApp não
+            // acha a msg original).
+            let quotedPayload:
+              | { id: string; remoteJid: string; fromMe: boolean; text?: string | null }
+              | null = null;
+            if (parsed.replyToId) {
+              const parent = await prisma.message.findFirst({
+                where: {
+                  id: parsed.replyToId,
+                  conversationId,
+                },
+                select: {
+                  externalId: true,
+                  content: true,
+                  senderType: true,
+                  metadata: true,
+                },
+              });
+              const parentExternalId = parent?.externalId ?? '';
+              if (parentExternalId && !parentExternalId.startsWith('pending:')) {
+                const parentMetadata =
+                  parent?.metadata && typeof parent.metadata === 'object' && !Array.isArray(parent.metadata)
+                    ? (parent.metadata as Record<string, unknown>)
+                    : {};
+                const remoteJidFromMeta =
+                  typeof parentMetadata.remoteJid === 'string'
+                    ? (parentMetadata.remoteJid as string)
+                    : null;
+                quotedPayload = {
+                  id: parentExternalId,
+                  remoteJid:
+                    remoteJidFromMeta ??
+                    `${phone.replace(/\D+/g, '')}@s.whatsapp.net`,
+                  // fromMe=true quando NÓS enviamos a msg citada.
+                  fromMe: parent!.senderType !== 'customer',
+                  text: parent!.content ?? '',
+                };
+              }
+            }
+
+            // CHAT-MIC-RECORDING + media routing:
+            //  - attachments[0].fileType === 'audio'  → sendWhatsAppAudio (PTT)
+            //  - fileType image|video|document       → sendMedia
+            //  - só texto                            → sendText (com quoted opcional)
+            const firstAttachment =
+              hasAttachmentDispatch && parsed.attachments
+                ? parsed.attachments[0]
+                : null;
+
+            let result: { messageId: string; raw: any };
+            if (firstAttachment && firstAttachment.fileType === 'audio') {
+              // Extrai base64 puro do data URL (Evolution sendWhatsAppAudio
+              // espera base64 sem prefixo `data:`).
+              const rawFileUrl = firstAttachment.fileUrl;
+              const base64 = rawFileUrl.startsWith('data:')
+                ? rawFileUrl.replace(/^data:[^;]+;base64,/, '')
+                : rawFileUrl;
+              result = await evolutionService.sendWhatsAppAudio(accountId, {
+                number: phone,
+                audioBase64: base64,
+                instance,
+              });
+            } else if (
+              firstAttachment &&
+              (firstAttachment.fileType === 'image' ||
+                firstAttachment.fileType === 'video' ||
+                firstAttachment.fileType === 'document')
+            ) {
+              result = await evolutionService.sendMedia(accountId, {
+                number: phone,
+                mediaUrl: firstAttachment.fileUrl,
+                mediaType: firstAttachment.fileType,
+                caption:
+                  typeof parsed.content === 'string' && parsed.content.trim()
+                    ? parsed.content
+                    : undefined,
+                fileName: firstAttachment.fileName,
+                instance,
+              });
+            } else if (quotedPayload) {
+              result = await evolutionService.sendTextWithQuote(accountId, {
+                number: phone,
+                text: parsed.content as string,
+                quotedKey: {
+                  id: quotedPayload.id,
+                  remoteJid: quotedPayload.remoteJid,
+                  fromMe: quotedPayload.fromMe,
+                },
+                quotedText: quotedPayload.text ?? '',
+                instance,
+              });
+            } else {
+              result = await evolutionService.sendText(accountId, {
+                number: phone,
+                text: parsed.content as string,
+                instance,
+              });
+            }
 
             if (result.messageId) {
               // Troca o pending:<uuid> pelo messageId real da Evolution.
@@ -425,6 +540,156 @@ export class MessageController {
       }
 
       res.json({ data: updated });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PATCH /api/messages/:id
+   * Body: { content }
+   *
+   * Edita o conteúdo de uma mensagem outbound do próprio agente
+   * (janela: 15 min após envio). Ver `messageService.editMessage` para regras.
+   */
+  async update(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user) throw new UnauthorizedError();
+      const accountId = req.user.accountId;
+      if (!accountId) throw new ValidationError('accountId obrigatório');
+
+      const id = req.params.id as string;
+      const parsed = editMessageBodySchema.parse(req.body ?? {});
+
+      const data = await messageService.editMessage(
+        id,
+        accountId,
+        req.user.id,
+        parsed.content
+      );
+
+      res.json({ data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * DELETE /api/messages/:id
+   *
+   * Soft delete de mensagem outbound do próprio agente
+   * (janela: 15 min após envio). Propaga delete-for-everyone pro WhatsApp.
+   */
+  async remove(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user) throw new UnauthorizedError();
+      const accountId = req.user.accountId;
+      if (!accountId) throw new ValidationError('accountId obrigatório');
+
+      const id = req.params.id as string;
+      const data = await messageService.softDeleteMessage(
+        id,
+        accountId,
+        req.user.id
+      );
+
+      res.json({ data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/messages/:id/reactions
+   * Body: { emoji }
+   *
+   * Reage a uma mensagem com um emoji. Idempotente por (msgId, userId, emoji).
+   */
+  async addReaction(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user) throw new UnauthorizedError();
+      const accountId = req.user.accountId;
+      if (!accountId) throw new ValidationError('accountId obrigatório');
+
+      const id = req.params.id as string;
+      const parsed = reactionBodySchema.parse(req.body ?? {});
+
+      const data = await messageService.addReaction(
+        id,
+        accountId,
+        req.user.id,
+        parsed.emoji
+      );
+
+      res.status(201).json({ data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * DELETE /api/messages/:id/reactions/:emoji
+   *
+   * Remove a reaction do usuário atual (com aquele emoji) na mensagem.
+   */
+  async removeReaction(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user) throw new UnauthorizedError();
+      const accountId = req.user.accountId;
+      if (!accountId) throw new ValidationError('accountId obrigatório');
+
+      const id = req.params.id as string;
+      const emojiParam = decodeURIComponent(req.params.emoji as string);
+
+      const data = await messageService.removeReaction(
+        id,
+        accountId,
+        req.user.id,
+        emojiParam
+      );
+
+      res.json({ data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/messages/:id/reactions
+   *
+   * Lista reactions de uma mensagem (agente humano + cliente). Frontend agrega
+   * por emoji pra render dos pills.
+   */
+  async listReactions(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      if (!req.user) throw new UnauthorizedError();
+      const accountId = req.user.accountId;
+      if (!accountId) throw new ValidationError('accountId obrigatório');
+
+      const id = req.params.id as string;
+      const data = await messageService.listReactions(id, accountId);
+
+      res.json({ data });
     } catch (error) {
       next(error);
     }

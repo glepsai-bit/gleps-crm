@@ -7,6 +7,7 @@ import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
 import { teamService } from './team.service';
 import { conversationCycleService } from './conversation-cycle.service';
+import { aggregateMessageReactions } from './message.service';
 
 /**
  * Wrapper defensivo: o Socket.IO pode não estar inicializado em testes
@@ -294,7 +295,22 @@ class ConversationService {
           ? {
               // T2-MSG-ORDER: tiebreaker por id quando createdAt colide (ms).
               orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-              include: { attachments: true },
+              include: {
+                attachments: true,
+                // CHAT-REACTIONS FURO 2: hidratação inicial dos pills. O
+                // ConversationThread agrega client-side via
+                // aggregateMessageReactions (mesmo shape retornado por
+                // messageService.list e pelo socket message:reaction:updated).
+                reactions: {
+                  select: {
+                    id: true,
+                    emoji: true,
+                    userId: true,
+                    externalContactId: true,
+                    createdAt: true,
+                  },
+                },
+              },
             }
           : false,
         participants: include.participants
@@ -327,6 +343,20 @@ class ConversationService {
     if (!include.messages) out.messages = [] as unknown as never;
     if (!include.labels) out.labels = [] as unknown as never;
     if (!include.participants) out.participants = [] as unknown as never;
+
+    // CHAT-REACTIONS FURO 2: hidratação inicial dos pills. Cada Message
+    // veio com `reactions` (raw MessageReaction[] via include acima); o
+    // frontend espera o mesmo shape agregado que list()/socket devolvem.
+    // Substituímos IN PLACE pra evitar realocar o array inteiro só pra
+    // trocar o campo.
+    if (include.messages && Array.isArray(out.messages)) {
+      const msgs = out.messages as Array<{
+        reactions?: Array<{ emoji: string; userId: string | null; externalContactId: string | null }>;
+      }>;
+      for (const m of msgs) {
+        m.reactions = aggregateMessageReactions(m.reactions ?? []) as unknown as typeof m.reactions;
+      }
+    }
 
     return out as Conversation;
   }
