@@ -1430,18 +1430,22 @@ model Attachment {
   // fileUrl: URL servível pelo frontend. Após baixar a mídia da Evolution,
   // passa a ser '/api/attachments/<id>' (proxy autenticado). Em rows legadas
   // pode estar a URL original (Evolution) — preservada também em sourceUrl.
-  fileUrl      String   @map("file_url") @db.VarChar(2000)
+  // BUG-ATTACH-500: precisa ser Text (não VarChar) porque anexos via UI enviam
+  // como data URL base64 inline (ex.: PNG 100x100 já gera ~4KB de string).
+  // VarChar(2000) explodia com 500 INTERNAL_ERROR silencioso em qualquer
+  // imagem >2KB. Rows legadas continuam válidas (upcast VarChar→Text é lossless).
+  fileUrl      String   @map("file_url") @db.Text
   fileSize     Int?     @map("file_size")
   fileName     String?  @map("file_name") @db.VarChar(255)
   mimeType     String?  @map("mime_type") @db.VarChar(120)
-  thumbnailUrl String?  @map("thumbnail_url") @db.VarChar(2000)
+  thumbnailUrl String?  @map("thumbnail_url") @db.Text
   duration     Int? // segundos pra audio/video
   // Bug A: storagePath = caminho relativo a backend/uploads onde a mídia foi
   // materializada (ex.: '<accountId>/<id>.ogg'). storageStatus = pending |
   // downloaded | failed. sourceUrl = URL original da Evolution pra retry/fallback.
   storagePath   String?  @map("storage_path") @db.VarChar(500)
   storageStatus String?  @default("pending") @map("storage_status") @db.VarChar(20)
-  sourceUrl     String?  @map("source_url") @db.VarChar(2000)
+  sourceUrl     String?  @map("source_url") @db.Text
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([messageId])
