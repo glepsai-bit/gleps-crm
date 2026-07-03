@@ -32,7 +32,16 @@ import {
   useState,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Paperclip, Send, Smile, Loader2, X } from 'lucide-react';
+import {
+  CornerUpLeft,
+  Mic,
+  Paperclip,
+  Send,
+  Smile,
+  Loader2,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -113,9 +122,94 @@ interface PendingAttachment {
 interface MessageComposerProps {
   conversationId: string;
   onMessageSent?: () => void;
+  /**
+   * CHAT-REPLY-EDIT-DEL: quando != null, o composer mostra preview do quote
+   * acima do textarea e envia `replyToId` no POST. O parent limpa via
+   * `onCancelReply` (X do preview) ou depois do send (via `onMessageSent`).
+   */
+  replyingTo?: Message | null;
+  onCancelReply?: () => void;
 }
 
-export function MessageComposer({ conversationId, onMessageSent }: MessageComposerProps) {
+// ============================================
+// CHAT-MIC-RECORDING — mimeType preferred order
+// ============================================
+// Evolution sendWhatsAppAudio (encoding: true) aceita OGG/Opus e WebM;
+// preferimos OGG/Opus quando o browser suporta (menor payload, mesmo codec
+// nativo do WhatsApp) e caímos pra WebM. Safari geralmente só oferece
+// 'audio/mp4' — mantemos fallback.
+function pickAudioMimeType(): string {
+  if (typeof MediaRecorder === 'undefined') return 'audio/webm';
+  const candidates = [
+    'audio/ogg;codecs=opus',
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+  ];
+  for (const mt of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(mt)) return mt;
+    } catch {
+      /* ignore */
+    }
+  }
+  return 'audio/webm';
+}
+
+function extForMime(mime: string): string {
+  if (mime.includes('ogg')) return 'ogg';
+  if (mime.includes('mp4')) return 'm4a';
+  return 'webm';
+}
+
+function formatRecordingTime(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function timestampSuffix(): string {
+  const d = new Date();
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return (
+    d.getFullYear().toString() +
+    pad(d.getMonth() + 1) +
+    pad(d.getDate()) +
+    pad(d.getHours()) +
+    pad(d.getMinutes())
+  );
+}
+
+// Trecho curto do reply pra mostrar no preview (60 chars).
+function replyPreviewText(msg: Message): string {
+  if (msg.deletedAt) return 'Mensagem apagada';
+  const body = msg.content?.trim();
+  if (body) {
+    return body.length > 60 ? `${body.slice(0, 60)}…` : body;
+  }
+  if (msg.attachments && msg.attachments.length > 0) {
+    const first = msg.attachments[0];
+    if (first.fileType === 'audio') return 'Mensagem de áudio';
+    if (first.fileType === 'image') return 'Imagem';
+    if (first.fileType === 'video') return 'Vídeo';
+    return 'Arquivo';
+  }
+  return '—';
+}
+
+function replySenderLabel(msg: Message): string {
+  if (msg.senderType === 'customer') return 'Cliente';
+  if (msg.senderType === 'system') return 'Sistema';
+  return 'Você';
+}
+
+export function MessageComposer({
+  conversationId,
+  onMessageSent,
+  replyingTo,
+  onCancelReply,
+}: MessageComposerProps) {
   const { toast } = useToast();
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -125,6 +219,19 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [cannedOpen, setCannedOpen] = useState(false);
   const [cannedQuery, setCannedQuery] = useState('');
+
+  // CHAT-MIC-RECORDING states
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingMs, setRecordingMs] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingStartRef = useRef<number>(0);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ref pra decidir no onstop se devemos ENVIAR ou DESCARTAR. Não podemos
+  // usar state porque o handler `onstop` é assíncrono e recebe uma snapshot
+  // do state no momento do bind.
+  const recordingIntentRef = useRef<'send' | 'cancel'>('cancel');
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -226,6 +333,12 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
     isPrivate: boolean;
     pendingAttachments: PendingAttachment[];
     optimisticId: string;
+    /**
+     * CHAT-REPLY-EDIT-DEL: id da msg citada (quando o usuário está usando
+     * o modo "Responder"). Vai como replyToId no POST — o backend valida
+     * que pertence à mesma conversa e monta o quoted p/ Evolution.
+     */
+    replyToId?: string | null;
   }
 
   interface SendContext {
@@ -240,7 +353,8 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
     optimisticId: string,
     text: string,
     privateFlag: boolean,
-    pendingAttachments: PendingAttachment[]
+    pendingAttachments: PendingAttachment[],
+    replyToId: string | null
   ): Message {
     const nowIso = new Date().toISOString();
     return {
@@ -249,11 +363,18 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
       senderType: 'agent',
       senderId: user?.id ?? null,
       content: text || null,
-      contentType: pendingAttachments.length > 0 ? 'media' : 'text',
+      // CHAT-MIC-RECORDING: quando o único anexo é audio, marcamos como
+      // 'audio' — bubble usa isso pra ícone/cor correto na UI.
+      contentType:
+        pendingAttachments.length === 1 && pendingAttachments[0].fileType === 'audio'
+          ? 'audio'
+          : pendingAttachments.length > 0
+            ? 'media'
+            : 'text',
       isPrivate: privateFlag,
       status: 'sending',
       externalId: null,
-      replyToId: null,
+      replyToId,
       deliveredAt: null,
       readAt: null,
       metadata: { __optimisticId: optimisticId },
@@ -312,6 +433,11 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         content: vars.text || undefined,
         isPrivate: vars.isPrivate,
         attachments: attachments.length > 0 ? attachments : undefined,
+        // CHAT-REPLY-EDIT-DEL: só envia quando o backend consegue montar
+        // quoted (msg citada precisa ter externalId real). O controller
+        // trata graciosamente quando o parent ainda está pending — segue
+        // sem quoted.
+        replyToId: vars.replyToId ?? undefined,
       });
     },
     onMutate: async (vars) => {
@@ -329,7 +455,8 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         vars.optimisticId,
         vars.text,
         vars.isPrivate,
-        vars.pendingAttachments
+        vars.pendingAttachments,
+        vars.replyToId ?? null
       );
 
       queryClient.setQueryData<Conversation | undefined>(queryKey, (prev) => {
@@ -420,6 +547,9 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
       }
 
       // Devolve texto/anexos para o usuario poder reenviar.
+      // CHAT-REPLY-EDIT-DEL: `replyingTo` fica no parent (ConversationThread);
+      // não limpamos aqui no onMutate, então em caso de erro o quote continua
+      // visível no preview — o usuário pode retry no botão Enviar.
       if (ctx) {
         if (ctx.previousContent) setContent(ctx.previousContent);
         if (ctx.previousPending.length > 0) setPending(ctx.previousPending);
@@ -481,6 +611,10 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      // CHAT-REPLY-EDIT-DEL: pega o id do quote atual (ou null quando não
+      // está respondendo). Nota interna também pode carregar quote — o
+      // backend permite replyToId em ambos os casos.
+      replyToId: replyingTo?.id ?? null,
     };
   }
 
@@ -488,6 +622,186 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
     const vars = prepareSend();
     if (!vars) return;
     sendMutation.mutate(vars);
+  }
+
+  // ============================================
+  // CHAT-MIC-RECORDING — gravação de áudio (PTT)
+  // ============================================
+
+  function cleanupRecordingResources() {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    const stream = mediaStreamRef.current;
+    if (stream) {
+      for (const track of stream.getTracks()) {
+        try {
+          track.stop();
+        } catch { /* ignore */ }
+      }
+      mediaStreamRef.current = null;
+    }
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+  }
+
+  // Ao trocar de conversa ou desmontar, aborta gravação em andamento.
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        recordingIntentRef.current = 'cancel';
+        try {
+          mediaRecorderRef.current.stop();
+        } catch { /* ignore */ }
+      }
+      cleanupRecordingResources();
+      setIsRecording(false);
+      setRecordingMs(0);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
+
+  async function startRecording() {
+    // Guard-rails: API precisa existir + já não estar gravando.
+    if (isRecording) return;
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      toast({
+        title: 'Microfone indisponível',
+        description: 'Seu navegador não suporta gravação de áudio.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (typeof MediaRecorder === 'undefined') {
+      toast({
+        title: 'Microfone indisponível',
+        description: 'MediaRecorder não suportado neste navegador.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Anexar/áudio gravado é mutuamente exclusivo com outros anexos pendentes
+    // pra evitar payload com múltiplos áudios / mix de tipos que o backend
+    // rota diferente.
+    if (pending.length > 0) {
+      toast({
+        title: 'Remova os anexos antes',
+        description: 'Grave áudio sem outros anexos na fila.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+
+      const mimeType = pickAudioMimeType();
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+      recordingIntentRef.current = 'cancel'; // default seguro
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const chunks = audioChunksRef.current;
+        const intent = recordingIntentRef.current;
+        cleanupRecordingResources();
+        setIsRecording(false);
+        setRecordingMs(0);
+
+        if (intent !== 'send' || chunks.length === 0) return;
+
+        const blob = new Blob(chunks, { type: mimeType });
+        // Blob acima do limite de anexo — WhatsApp aceita até ~16MB PTT mas
+        // nosso backend limita a 5MB pra proteger o payload JSON. Feedback
+        // ao usuário e aborta.
+        if (blob.size > MAX_ATTACHMENT_BYTES) {
+          toast({
+            title: 'Áudio muito longo',
+            description: `Gravação de ${formatBytes(blob.size)} excede o limite de ${formatBytes(MAX_ATTACHMENT_BYTES)}. Grave um trecho menor.`,
+            variant: 'destructive',
+          });
+          return;
+        }
+
+        const file = new File(
+          [blob],
+          `recording-${timestampSuffix()}.${extForMime(mimeType)}`,
+          { type: mimeType }
+        );
+
+        const pendingAudio: PendingAttachment = {
+          id:
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          file,
+          fileType: 'audio',
+          previewUrl: URL.createObjectURL(blob),
+        };
+
+        // Dispara envio imediato — texto opcional (o usuário pode ter
+        // digitado enquanto gravava). Backend roteia sendWhatsAppAudio
+        // quando o único attachment é audio (PTT nativo).
+        const optimisticId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+        sendMutation.mutate({
+          text: content.trim(),
+          isPrivate,
+          pendingAttachments: [pendingAudio],
+          optimisticId,
+          replyToId: replyingTo?.id ?? null,
+        });
+      };
+
+      recordingStartRef.current = Date.now();
+      setRecordingMs(0);
+      recorder.start();
+      setIsRecording(true);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingMs(Date.now() - recordingStartRef.current);
+      }, 250);
+    } catch (err) {
+      cleanupRecordingResources();
+      const message =
+        err instanceof Error ? err.message : 'Erro ao acessar microfone';
+      toast({
+        title: 'Falha na gravação',
+        description: message,
+        variant: 'destructive',
+      });
+    }
+  }
+
+  function stopRecording(intent: 'send' | 'cancel') {
+    if (!isRecording) return;
+    recordingIntentRef.current = intent;
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      try {
+        recorder.stop(); // dispara ondataavailable + onstop
+      } catch {
+        // Estado inconsistente — força cleanup
+        cleanupRecordingResources();
+        setIsRecording(false);
+        setRecordingMs(0);
+      }
+    } else {
+      cleanupRecordingResources();
+      setIsRecording(false);
+      setRecordingMs(0);
+    }
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -599,6 +913,35 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         </TabsList>
       </Tabs>
 
+      {/* CHAT-REPLY-EDIT-DEL: preview do quote acima do textarea */}
+      {replyingTo && (
+        <div
+          className={cn(
+            'flex items-start gap-2 rounded-md border border-primary/40 bg-primary/5 px-2 py-1.5',
+            'dark:bg-primary/10'
+          )}
+        >
+          <CornerUpLeft className="w-3.5 h-3.5 text-primary mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0 border-l-2 border-primary pl-2">
+            <p className="text-[11px] font-medium text-primary">
+              Respondendo a {replySenderLabel(replyingTo)}
+            </p>
+            <p className="text-[11px] text-muted-foreground truncate">
+              {replyPreviewText(replyingTo)}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onCancelReply?.()}
+            className="text-muted-foreground hover:text-foreground shrink-0"
+            aria-label="Cancelar resposta"
+            title="Cancelar resposta"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Anexos pendentes */}
       {pending.length > 0 && (
         <div className="flex flex-wrap gap-2">
@@ -623,6 +966,42 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* CHAT-MIC-RECORDING: barra de gravação — substitui a textarea/actions
+          normais enquanto isRecording=true. Timer + Cancelar + Enviar. */}
+      {isRecording && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-destructive opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-destructive" />
+          </span>
+          <span className="text-sm font-medium text-destructive tabular-nums">
+            {formatRecordingTime(recordingMs)}
+          </span>
+          <span className="text-xs text-muted-foreground flex-1">
+            Gravando… fale agora
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs"
+            onClick={() => stopRecording('cancel')}
+          >
+            <Trash2 className="w-3.5 h-3.5 mr-1" />
+            Cancelar
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => stopRecording('send')}
+          >
+            <Send className="w-3.5 h-3.5 mr-1" />
+            Enviar
+          </Button>
         </div>
       )}
 
@@ -656,95 +1035,116 @@ export function MessageComposer({ conversationId, onMessageSent }: MessageCompos
         </PopoverContent>
       </Popover>
 
-      <Textarea
-        ref={textareaRef}
-        value={content}
-        onChange={(e) => {
-          setContent(e.target.value);
-          notifyTyping();
-        }}
-        onKeyDown={handleKeyDown}
-        placeholder={
-          isPrivate
-            ? 'Nota interna (não visível ao cliente)...'
-            : 'Digite uma mensagem. Use / para respostas prontas. Enter envia, Shift+Enter quebra linha.'
-        }
-        rows={2}
-        className={cn(
-          'resize-none text-sm min-h-[44px] max-h-[200px] focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:border-primary/50',
-          isPrivate && 'bg-yellow-100/60 dark:bg-yellow-900/30'
-        )}
-      />
-
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1">
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileSelected}
+      {/* Textarea + actions — escondidos durante gravação p/ evitar
+          conflito de foco / envio duplicado (envio do áudio dispara
+          sendMutation quando o usuário clica "Enviar" na barra de rec). */}
+      {!isRecording && (
+        <>
+          <Textarea
+            ref={textareaRef}
+            value={content}
+            onChange={(e) => {
+              setContent(e.target.value);
+              notifyTyping();
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder={
+              isPrivate
+                ? 'Nota interna (não visível ao cliente)...'
+                : 'Digite uma mensagem. Use / para respostas prontas. Enter envia, Shift+Enter quebra linha.'
+            }
+            rows={2}
+            className={cn(
+              'resize-none text-sm min-h-[44px] max-h-[200px] focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:border-primary/50',
+              isPrivate && 'bg-yellow-100/60 dark:bg-yellow-900/30'
+            )}
           />
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={() => fileInputRef.current?.click()}
-            title="Anexar arquivo"
-          >
-            <Paperclip className="w-4 h-4" />
-          </Button>
 
-          <Popover>
-            <PopoverTrigger asChild>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={handleFileSelected}
+              />
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                title="Emoji"
+                onClick={() => fileInputRef.current?.click()}
+                title="Anexar arquivo"
               >
-                <Smile className="w-4 h-4" />
+                <Paperclip className="w-4 h-4" />
               </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-64 p-2">
-              <div className="grid grid-cols-10 gap-1">
-                {EMOJIS.map((e) => (
-                  <button
-                    key={e}
+
+              {/* CHAT-MIC-RECORDING: botão Mic — inicia gravação */}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={startRecording}
+                title="Gravar áudio"
+                aria-label="Gravar áudio"
+                disabled={sendMutation.isPending}
+              >
+                <Mic className="w-4 h-4" />
+              </Button>
+
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
                     type="button"
-                    className="text-lg hover:bg-accent rounded p-0.5"
-                    onClick={() => insertEmoji(e)}
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    title="Emoji"
                   >
-                    {e}
-                  </button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
+                    <Smile className="w-4 h-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-64 p-2">
+                  <div className="grid grid-cols-10 gap-1">
+                    {EMOJIS.map((e) => (
+                      <button
+                        key={e}
+                        type="button"
+                        className="text-lg hover:bg-accent rounded p-0.5"
+                        onClick={() => insertEmoji(e)}
+                      >
+                        {e}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
 
-        </div>
+            </div>
 
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => triggerSend()}
-          disabled={
-            sendMutation.isPending ||
-            (!content.trim() && pending.length === 0)
-          }
-        >
-          {sendMutation.isPending ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <>
-              <Send className="w-3.5 h-3.5 mr-1" />
-              Enviar
-            </>
-          )}
-        </Button>
-      </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => triggerSend()}
+              disabled={
+                sendMutation.isPending ||
+                (!content.trim() && pending.length === 0)
+              }
+            >
+              {sendMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <>
+                  <Send className="w-3.5 h-3.5 mr-1" />
+                  Enviar
+                </>
+              )}
+            </Button>
+          </div>
+        </>
+      )}
 
     </div>
   );

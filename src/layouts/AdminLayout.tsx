@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/popover';
 import { chatSocket, type MentionPayload } from '@/services/socket.client';
 import { agentAvailabilityBackendService } from '@/services/agent-availability.backend.service';
+import { messagesBackendService } from '@/services/messages.backend.service';
 import { tokenManager } from '@/api/client';
 import {
   DropdownMenu,
@@ -193,9 +194,47 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
       });
     });
 
+    // T-022 Sprint 4 pareado: hidrata mentions não-lidas do backend logo
+    // após conectar. Cobre o gap entre F5 e a chegada do primeiro socket
+    // event — sem isso o sino ficava sempre em zero até uma menção nova
+    // acontecer. GET /api/mentions?limit=20&read=false (default do controller).
+    // AbortController evita setMentions após desmontar (troca de user).
+    const mentionsCtrl = new AbortController();
+    messagesBackendService
+      .getMentions({ limit: 20 })
+      .then((rows) => {
+        if (mentionsCtrl.signal.aborted) return;
+        const hydrated: MentionPayload[] = rows.map((r) => ({
+          id: r.id,
+          conversationId: r.conversationId,
+          messageId: r.messageId ?? null,
+          fromUserId: r.fromUserId ?? null,
+          read: r.read,
+          createdAt: r.createdAt,
+        }));
+        setMentions((prev) => {
+          // Merge dedup: socket pode ter chegado antes do GET terminar.
+          const seen = new Set(prev.map((m) => m.id));
+          const merged = [...prev];
+          for (const h of hydrated) {
+            if (!seen.has(h.id)) {
+              merged.push(h);
+              seen.add(h.id);
+            }
+          }
+          // Ordena por createdAt desc (mais recentes primeiro), limit 20.
+          merged.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+          return merged.slice(0, 20);
+        });
+      })
+      .catch(() => {
+        /* silencioso — mentions não são críticas pro layout */
+      });
+
     return () => {
       clearInterval(heartbeatInterval);
       offMention();
+      mentionsCtrl.abort();
     };
   }, [user?.id]);
 

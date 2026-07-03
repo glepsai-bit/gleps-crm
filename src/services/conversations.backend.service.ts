@@ -59,6 +59,18 @@ export interface Attachment {
   createdAt: string;
 }
 
+/**
+ * CHAT-REACTIONS FURO 2: aggregate emitido pelo backend em list/get e no
+ * evento socket message:reaction:updated. `byMe` é DERIVADO no frontend
+ * a partir de `userIds` + currentUserId — não vem do servidor.
+ */
+export interface MessageReactionServerAggregate {
+  emoji: string;
+  count: number;
+  userIds: string[];
+  externalContactIds: string[];
+}
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -72,9 +84,22 @@ export interface Message {
   replyToId: string | null;
   deliveredAt: string | null;
   readAt: string | null;
+  /**
+   * CHAT-REPLY-EDIT-DEL: quando != null, a mensagem foi soft-deletada
+   * pelo próprio agente (delete-for-everyone) e deve ser renderizada como
+   * "Mensagem apagada". O backend também zera `content` no soft-delete.
+   */
+  deletedAt?: string | null;
   metadata?: Record<string, unknown> | null;
   createdAt: string;
   attachments?: Attachment[];
+  /**
+   * CHAT-REACTIONS FURO 2: reactions agregadas por emoji, hidratadas
+   * pelo backend em list()/get() e atualizadas via socket em
+   * message:reaction:updated. Sem esse campo, F5 apagava os pills e
+   * agente B nunca via a reaction do agente A/cliente sem refresh.
+   */
+  reactions?: MessageReactionServerAggregate[];
 }
 
 export interface ConversationContactSummary {

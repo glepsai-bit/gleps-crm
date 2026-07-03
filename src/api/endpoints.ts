@@ -470,13 +470,36 @@ export const API_ENDPOINTS = {
   // Listagem/envio de mensagens por conversa, marcação de leitura por
   // mensagem e busca textual (ILIKE em content escopado por accountId).
   // LIST/SEND compartilham a mesma URL — diferem pelo método HTTP.
+  //
+  // CHAT-REPLY-EDIT-DEL + CHAT-REACTIONS (T-022 pós-Sprint 4):
+  //   PATCH  /api/messages/:id                    → edit outbound (janela 15min)
+  //   DELETE /api/messages/:id                    → soft delete outbound (janela 15min)
+  //   GET    /api/messages/:id/reactions          → lista reactions da msg
+  //   POST   /api/messages/:id/reactions          → adiciona reaction {emoji}
+  //   DELETE /api/messages/:id/reactions/:emoji   → remove reaction do próprio user
   MESSAGES: {
     LIST: (conversationId: string) =>
       `/api/conversations/${conversationId}/messages`,
     SEND: (conversationId: string) =>
       `/api/conversations/${conversationId}/messages`,
     MARK_READ: (id: string) => `/api/messages/${id}/read`,
+    UPDATE: (id: string) => `/api/messages/${id}`,
+    DELETE: (id: string) => `/api/messages/${id}`,
     SEARCH: '/api/messages/search',
+    REACTIONS: (id: string) => `/api/messages/${id}/reactions`,
+    REACTION_REMOVE: (id: string, emoji: string) =>
+      `/api/messages/${id}/reactions/${encodeURIComponent(emoji)}`,
+  },
+
+  // ============= MENTIONS (T-022 Sprint 4 — histórico do sino) =============
+  // Hidrata o sino do AdminLayout no mount (complementa o socket
+  // `mention:new` que só cobre eventos em tempo real depois da conexão).
+  //
+  //   GET   /api/mentions?limit=&read=false|true|all
+  //   PATCH /api/mentions/:id/read
+  MENTIONS: {
+    LIST: '/api/mentions',
+    MARK_READ: (id: string) => `/api/mentions/${id}/read`,
   },
 } as const;
 

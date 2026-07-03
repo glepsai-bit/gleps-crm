@@ -5,12 +5,14 @@
  * `/chat` do backend Express (ver backend/src/socket/index.ts).
  *
  * Eventos emitidos pelo backend (assinaturas):
- *   - 'message:created'        → { conversationId, message }
- *   - 'conversation:updated'   → { conversationId, conversation }
- *   - 'conversation:assigned'  → { conversationId, assignee }
- *   - 'mention:new'            → MentionPayload
- *   - 'agent:status'           → { userId, status }
- *   - 'typing'                 → { conversationId, userId, isTyping }
+ *   - 'message:created'          → { conversationId, message }
+ *   - 'message:updated'          → { conversationId, message }
+ *   - 'message:reaction:updated' → { conversationId, messageId, reactions }
+ *   - 'conversation:updated'     → { conversationId, conversation }
+ *   - 'conversation:assigned'    → { conversationId, assignee }
+ *   - 'mention:new'              → MentionPayload
+ *   - 'agent:status'             → { userId, status }
+ *   - 'typing'                   → { conversationId, userId, isTyping }
  *
  * Eventos consumidos pelo backend (cliente → servidor):
  *   - 'join-conversation'      → conversationId | { conversationId }
@@ -35,6 +37,29 @@ export type AgentStatus = 'online' | 'away' | 'busy' | 'offline';
 export interface MessageCreatedPayload {
   conversationId: string;
   message: unknown;
+}
+
+/**
+ * CHAT-REPLY-EDIT-DEL: emitido pelo backend quando uma mensagem existente
+ * é editada (metadata.edited=true, novo content) ou soft-deleted
+ * (content=null, deletedAt preenchido). Mesmo shape do created.
+ */
+export interface MessageUpdatedPayload {
+  conversationId: string;
+  message: unknown;
+}
+
+/**
+ * CHAT-REACTIONS FURO 2: emitido pelo backend após addReaction /
+ * removeReaction / recordCustomerReaction. `reactions` é o mesmo aggregate
+ * agrupado por emoji retornado por list()/get(): `{ emoji, count, userIds,
+ * externalContactIds }[]`. O caller aplica PATCH direto na msg do cache
+ * do thread — sem refetch, sem F5.
+ */
+export interface MessageReactionUpdatedPayload {
+  conversationId: string;
+  messageId: string;
+  reactions: unknown;
 }
 
 export interface ConversationUpdatedPayload {
@@ -254,6 +279,26 @@ export class ChatSocket {
 
   onMessageCreated(cb: Listener<MessageCreatedPayload>): Unsubscribe {
     return this.subscribe('message:created', cb);
+  }
+
+  /**
+   * CHAT-REPLY-EDIT-DEL: assina mutações em mensagem existente (edit ou
+   * soft delete). O caller aplica PATCH direto no cache do thread.
+   */
+  onMessageUpdated(cb: Listener<MessageUpdatedPayload>): Unsubscribe {
+    return this.subscribe('message:updated', cb);
+  }
+
+  /**
+   * CHAT-REACTIONS FURO 2: assina atualizações de reactions de uma
+   * mensagem (add/remove por agente ou cliente WhatsApp via webhook).
+   * Payload traz o aggregate já agrupado por emoji — o caller apenas
+   * substitui `msg.reactions` no cache do thread.
+   */
+  onMessageReactionUpdated(
+    cb: Listener<MessageReactionUpdatedPayload>
+  ): Unsubscribe {
+    return this.subscribe('message:reaction:updated', cb);
   }
 
   onConversationUpdated(cb: Listener<ConversationUpdatedPayload>): Unsubscribe {

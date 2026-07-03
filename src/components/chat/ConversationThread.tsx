@@ -1,11 +1,20 @@
 /**
- * ConversationThread — T-022 Sprint 4
+ * ConversationThread — T-022 Sprint 4 + CHAT-REPLY-EDIT-DEL + CHAT-REACTIONS
  *
  * Coluna central do chat: header com ações + lista de mensagens agrupadas por
  * dia + composer. Auto-scroll para a última mensagem; markAsRead após 2s de
  * exibição. Bubbles alinhados conforme `senderType` (customer à esquerda,
  * agent/system à direita). Notas privadas com fundo amarelo. Reply quote.
  * Indicador entregue/lida via checks.
+ *
+ * CHAT-REPLY-EDIT-DEL: bubble ganha menu contextual (Responder / Editar /
+ * Apagar). Responder → passa msg pro composer como quote; Editar → textarea
+ * inline; Apagar → AlertDialog + PATCH backend (soft delete).
+ *
+ * CHAT-REACTIONS: menu ganha "Reagir" (popover com 6 emojis). Pill abaixo do
+ * bubble mostra agregado por emoji. Click toggla (POST/DELETE). Reactions
+ * ficam em Map<msgId, aggregate[]> local (não hidratamos no mount — sem
+ * endpoint batch), atualizadas via mutations.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -14,12 +23,8 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import {
-  Check,
-  CheckCheck,
-  Clock,
   AlertCircle,
   MessageSquare,
-  CornerUpLeft,
   Loader2,
   ArrowLeft,
   Phone,
@@ -29,18 +34,34 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   conversationsBackendService,
   type Conversation,
   type Message,
+  type MessageReactionServerAggregate,
 } from '@/services/conversations.backend.service';
+import {
+  messagesBackendService,
+  aggregateReactions,
+  type MessageReactionAggregate,
+} from '@/services/messages.backend.service';
 import { chatSocket } from '@/services/socket.client';
 import { tokenManager } from '@/api/client';
 import { ConversationActions } from './ConversationActions';
 import { MessageComposer } from './MessageComposer';
-import { AttachmentRenderer } from './AttachmentRenderer';
+import { MessageBubble } from './MessageBubble';
 
 const STATUS_LABEL: Record<Conversation['status'], string> = {
   open: 'Aberta',
@@ -86,12 +107,6 @@ function getContactInitials(
     .toUpperCase();
 }
 
-function formatHour(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-}
-
 function formatDayHeader(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
@@ -111,6 +126,26 @@ function formatDayHeader(iso: string): string {
   });
 }
 
+/**
+ * CHAT-REACTIONS FURO 2: converte o aggregate server-side (sem `byMe`)
+ * para o shape consumido pelo MessageBubble. `byMe` é derivado do
+ * currentUserId — o backend NÃO conhece o solicitante nas rotas
+ * list()/get() (viria a custo extra de contexto no include).
+ */
+function toClientAggregate(
+  server: MessageReactionServerAggregate[] | undefined,
+  currentUserId: string | null | undefined
+): MessageReactionAggregate[] {
+  if (!Array.isArray(server) || server.length === 0) return [];
+  return server.map((r) => ({
+    emoji: r.emoji,
+    count: r.count,
+    userIds: r.userIds,
+    externalContactIds: r.externalContactIds,
+    byMe: Boolean(currentUserId) && r.userIds.includes(currentUserId as string),
+  }));
+}
+
 function groupByDay(messages: Message[]): Array<{ day: string; items: Message[] }> {
   const groups = new Map<string, Message[]>();
   for (const msg of messages) {
@@ -122,22 +157,7 @@ function groupByDay(messages: Message[]): Array<{ day: string; items: Message[] 
   return Array.from(groups.entries()).map(([day, items]) => ({ day, items }));
 }
 
-function statusIcon(status: Message['status']) {
-  switch (status) {
-    case 'sending':
-      return <Clock className="w-3 h-3" />;
-    case 'sent':
-      return <Check className="w-3 h-3" />;
-    case 'delivered':
-      return <CheckCheck className="w-3 h-3" />;
-    case 'read':
-      return <CheckCheck className="w-3 h-3 text-blue-500" />;
-    case 'failed':
-      return <AlertCircle className="w-3 h-3 text-destructive" />;
-    default:
-      return null;
-  }
-}
+// formatHour + statusIcon movidos para MessageBubble.tsx (CHAT-REPLY-EDIT-DEL)
 
 interface ConversationThreadProps {
   conversationId: string;
@@ -421,6 +441,90 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
       }
     });
 
+    // CHAT-REPLY-EDIT-DEL: mutações em mensagem existente (edit/soft delete)
+    // chegam em 'message:updated'. PATCH direto na mensagem correspondente
+    // no cache do thread — troca content, deletedAt e metadata (edited flag,
+    // editedAt, previousContent). NÃO reordena a thread: id e createdAt
+    // são preservados. Se a mensagem não estiver no cache (usuário abriu a
+    // conversa tarde), ignoramos silenciosamente — o próximo refetch a traz.
+    const offMessageUpdated = chatSocket.onMessageUpdated((payload) => {
+      if (payload.conversationId !== conversationId) return;
+      const incoming = payload.message as Message | undefined | null;
+      const hasValidMessage =
+        incoming &&
+        typeof incoming === 'object' &&
+        typeof (incoming as Message).id === 'string';
+      if (!hasValidMessage) return;
+
+      queryClient.setQueryData<Conversation | undefined>(
+        ['conversation', conversationId, 'thread-full'],
+        (old) => {
+          if (!old) return old;
+          if (!Array.isArray(old.messages)) return old;
+          let touched = false;
+          const merged = old.messages.map((m) => {
+            if (m.id === incoming.id) {
+              touched = true;
+              // Merge (nao replace): editMessage/softDeleteMessage nao incluem
+              // REACTIONS_INCLUDE no include do prisma.update — sem o spread
+              // de `m` primeiro, o campo `reactions` da msg sumiria do cache
+              // depois de qualquer edit/delete (pill some da UI ate proximo
+              // refetch). Padrao consistente com onMessageReactionUpdated.
+              return { ...m, ...incoming };
+            }
+            return m;
+          });
+          if (!touched) return old;
+          return { ...old, messages: merged };
+        }
+      );
+    });
+
+    // CHAT-REACTIONS FURO 2: add/remove de reactions (do agente atual, de
+    // outros agentes, ou do cliente via webhook) chegam em
+    // 'message:reaction:updated'. Payload traz `reactions` já agregado por
+    // emoji — sem precisar refetch. Aplicamos em DOIS lugares:
+    //   1) cache do thread (msg.reactions) — persiste entre remounts e
+    //      alimenta a hidratação inicial via useEffect abaixo.
+    //   2) Map local reactionsByMsg — render imediato do pill (evita esperar
+    //      o re-run do useEffect que só dispara quando allMessages muda de
+    //      referência).
+    const offReactionUpdated = chatSocket.onMessageReactionUpdated((payload) => {
+      if (payload.conversationId !== conversationId) return;
+      const messageId = payload.messageId;
+      if (!messageId) return;
+      const server =
+        (payload.reactions as MessageReactionServerAggregate[] | undefined) ?? [];
+
+      queryClient.setQueryData<Conversation | undefined>(
+        ['conversation', conversationId, 'thread-full'],
+        (old) => {
+          if (!old) return old;
+          if (!Array.isArray(old.messages)) return old;
+          let touched = false;
+          const merged = old.messages.map((m) => {
+            if (m.id === messageId) {
+              touched = true;
+              return { ...m, reactions: server };
+            }
+            return m;
+          });
+          if (!touched) return old;
+          return { ...old, messages: merged };
+        }
+      );
+
+      setReactionsByMsg((prev) => {
+        const next = new Map(prev);
+        if (server.length === 0) {
+          next.delete(messageId);
+        } else {
+          next.set(messageId, toClientAggregate(server, user?.id));
+        }
+        return next;
+      });
+    });
+
     // BUG-2 (race residual): Mudancas na conversa (assign, status, priority,
     // etc.) NAO devem invalidar a queryKey 'thread-full' — invalidate dispara
     // um GET /conversations/:id?messages=true que demora 100-500ms e, nesse
@@ -561,6 +665,8 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
 
     return () => {
       offMessage();
+      offMessageUpdated();
+      offReactionUpdated();
       offConvUpdate();
       offAssigned();
       offTyping();
@@ -571,6 +677,289 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
       setTypingUsers(new Set());
     };
   }, [conversationId, queryClient, user?.id]);
+
+  // ============================================
+  // CHAT-REPLY-EDIT-DEL + CHAT-REACTIONS — states + mutations
+  // ============================================
+  // Reply: msg citada quando != null; MessageComposer lê via props e envia
+  // o replyToId no POST. Cancelamos ao trocar de conversa ou depois do envio.
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  // Edit inline: id da msg em edição + o texto sendo digitado.
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState<string>('');
+  // Delete: msg selecionada para AlertDialog (confirmação).
+  const [pendingDeleteMsg, setPendingDeleteMsg] = useState<Message | null>(null);
+  // Reactions: agregado por msgId, mantido em Map local. FURO 2: agora o
+  // backend retorna `msg.reactions` embutido em list()/get() e emite
+  // `message:reaction:updated` no socket. Hidratamos abaixo via useEffect.
+  const [reactionsByMsg, setReactionsByMsg] = useState<
+    Map<string, MessageReactionAggregate[]>
+  >(() => new Map());
+
+  // Reset de todos os states auxiliares ao trocar de conversa — evita que
+  // `replyingTo` de uma conversa vaze pra outra (BUG UX comum).
+  useEffect(() => {
+    setReplyingTo(null);
+    setEditingMessageId(null);
+    setEditingValue('');
+    setPendingDeleteMsg(null);
+    setReactionsByMsg(new Map());
+  }, [conversationId]);
+
+  // CHAT-REACTIONS FURO 2: hidrata reactionsByMsg a partir do msg.reactions
+  // que o backend agora devolve embutido em list()/get(). Isso resolve o
+  // caso "F5 = pill some" (sem hidratação, o Map ficava vazio até o próximo
+  // toggle do usuário).
+  //
+  // MERGE que respeita optimistic: para cada msg com reactions server-side,
+  // sobrescreve com o server truth (correto). Para msgs sem reactions
+  // server-side, NAO apaga entries locais — protege contra a race entre
+  // onMutate (optimistic) e o socket message:reaction:updated que vem depois.
+  //
+  // Depende de `conversationQuery.data?.messages` (não do allMessages memo
+  // que ainda não foi definido nesse ponto). A referência muda a cada
+  // setQueryData do socket, então uma reaction chegando via socket
+  // (message:reaction:updated) que altere msg.reactions no cache também
+  // dispara aqui — belt-and-suspenders sobre o handler direto do socket.
+  const threadMessages = conversationQuery.data?.messages;
+  useEffect(() => {
+    if (!Array.isArray(threadMessages) || threadMessages.length === 0) return;
+    setReactionsByMsg((prev) => {
+      const next = new Map(prev);
+      for (const m of threadMessages) {
+        const server =
+          (m.reactions as MessageReactionServerAggregate[] | undefined) ?? [];
+        if (server.length === 0) continue;
+        next.set(m.id, toClientAggregate(server, user?.id));
+      }
+      return next;
+    });
+  }, [threadMessages, user?.id]);
+
+  // ---- Edit ----
+  const editMutation = useMutation({
+    mutationFn: ({ id, content }: { id: string; content: string }) =>
+      messagesBackendService.editMessage(id, content),
+    onSuccess: (updated) => {
+      // Merge direto no cache — mesma queryKey da thread.
+      queryClient.setQueryData<Conversation | undefined>(
+        ['conversation', conversationId, 'thread-full'],
+        (prev) => {
+          if (!prev) return prev;
+          if (!Array.isArray(prev.messages)) return prev;
+          return {
+            ...prev,
+            messages: prev.messages.map((m) => (m.id === updated.id ? { ...m, ...updated } : m)),
+          };
+        }
+      );
+      setEditingMessageId(null);
+      setEditingValue('');
+      toast({ title: 'Mensagem editada' });
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : 'Erro ao editar';
+      toast({ title: 'Falha ao editar', description: message, variant: 'destructive' });
+    },
+  });
+
+  function handleReply(msg: Message) {
+    setReplyingTo(msg);
+    // Cancela edit em andamento se houver — não faz sentido responder e editar
+    // simultâneo.
+    setEditingMessageId(null);
+    setEditingValue('');
+  }
+
+  function handleCancelReply() {
+    setReplyingTo(null);
+  }
+
+  function handleEditStart(msg: Message) {
+    setEditingMessageId(msg.id);
+    setEditingValue(msg.content ?? '');
+    setReplyingTo(null);
+  }
+
+  function handleEditCancel() {
+    setEditingMessageId(null);
+    setEditingValue('');
+  }
+
+  function handleEditSave() {
+    if (!editingMessageId) return;
+    const trimmed = editingValue.trim();
+    if (!trimmed) {
+      toast({
+        title: 'Conteúdo obrigatório',
+        description: 'Digite algo antes de salvar.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    editMutation.mutate({ id: editingMessageId, content: trimmed });
+  }
+
+  // ---- Delete ----
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => messagesBackendService.deleteMessage(id),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<Conversation | undefined>(
+        ['conversation', conversationId, 'thread-full'],
+        (prev) => {
+          if (!prev) return prev;
+          if (!Array.isArray(prev.messages)) return prev;
+          return {
+            ...prev,
+            messages: prev.messages.map((m) =>
+              m.id === updated.id ? { ...m, ...updated } : m
+            ),
+          };
+        }
+      );
+      setPendingDeleteMsg(null);
+      toast({ title: 'Mensagem apagada' });
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : 'Erro ao apagar';
+      toast({
+        title: 'Falha ao apagar',
+        description: message,
+        variant: 'destructive',
+      });
+      setPendingDeleteMsg(null);
+    },
+  });
+
+  function handleDeleteRequest(msg: Message) {
+    setPendingDeleteMsg(msg);
+  }
+
+  function handleDeleteConfirm() {
+    if (!pendingDeleteMsg) return;
+    deleteMutation.mutate(pendingDeleteMsg.id);
+  }
+
+  // ---- React (add / remove) ----
+  //
+  // Cada mutação atualiza `reactionsByMsg` sincronamente antes de disparar
+  // (optimistic) e reconcilia com a resposta do backend. Pra minimizar
+  // complexidade de rollback, guardamos o snapshot no `ctx`.
+  const reactMutation = useMutation<
+    unknown,
+    Error,
+    { msg: Message; emoji: string; action: 'add' | 'remove' },
+    { previous: MessageReactionAggregate[] | undefined }
+  >({
+    mutationFn: ({ msg, emoji, action }) => {
+      if (action === 'add') {
+        return messagesBackendService.reactMessage(msg.id, emoji);
+      }
+      return messagesBackendService.removeReaction(msg.id, emoji);
+    },
+    onMutate: ({ msg, emoji, action }) => {
+      const previous = reactionsByMsg.get(msg.id);
+      setReactionsByMsg((prev) => {
+        const next = new Map(prev);
+        const current = prev.get(msg.id) ?? [];
+        const idx = current.findIndex((r) => r.emoji === emoji);
+        if (action === 'add') {
+          if (idx === -1) {
+            next.set(msg.id, [
+              ...current,
+              {
+                emoji,
+                count: 1,
+                userIds: user?.id ? [user.id] : [],
+                externalContactIds: [],
+                byMe: true,
+              },
+            ]);
+          } else {
+            const existing = current[idx];
+            // Já tem esse emoji — se byMe true, era um noop (backend upsert),
+            // se byMe false, incrementa e marca como meu.
+            if (!existing.byMe) {
+              const clone = [...current];
+              clone[idx] = {
+                ...existing,
+                count: existing.count + 1,
+                userIds: user?.id ? [...existing.userIds, user.id] : existing.userIds,
+                byMe: true,
+              };
+              next.set(msg.id, clone);
+            }
+          }
+        } else {
+          if (idx !== -1) {
+            const existing = current[idx];
+            const nextCount = Math.max(existing.count - 1, 0);
+            if (nextCount === 0) {
+              next.set(
+                msg.id,
+                current.filter((_, i) => i !== idx)
+              );
+            } else {
+              const clone = [...current];
+              clone[idx] = {
+                ...existing,
+                count: nextCount,
+                userIds: user?.id
+                  ? existing.userIds.filter((id) => id !== user.id)
+                  : existing.userIds,
+                byMe: false,
+              };
+              next.set(msg.id, clone);
+            }
+          }
+        }
+        return next;
+      });
+      return { previous };
+    },
+    onError: (err, { msg }, ctx) => {
+      // Reverte para o snapshot pré-mutação
+      setReactionsByMsg((prev) => {
+        const next = new Map(prev);
+        if (ctx?.previous) {
+          next.set(msg.id, ctx.previous);
+        } else {
+          next.delete(msg.id);
+        }
+        return next;
+      });
+      const message = err instanceof Error ? err.message : 'Erro ao reagir';
+      toast({ title: 'Falha na reação', description: message, variant: 'destructive' });
+    },
+    onSuccess: (_data, { msg }) => {
+      // Best-effort: reidrata as reactions dessa msg com o server-side pra
+      // captar reactions de outros agentes/clientes que possam ter caído
+      // no meio do fluxo. Silencioso em caso de falha.
+      messagesBackendService
+        .listReactions(msg.id)
+        .then((rows) => {
+          const agg = aggregateReactions(rows, user?.id ?? null);
+          setReactionsByMsg((prev) => {
+            const next = new Map(prev);
+            if (agg.length === 0) {
+              next.delete(msg.id);
+            } else {
+              next.set(msg.id, agg);
+            }
+            return next;
+          });
+        })
+        .catch(() => { /* ignore */ });
+    },
+  });
+
+  function handleReact(msg: Message, emoji: string) {
+    reactMutation.mutate({ msg, emoji, action: 'add' });
+  }
+
+  function handleUnreact(msg: Message, emoji: string) {
+    reactMutation.mutate({ msg, emoji, action: 'remove' });
+  }
 
   const conversation = conversationQuery.data ?? null;
   const allMessages = useMemo(
@@ -764,77 +1153,31 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
                 </div>
                 {group.items.map((msg) => {
                   const isCustomer = msg.senderType === 'customer';
-                  const isPrivate = msg.isPrivate;
                   const replyMsg = msg.replyToId
-                    ? messages.find((m) => m.id === msg.replyToId)
+                    ? messages.find((m) => m.id === msg.replyToId) ?? null
                     : null;
+                  const reactions = reactionsByMsg.get(msg.id);
+                  const isEditing = editingMessageId === msg.id;
 
                   return (
-                    <div
+                    <MessageBubble
                       key={msg.id}
-                      className={cn(
-                        'flex w-full',
-                        isCustomer ? 'justify-start' : 'justify-end'
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          'max-w-[80%] rounded-lg px-3 py-2 space-y-1.5',
-                          isPrivate
-                            ? 'bg-yellow-100 dark:bg-yellow-900/40 border border-yellow-400/40'
-                            : isCustomer
-                              ? 'bg-muted text-foreground'
-                              : 'bg-primary text-primary-foreground'
-                        )}
-                      >
-                        {isPrivate && (
-                          <div className="flex items-center gap-1 text-[10px] text-yellow-800 dark:text-yellow-200 font-medium uppercase">
-                            <CornerUpLeft className="w-3 h-3" />
-                            Nota interna
-                          </div>
-                        )}
-                        {replyMsg && (
-                          <div
-                            className={cn(
-                              'border-l-2 pl-2 text-[11px] opacity-80',
-                              isCustomer ? 'border-primary' : 'border-primary-foreground/40'
-                            )}
-                          >
-                            <p className="font-medium">
-                              {replyMsg.senderType === 'customer'
-                                ? 'Cliente'
-                                : replyMsg.senderType === 'system'
-                                  ? 'Sistema'
-                                  : 'Agente'}
-                            </p>
-                            <p className="line-clamp-2">{replyMsg.content || '—'}</p>
-                          </div>
-                        )}
-                        {msg.content && (
-                          <p className="text-sm whitespace-pre-wrap break-words">
-                            {msg.content}
-                          </p>
-                        )}
-                        {msg.attachments && msg.attachments.length > 0 && (
-                          <div className="space-y-1.5">
-                            {msg.attachments.map((att) => (
-                              <AttachmentRenderer key={att.id} attachment={att} />
-                            ))}
-                          </div>
-                        )}
-                        <div
-                          className={cn(
-                            'flex items-center gap-1 text-[10px]',
-                            isCustomer
-                              ? 'text-muted-foreground justify-start'
-                              : 'text-primary-foreground/80 justify-end'
-                          )}
-                        >
-                          <span>{formatHour(msg.createdAt)}</span>
-                          {!isCustomer && statusIcon(msg.status)}
-                        </div>
-                      </div>
-                    </div>
+                      msg={msg}
+                      replyMsg={replyMsg}
+                      isCustomer={isCustomer}
+                      currentUserId={user?.id ?? null}
+                      reactions={reactions}
+                      onReply={handleReply}
+                      onEdit={handleEditStart}
+                      onDelete={handleDeleteRequest}
+                      onReact={handleReact}
+                      onUnreact={handleUnreact}
+                      isEditing={isEditing}
+                      editingValue={isEditing ? editingValue : ''}
+                      onEditChange={setEditingValue}
+                      onEditSave={handleEditSave}
+                      onEditCancel={handleEditCancel}
+                    />
                   );
                 })}
               </div>
@@ -853,15 +1196,57 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
         </div>
       )}
 
-      {/* Composer */}
+      {/* Composer — recebe replyingTo pra montar preview + enviar replyToId */}
       <MessageComposer
         conversationId={conversationId}
+        replyingTo={replyingTo}
+        onCancelReply={handleCancelReply}
         // BUG-1: removido invalidateQueries aqui. O proprio MessageComposer ja
         // aplica optimistic update no cache + onSuccess substitui pelo real,
         // e o socket onMessageCreated faz merge final. Invalidar aqui causava
         // refetch redundante que (em rede lenta) zerava a thread por um frame.
-        onMessageSent={() => {}}
+        onMessageSent={() => {
+          // Após enviar, limpa reply — o quote foi "consumido".
+          setReplyingTo(null);
+        }}
       />
+
+      {/* AlertDialog — confirmação de apagar (CHAT-REPLY-EDIT-DEL) */}
+      <AlertDialog
+        open={pendingDeleteMsg !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteMsg(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apagar essa mensagem para todos?</AlertDialogTitle>
+            <AlertDialogDescription>
+              A mensagem será removida do WhatsApp do cliente e ficará marcada como
+              &quot;Mensagem apagada&quot; no histórico. Essa ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleDeleteConfirm();
+              }}
+              disabled={deleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                'Apagar'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
