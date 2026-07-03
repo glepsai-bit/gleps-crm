@@ -308,6 +308,34 @@ class ProspectingService {
    * @param inboxInstanceMap - map de inbox_id -> Inbox.evolutionInstance (validado
    *   em dispatch()). Não usado aqui, apenas anexado ao DispatchConfig.
    */
+  /**
+   * Best-effort persistence do dispatchLog. Quando o transporte real (Evolution)
+   * já entregou a mensagem e persistOutboundConversation já criou a Conversation,
+   * um erro transiente no update do log NAO deve regredir o contador do batch
+   * — a mensagem foi entregue de verdade. Log fica em 'pending' e um alerta
+   * é registrado para reconciliação posterior.
+   */
+  private async persistLogBestEffort(
+    batchId: string,
+    logId: string,
+    data: {
+      status: string;
+      sentAt?: Date;
+      errorMessage?: string | null;
+    }
+  ): Promise<void> {
+    try {
+      await prisma.dispatchLog.update({ where: { id: logId }, data });
+    } catch (err: any) {
+      logger.error('[dispatch] Falha ao persistir DispatchLog — batch contador correto, log fica pending pra reconciliacao', {
+        batchId,
+        logId,
+        targetStatus: data.status,
+        error: err?.message ?? String(err),
+      });
+    }
+  }
+
   private async resolveDispatchConfig(
     accountId: string,
     inboxInstanceMap: Map<string, string>
@@ -414,6 +442,37 @@ class ProspectingService {
           `Inbox(es) sem WhatsApp conectado: ${noInstance.map(i => i.name).join(', ')}. Conecte primeiro em Configurações > Inboxes.`,
           422,
           'INBOX_NOT_CONNECTED'
+        );
+      }
+
+      // Bug C — Guard de connection state ao vivo. O flag `active` do banco
+      // não reflete se a sessão WhatsApp está pareada agora; um chip pode
+      // estar `active=true` mas com `connectionState='close'` (aparelho
+      // desligado, QR expirado). Sem essa checagem o loop de dispatch chama
+      // evolutionService.sendText contra uma instância morta, gastando slot
+      // de rate limit e retornando "sucesso" fake em algumas versões.
+      //
+      // Consulta o Evolution APENAS para os inboxes deste batch (paralelo),
+      // com timeout embutido em evolutionService.getStatus. Falha individual
+      // (Evolution offline / instância removida) vira 'unknown' e bloqueia.
+      const healthChecks = await Promise.all(
+        dbInboxes.map(async (inbox) => {
+          try {
+            const status = await evolutionService.getStatus(accountId, inbox.evolutionInstance!);
+            return { inbox, state: status.state };
+          } catch {
+            return { inbox, state: 'unknown' as const };
+          }
+        })
+      );
+      const unhealthy = healthChecks.filter(x => x.state !== 'open');
+      if (unhealthy.length > 0) {
+        const detail = unhealthy.map(x => `${x.inbox.name} (${x.state})`).join(', ');
+        throw new AppError(
+          `Inbox(es) desconectada(s): ${detail}. Reconecte em Configurações > Inboxes antes de disparar.`,
+          422,
+          'INBOX_DISCONNECTED',
+          { unhealthy: unhealthy.map(x => ({ id: x.inbox.id, name: x.inbox.name, state: x.state })) }
         );
       }
 
@@ -557,14 +616,13 @@ class ProspectingService {
 
         const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
         if (!hasConsent) {
+          // Contador reflete decisão real (msg bloqueada). Log é best-effort:
+          // se persist falhar, batch continua consistente com a ação tomada.
           failedCount++;
-          await prisma.dispatchLog.update({
-            where: { id: task.logId },
-            data: {
-              status: 'blocked_optout',
-              errorMessage: 'Contato com opt-out',
-              sentAt: new Date(),
-            },
+          await this.persistLogBestEffort(batchId, task.logId, {
+            status: 'blocked_optout',
+            errorMessage: 'Contato com opt-out',
+            sentAt: new Date(),
           });
           await prisma.dispatchBatch.update({
             where: { id: batchId },
@@ -577,13 +635,10 @@ class ProspectingService {
         const rl = await whatsappRateLimitService.check(config.accountId, normalized);
         if (!rl.allowed) {
           failedCount++;
-          await prisma.dispatchLog.update({
-            where: { id: task.logId },
-            data: {
-              status: 'rate_limited',
-              errorMessage: rl.reason ?? 'rate_limited',
-              sentAt: new Date(),
-            },
+          await this.persistLogBestEffort(batchId, task.logId, {
+            status: 'rate_limited',
+            errorMessage: rl.reason ?? 'rate_limited',
+            sentAt: new Date(),
           });
           await prisma.dispatchBatch.update({
             where: { id: batchId },
@@ -596,16 +651,20 @@ class ProspectingService {
         await this.sendViaTransport(config, task.contact, task.inboxId, message);
         whatsappRateLimitService.record(config.accountId, normalized);
 
+        // sendViaTransport ja persistiu Conversation+Message. Contador sobe
+        // agora refletindo a mensagem REAL entregue. dispatchLog eh best-effort:
+        // se persist falha, alerta em log mas nao regride envio ja realizado.
         sentCount++;
-        await prisma.dispatchLog.update({
-          where: { id: task.logId },
-          data: { status: 'sent', sentAt: new Date() },
+        await this.persistLogBestEffort(batchId, task.logId, {
+          status: 'sent',
+          sentAt: new Date(),
         });
       } catch (err: any) {
         failedCount++;
-        await prisma.dispatchLog.update({
-          where: { id: task.logId },
-          data: { status: 'failed', errorMessage: err.message, sentAt: new Date() },
+        await this.persistLogBestEffort(batchId, task.logId, {
+          status: 'failed',
+          errorMessage: err.message,
+          sentAt: new Date(),
         });
       }
 
@@ -768,13 +827,10 @@ class ProspectingService {
         const hasConsent = await whatsappConsentService.hasConsent(config.accountId, normalized);
         if (!hasConsent) {
           failedCount++;
-          await prisma.dispatchLog.update({
-            where: { id: log.id },
-            data: {
-              status: 'blocked_optout',
-              errorMessage: 'Contato com opt-out',
-              sentAt: new Date(),
-            },
+          await this.persistLogBestEffort(batchId, log.id, {
+            status: 'blocked_optout',
+            errorMessage: 'Contato com opt-out',
+            sentAt: new Date(),
           });
           await prisma.dispatchBatch.update({
             where: { id: batchId },
@@ -787,13 +843,10 @@ class ProspectingService {
         const rl = await whatsappRateLimitService.check(config.accountId, normalized);
         if (!rl.allowed) {
           failedCount++;
-          await prisma.dispatchLog.update({
-            where: { id: log.id },
-            data: {
-              status: 'rate_limited',
-              errorMessage: rl.reason ?? 'rate_limited',
-              sentAt: new Date(),
-            },
+          await this.persistLogBestEffort(batchId, log.id, {
+            status: 'rate_limited',
+            errorMessage: rl.reason ?? 'rate_limited',
+            sentAt: new Date(),
           });
           await prisma.dispatchBatch.update({
             where: { id: batchId },
@@ -810,15 +863,17 @@ class ProspectingService {
         whatsappRateLimitService.record(config.accountId, normalized);
 
         sentCount++;
-        await prisma.dispatchLog.update({
-          where: { id: log.id },
-          data: { status: 'sent', sentAt: new Date(), errorMessage: null },
+        await this.persistLogBestEffort(batchId, log.id, {
+          status: 'sent',
+          sentAt: new Date(),
+          errorMessage: null,
         });
       } catch (err: any) {
         failedCount++;
-        await prisma.dispatchLog.update({
-          where: { id: log.id },
-          data: { status: 'failed', errorMessage: err.message, sentAt: new Date() },
+        await this.persistLogBestEffort(batchId, log.id, {
+          status: 'failed',
+          errorMessage: err.message,
+          sentAt: new Date(),
         });
       }
 
