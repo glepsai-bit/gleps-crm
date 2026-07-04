@@ -728,6 +728,15 @@ export class EvolutionController {
       return { content: null, contentType: 'audio', attachments: att ? [att] : [] };
     }
 
+    // Sticker (WEBP estatico ou animado — recebimento apenas; nao renderizamos
+    // botao de envio por regra de negocio). A msg fica sem content, so com
+    // attachment fileType='sticker' — o AttachmentRenderer no frontend
+    // renderiza como <img> menor (~180x180) sem contorno de bubble.
+    if (m.stickerMessage) {
+      const att = buildAttachment('sticker', m.stickerMessage);
+      return { content: null, contentType: 'media', attachments: att ? [att] : [] };
+    }
+
     return { content: null, contentType: 'text', attachments: [] };
   }
 

@@ -103,6 +103,13 @@ export function AttachmentRenderer({ attachment }: AttachmentRendererProps) {
     return <ImageAttachment fileUrl={fileUrl} thumbnailUrl={thumbnailUrl} displayName={displayName} />;
   }
 
+  // Sticker (WEBP) — recebimento apenas. Render menor (~180x180) sem bordas
+  // pra parecer figurinha nativa. Sem lightbox nem link — sticker nao eh
+  // pra download. WEBP animado toca automatico via tag <img> nativa.
+  if (fileType === 'sticker') {
+    return <StickerAttachment fileUrl={fileUrl} displayName={displayName} />;
+  }
+
   if (fileType === 'video') {
     return <VideoAttachment fileUrl={fileUrl} thumbnailUrl={thumbnailUrl} mimeType={mimeType} />;
   }
@@ -152,6 +159,35 @@ function ImageAttachment({
         className="w-full h-auto object-cover max-h-64"
       />
     </a>
+  );
+}
+
+function StickerAttachment({
+  fileUrl,
+  displayName,
+}: { fileUrl: string; displayName: string }) {
+  const { resolvedSrc, loading, error } = useAuthenticatedSrc(fileUrl);
+  if (loading || !resolvedSrc) {
+    return (
+      <div className="flex items-center justify-center w-[160px] h-[160px] rounded-md bg-transparent">
+        <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="w-[160px] rounded-md border border-destructive/40 bg-destructive/5 px-3 py-4 text-center text-xs text-destructive">
+        Sticker
+      </div>
+    );
+  }
+  return (
+    <img
+      src={resolvedSrc}
+      alt={displayName}
+      className="w-[160px] h-[160px] object-contain select-none"
+      draggable={false}
+    />
   );
 }
 

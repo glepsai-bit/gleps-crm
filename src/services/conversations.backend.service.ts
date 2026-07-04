@@ -37,7 +37,7 @@ export type MessageSenderType =
   | 'system'
   | 'integration';
 
-export type AttachmentFileType = 'image' | 'video' | 'audio' | 'document';
+export type AttachmentFileType = 'image' | 'video' | 'audio' | 'document' | 'sticker';
 
 export interface Attachment {
   id: string;

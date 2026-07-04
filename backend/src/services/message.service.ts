@@ -45,7 +45,7 @@ export interface ListMessagesOptions {
 }
 
 export interface CreateAttachmentInput {
-  fileType: 'image' | 'video' | 'audio' | 'document';
+  fileType: 'image' | 'video' | 'audio' | 'document' | 'sticker';
   fileUrl: string;
   fileSize?: number;
   fileName?: string;
