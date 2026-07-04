@@ -1,10 +1,31 @@
+import * as Sentry from '@sentry/node';
+import { env, isDevelopment } from './config/env';
+
+// PISTA A — Sentry error tracking.
+// Init roda no MODULE LOAD (antes de rotas / bootstrap) para instrumentar
+// http + express + prisma automaticamente. É guardado por SENTRY_DSN: se
+// ausente, nada é inicializado e o app continua funcionando normalmente
+// (sem coleta de erros). tracesSampleRate=0.1 mantém overhead baixo em prod.
+if (env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: env.SENTRY_DSN,
+    environment: env.NODE_ENV,
+    release: process.env.BUILD_VERSION || 'dev',
+    integrations: [
+      Sentry.httpIntegration(),
+      Sentry.expressIntegration(),
+      Sentry.prismaIntegration(),
+    ],
+    tracesSampleRate: 0.1,
+  });
+}
+
 import http from 'http';
 import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { env, isDevelopment } from './config/env';
 import { connectDatabase, prisma } from './config/database';
 import { metricsCollector } from './services/metrics-collector';
 import { emailService } from './services/email.service';
@@ -430,6 +451,14 @@ async function bootstrap() {
 
   // API routes
   app.use('/api', routes);
+
+  // PISTA A — Sentry error handler.
+  // Deve rodar DEPOIS das rotas e ANTES dos error handlers customizados
+  // para capturar exceptions lançadas dentro dos handlers de rota. No-op
+  // silencioso se Sentry.init não foi chamado (SENTRY_DSN ausente).
+  if (env.SENTRY_DSN) {
+    Sentry.setupExpressErrorHandler(app);
+  }
 
   // Error handlers
   app.use(notFoundHandler);

@@ -64,6 +64,11 @@ const envSchema = z.object({
   // Logging
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 
+  // Sentry error tracking (optional but strongly recommended in prod).
+  // Se ausente, a inicialização do Sentry é pulada e o app continua
+  // funcionando normalmente sem coleta de erros.
+  SENTRY_DSN: z.string().optional(),
+
   // Warmup AI providers (T-023 Fase 2) — TODAS opcionais.
   // Se a chave de um provider estiver vazia, o provider eh marcado disabled
   // e o registry ignora ele; a geracao cai pra template automaticamente.
@@ -72,6 +77,13 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
   WARMUP_AI_TIMEOUT_MS: z.string().transform(Number).default('5000'),
+
+  // Web Push (VAPID) — opcional. Se ausente, push service loga warn e no-op.
+  // Gerar par com: npx web-push generate-vapid-keys
+  // VAPID_SUBJECT tem que ser mailto: ou https:// (spec Web Push).
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
