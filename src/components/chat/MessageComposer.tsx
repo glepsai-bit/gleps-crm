@@ -77,11 +77,15 @@ const EMOJIS = [
  * em ~33%, então mantemos 5MB de margem segura. Anexos acima desse limite são
  * recusados no cliente antes de qualquer chamada de rede.
  */
-// 16 MB — teto do WhatsApp para PTT (push-to-talk) e imagens/videos.
-// Anexos em base64 inflam ~33% no payload JSON, entao o backend
-// (express.json limit) precisa aceitar ~24MB. Antes era 5MB e cortava
-// audios de 1min+ e imagens de camera moderna (10-15MB).
-const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024;
+// 10 MB — limite prático (arquivo real) do fluxo base64 inline em prod.
+// Testado 2026-07-04: payload base64 de 14MB (arquivo ~10MB) passa;
+// 17MB base64 (arquivo ~13MB) estoura 502 Bad Gateway no proxy do
+// EasyPanel/Nginx antes de terminar de processar. Teto WhatsApp é 16MB,
+// mas base64 (~1.33×) + JSON.parse + memoria do container atingem o limite
+// antes disso. Solução definitiva é upload dedicado multipart (roadmap).
+// Ate la, 10MB de arquivo real cobre 95% dos casos de atendimento (foto
+// 2-5MB, audio 1min ~1MB, video curto ~5-8MB).
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 /**
  * Schemes aceitos para `fileUrl` no payload de mensagens. Backend espera URL
