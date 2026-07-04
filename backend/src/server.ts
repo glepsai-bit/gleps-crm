@@ -354,15 +354,20 @@ async function bootstrap() {
   // o payload (HMAC SHA-256) possam validar a assinatura byte-a-byte. Sem isso,
   // o JSON.stringify(req.body) gera bytes diferentes do que o cliente assinou
   // (espaços, ordem de chaves, escapes Unicode) e a assinatura nunca bate.
+  // 24MB acomoda o teto de 16MB do WhatsApp para PTT/imagem/video
+  // inflado ~33% pelo base64 do payload JSON (frontend envia
+  // attachments como data:base64 inline enquanto nao ha upload dedicado).
+  // Antes era 10MB e audios reais de ~1min ou fotos de camera moderna
+  // caiam com 413 ou eram bloqueados pelo guard do MessageComposer.
   app.use(
     express.json({
-      limit: '10mb',
+      limit: '24mb',
       verify: (req, _res, buf) => {
         (req as any).rawBody = buf;
       },
     })
   );
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '24mb' }));
 
   // Request logging
   if (isDevelopment) {
