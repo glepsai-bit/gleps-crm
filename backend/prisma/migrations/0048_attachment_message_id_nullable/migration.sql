@@ -1,0 +1,21 @@
+-- Migration: 0048_attachment_message_id_nullable
+-- ADITIVA — apenas relaxa NOT NULL de attachments.message_id para NULL-tolerante.
+--
+-- Contexto (PISTA D — Upload multipart dedicado):
+-- O novo fluxo POST /api/attachments/upload cria a linha em Attachment ANTES
+-- da Message correspondente existir. O usuário faz upload do arquivo grande
+-- (>5MB) via multipart, recebe { id, fileUrl }, e só depois o composer envia
+-- POST /api/conversations/:id/messages com esse fileUrl. O message.service
+-- então linka o attachment pré-existente à message recém-criada
+-- (att.messageId = novaMsg.id). Durante a janela intermediária, message_id
+-- fica NULL e Attachment.storagePath já aponta pro arquivo em disco.
+--
+-- Rows legadas continuam válidas — o ALTER só remove o NOT NULL constraint,
+-- os dados existentes seguem intocados. A FK message_id → messages(id) com
+-- ON DELETE CASCADE continua ativa: uploads órfãos (message_id=NULL) não são
+-- afetados por cascade (nada para cascatar), e limpeza periódica pode ser
+-- feita por WHERE message_id IS NULL AND created_at < now() - interval '24h'.
+--
+-- Operação atômica, não bloqueia leituras: ALTER COLUMN DROP NOT NULL é O(1).
+ALTER TABLE "attachments"
+  ALTER COLUMN "message_id" DROP NOT NULL;

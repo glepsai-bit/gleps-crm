@@ -1,13 +1,23 @@
 /**
- * ATTACHMENT CONTROLLER — Bug A (T-022)
+ * ATTACHMENT CONTROLLER — Bug A (T-022) + PISTA D (upload multipart)
  *
  * GET /api/attachments/:id
  *   Streama a mídia já materializada em disco (ou força materialização lazy
  *   se ainda estiver pending). Autenticação JWT obrigatória (rota está sob
- *   o stack /api comum). RBAC: o attachment precisa pertencer a uma
- *   conversa da accountId do usuário.
+ *   o stack /api comum). RBAC:
+ *   - Se o attachment tem messageId (fluxo Evolution + legacy), valida via
+ *     conversation.accountId.
+ *   - PISTA D: se messageId=NULL (upload pending do agente), valida via
+ *     storagePath prefix (accountId eh o primeiro segmento — `<accountId>/`).
  *
- * Headers de resposta:
+ * POST /api/attachments/upload  (PISTA D)
+ *   Multipart form-data: campo `file` (binary) + campo `conversationId`.
+ *   Valida ownership da conversationId, grava buffer em disco via
+ *   storeFromBuffer, retorna { id, fileUrl, fileType, fileSize, mimeType }.
+ *   O composer usa fileUrl (/api/attachments/<id>) no proximo POST de
+ *   message — o message.service linka a row pre-existente.
+ *
+ * Headers de resposta (stream):
  *   - Content-Type vindo do Attachment.mimeType (fallback application/octet-stream)
  *   - Content-Length = byteLength do arquivo
  *   - Content-Disposition: inline; filename="<fileName>" — permite o browser
@@ -45,10 +55,25 @@ export class AttachmentController {
       // RBAC: garante que o attachment pertence à conta do usuário.
       // Não vazamos 404 vs 403 pra evitar enumeração (sempre 404 se não
       // pertencer).
+      //
+      // PISTA D: attachments criados via POST /api/attachments/upload podem
+      // ter messageId=NULL (upload pending, ainda nao linkado a nenhuma msg).
+      // Nesses casos o filtro por message.conversation.accountId eh vazio.
+      // Fallback: valida via storagePath — o layout eh `<accountId>/<id>.<ext>`,
+      // entao startsWith(`${accountId}/`) equivale a "pertence a essa conta".
       const att = await prisma.attachment.findFirst({
         where: {
           id,
-          message: { conversation: { accountId } },
+          OR: [
+            // Fluxo padrao: attachment ja linkado a uma message da conta.
+            { message: { conversation: { accountId } } },
+            // PISTA D: upload pending do agente — messageId ainda null.
+            // storagePath prefixado por `<accountId>/` prova o pertencimento.
+            {
+              messageId: null,
+              storagePath: { startsWith: `${accountId}/` },
+            },
+          ],
         },
         select: {
           id: true,
@@ -135,6 +160,88 @@ export class AttachmentController {
         return 'application/pdf';
       default:
         return 'application/octet-stream';
+    }
+  }
+
+  /**
+   * PISTA D — POST /api/attachments/upload
+   *
+   * Multipart form-data: campo `file` (binary) + campo `conversationId`.
+   * Fluxo hibrido do MessageComposer: anexos ate 5MB seguem base64 inline,
+   * arquivos maiores sobem por aqui (upload dedicado) e o composer envia
+   * a message referenciando fileUrl=/api/attachments/<id>.
+   *
+   * Validacoes:
+   *   - conversationId pertence a accountId do usuario (RBAC).
+   *   - file presente + nao vazio (multer garante limits.fileSize).
+   *   - mimetype string nao vazia.
+   *
+   * NAO cria Message aqui — apenas Attachment com messageId=null. O link
+   * ocorre no proximo POST /api/conversations/:id/messages, na mesma
+   * transacao que cria a Message (message.service).
+   */
+  async upload(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const accountId = getAccountId(req);
+
+      const file = (req as unknown as { file?: Express.Multer.File }).file;
+      if (!file) {
+        throw new ValidationError('Arquivo obrigatorio (campo "file")');
+      }
+      if (!file.buffer || file.buffer.byteLength === 0) {
+        throw new ValidationError('Arquivo vazio');
+      }
+
+      const conversationId =
+        typeof req.body?.conversationId === 'string'
+          ? req.body.conversationId.trim()
+          : '';
+      if (!conversationId) {
+        throw new ValidationError('conversationId obrigatorio');
+      }
+
+      // RBAC: garante que a conversa pertence a accountId. Nao vazamos
+      // 404 vs 403 — sempre NotFound se cross-tenant.
+      const conversation = await prisma.conversation.findFirst({
+        where: { id: conversationId, accountId },
+        select: { id: true },
+      });
+      if (!conversation) {
+        throw new NotFoundError('Conversa nao encontrada');
+      }
+
+      const stored = await attachmentStorageService.storeFromBuffer(
+        accountId,
+        file.buffer,
+        file.mimetype || 'application/octet-stream',
+        file.originalname || null
+      );
+
+      logger.info('[attachment] upload multipart concluido', {
+        attachmentId: stored.id,
+        conversationId,
+        accountId,
+        bytes: stored.fileSize,
+        mimeType: stored.mimeType,
+        fileType: stored.fileType,
+      });
+
+      res.status(201).json({
+        data: {
+          id: stored.id,
+          fileUrl: stored.fileUrl,
+          fileType: stored.fileType,
+          fileSize: stored.fileSize,
+          mimeType: stored.mimeType,
+          fileName: stored.fileName,
+        },
+      });
+    } catch (error) {
+      next(error);
     }
   }
 }

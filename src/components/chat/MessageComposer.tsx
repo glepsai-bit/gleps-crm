@@ -1,27 +1,28 @@
 /**
- * MessageComposer — T-022 Sprint 4
+ * MessageComposer — T-022 Sprint 4 + PISTA D (upload hibrido)
  *
  * Composer de mensagens:
  *  - Textarea auto-grow
  *  - Toggle "Privada" (notas internas)
  *  - Atalhos canned-response via "/" (autocomplete)
- *  - Attach (input file simples + dropzone)
+ *  - Attach (input file simples + dropzone) — fluxo hibrido:
+ *      * arquivos <= 5MB: base64 inline no body JSON (rapido, low latency)
+ *      * arquivos  > 5MB: multipart pra POST /api/attachments/upload
+ *        (fluxo dedicado — cria Attachment em disco, message referencia
+ *        via fileUrl=/api/attachments/<id>)
  *  - Ctrl+Enter envia
  *  - Indicador "digitando..." via chatSocket.sendTyping
  *
- * Observação: upload real de arquivos depende de endpoint dedicado. Aqui
- * mantemos compat com o backend `sendMessage` que aceita `attachments[]`
- * com `fileUrl` já hospedado. O input de file converte para base64 inline
- * em data URL como fallback, sinalizado por toast.
+ * Historico: antes existia apenas o fallback base64 com teto de 10MB —
+ * arquivos maiores exigiam hospedagem externa. PISTA D introduziu o
+ * endpoint multipart que aceita ate 25MB (teto WhatsApp ~16MB + folga),
+ * cobrindo praticamente 100% dos casos de atendimento.
  *
- * IMPORTANTE (bug HIGH): o fallback base64 quebra o body do POST quando o
- * arquivo passa do limite do `express.json` (10MB) — o Evolution também
- * rejeita base64 mal-formado / muito grande. Enquanto o endpoint dedicado
- * de upload não existir, aplicamos:
- *   - limite explícito de 5 MB por arquivo (após base64 o body cresce ~33%)
- *   - validação do esquema do `fileUrl` (http(s):// ou data:)
- *   - aviso visual (toast) sempre que cair no fallback inline
- *   - bloqueio do envio quando algum anexo excede o limite
+ * Validacoes:
+ *   - limite MAX_ATTACHMENT_BYTES=25MB por arquivo (recusa selecao)
+ *   - threshold base64 vs multipart em 5MB
+ *   - schema aceita http(s), data URL e /api/attachments/... (relativo)
+ *   - toast informativo em cada branch (base64 x multipart)
  */
 import {
   ChangeEvent,
@@ -72,27 +73,35 @@ const EMOJIS = [
 ];
 
 /**
- * Limite máximo (em bytes) por anexo enquanto não existir endpoint dedicado de
- * upload. O backend recebe via `express.json` (default ~10MB) e o base64 inflaciona
- * em ~33%, então mantemos 5MB de margem segura. Anexos acima desse limite são
- * recusados no cliente antes de qualquer chamada de rede.
+ * PISTA D — teto real: 25MB por anexo, aplicado em qualquer branch
+ * (base64 inline ou multipart dedicado). Cobre o teto pratico do WhatsApp
+ * (~16MB pra imagem/video/audio) com folga pra metadata, headers e retry.
+ * Anexos acima disso sao recusados na selecao (feedback imediato ao usuario).
+ * A rota multipart lida com arquivos entre 5MB e 25MB; base64 fica reservado
+ * pros anexos ate 5MB (rapido, low latency, evita duas ida-e-voltas HTTP).
  */
-// 10 MB — limite prático (arquivo real) do fluxo base64 inline em prod.
-// Testado 2026-07-04: payload base64 de 14MB (arquivo ~10MB) passa;
-// 17MB base64 (arquivo ~13MB) estoura 502 Bad Gateway no proxy do
-// EasyPanel/Nginx antes de terminar de processar. Teto WhatsApp é 16MB,
-// mas base64 (~1.33×) + JSON.parse + memoria do container atingem o limite
-// antes disso. Solução definitiva é upload dedicado multipart (roadmap).
-// Ate la, 10MB de arquivo real cobre 95% dos casos de atendimento (foto
-// 2-5MB, audio 1min ~1MB, video curto ~5-8MB).
-const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 /**
- * Schemes aceitos para `fileUrl` no payload de mensagens. Backend espera URL
- * hospedada (http/https) ou data URL para o fallback inline. Qualquer outro
- * esquema (blob:, file:, javascript:, etc.) é rejeitado.
+ * PISTA D — threshold que separa base64 inline vs multipart dedicado.
+ *   arquivos <= 5MB     → base64 no body do POST /messages (rapido)
+ *   arquivos  > 5MB      → POST /api/attachments/upload multipart, depois
+ *                          POST /messages referenciando /api/attachments/<id>
+ *
+ * 5MB eh o "sweet spot": arquivos pequenos (screenshot, audio curto) enviam
+ * em 1 request; arquivos grandes (video, PDF) usam multipart pra nao inflar
+ * o body JSON (base64 = +33%) nem estourar express.json (24MB).
  */
-const ALLOWED_FILE_URL_SCHEMES = /^(https?:\/\/|data:)/i;
+const MULTIPART_THRESHOLD_BYTES = 5 * 1024 * 1024;
+
+/**
+ * PISTA D — Schemes aceitos para `fileUrl` no payload de mensagens:
+ *   - http(s)://       URL hospedada externa (legado)
+ *   - data:            base64 inline (fallback rapido)
+ *   - /api/attachments/  path relativo pro attachment ja carregado via
+ *                        upload multipart (o backend reconhece e linka)
+ */
+const ALLOWED_FILE_URL_SCHEMES = /^(https?:\/\/|data:|\/api\/attachments\/)/i;
 
 function isAllowedFileUrl(url: string): boolean {
   return ALLOWED_FILE_URL_SCHEMES.test(url);
@@ -408,23 +417,65 @@ export function MessageComposer({
 
   const sendMutation = useMutation<Message, Error, SendVariables, SendContext>({
     mutationFn: async (vars) => {
-      // Aviso ao usuario de que estamos no fallback base64 (nao e upload real).
-      if (vars.pendingAttachments.length > 0) {
+      // PISTA D — Fluxo hibrido: base64 inline (rapido) pra <=5MB, multipart
+      // dedicado (POST /api/attachments/upload) pra >5MB. Cada anexo eh
+      // roteado independentemente pelo seu size — user pode enviar 1 foto
+      // pequena + 1 video grande na mesma message; a primeira vai inline,
+      // a segunda sobe primeiro e depois eh linkada por fileUrl relativo.
+      const hasSmall = vars.pendingAttachments.some(
+        (p) => p.file.size <= MULTIPART_THRESHOLD_BYTES
+      );
+      const hasLarge = vars.pendingAttachments.some(
+        (p) => p.file.size > MULTIPART_THRESHOLD_BYTES
+      );
+      if (hasLarge) {
+        toast({
+          title: 'Enviando arquivo grande…',
+          description:
+            'Anexo(s) acima de ' +
+            formatBytes(MULTIPART_THRESHOLD_BYTES) +
+            ' — subindo via upload dedicado antes de enviar a mensagem.',
+        });
+      } else if (hasSmall) {
         toast({
           title: 'Enviando anexo inline (base64)',
           description:
-            'Upload dedicado ainda nao disponivel — arquivos grandes podem demorar ou falhar. Limite por arquivo: ' +
+            'Arquivos ate ' +
+            formatBytes(MULTIPART_THRESHOLD_BYTES) +
+            ' viajam inline. Limite total por arquivo: ' +
             formatBytes(MAX_ATTACHMENT_BYTES),
         });
       }
 
-      // Converte anexos pendentes (fallback: data URL inline).
       const attachments: SendAttachmentInput[] = await Promise.all(
-        vars.pendingAttachments.map(async (p) => {
+        vars.pendingAttachments.map(async (p): Promise<SendAttachmentInput> => {
+          if (p.file.size > MULTIPART_THRESHOLD_BYTES) {
+            // Branch multipart — sobe o arquivo pra rota dedicada; o backend
+            // devolve fileUrl relativo (/api/attachments/<id>). O composer
+            // envia a message apenas com esse fileUrl (sem base64).
+            const uploaded = await messagesBackendService.uploadAttachment(
+              conversationId,
+              p.file
+            );
+            if (!isAllowedFileUrl(uploaded.fileUrl)) {
+              throw new Error(
+                `URL do anexo retornada pelo servidor eh invalida: "${uploaded.fileUrl}".`
+              );
+            }
+            return {
+              fileType: p.fileType,
+              fileUrl: uploaded.fileUrl,
+              fileName: p.file.name,
+              fileSize: uploaded.fileSize,
+              mimeType: uploaded.mimeType,
+            };
+          }
+
+          // Branch base64 (rapido, arquivos <=5MB).
           const dataUrl = await fileToDataUrl(p.file);
           if (!isAllowedFileUrl(dataUrl)) {
             throw new Error(
-              `URL de anexo invalida para "${p.file.name}". Apenas http(s):// ou data: sao aceitos.`
+              `URL de anexo invalida para "${p.file.name}". Apenas http(s)://, data: ou /api/attachments/ sao aceitos.`
             );
           }
           return {

@@ -62,9 +62,40 @@ export interface MaterializedAttachment {
   mimeType: string | null;
 }
 
+/**
+ * PISTA D: retorno de storeFromBuffer — shape que o controller devolve pro
+ * frontend fazer POST na message referenciando esse attachment via fileUrl
+ * relativo (/api/attachments/<id>).
+ */
+export interface StoredAttachment {
+  id: string;
+  fileUrl: string;
+  fileType: 'image' | 'video' | 'audio' | 'document';
+  fileSize: number;
+  mimeType: string;
+  fileName: string | null;
+  storagePath: string;
+}
+
 interface EvolutionConfigForDownload {
   baseUrl: string;
   apiKey: string;
+}
+
+/**
+ * PISTA D: deriva fileType (image|video|audio|document) do MIME. Espelha
+ * mimeToFileType do frontend (MessageComposer.tsx) pra que ambos os lados
+ * classifiquem do mesmo jeito. Sticker eh tratado como image no upload
+ * (o composer nao gera sticker).
+ */
+function deriveFileType(
+  mimeType: string
+): 'image' | 'video' | 'audio' | 'document' {
+  const m = mimeType.toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('video/')) return 'video';
+  if (m.startsWith('audio/')) return 'audio';
+  return 'document';
 }
 
 // ============================================
@@ -381,6 +412,87 @@ class AttachmentStorageService {
     } catch {
       // best-effort
     }
+  }
+
+  /**
+   * PISTA D — Upload multipart dedicado.
+   *
+   * Persiste um buffer bruto (recebido via multer.memoryStorage no controller
+   * /api/attachments/upload) no diretorio uploads/<accountId>/<uuid>.<ext> e
+   * cria a row Attachment com messageId=null / storageStatus='downloaded'.
+   * O controller retorna { id, fileUrl } pro frontend; quando o usuario
+   * finaliza o composer, POST /api/conversations/:id/messages referencia
+   * esse fileUrl e o message.service linka a row (messageId = novaMsg.id).
+   *
+   * Diferente de materialize(): NAO baixa nada da rede, NAO precisa de
+   * Evolution config, e nao popula sourceUrl (nao existe URL "original" —
+   * o upload veio do proprio browser do agente).
+   *
+   * Idempotente por accountId: dois uploads simultaneos geram uuids distintos
+   * e paths distintos, sem colisao.
+   */
+  async storeFromBuffer(
+    accountId: string,
+    buffer: Buffer,
+    mimeType: string,
+    fileName: string | null
+  ): Promise<StoredAttachment> {
+    if (!accountId) {
+      throw new Error('accountId obrigatorio pra storeFromBuffer');
+    }
+    if (!buffer || buffer.byteLength === 0) {
+      throw new Error('buffer vazio');
+    }
+    const normalizedMime = (mimeType || 'application/octet-stream').trim();
+    const fileType = deriveFileType(normalizedMime);
+    const ext = extFromMime(normalizedMime);
+
+    // uuid gerado pelo Prisma via @default(uuid()) — geramos manualmente
+    // aqui pra montar o path ANTES do INSERT (senao teria que fazer 2
+    // roundtrips: create + update com storagePath).
+    const { randomUUID } = await import('node:crypto');
+    const id = randomUUID();
+    const relative = path.posix.join(accountId, `${id}.${ext}`);
+    const abs = this.resolveAbsolutePath(relative);
+    await ensureDir(path.dirname(abs));
+    await fs.writeFile(abs, buffer);
+
+    const apiUrl = `/api/attachments/${id}`;
+
+    await prisma.attachment.create({
+      data: {
+        id,
+        // messageId: nao populado — sera linkado pelo message.service quando
+        // o composer fizer POST na message referenciando esse fileUrl.
+        fileType,
+        fileUrl: apiUrl,
+        fileSize: buffer.byteLength,
+        fileName: fileName ?? null,
+        mimeType: normalizedMime,
+        storagePath: relative,
+        storageStatus: 'downloaded',
+        // sourceUrl: null — nao ha URL "original" pra retry (upload do agente).
+      },
+    });
+
+    logger.info('[attachment-storage] storeFromBuffer criou attachment', {
+      attachmentId: id,
+      accountId,
+      bytes: buffer.byteLength,
+      mimeType: normalizedMime,
+      fileType,
+      storagePath: relative,
+    });
+
+    return {
+      id,
+      fileUrl: apiUrl,
+      fileType,
+      fileSize: buffer.byteLength,
+      mimeType: normalizedMime,
+      fileName: fileName ?? null,
+      storagePath: relative,
+    };
   }
 }
 

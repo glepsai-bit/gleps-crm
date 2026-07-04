@@ -80,6 +80,17 @@ services:
       WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
       EVOLUTION_ALLOWED_IPS: ${EVOLUTION_ALLOWED_IPS:-}
       EVOLUTION_WEBHOOK_TOKEN: ${EVOLUTION_WEBHOOK_TOKEN:-}
+      # Pista A — Sentry error tracking (opcional; se vazio o SDK nao inicializa)
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      # Pista C — Web Push (VAPID). Sem essas 3, endpoint /api/push responde erro amigavel.
+      # Gerar: npx web-push generate-vapid-keys
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    volumes:
+      # Backups do Postgres (script backend/scripts/backup-postgres.sh).
+      # No EasyPanel: adicionar bind mount equivalente via UI (Volumes -> Bind).
+      - ./backups:/app/backups
     expose:
       - "3000"
     depends_on:
@@ -99,6 +110,8 @@ services:
       args:
         VITE_API_URL: /api
         VITE_USE_BACKEND: "true"
+        # Pista A — Sentry frontend. Se vazio no build, SDK nao inicializa em runtime.
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
     restart: unless-stopped
     environment:
       BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:3000}

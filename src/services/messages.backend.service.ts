@@ -182,7 +182,87 @@ function unwrapArray<T>(payload: T[] | DataEnvelope<T[]>): T[] {
 // Service
 // ============================================
 
+// ============================================
+// PISTA D — Upload multipart dedicado
+// ============================================
+
+/**
+ * Retorno do POST /api/attachments/upload — o backend cria a linha em
+ * Attachment (messageId=null pending) e devolve o fileUrl relativo que o
+ * composer deve enviar como fileUrl na proxima POST /messages. Quando o
+ * message.service cria a Message, o backend detecta o path relativo e linka
+ * a row pre-existente (att.messageId = novaMsg.id) na mesma transacao.
+ */
+export interface UploadedAttachment {
+  id: string;
+  fileUrl: string;
+  fileType: AttachmentFileType;
+  fileSize: number;
+  mimeType: string;
+  fileName: string | null;
+}
+
+/**
+ * PISTA D — POST /api/attachments/upload (multipart/form-data).
+ *
+ * Nao passa pelo apiClient (que forca Content-Type: application/json e usa
+ * JSON.stringify no body). Precisamos de FormData/multipart pro multer no
+ * backend receber file.buffer sem parse JSON. Auth via Bearer JWT lido do
+ * localStorage (mesma chave 'auth_token' do apiClient/tokenManager).
+ *
+ * NAO passa pelo caminho de retry automatico do apiClient (`tryRefreshToken`
+ * em 401). Isso eh proposital: multipart uploads gigantes nao devem ser
+ * automaticamente re-enviados apos refresh — o usuario re-tenta manualmente
+ * se der 401 (raro, ja que o composer eh usado sempre autenticado).
+ */
+async function uploadAttachmentMultipart(
+  conversationId: string,
+  file: File
+): Promise<UploadedAttachment> {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('conversationId', conversationId);
+
+  const token =
+    typeof localStorage !== 'undefined'
+      ? localStorage.getItem('auth_token')
+      : null;
+
+  const url =
+    (window?.location?.origin || '') + API_ENDPOINTS.ATTACHMENTS.UPLOAD;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: fd,
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  if (!response.ok) {
+    let message = response.statusText || 'Falha no upload';
+    try {
+      const body = await response.json();
+      message = body?.error?.message || body?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`Upload falhou (${response.status}): ${message}`);
+  }
+
+  const raw = await response.json();
+  return unwrapData<UploadedAttachment>(raw);
+}
+
 export const messagesBackendService = {
+  /**
+   * PISTA D — POST /api/attachments/upload (multipart)
+   *
+   * Sobe arquivo grande (>5MB) pra rota dedicada. Retorna { id, fileUrl,
+   * fileType, fileSize, mimeType, fileName } — o composer usa `fileUrl`
+   * como `fileUrl` no proximo POST /messages, e o backend linka a row
+   * pre-existente automaticamente.
+   */
+  uploadAttachment: uploadAttachmentMultipart,
+
   /**
    * GET /api/conversations/:conversationId/messages
    */
