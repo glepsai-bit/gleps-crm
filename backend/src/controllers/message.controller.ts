@@ -35,13 +35,17 @@ import { logger } from '../utils/logger';
 // 5MB binario => ~6.67MB em base64 + header data:; previne payload absurdo
 // de cliente custom (curl, n8n, etc.) mas sem quebrar o fluxo legitimo.
 // mimeType e fileName ja tinham cap; mantido. Cap conservador em 7MB.
+// Cap 22MB por campo de URL — cobre 16MB (teto WhatsApp) inflado ~33% pelo
+// base64 do payload JSON. Alinhado com express.json({limit:'24mb'}) e
+// nginx client_max_body_size=25M. Antes eram 7MB e cortava anexos reais.
+const MAX_URL_LEN = 22_000_000;
 const attachmentSchema = z.object({
-  fileType: z.enum(['image', 'video', 'audio', 'document']),
-  fileUrl: z.string().min(1).max(7_000_000, 'Anexo muito grande (max ~5MB base64)'),
+  fileType: z.enum(['image', 'video', 'audio', 'document', 'sticker']),
+  fileUrl: z.string().min(1).max(MAX_URL_LEN, 'Anexo muito grande (max 16MB — teto WhatsApp)'),
   fileSize: z.number().int().nonnegative().optional(),
   fileName: z.string().max(512, 'fileName muito longo (max 512 caracteres)').optional(),
   mimeType: z.string().max(128, 'mimeType muito longo (max 128 caracteres)').optional(),
-  thumbnailUrl: z.string().max(7_000_000, 'thumbnailUrl muito grande (max ~5MB base64)').optional(),
+  thumbnailUrl: z.string().max(MAX_URL_LEN, 'thumbnailUrl muito grande (max 16MB)').optional(),
   duration: z.number().int().nonnegative().optional(),
 });
 
