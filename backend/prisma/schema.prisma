@@ -266,6 +266,11 @@ model User {
   cyclesResolved             ConversationCycle[]       @relation("CycleResolver")
   cyclesFirstResponded       ConversationCycle[]       @relation("CycleResponder")
 
+  // Web Push — subscriptions do navegador do agente pra receber notificacao
+  // quando mensagem inbound chega numa conversa dele. Multi-endpoint por user
+  // (desktop + mobile). Ver push.service.ts + push.routes.ts.
+  pushSubscriptions          PushSubscription[]
+
   @@index([accountId])
   @@index([email])
   @@index([role])
@@ -1424,8 +1429,17 @@ model MessageReaction {
 
 model Attachment {
   id           String   @id @default(uuid()) @db.Uuid
-  messageId    String   @map("message_id") @db.Uuid
-  message      Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  // PISTA D (upload multipart dedicado): messageId eh nullable pra permitir
+  // upload via POST /api/attachments/upload ANTES da Message existir. O
+  // composer primeiro sobe o arquivo grande (>5MB) e recebe { id, fileUrl };
+  // depois envia a message referenciando /api/attachments/<id> — o
+  // message.service linka a row pre-existente (att.messageId = novaMsg.id)
+  // na mesma transacao. Fluxos legados (Evolution webhook, base64 inline)
+  // continuam preenchendo messageId no create nested. Migration 0047
+  // removeu o NOT NULL. onDelete: Cascade continua ativo — orfaos com
+  // messageId=NULL nao sao afetados por cascade (nada pra cascatar).
+  messageId    String?  @map("message_id") @db.Uuid
+  message      Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
   fileType     String   @map("file_type") @db.VarChar(40) // image | video | audio | document
   // fileUrl: URL servível pelo frontend. Após baixar a mídia da Evolution,
   // passa a ser '/api/attachments/<id>' (proxy autenticado). Em rows legadas
@@ -1776,4 +1790,29 @@ model WarmupTemplate {
   @@index([accountId])
   @@index([accountId, type, isActive])
   @@map("warmup_templates")
+}
+
+// ============================================
+// PUSH SUBSCRIPTIONS (Web Push Notifications)
+// ============================================
+// Cada linha representa um browser inscrito no service worker (SW) do agente
+// para receber notificacoes Web Push (VAPID). Um mesmo usuario pode ter varias
+// subscriptions (desktop + mobile). O endpoint eh unico global (garantia da
+// Push API do browser) — usado como chave logica para upsert e unsubscribe.
+//
+// keys guarda { p256dh, auth } exatamente como o browser retorna no
+// subscription.toJSON().keys (base64url). O web-push package precisa desses
+// dois campos + endpoint pra montar o payload cifrado.
+model PushSubscription {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint       String    @unique @db.Text
+  keys           Json // { p256dh: string, auth: string }
+  userAgent      String?   @map("user_agent") @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  lastNotifiedAt DateTime? @map("last_notified_at") @db.Timestamptz
+
+  @@index([userId])
+  @@map("push_subscriptions")
 }

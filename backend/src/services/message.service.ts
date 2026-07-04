@@ -13,6 +13,8 @@ import {
 import { conversationCycleService } from './conversation-cycle.service';
 import { attachmentStorageService } from './attachment-storage.service';
 import { evolutionService } from './evolution.service';
+import { pushService } from './push.service';
+import { env } from '../config/env';
 
 // ============================================
 // Regras de edição/deleção outbound
@@ -362,7 +364,81 @@ class MessageService {
     const shouldSetFirstResponse =
       isFirstResponseSender && !conversation.firstResponseAt && input.isPrivate !== true;
 
+    // PISTA D — Upload multipart dedicado: fileUrl no formato
+    // `/api/attachments/<uuid>` indica um Attachment JA existente (foi criado
+    // via POST /api/attachments/upload antes desta message). Nesse caso NAO
+    // recriamos a row via nested create — apenas linkamos (messageId=novaMsg.id)
+    // dentro da mesma transacao. Isso evita duplicar arquivo em disco, preserva
+    // storageStatus='downloaded' e nao dispara materialize desnecessario.
+    //
+    // Guard-rail multi-tenant: validamos que Attachment.storagePath comeca com
+    // `<accountId>/` — o upload sempre grava em uploads/<accountId>/<id>.<ext>,
+    // entao esse prefixo prova que a row pertence a essa conta e nao a outra.
+    // Sem isso um agente da conta X poderia forjar fileUrl apontando pro id de
+    // um attachment da conta Y e "linkar" cross-tenant.
+    const linkedAttachmentPattern = /^\/api\/attachments\/([0-9a-f-]{36})$/i;
+    const attachmentInputs = hasAttachments
+      ? (input.attachments as CreateAttachmentInput[])
+      : [];
+    interface AttachmentPlan {
+      kind: 'link' | 'create';
+      input: CreateAttachmentInput;
+      linkedId?: string;
+    }
+    const plans: AttachmentPlan[] = [];
+    for (const att of attachmentInputs) {
+      const m = typeof att.fileUrl === 'string'
+        ? att.fileUrl.match(linkedAttachmentPattern)
+        : null;
+      if (m) {
+        plans.push({ kind: 'link', input: att, linkedId: m[1] });
+      } else {
+        plans.push({ kind: 'create', input: att });
+      }
+    }
+    const linkedIds = plans
+      .filter(p => p.kind === 'link')
+      .map(p => p.linkedId as string);
+
+    if (linkedIds.length > 0) {
+      // Valida antes de abrir a transacao — findMany scoped por prefixo do
+      // storagePath. Rejeita se qualquer id for cross-tenant, invalido ou
+      // ja linkado (messageId != null seria um double-linking / reuso ilegal).
+      const existing = await prisma.attachment.findMany({
+        where: {
+          id: { in: linkedIds },
+          messageId: null,
+          storagePath: { startsWith: `${accountId}/` },
+        },
+        select: { id: true },
+      });
+      if (existing.length !== linkedIds.length) {
+        throw new ValidationError(
+          'Um ou mais anexos referenciados nao existem, ja foram enviados ou nao pertencem a esta conta'
+        );
+      }
+    }
+
     const message = await prisma.$transaction(async tx => {
+      const createNestedAttachments = plans
+        .filter(p => p.kind === 'create')
+        .map(p => ({
+          fileType: p.input.fileType,
+          // Bug A: fileUrl será sobrescrito por '/api/attachments/<id>'
+          // após o materialize ter sucesso. Até lá guardamos o original
+          // pra que listagens legacy continuem mostrando ALGO.
+          fileUrl: p.input.fileUrl,
+          fileSize: p.input.fileSize ?? null,
+          fileName: p.input.fileName ?? null,
+          mimeType: p.input.mimeType ?? null,
+          thumbnailUrl: p.input.thumbnailUrl ?? null,
+          duration: p.input.duration ?? null,
+          // Bug A: sourceUrl preserva URL Evolution (com apikey requerida)
+          // pra que o storage service consiga baixar depois.
+          sourceUrl: p.input.sourceUrl ?? p.input.fileUrl,
+          storageStatus: 'pending',
+        }));
+
       const created = await tx.message.create({
         data: {
           conversationId: conversation.id,
@@ -375,24 +451,9 @@ class MessageService {
           externalId: input.externalId ?? null,
           replyToId: input.replyToId ?? null,
           metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
-          ...(hasAttachments && {
+          ...(createNestedAttachments.length > 0 && {
             attachments: {
-              create: (input.attachments as CreateAttachmentInput[]).map(att => ({
-                fileType: att.fileType,
-                // Bug A: fileUrl será sobrescrito por '/api/attachments/<id>'
-                // após o materialize ter sucesso. Até lá guardamos o original
-                // pra que listagens legacy continuem mostrando ALGO.
-                fileUrl: att.fileUrl,
-                fileSize: att.fileSize ?? null,
-                fileName: att.fileName ?? null,
-                mimeType: att.mimeType ?? null,
-                thumbnailUrl: att.thumbnailUrl ?? null,
-                duration: att.duration ?? null,
-                // Bug A: sourceUrl preserva URL Evolution (com apikey requerida)
-                // pra que o storage service consiga baixar depois.
-                sourceUrl: att.sourceUrl ?? att.fileUrl,
-                storageStatus: 'pending',
-              })),
+              create: createNestedAttachments,
             },
           }),
         },
@@ -400,6 +461,26 @@ class MessageService {
           attachments: true,
         },
       });
+
+      // PISTA D: linka attachments ja existentes (upload multipart) na mesma
+      // transacao. updateMany devolve count — a validacao pre-transacao ja
+      // garantiu que todos existem, entao count deve bater com linkedIds.length;
+      // caso contrario abortamos (rollback) por safety.
+      if (linkedIds.length > 0) {
+        const updateResult = await tx.attachment.updateMany({
+          where: {
+            id: { in: linkedIds },
+            messageId: null,
+            storagePath: { startsWith: `${accountId}/` },
+          },
+          data: { messageId: created.id },
+        });
+        if (updateResult.count !== linkedIds.length) {
+          throw new ValidationError(
+            'Falha ao linkar anexos pre-existentes (race condition ou multi-tenant)'
+          );
+        }
+      }
 
       const convUpdate: Prisma.ConversationUpdateInput = { updatedAt: now };
       if (shouldIncrementUnread) {
@@ -414,6 +495,16 @@ class MessageService {
         data: convUpdate,
       });
 
+      // Recarrega com attachments linkados incluidos (o include acima so
+      // trouxe os criados via nested create — os linkados ainda tinham
+      // messageId=null naquele momento).
+      if (linkedIds.length > 0) {
+        const refreshed = await tx.message.findUnique({
+          where: { id: created.id },
+          include: { attachments: true },
+        });
+        return refreshed ?? created;
+      }
       return created;
     });
 
@@ -525,7 +616,94 @@ class MessageService {
       });
     }
 
+    // Web Push — notifica o assignee quando mensagem inbound do CLIENTE
+    // chega numa conversa que ele atende, e a msg nao foi enviada pelo
+    // proprio assignee (caso improvavel — senderType='customer' implica
+    // senderId null — mas mantemos a guarda por defesa em profundidade).
+    // Fire-and-forget: falha do push service nao afeta a persistencia da msg.
+    if (
+      input.senderType === 'customer' &&
+      !message.isPrivate &&
+      conversation.assigneeId &&
+      conversation.assigneeId !== input.senderId
+    ) {
+      void this.sendInboundPushNotification(conversation, message, accountId).catch(err => {
+        logger.warn('[message] push notification falhou', {
+          messageId: message.id,
+          assigneeId: conversation.assigneeId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+
     return message;
+  }
+
+  /**
+   * Monta e dispara a push notification pro assignee quando chega mensagem
+   * do cliente. Separado do fluxo principal pra manter create() legivel e
+   * facilitar testes. Executado em fire-and-forget pelo caller.
+   */
+  private async sendInboundPushNotification(
+    conversation: { id: string; assigneeId: string | null; contactId: string | null },
+    message: Message,
+    accountId: string
+  ): Promise<void> {
+    if (!conversation.assigneeId) return;
+
+    // Busca nome do contato pra montar titulo amigavel — best-effort.
+    let contactName = 'Nova mensagem';
+    if (conversation.contactId) {
+      try {
+        const contact = await prisma.contact.findFirst({
+          where: { id: conversation.contactId, accountId },
+          select: { nome: true, telefone: true },
+        });
+        if (contact) {
+          contactName = (contact.nome || contact.telefone || 'Nova mensagem').trim();
+        }
+      } catch {
+        /* silencioso — cai no default */
+      }
+    }
+
+    // Preview do corpo (texto ou placeholder de midia). Limitado a 140 chars
+    // pra caber bonito na notificacao do browser.
+    let body: string;
+    if (typeof message.content === 'string' && message.content.trim().length > 0) {
+      const trimmed = message.content.trim();
+      body = trimmed.length > 140 ? `${trimmed.slice(0, 137)}…` : trimmed;
+    } else {
+      switch (message.contentType) {
+        case 'audio':
+          body = '[Audio]';
+          break;
+        case 'document':
+          body = '[Documento]';
+          break;
+        case 'media':
+          body = '[Midia]';
+          break;
+        default:
+          body = 'Nova mensagem';
+      }
+    }
+
+    const frontendBase = (env.FRONTEND_URL || 'http://localhost:8080').replace(/\/$/, '');
+    const url = `${frontendBase}/admin/chat?conversationId=${conversation.id}`;
+
+    await pushService.sendToUser(conversation.assigneeId, {
+      title: contactName,
+      body,
+      url,
+      // Colapsa multiplas mensagens da mesma conversa numa notificacao so
+      // (spec Notification API: mesma tag substitui a anterior).
+      tag: `conv:${conversation.id}`,
+      data: {
+        conversationId: conversation.id,
+        messageId: message.id,
+      },
+    });
   }
 
   /**

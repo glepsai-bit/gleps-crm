@@ -501,6 +501,30 @@ export const API_ENDPOINTS = {
     LIST: '/api/mentions',
     MARK_READ: (id: string) => `/api/mentions/${id}/read`,
   },
+
+  // ============= WEB PUSH (VAPID subscriptions do browser) =============
+  // Feature opcional: quando VAPID_PUBLIC_KEY nao esta configurada no backend,
+  // GET /vapid-public devolve { enabled:false } e o hook do frontend fica
+  // silencioso (nao pede permissao Notification).
+  //
+  //   GET    /api/push/vapid-public
+  //   POST   /api/push/subscribe   { endpoint, keys: { p256dh, auth } }
+  //   DELETE /api/push/unsubscribe { endpoint }
+  PUSH: {
+    VAPID_PUBLIC: '/api/push/vapid-public',
+    SUBSCRIBE: '/api/push/subscribe',
+    UNSUBSCRIBE: '/api/push/unsubscribe',
+  },
+
+  // ============= ATTACHMENTS (Bug A + PISTA D) =============
+  // Proxy autenticado pra midia baixada da Evolution (GET /:id) + upload
+  // multipart dedicado (POST /upload) usado pelo composer para arquivos
+  // acima do threshold base64 (5MB). Auth JWT + accountId (RBAC via
+  // conversation.accountId ou storagePath prefix pra rows pending).
+  ATTACHMENTS: {
+    STREAM: (id: string) => `/api/attachments/${id}`,
+    UPLOAD: '/api/attachments/upload',
+  },
 } as const;
 
 export default API_ENDPOINTS;

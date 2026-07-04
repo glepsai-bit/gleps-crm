@@ -50,6 +50,7 @@ import agentAvailabilityRoutes from './agent-availability.routes';
 import attachmentRoutes from './attachment.routes';
 import warmupRoutes from './warmup.routes';
 import mentionRoutes from './mention.routes';
+import pushRoutes from './push.routes';
 import { Router as LeadTagRouter } from 'express';
 import { contactController } from '../controllers/contact.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
@@ -193,5 +194,9 @@ router.use('/mentions', mentionRoutes);
 
 // T-023 — WhatsApp Warmup (aquecimento de chips Evolution)
 router.use('/warmup', warmupRoutes);
+
+// Web Push subscriptions (VAPID) — notifica agente quando msg inbound chega
+// em conversa atribuida a ele mesmo com aba fechada.
+router.use('/push', pushRoutes);
 
 export default router;

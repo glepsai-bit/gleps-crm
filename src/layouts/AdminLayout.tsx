@@ -16,6 +16,7 @@ import { chatSocket, type MentionPayload } from '@/services/socket.client';
 import { agentAvailabilityBackendService } from '@/services/agent-availability.backend.service';
 import { messagesBackendService } from '@/services/messages.backend.service';
 import { tokenManager } from '@/api/client';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -164,6 +165,12 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   // Lista de menções não lidas recebidas em tempo real (sino do header).
   const [mentions, setMentions] = useState<MentionPayload[]>([]);
   const [mentionsOpen, setMentionsOpen] = useState(false);
+
+  // Web Push — registra service worker '/sw-push.js' + pede permissao Notification
+  // + envia subscription VAPID pro backend. Hook eh guardado internamente contra
+  // browser sem suporte / permissao negada / VAPID desabilitada no servidor,
+  // entao aqui basta chamar com o userId autenticado.
+  usePushNotifications(user?.id);
 
   // Conecta socket + marca online + heartbeat 30s enquanto autenticado.
   useEffect(() => {
