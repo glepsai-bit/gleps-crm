@@ -4,6 +4,11 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Body size: 25MB acomoda o teto de 16MB do WhatsApp (PTT/image/video/document)
+    # inflado ~33% pelo base64 do payload JSON. Antes era o default de 1MB do
+    # nginx e cortava qualquer anexo real com 413 ANTES de chegar no Express.
+    client_max_body_size 25M;
+
     # Gzip compression
     gzip on;
     gzip_vary on;
