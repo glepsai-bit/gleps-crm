@@ -37,6 +37,11 @@ backend/uploads/warmup/image/*
 !backend/uploads/warmup/sticker/.gitkeep
 !backend/uploads/warmup/image/.gitkeep
 
+# Pista B — Postgres backups (dumps sql.gz). Nunca versionar (dados dos clientes).
+# Mount definido em docker-compose.yml -> backend.volumes -> ./backups:/app/backups
+backups/*
+!backups/.gitkeep
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
