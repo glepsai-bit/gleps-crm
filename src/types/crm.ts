@@ -60,6 +60,15 @@ export interface Contact {
   telefone: string | null;
   email: string | null;
   origem: ContactOrigin | null;
+  /**
+   * Foto de perfil (WhatsApp Business avatar) — buscada da Evolution
+   * automaticamente no primeiro contato + refresh a cada 24h. URLs do
+   * CDN do WhatsApp expiram; se `null`, cair no fallback de iniciais.
+   * Backend expoe como camelCase (`profilePicUrl`) — este campo cobre
+   * ambos os shapes (Supabase snake / Express camel).
+   */
+  profile_pic_url?: string | null;
+  profilePicUrl?: string | null;
   followup_count?: number;
   last_followup_at?: string | null;
   created_at: string;

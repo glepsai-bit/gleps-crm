@@ -8,6 +8,11 @@ import { emitConversationUpdated, emitConversationAssigned } from '../socket';
 import { teamService } from './team.service';
 import { conversationCycleService } from './conversation-cycle.service';
 import { aggregateMessageReactions } from './message.service';
+import { evolutionService } from './evolution.service';
+
+// Foto de perfil expira em ~5-30 min na CDN do WhatsApp. Refetch a cada 24h
+// pra nao virar quebrada. Primeira sincronia acontece no primeiro contato.
+const PROFILE_PIC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Wrapper defensivo: o Socket.IO pode não estar inicializado em testes
@@ -157,7 +162,7 @@ const ALLOWED_PRIORITIES: ConversationPriority[] = ['urgent', 'high', 'medium', 
  * `undefined` no front após assign/transfer/resolve/etc.
  */
 const FULL_CONVERSATION_INCLUDE = {
-  contact: { select: { id: true, nome: true, telefone: true, email: true } },
+  contact: { select: { id: true, nome: true, telefone: true, email: true, profilePicUrl: true } },
   inbox: { select: { id: true, name: true, channelType: true } },
   assignee: { select: { id: true, nome: true, email: true } },
   team: { select: { id: true, name: true } },
@@ -287,7 +292,7 @@ class ConversationService {
     const conversation = await prisma.conversation.findFirst({
       where: { id, accountId },
       include: {
-        contact: { select: { id: true, nome: true, telefone: true, email: true } },
+        contact: { select: { id: true, nome: true, telefone: true, email: true, profilePicUrl: true } },
         inbox: { select: { id: true, name: true, channelType: true } },
         assignee: { select: { id: true, nome: true, email: true } },
         team: { select: { id: true, name: true } },
@@ -1919,9 +1924,19 @@ class ConversationService {
     // 1) Caminho rápido — provavelmente já existe
     const existing = await prisma.contact.findFirst({
       where: { accountId, telefone: phone },
-      select: { id: true },
+      select: { id: true, profilePicUrl: true, profilePicFetchedAt: true },
     });
-    if (existing) return existing.id;
+    if (existing) {
+      // Refresh de foto de perfil: URLs do WhatsApp CDN expiram; refetch
+      // a cada 24h. Fire-and-forget pra nao segurar o webhook.
+      this.maybeRefreshProfilePic(
+        accountId,
+        existing.id,
+        phone,
+        existing.profilePicFetchedAt
+      );
+      return existing.id;
+    }
 
     // 2) Re-check sob transação curta + create
     try {
@@ -1945,6 +1960,8 @@ class ConversationService {
           contactId: created.id,
           phone,
         });
+        // Fetch de profile pic da Evolution — fire-and-forget, primeiro contato.
+        this.maybeRefreshProfilePic(accountId, created.id, phone, null);
         return created.id;
       });
     } catch (err: any) {
@@ -1963,6 +1980,47 @@ class ConversationService {
   // ============================================
   // Helpers privados
   // ============================================
+
+  /**
+   * Fire-and-forget: busca profile pic da Evolution e persiste em Contact.
+   * NAO da await no caller — webhook processing continua sem esperar.
+   * Skip quando fetchedAt e recente (< 24h). Erros sao logados no util
+   * do evolution.service e viram null (contato sem foto e comum).
+   */
+  private maybeRefreshProfilePic(
+    accountId: string,
+    contactId: string,
+    phone: string,
+    fetchedAt: Date | null | undefined
+  ): void {
+    if (
+      fetchedAt &&
+      Date.now() - new Date(fetchedAt).getTime() < PROFILE_PIC_MAX_AGE_MS
+    ) {
+      return;
+    }
+    void (async () => {
+      try {
+        const url = await evolutionService.fetchProfilePictureUrl(accountId, {
+          number: phone,
+        });
+        await prisma.contact.update({
+          where: { id: contactId },
+          data: {
+            profilePicUrl: url,
+            profilePicFetchedAt: new Date(),
+          },
+        });
+      } catch (err) {
+        // Nao levanta — refresh de foto e best-effort.
+        logger.warn('[conversation] falha ao refresh profile pic', {
+          accountId,
+          contactId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }
 
   private async requireConversation(id: string, accountId: string): Promise<Conversation> {
     const conversation = await prisma.conversation.findFirst({

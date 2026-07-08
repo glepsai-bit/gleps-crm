@@ -327,6 +327,13 @@ model Contact {
   pushNameUpdatedAt DateTime?     @map("push_name_updated_at") @db.Timestamptz
   pushNameChangeCount Int         @default(0) @map("push_name_change_count")
 
+  // Foto de perfil (WhatsApp Business avatar). Populada por
+  // evolutionService.fetchProfilePictureUrl no primeiro contato + refresh
+  // ocasional (24h) via contact.service. Text pra caber URLs longas do
+  // WhatsApp CDN. null = sem foto (privado ou nunca buscado).
+  profilePicUrl        String?   @map("profile_pic_url") @db.Text
+  profilePicFetchedAt  DateTime? @map("profile_pic_fetched_at") @db.Timestamptz
+
   // REMOVED: external contact/conversation ids (deprecated integration)
 
   // Segmentation

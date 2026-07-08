@@ -28,7 +28,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   Accordion,
   AccordionContent,
@@ -367,6 +367,12 @@ export function ContactSidePanel({ conversation, onClose }: ContactSidePanelProp
               </button>
             )}
             <Avatar className="h-16 w-16">
+              {conversation.contact?.profilePicUrl ? (
+                <AvatarImage
+                  src={conversation.contact.profilePicUrl}
+                  alt={displayName}
+                />
+              ) : null}
               <AvatarFallback className="bg-primary/10 text-primary text-lg">
                 {initials ?? <Phone className="h-5 w-5" />}
               </AvatarFallback>

@@ -107,6 +107,12 @@ export interface ConversationContactSummary {
   nome: string | null;
   telefone: string | null;
   email: string | null;
+  /**
+   * URL da foto de perfil do WhatsApp Business (Evolution).
+   * Populada pelo backend em findOrCreateForCustomer com refresh 24h.
+   * null = contato sem foto publica / nunca buscado.
+   */
+  profilePicUrl?: string | null;
 }
 
 export interface ConversationInboxSummary {

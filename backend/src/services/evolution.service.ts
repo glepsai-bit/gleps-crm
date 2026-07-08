@@ -1150,6 +1150,48 @@ class EvolutionService {
 
     return { ok, raw };
   }
+
+  /**
+   * Busca a URL da foto de perfil do WhatsApp Business do contato via
+   * POST /chat/fetchProfilePictureUrl/{instance}. Retorna null quando o
+   * numero nao tem foto publica ou nao esta no WhatsApp.
+   *
+   * A URL retornada e do CDN mmg.whatsapp.net e expira em ~5-30 min —
+   * quem consome deve saber que precisa refresh periodico (o
+   * contact.service faz isso a cada 24h no findOrCreateForCustomer).
+   * NAO levanta em erro: log warn + null (contato sem foto e caso comum).
+   */
+  async fetchProfilePictureUrl(
+    accountId: string,
+    input: { instance?: string | null; number: string }
+  ): Promise<string | null> {
+    if (!input.number) return null;
+    try {
+      const config = await this.getAccountConfig(accountId, input.instance);
+      const number = this.normalizeNumber(input.number);
+      const raw = await this.makeRequest<any>(
+        config,
+        `/chat/fetchProfilePictureUrl/${encodeURIComponent(config.instance)}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ number }),
+        }
+      );
+      const url =
+        typeof raw?.profilePictureUrl === 'string' ? raw.profilePictureUrl :
+        typeof raw?.url === 'string' ? raw.url :
+        typeof raw?.profilePicUrl === 'string' ? raw.profilePicUrl :
+        null;
+      return url || null;
+    } catch (err) {
+      logger.warn('[evolution] fetchProfilePictureUrl falhou', {
+        accountId,
+        number: input.number,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
 }
 
 export const evolutionService = new EvolutionService();

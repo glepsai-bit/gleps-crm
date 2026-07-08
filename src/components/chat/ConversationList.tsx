@@ -27,7 +27,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Select,
@@ -815,6 +815,12 @@ export function ConversationList({
                   )}
                 >
                   <Avatar className="h-9 w-9 shrink-0">
+                    {conv.contact?.profilePicUrl ? (
+                      <AvatarImage
+                        src={conv.contact.profilePicUrl}
+                        alt={contactName}
+                      />
+                    ) : null}
                     <AvatarFallback
                       className={cn(
                         'text-xs text-primary',

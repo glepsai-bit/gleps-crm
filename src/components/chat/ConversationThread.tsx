@@ -30,7 +30,7 @@ import {
   Phone,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -288,7 +288,8 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
     prevMessageCountRef.current = currentMessageCount;
   }, [currentMessageCount]);
 
-  // Auto-scroll quando lista CRESCER (mensagem nova)
+  // Auto-scroll quando lista CRESCE (mensagem nova).
+  // `smooth` porque o usuario ja esta no thread e queremos animar suave.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -296,6 +297,41 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     });
   }, [currentMessageCount]);
+
+  // BUG-SCROLL-OPEN: ao TROCAR de conversa, o thread precisa aparecer na
+  // ultima mensagem, nao em uma msg antiga. O effect acima falhava porque:
+  //   1) enquanto `useQuery` refetcha o thread da nova conversa, os dados
+  //      antigos ficam na tela (`data` ainda tem a conversa anterior);
+  //      `currentMessageCount` vai de 50 -> ? e o comportamento fica racy.
+  //   2) `behavior: 'smooth'` e assincrono; quando imagens/audios do thread
+  //      terminam de carregar depois, o scrollHeight cresce e o scroll para
+  //      no meio.
+  // Fix: efeito dedicado por `conversationId` que, tao logo o data novo
+  // apareca, scrolla `instantaneo` pro bottom e re-scrolla nos proximos
+  // ~500ms cobrindo o load das imagens (ResizeObserver seria mais rigoroso
+  // mas o custo/beneficio nao compensa aqui).
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (currentMessageCount === 0) return;
+    const scrollToBottom = () => {
+      el.scrollTop = el.scrollHeight;
+    };
+    scrollToBottom();
+    // Cobre layout shift de imagens/audios que renderizam depois do primeiro paint.
+    const t1 = window.setTimeout(scrollToBottom, 100);
+    const t2 = window.setTimeout(scrollToBottom, 300);
+    const t3 = window.setTimeout(scrollToBottom, 600);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+    };
+    // Depende de conversationId (nao de currentMessageCount) — o efeito
+    // acima ja cuida do crescer-por-mensagem-nova. Este ativa somente quando
+    // o usuario troca de conversa. Damos o count no dep so pra re-disparar
+    // quando o data chega vazio (0) e depois hidrata (>0).
+  }, [conversationId, currentMessageCount > 0]);
 
   // ============================================
   // Socket.IO — real-time updates (T-022 Sprint 4)
@@ -1049,6 +1085,9 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
               demais badges). Status/prioridade/assignee continuam como
               metadata mas em linha separada do canal. */}
           <Avatar className="h-10 w-10 shrink-0">
+            {conversation.contact?.profilePicUrl ? (
+              <AvatarImage src={conversation.contact.profilePicUrl} alt={contactName} />
+            ) : null}
             <AvatarFallback className="text-base bg-primary/10 text-primary">
               {headerAvatarInitials ?? <Phone className="w-4 h-4" />}
             </AvatarFallback>
