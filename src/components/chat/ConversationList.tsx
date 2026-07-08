@@ -275,39 +275,49 @@ export function ConversationList({
       if (payload?.conversationId && payload?.message) {
         const incoming = payload.message as Message;
         const targetId = payload.conversationId;
+        // Mensagem inbound (do cliente) precisa incrementar unreadCount na
+        // lista se essa conversa nao e a atualmente aberta. Se e a aberta,
+        // o ConversationThread mesmo emite mark-as-read via useEffect.
+        const isInbound = incoming.senderType === 'customer';
+        const isOpenHere =
+          typeof window !== 'undefined' &&
+          window.location.pathname.includes('/admin/chat') &&
+          new URLSearchParams(window.location.search).get('conversationId') === targetId;
         queryClient.setQueriesData<{ data?: Conversation[] } | undefined>(
           { queryKey: ['conversations'] },
           (old) => {
             if (!old?.data) return old;
-            let touched = false;
-            const nextData = old.data.map((conv) => {
-              if (conv.id !== targetId) return conv;
-              touched = true;
-              const existing = conv.messages ?? [];
-              // Evita duplicar se o refetch já injetou a mesma mensagem.
-              const dedup = existing.some((m) => m.id === incoming.id)
-                ? existing
-                : [incoming, ...existing].slice(0, 1);
-              return {
-                ...conv,
-                messages: dedup,
-                updatedAt: incoming.createdAt ?? conv.updatedAt,
-              };
-            });
-            return touched ? { ...old, data: nextData } : old;
+            const idx = old.data.findIndex((c) => c.id === targetId);
+            if (idx < 0) return old;
+            const existing = old.data[idx];
+            const existingMsgs = existing.messages ?? [];
+            const dedup = existingMsgs.some((m) => m.id === incoming.id)
+              ? existingMsgs
+              : [incoming, ...existingMsgs].slice(0, 1);
+            const nextUnread =
+              isInbound && !isOpenHere
+                ? (existing.unreadCount ?? 0) + 1
+                : existing.unreadCount ?? 0;
+            const updated: Conversation = {
+              ...existing,
+              messages: dedup,
+              updatedAt: incoming.createdAt ?? existing.updatedAt,
+              unreadCount: nextUnread,
+            };
+            // Reordena: a conversa afetada sobe pro topo (orderBy updatedAt
+            // DESC do backend). Antes desta correcao o patch mantinha a
+            // posicao original — sem invalidateList a conv "nova" nunca
+            // subia, entrando em conflito com o polling a cada 30s.
+            const nextData = [updated, ...old.data.filter((_, i) => i !== idx)];
+            return { ...old, data: nextData };
           }
         );
       }
-      // PERF-AUDIT (Round 1): antigamente invalidateList() disparava aqui em
-      // TODO evento message:created, forcando refetch da lista inteira (50
-      // conversas + joins de contact/inbox/assignee/team/labels/messages) a
-      // cada mensagem recebida em qualquer conversa. Em produ com muitas
-      // conversas ativas isso era uma tempestade de refetches.
-      // O patch otimista logo acima ja atualiza snippet/updatedAt/unread na
-      // lista — sem gap visual. Reordenacao por updatedAt e feita no proximo
-      // conversation:updated (que continua invalidando; ver handler abaixo).
-      // Se em algum caso extremo o patch nao cobrir, o proximo refetch
-      // agendado (staleTime do useQuery) corrige.
+      // PERF-AUDIT (Round 1): invalidateList() foi removida deste handler
+      // (antes disparava em CADA mensagem em CADA conversa — tempestade de
+      // refetches). O patch acima ja cobre: atualiza snippet, updatedAt,
+      // unreadCount E reordena a lista. Sem esse trabalho manual a lista
+      // divergia da ordem do backend ate o refetchInterval de 30s.
     });
     const offUpdated = chatSocket.onConversationUpdated((payload) => {
       invalidateList();

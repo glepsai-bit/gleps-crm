@@ -417,15 +417,38 @@ function propsAreEqualForMemo(
     ) {
       return false;
     }
-    // attachments length ou primeiro id diferente = re-render.
+    // Attachments: comparar por indice. NAO basta length+id porque o worker
+    // de download materializa `storageStatus: pending -> downloaded`, muda
+    // `fileUrl` (proxy /api/attachments/<id>) e preenche `thumbnailUrl`
+    // depois de a Message ja existir — mesmo id de attachment, campos
+    // diferentes. Se ignorarmos, a bubble mantem "loading" ate um refetch
+    // completo (30s de polling).
     const prevAtt = prev.msg.attachments ?? [];
     const nextAtt = next.msg.attachments ?? [];
     if (prevAtt.length !== nextAtt.length) return false;
-    if (prevAtt[0]?.id !== nextAtt[0]?.id) return false;
+    for (let i = 0; i < prevAtt.length; i += 1) {
+      const a = prevAtt[i];
+      const b = nextAtt[i];
+      if (
+        a?.id !== b?.id ||
+        a?.fileUrl !== b?.fileUrl ||
+        a?.thumbnailUrl !== b?.thumbnailUrl ||
+        a?.mimeType !== b?.mimeType ||
+        a?.fileSize !== b?.fileSize ||
+        a?.duration !== b?.duration
+      ) {
+        return false;
+      }
+    }
   }
   if (prev.isCustomer !== next.isCustomer) return false;
   if (prev.currentUserId !== next.currentUserId) return false;
+  // replyMsg: comparar tambem content+deletedAt porque uma msg citada pode
+  // ser editada (novo content) ou apagada (deletedAt setado + content zerado
+  // pelo backend). Sem esses campos o quote fica travado no texto original.
   if (prev.replyMsg?.id !== next.replyMsg?.id) return false;
+  if (prev.replyMsg?.content !== next.replyMsg?.content) return false;
+  if (prev.replyMsg?.deletedAt !== next.replyMsg?.deletedAt) return false;
   // Reactions: comparar por conteudo (referencia sempre muda com o hydrate
   // do effect, mas o conteudo pode ser igual).
   const prevR = prev.reactions ?? [];

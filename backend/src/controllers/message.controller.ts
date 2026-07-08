@@ -550,6 +550,27 @@ export class MessageController {
               });
             }
           } catch (err) {
+            // PERF-AUDIT (Round 2): erros de PAYLOAD (ValidationError /
+            // NotFoundError) devem virar 4xx pro cliente, nao 201 com
+            // status=failed silencioso — bugs de payload passavam despercebidos.
+            // Ex.: audio com fileUrl de scheme desconhecido caia aqui e o UI
+            // via um "sent" que virava failed em background, sem toast.
+            // Como a Message ja foi criada (linha 354), removemos e re-lancamos
+            // pra o Express error handler devolver 400/404 pro cliente.
+            if (
+              err instanceof ValidationError ||
+              err instanceof NotFoundError
+            ) {
+              try {
+                await prisma.message.delete({ where: { id: message.id } });
+              } catch (delErr) {
+                logger.warn('[message] falha ao limpar msg pos-validation-error', {
+                  messageId: message.id,
+                  error: delErr instanceof Error ? delErr.message : String(delErr),
+                });
+              }
+              throw err;
+            }
             const errMsg =
               err instanceof Error ? err.message : String(err);
             logger.warn('[message] falha ao enviar via Evolution', {
