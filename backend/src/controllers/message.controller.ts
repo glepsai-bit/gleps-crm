@@ -20,7 +20,104 @@ import {
   UnauthorizedError,
   ValidationError,
 } from '../utils/errors';
+import { readFile } from 'node:fs/promises';
 import { logger } from '../utils/logger';
+import {
+  transcodeToOggOpus,
+  isOggOpus,
+  decodeDataUrlBase64,
+} from '../utils/audio-transcode.util';
+import { attachmentStorageService } from '../services/attachment-storage.service';
+
+// Tamanho maximo aceito como source de audio (bound defensivo antes do spawn
+// do ffmpeg — evita fork bomb com payload adversarial).
+const MAX_AUDIO_SOURCE_BYTES = 25 * 1024 * 1024;
+// Padrao de fileUrl gerado por POST /api/attachments/upload (PISTA D).
+const API_ATTACHMENT_URL = /^\/api\/attachments\/([0-9a-f-]{36})$/i;
+
+/**
+ * Materializa o audio outbound em Buffer, tolerando os dois formatos que o
+ * frontend produz:
+ *   - `data:audio/webm;codecs=opus;base64,AAAA...`  (composer inline, <=5MB)
+ *   - `/api/attachments/<uuid>`                      (upload multipart, >5MB)
+ *
+ * Bug pre-fix: o codigo assumia que qualquer coisa que nao comecasse com
+ * `data:` era base64 puro — o que faz `Buffer.from('/api/attachments/…', 'base64')`
+ * decodificar 15 bytes de lixo e mandar para o WhatsApp. Agora resolvemos
+ * cada caso explicitamente e rejeitamos formatos desconhecidos.
+ *
+ * O uuid extraido do path e escopado por accountId via storagePath prefix
+ * (mesmo padrao usado por attachment.controller para servir o proxy) —
+ * impede cross-tenant.
+ */
+async function resolveAudioSourceBuffer(
+  fileUrl: string,
+  accountId: string
+): Promise<Buffer> {
+  // Caso 1: data URL base64. RFC 2397: o payload sempre esta depois do
+  // primeiro `,`. O split.indexOf trata `data:audio/webm;codecs=opus;base64,…`
+  // (Chrome/Edge/Firefox) e `data:audio/ogg;base64,…` (custom clients)
+  // sem depender de regex, que ja quebrou uma vez em produ.
+  if (fileUrl.startsWith('data:')) {
+    let buf: Buffer;
+    try {
+      buf = decodeDataUrlBase64(fileUrl);
+    } catch (err) {
+      throw new ValidationError(
+        `Data URL de audio invalido: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    if (buf.length === 0) {
+      throw new ValidationError('Data URL de audio decodificou para 0 bytes');
+    }
+    if (buf.length > MAX_AUDIO_SOURCE_BYTES) {
+      throw new ValidationError(
+        `Audio inline muito grande (${buf.length} bytes, max ${MAX_AUDIO_SOURCE_BYTES}).`
+      );
+    }
+    return buf;
+  }
+
+  // Caso 2: attachment materializado em disco (PISTA D).
+  const apiMatch = fileUrl.match(API_ATTACHMENT_URL);
+  if (apiMatch) {
+    const attachmentId = apiMatch[1];
+    // RBAC: mesmo criterio de attachment.controller.serveFile — attachment
+    // linkado a message da conta OU orfao com storagePath prefixado pela conta.
+    const att = await prisma.attachment.findFirst({
+      where: {
+        id: attachmentId,
+        OR: [
+          { message: { conversation: { accountId } } },
+          {
+            messageId: null,
+            storagePath: { startsWith: `${accountId}/` },
+          },
+        ],
+      },
+      select: { storagePath: true, fileSize: true, storageStatus: true },
+    });
+    if (!att) {
+      throw new NotFoundError('Attachment de audio nao encontrado');
+    }
+    if (!att.storagePath || att.storageStatus !== 'downloaded') {
+      throw new ValidationError('Attachment de audio ainda nao materializado');
+    }
+    if (att.fileSize && att.fileSize > MAX_AUDIO_SOURCE_BYTES) {
+      throw new ValidationError(
+        `Audio muito grande (${att.fileSize} bytes, max ${MAX_AUDIO_SOURCE_BYTES}).`
+      );
+    }
+    const abs = attachmentStorageService.resolveAbsolutePath(att.storagePath);
+    return readFile(abs);
+  }
+
+  // Caso 3: qualquer outro esquema (http(s)://, relative desconhecido).
+  // Melhor falhar cedo do que enviar lixo silenciosamente.
+  throw new ValidationError(
+    `fileUrl de audio nao suportado: aceita apenas data: ou /api/attachments/<uuid>.`
+  );
+}
 
 // ============================================
 // Validation schemas
@@ -369,15 +466,39 @@ export class MessageController {
 
             let result: { messageId: string; raw: any };
             if (firstAttachment && firstAttachment.fileType === 'audio') {
-              // Extrai base64 puro do data URL (Evolution sendWhatsAppAudio
-              // espera base64 sem prefixo `data:`).
-              const rawFileUrl = firstAttachment.fileUrl;
-              const base64 = rawFileUrl.startsWith('data:')
-                ? rawFileUrl.replace(/^data:[^;]+;base64,/, '')
-                : rawFileUrl;
+              // Chrome/Edge gravam WebM/Opus mas o WhatsApp so renderiza bubble
+              // PTT nativo com OGG/Opus — transcodamos via ffmpeg antes de enviar.
+              // O buffer pode vir de dois lugares:
+              //   (a) data URL base64 inline (arquivos <=5MB no composer)
+              //   (b) /api/attachments/<uuid> — upload multipart dedicado
+              //       ja materializado em disco (arquivos >5MB ou tudo em
+              //       clientes custom).
+              // Precisamos resolver os DOIS antes de transcodar; do contrario
+              // (b) e decodificado como base64 de string curta e vira lixo.
+              const sourceBuffer = await resolveAudioSourceBuffer(
+                firstAttachment.fileUrl,
+                accountId
+              );
+              const sourceMime = firstAttachment.mimeType ?? null;
+              const transcoded = await transcodeToOggOpus(sourceBuffer, sourceMime);
+              // Observabilidade: se o util nao rodou ffmpeg com sucesso E o
+              // source nao era OGG, o dispatch cai no fallback pre-fix (envia
+              // WebM/MP4 -> chega como documento no WhatsApp). Log em error
+              // pra alarme, sem quebrar o envio.
+              if (!transcoded.transcoded && !isOggOpus(sourceMime)) {
+                logger.error(
+                  '[message] audio nao-OGG enviado sem transcode — WhatsApp entregara como documento',
+                  {
+                    accountId,
+                    conversationId,
+                    sourceMime,
+                    sourceBytes: sourceBuffer.length,
+                  }
+                );
+              }
               result = await evolutionService.sendWhatsAppAudio(accountId, {
                 number: phone,
-                audioBase64: base64,
+                audioBase64: transcoded.buffer.toString('base64'),
                 instance,
               });
             } else if (

@@ -33,8 +33,11 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
-# Install OpenSSL for Prisma
-RUN apk add --no-cache openssl
+# OpenSSL: exigido pelo Prisma.
+# ffmpeg: exigido pelo audio-transcode.util — o browser Chrome/Edge grava PTT
+# como WebM/Opus, mas o WhatsApp so renderiza bubble PTT nativo quando recebe
+# OGG/Opus. Sem ffmpeg o audio chega como "documento".
+RUN apk add --no-cache openssl ffmpeg
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
