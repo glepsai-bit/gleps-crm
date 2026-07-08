@@ -22,7 +22,7 @@
  *     regressão visual.
  *   - `group relative` no wrapper habilita o `group-hover` do trigger.
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import {
   Check,
   CheckCheck,
@@ -110,7 +110,7 @@ export interface MessageBubbleProps {
   onEditCancel: () => void;
 }
 
-export function MessageBubble({
+function MessageBubbleInner({
   msg,
   replyMsg,
   isCustomer,
@@ -387,5 +387,65 @@ export function MessageBubble({
     </div>
   );
 }
+
+/**
+ * PERF-AUDIT (Round 1): threads longas re-renderizavam todas as bubbles a
+ * cada tecla no composer, cada evento socket, cada edit inline — porque o
+ * pai (ConversationThread) recria os handlers e passa refs novas via props.
+ * React.memo com custom comparator: so re-renderiza se o proprio msg mudou,
+ * reactions mudaram, isEditing/editingValue mudaram (dessa row) OU
+ * currentUserId mudou. Os handlers `on*` sao intencionalmente ignorados no
+ * compare — o pai deve envolve-los em useCallback para nao invalidar tudo,
+ * mas mesmo sem useCallback do lado do pai a memoizacao continua util pra
+ * qualquer prop instavel que nao entre no comparator.
+ */
+function propsAreEqualForMemo(
+  prev: MessageBubbleProps,
+  next: MessageBubbleProps
+): boolean {
+  // Estado da propria bubble: mudou algum campo relevante da msg?
+  if (prev.msg !== next.msg) {
+    // Referencia diferente: comparar por campos sensiveis pra renderizacao.
+    if (
+      prev.msg.id !== next.msg.id ||
+      prev.msg.content !== next.msg.content ||
+      prev.msg.status !== next.msg.status ||
+      prev.msg.deletedAt !== next.msg.deletedAt ||
+      prev.msg.externalId !== next.msg.externalId ||
+      prev.msg.readAt !== next.msg.readAt ||
+      prev.msg.deliveredAt !== next.msg.deliveredAt
+    ) {
+      return false;
+    }
+    // attachments length ou primeiro id diferente = re-render.
+    const prevAtt = prev.msg.attachments ?? [];
+    const nextAtt = next.msg.attachments ?? [];
+    if (prevAtt.length !== nextAtt.length) return false;
+    if (prevAtt[0]?.id !== nextAtt[0]?.id) return false;
+  }
+  if (prev.isCustomer !== next.isCustomer) return false;
+  if (prev.currentUserId !== next.currentUserId) return false;
+  if (prev.replyMsg?.id !== next.replyMsg?.id) return false;
+  // Reactions: comparar por conteudo (referencia sempre muda com o hydrate
+  // do effect, mas o conteudo pode ser igual).
+  const prevR = prev.reactions ?? [];
+  const nextR = next.reactions ?? [];
+  if (prevR.length !== nextR.length) return false;
+  for (let i = 0; i < prevR.length; i += 1) {
+    if (
+      prevR[i].emoji !== nextR[i].emoji ||
+      prevR[i].count !== nextR[i].count ||
+      prevR[i].byMe !== nextR[i].byMe
+    ) {
+      return false;
+    }
+  }
+  // Edicao inline: so importa pra bubble em edicao.
+  if (prev.isEditing !== next.isEditing) return false;
+  if (prev.isEditing && prev.editingValue !== next.editingValue) return false;
+  return true;
+}
+
+export const MessageBubble = memo(MessageBubbleInner, propsAreEqualForMemo);
 
 export default MessageBubble;

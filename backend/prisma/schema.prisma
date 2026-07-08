@@ -1324,12 +1324,20 @@ model Conversation {
   // migration 0028_conversation_external_unique — Prisma não suporta partial
   // unique no schema, então o índice fica fora do model mas o Postgres garante.
   // Conversas sem externalId (ex: criadas manualmente) seguem livres pra duplicar.
-  @@index([accountId])
+  // PERF-AUDIT (Round 1): a inbox principal do CRM roda `findMany({ where:
+  // { accountId, [status] }, orderBy: { updatedAt: 'desc' }, take: 50 })` —
+  // sem os compostos abaixo o Postgres puxava TODAS as conversas da conta e
+  // ordenava em memoria. Composite (accountId, updatedAt DESC) atende a
+  // listagem sem filtro de status; (accountId, status, updatedAt DESC)
+  // atende a listagem filtrada por status (fila aberta/pendente/etc).
+  // (accountId, resolvedAt) alimenta o dashboard chat-metrics.
+  @@index([accountId, updatedAt(sort: Desc)])
+  @@index([accountId, status, updatedAt(sort: Desc)])
+  @@index([accountId, resolvedAt])
   @@index([inboxId])
   @@index([contactId])
   @@index([assigneeId])
   @@index([teamId])
-  @@index([status])
   @@index([externalId])
   @@map("conversations")
 }
@@ -1402,11 +1410,15 @@ model Message {
   // mas duas mensagens com mesmo (conversationId, externalId) levantam P2002 — que o
   // controller trata como skip silencioso. Sem esse unique a janela de retry da Evolution
   // duplicava Messages, inflava unreadCount e disparava webhookOutbound 2x.
+  // PERF-AUDIT (Round 1): paginacao da thread do chat roda
+  // `WHERE conversationId = ? AND createdAt < ? ORDER BY createdAt DESC LIMIT n`
+  // (message.service.ts list()) — endpoint MAIS quente do produto. Sem o
+  // composite abaixo o Postgres usava @@index([conversationId]) e sortava
+  // in-memory: em conversas com 10k+ msgs a query passava de segundos.
   @@unique([conversationId, externalId])
-  @@index([conversationId])
+  @@index([conversationId, createdAt(sort: Desc)])
   @@index([senderType])
   @@index([externalId])
-  @@index([createdAt])
   @@index([deletedAt])
   @@map("messages")
 }

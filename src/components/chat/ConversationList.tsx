@@ -298,9 +298,16 @@ export function ConversationList({
           }
         );
       }
-      // Mensagem nova só altera snippet/unread/updatedAt da lista — não toca
-      // o cache da conversa individual (isso é do ConversationThread).
-      invalidateList();
+      // PERF-AUDIT (Round 1): antigamente invalidateList() disparava aqui em
+      // TODO evento message:created, forcando refetch da lista inteira (50
+      // conversas + joins de contact/inbox/assignee/team/labels/messages) a
+      // cada mensagem recebida em qualquer conversa. Em produ com muitas
+      // conversas ativas isso era uma tempestade de refetches.
+      // O patch otimista logo acima ja atualiza snippet/updatedAt/unread na
+      // lista — sem gap visual. Reordenacao por updatedAt e feita no proximo
+      // conversation:updated (que continua invalidando; ver handler abaixo).
+      // Se em algum caso extremo o patch nao cobrir, o proximo refetch
+      // agendado (staleTime do useQuery) corrige.
     });
     const offUpdated = chatSocket.onConversationUpdated((payload) => {
       invalidateList();
