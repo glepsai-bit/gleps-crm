@@ -88,6 +88,15 @@ function roomConv(accountId: string, conversationId: string): string {
   return `account:${accountId}:conv:${conversationId}`;
 }
 
+/**
+ * AUDIT-SOCKET-RBAC: sala exclusiva de admins/super_admins da conta — recebem
+ * eventos de TODAS as conversas (equivalente ao antigo broadcast tenant-wide,
+ * mas sem incluir agentes com visibilidade restrita).
+ */
+function roomAdmins(accountId: string): string {
+  return `account:${accountId}:admins`;
+}
+
 function roomAccount(accountId: string): string {
   return `account:${accountId}`;
 }
@@ -218,6 +227,10 @@ export function initSocket(httpServer: HttpServer): Namespace {
     // Sala da conta + sala direta do usuário
     if (accountId) socket.join(roomAccount(accountId));
     socket.join(roomUser(accountId, userId));
+    // AUDIT-SOCKET-RBAC: admins/super_admins acompanham todas as conversas.
+    if (accountId && socket.data.role !== 'agent') {
+      socket.join(roomAdmins(accountId));
+    }
 
     logger.debug('[socket] cliente conectado', {
       socketId: socket.id,
@@ -246,9 +259,39 @@ export function initSocket(httpServer: HttpServer): Namespace {
         // Garante que a conversa pertence à conta antes de entrar na sala.
         const conv = await prisma.conversation.findFirst({
           where: { id: conversationId, accountId },
-          select: { id: true },
+          select: { id: true, assigneeId: true, teamId: true },
         });
         if (!conv) return;
+
+        // AUDIT-SOCKET-RBAC: agente só entra na sala da conversa se tiver
+        // acesso (assignee/participante/membro do time) — mesmo critério de
+        // conversation.service.assertAgentCanAccess. Sem isso, qualquer
+        // agente assinava message:created/typing de qualquer conversa do
+        // tenant, contornando o RBAC do REST.
+        if (socket.data.role === 'agent') {
+          let allowed = conv.assigneeId === userId;
+          if (!allowed) {
+            const participant = await prisma.conversationParticipant.findFirst({
+              where: { conversationId, userId },
+              select: { id: true },
+            });
+            allowed = Boolean(participant);
+          }
+          if (!allowed && conv.teamId) {
+            const member = await prisma.teamMember.findFirst({
+              where: { teamId: conv.teamId, userId },
+              select: { id: true },
+            });
+            allowed = Boolean(member);
+          }
+          if (!allowed) {
+            logger.warn('[socket] join-conversation negado (RBAC de agente)', {
+              userId,
+              conversationId,
+            });
+            return;
+          }
+        }
 
         socket.join(roomConv(accountId, conversationId));
       } catch (err) {
@@ -430,8 +473,45 @@ export function emitMessageReactionUpdated(
 }
 
 /**
+ * AUDIT-SOCKET-RBAC: resolve as salas autorizadas a receber eventos de uma
+ * conversa: sala da conversa (join já passa por RBAC), admins da conta,
+ * assignee, participantes e membros do time. Substitui o broadcast
+ * tenant-wide (roomAccount) que entregava PII do contato (nome/telefone/
+ * email) a agentes sem acesso àquela conversa.
+ */
+async function resolveConversationRooms(
+  accountId: string,
+  conversationId: string
+): Promise<string[]> {
+  const rooms = [roomConv(accountId, conversationId), roomAdmins(accountId)];
+  try {
+    const conv = await prisma.conversation.findFirst({
+      where: { id: conversationId, accountId },
+      select: {
+        assigneeId: true,
+        participants: { select: { userId: true } },
+        team: { select: { members: { select: { userId: true } } } },
+      },
+    });
+    if (conv) {
+      const userIds = new Set<string>();
+      if (conv.assigneeId) userIds.add(conv.assigneeId);
+      for (const p of conv.participants) userIds.add(p.userId);
+      for (const m of conv.team?.members ?? []) userIds.add(m.userId);
+      for (const uid of userIds) rooms.push(roomUser(accountId, uid));
+    }
+  } catch (err) {
+    logger.warn('[socket] resolveConversationRooms falhou — emitindo só para salas base', {
+      conversationId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return rooms;
+}
+
+/**
  * Emite que a conversa foi atualizada (status, prioridade, label etc).
- * Vai pra sala da conversa E pra sala da conta (lista de conversas).
+ * Vai pra sala da conversa, admins e usuários com acesso (não mais a conta toda).
  */
 export function emitConversationUpdated(
   accountId: string,
@@ -440,8 +520,9 @@ export function emitConversationUpdated(
 ): void {
   if (!chatNs || !accountId || !conversationId) return;
   const payload = { conversationId, conversation };
-  chatNs.to(roomConv(accountId, conversationId)).emit('conversation:updated', payload);
-  chatNs.to(roomAccount(accountId)).emit('conversation:updated', payload);
+  void resolveConversationRooms(accountId, conversationId).then((rooms) => {
+    chatNs?.to(rooms).emit('conversation:updated', payload);
+  });
 }
 
 /**
@@ -455,8 +536,10 @@ export function emitConversationAssigned(
 ): void {
   if (!chatNs || !accountId || !conversationId) return;
   const payload = { conversationId, assignee };
-  chatNs.to(roomConv(accountId, conversationId)).emit('conversation:assigned', payload);
-  chatNs.to(roomAccount(accountId)).emit('conversation:assigned', payload);
+  // AUDIT-SOCKET-RBAC: idem conversation:updated — salas restritas.
+  void resolveConversationRooms(accountId, conversationId).then((rooms) => {
+    chatNs?.to(rooms).emit('conversation:assigned', payload);
+  });
 }
 
 /**
