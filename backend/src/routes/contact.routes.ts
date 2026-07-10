@@ -1,12 +1,16 @@
 import { Router } from 'express';
 import { contactController } from '../controllers/contact.controller';
-import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
+import { authenticate, requirePermission, requireAccountId, requireAdmin } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // All routes require authentication + accountId
 router.use(authenticate);
 router.use(requireAccountId);
+
+// Backfill de fotos de perfil (WhatsApp) — admin-only, escopado por conta.
+// ANTES de /:id pra nao colidir. Popula contatos sem foto; ?force=true reprocessa.
+router.post('/refresh-avatars', requireAdmin, (req, res, next) => contactController.refreshAvatars(req, res, next));
 
 router.get('/', requirePermission('leads', 'kanban'), (req, res, next) => contactController.list(req, res, next));
 router.post('/', requirePermission('leads', 'kanban'), (req, res, next) => contactController.create(req, res, next));

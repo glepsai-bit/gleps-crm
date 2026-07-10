@@ -1691,6 +1691,18 @@ class ConversationService {
           });
         }
       }
+      // Conversa EXISTENTE: mantem a foto de perfil do contato atualizada ao
+      // longo do tempo. Fire-and-forget + self-throttle 24h — nao segura o
+      // processamento do webhook e so bate na Evolution 1x/dia por contato.
+      // Sem isso, contatos de conversas antigas nunca ganhariam foto (o fetch
+      // so rodava na criacao de contato novo).
+      if (existing.contactId) {
+        void this.refreshContactAvatarById(accountId, existing.contactId).catch(
+          () => {
+            /* best-effort */
+          }
+        );
+      }
       return this.maybeReopen(existing, accountId, input.externalId);
     }
 
@@ -2020,6 +2032,88 @@ class ConversationService {
         });
       }
     })();
+  }
+
+  /**
+   * Refresh publico da foto de perfil de UM contato (self-load do throttle).
+   * `force=true` ignora a janela de 24h. Retorna a URL final (ou null).
+   * Usado pelo backfill e pelo trigger de conversas existentes — que so tem
+   * o contactId (nao o fetchedAt carregado). Diferente do maybeRefreshProfilePic
+   * (fire-and-forget) este e AWAITABLE e devolve o resultado.
+   */
+  async refreshContactAvatarById(
+    accountId: string,
+    contactId: string,
+    opts: { force?: boolean } = {}
+  ): Promise<string | null> {
+    const contact = await prisma.contact.findFirst({
+      where: { id: contactId, accountId },
+      select: { id: true, telefone: true, profilePicFetchedAt: true },
+    });
+    if (!contact || !contact.telefone) return null;
+    if (
+      !opts.force &&
+      contact.profilePicFetchedAt &&
+      Date.now() - new Date(contact.profilePicFetchedAt).getTime() <
+        PROFILE_PIC_MAX_AGE_MS
+    ) {
+      return null; // ainda fresco — nao bate na Evolution
+    }
+    const url = await evolutionService.fetchProfilePictureUrl(accountId, {
+      number: contact.telefone,
+    });
+    await prisma.contact.update({
+      where: { id: contact.id },
+      data: { profilePicUrl: url, profilePicFetchedAt: new Date() },
+    });
+    return url;
+  }
+
+  /**
+   * Backfill: popula a foto de perfil dos contatos da conta que ainda nao tem
+   * (ou, com force, de todos). Sequencial com cap defensivo pra nao martelar a
+   * Evolution. Retorna resumo { scanned, updated, withPhoto }.
+   *
+   * withPhoto < updated significa que a Evolution respondeu, mas os contatos
+   * nao tem foto publica (privacidade) — diagnostico util pro operador.
+   */
+  async backfillAccountAvatars(
+    accountId: string,
+    opts: { limit?: number; force?: boolean } = {}
+  ): Promise<{ scanned: number; updated: number; withPhoto: number }> {
+    // Default conservador (100): backfill e SINCRONO e cada contato e um
+    // round-trip a Evolution (~200-500ms). 100 fica sob o timeout tipico do
+    // nginx (60s). Contas maiores chamam o endpoint em paginas sucessivas.
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+    const where = opts.force
+      ? { accountId, telefone: { not: null } }
+      : { accountId, telefone: { not: null }, profilePicFetchedAt: null };
+    const contacts = await prisma.contact.findMany({
+      where,
+      select: { id: true },
+      take: limit,
+      orderBy: { updatedAt: 'desc' },
+    });
+    let updated = 0;
+    let withPhoto = 0;
+    for (const c of contacts) {
+      try {
+        const url = await this.refreshContactAvatarById(accountId, c.id, {
+          force: true,
+        });
+        updated += 1;
+        if (url) withPhoto += 1;
+      } catch {
+        /* best-effort — segue pro proximo */
+      }
+    }
+    logger.info('[conversation] backfill de avatares concluido', {
+      accountId,
+      scanned: contacts.length,
+      updated,
+      withPhoto,
+    });
+    return { scanned: contacts.length, updated, withPhoto };
   }
 
   private async requireConversation(id: string, accountId: string): Promise<Conversation> {

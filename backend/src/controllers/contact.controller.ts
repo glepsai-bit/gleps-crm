@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { contactService } from '../services/contact.service';
+import { conversationService } from '../services/conversation.service';
 import { AuthenticatedRequest } from '../types';
 import { getPaginationParams } from '../utils/helpers';
 
@@ -333,6 +334,32 @@ export class ContactController {
       const result = await contactService.queryForApi(accountId, filters);
 
       res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/contacts/refresh-avatars  (admin-only)
+   * Backfill das fotos de perfil (WhatsApp) dos contatos da conta. Popula os
+   * que ainda nao tem foto; com ?force=true reprocessa todos. Cap de 500/req.
+   */
+  async refreshAvatars(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const accountId = req.user!.accountId!;
+      const force = String(req.query.force ?? '') === 'true';
+      const limitRaw = Number(req.query.limit);
+      const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+
+      const summary = await conversationService.backfillAccountAvatars(accountId, {
+        force,
+        limit,
+      });
+      res.json({ data: summary });
     } catch (error) {
       next(error);
     }
