@@ -204,32 +204,51 @@ class DashboardService {
       }
     }
 
-    // Get performance data for each agent
-    const performance = await Promise.all(
-      users.map(async (user) => {
-        const [totalSales, paidSales, totalRevenue] = await Promise.all([
-          prisma.sale.count({ where: { ...saleWhere, responsavelId: user.id } }),
-          prisma.sale.count({ where: { ...saleWhere, responsavelId: user.id, status: 'paid' } }),
-          prisma.sale.aggregate({
-            where: { ...saleWhere, responsavelId: user.id, status: 'paid' },
-            _sum: { valor: true },
-          }),
-        ]);
+    // AUDIT-DASH-N1: antes eram 3 queries POR usuário (3×N round-trips a
+    // cada carga do dashboard). Um único groupBy por (responsavelId, status)
+    // traz contagem e soma; cruzamos em memória com a lista de usuários.
+    const grouped = await prisma.sale.groupBy({
+      by: ['responsavelId', 'status'],
+      where: { ...saleWhere, responsavelId: { in: users.map((u) => u.id) } },
+      _count: { _all: true },
+      _sum: { valor: true },
+    });
 
-        return {
-          user: {
-            id: user.id,
-            nome: user.nome,
-            email: user.email,
-            role: user.role,
-          },
-          totalSales,
-          paidSales,
-          totalRevenue: Number(totalRevenue._sum.valor || 0),
-          conversionRate: totalSales > 0 ? Math.round((paidSales / totalSales) * 100) : 0,
-        };
-      })
-    );
+    const byUser = new Map<
+      string,
+      { total: number; paid: number; revenue: number }
+    >();
+    for (const row of grouped) {
+      if (!row.responsavelId) continue;
+      const agg = byUser.get(row.responsavelId) ?? {
+        total: 0,
+        paid: 0,
+        revenue: 0,
+      };
+      agg.total += row._count._all;
+      if (row.status === 'paid') {
+        agg.paid += row._count._all;
+        agg.revenue += Number(row._sum.valor || 0);
+      }
+      byUser.set(row.responsavelId, agg);
+    }
+
+    const performance = users.map((user) => {
+      const agg = byUser.get(user.id) ?? { total: 0, paid: 0, revenue: 0 };
+      return {
+        user: {
+          id: user.id,
+          nome: user.nome,
+          email: user.email,
+          role: user.role,
+        },
+        totalSales: agg.total,
+        paidSales: agg.paid,
+        totalRevenue: agg.revenue,
+        conversionRate:
+          agg.total > 0 ? Math.round((agg.paid / agg.total) * 100) : 0,
+      };
+    });
 
     return performance.sort((a, b) => b.totalRevenue - a.totalRevenue);
   }

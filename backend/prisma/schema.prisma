@@ -591,6 +591,8 @@ model Sale {
   @@index([status])
   @@index([responsavelId])
   @@index([createdAt])
+  // AUDIT-PERF-PAIDAT (migration 0052): suporte às queries de receita
+  @@index([accountId, status, paidAt])
   @@map("sales")
 }
 

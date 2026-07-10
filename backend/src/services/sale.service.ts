@@ -353,34 +353,42 @@ class SaleService {
       throw new ValidationError(ErrorCodes.ITEM_ALREADY_REFUNDED);
     }
 
-    // Refund the item
-    await prisma.saleItem.update({
-      where: { id: itemId },
-      data: {
-        refunded: true,
-        refundedAt: new Date(),
-        refundReason: reason,
-      },
-    });
+    // AUDIT-REFUND-TX: operação financeira em 3 passos era não-atômica —
+    // crash entre os updates deixava item refunded com status da venda
+    // incoerente, e dois estornos concorrentes podiam ambos ler
+    // nonRefundedItems>0 e gravar 'partial_refund' com tudo estornado.
+    // Transação + lock pessimista da venda (FOR UPDATE) serializa.
+    await prisma.$transaction(async (tx) => {
+      // Lock da venda: estornos concorrentes da mesma venda enfileiram aqui.
+      await tx.$queryRaw`SELECT id FROM sales WHERE id = ${saleId}::uuid FOR UPDATE`;
 
-    // Check if all items are refunded
-    const nonRefundedItems = await prisma.saleItem.count({
-      where: { saleId, refunded: false },
-    });
-
-    // Update sale status
-    const newStatus: SaleStatus = nonRefundedItems === 0 ? 'refunded' : 'partial_refund';
-
-    await prisma.sale.update({
-      where: { id: saleId },
-      data: {
-        status: newStatus,
-        ...(newStatus === 'refunded' ? {
+      await tx.saleItem.update({
+        where: { id: itemId },
+        data: {
+          refunded: true,
           refundedAt: new Date(),
           refundReason: reason,
-          refundedById,
-        } : {}),
-      },
+        },
+      });
+
+      const nonRefundedItems = await tx.saleItem.count({
+        where: { saleId, refunded: false },
+      });
+
+      const newStatus: SaleStatus =
+        nonRefundedItems === 0 ? 'refunded' : 'partial_refund';
+
+      await tx.sale.update({
+        where: { id: saleId },
+        data: {
+          status: newStatus,
+          ...(newStatus === 'refunded' ? {
+            refundedAt: new Date(),
+            refundReason: reason,
+            refundedById,
+          } : {}),
+        },
+      });
     });
 
     await eventService.create({
