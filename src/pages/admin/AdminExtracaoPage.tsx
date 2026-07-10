@@ -72,7 +72,8 @@ interface BatchRow {
 }
 
 function getNum(b: BatchRow, snake: 'total_contacts' | 'sent_count' | 'failed_count', camel: 'totalContacts' | 'sentCount' | 'failedCount'): number {
-  const v = (b as Record<string, unknown>)[snake] ?? (b as Record<string, unknown>)[camel];
+  const rec = b as unknown as Record<string, unknown>;
+  const v = rec[snake] ?? rec[camel];
   return typeof v === 'number' ? v : 0;
 }
 

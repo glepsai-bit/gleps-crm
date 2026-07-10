@@ -46,6 +46,7 @@ import {
 import { toast } from 'sonner';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { cn } from '@/lib/utils';
 import {
   slaPoliciesBackendService,
   type CreateSLAPolicyInput,
