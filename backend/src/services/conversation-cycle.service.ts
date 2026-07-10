@@ -34,7 +34,8 @@
  *   passam a ser uma "view" do último ciclo (escritos pelos services lifecycle).
  */
 
-import type { Prisma, ConversationCycle } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import type { ConversationCycle } from '@prisma/client';
 import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
 
