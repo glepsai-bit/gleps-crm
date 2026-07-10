@@ -110,10 +110,10 @@ type Unsubscribe = () => void;
  *    não passa pelo prefixo do REST.
  */
 function resolveSocketBaseUrl(): string {
-  const envUrl =
-    (import.meta as any)?.env?.VITE_API_URL ??
-    (import.meta as any)?.env?.VITE_API_URL_STAGING ??
-    '';
+  const meta = import.meta as ImportMeta & {
+    env?: Record<string, string | undefined>;
+  };
+  const envUrl = meta.env?.VITE_API_URL ?? meta.env?.VITE_API_URL_STAGING ?? '';
 
   let base: string;
   if (typeof envUrl === 'string' && envUrl.trim() && envUrl.startsWith('http')) {
