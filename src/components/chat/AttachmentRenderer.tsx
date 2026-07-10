@@ -31,15 +31,15 @@ function humanFileSize(bytes?: number | null): string {
   return `${value.toFixed(value >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-function isProxyUrl(src: string): boolean {
-  return /^\/?api\/attachments\//.test(src);
+function isProxyUrl(src: string | null): boolean {
+  return Boolean(src) && /^\/?api\/attachments\//.test(src as string);
 }
 
 /**
  * Hook: se src é o proxy autenticado, baixa com Bearer e devolve blob URL.
  * Caso contrário (URL pública/legacy), retorna src direto.
  */
-function useAuthenticatedSrc(src: string): { resolvedSrc: string | null; loading: boolean; error: boolean } {
+function useAuthenticatedSrc(src: string | null): { resolvedSrc: string | null; loading: boolean; error: boolean } {
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(
     isProxyUrl(src) ? null : src
   );
@@ -47,6 +47,14 @@ function useAuthenticatedSrc(src: string): { resolvedSrc: string | null; loading
   const [error, setError] = useState<boolean>(false);
 
   useEffect(() => {
+    // AUDIT-DOUBLE-FETCH: src null ⇒ hook inerte (usado quando o thumb deve
+    // reaproveitar o fetch do main em vez de duplicá-lo).
+    if (!src) {
+      setResolvedSrc(null);
+      setLoading(false);
+      setError(false);
+      return;
+    }
     if (!isProxyUrl(src)) {
       setResolvedSrc(src);
       setLoading(false);
@@ -128,7 +136,10 @@ function ImageAttachment({
   displayName,
 }: { fileUrl: string; thumbnailUrl?: string | null; displayName: string }) {
   const main = useAuthenticatedSrc(fileUrl);
-  const thumb = useAuthenticatedSrc(thumbnailUrl || fileUrl);
+  // AUDIT-DOUBLE-FETCH: sem thumbnailUrl (comum em mídia inbound do WhatsApp)
+  // o hook do thumb buscava a MESMA fileUrl de novo — dois GET autenticados e
+  // dois blobs por imagem. Passamos null e reaproveitamos o main.
+  const thumb = useAuthenticatedSrc(thumbnailUrl && thumbnailUrl !== fileUrl ? thumbnailUrl : null);
   const src = thumb.resolvedSrc || main.resolvedSrc;
   const href = main.resolvedSrc || src || '#';
   if ((thumb.loading && main.loading) || (!src && !main.error)) {
@@ -197,7 +208,7 @@ function VideoAttachment({
   mimeType,
 }: { fileUrl: string; thumbnailUrl?: string | null; mimeType?: string | null }) {
   const main = useAuthenticatedSrc(fileUrl);
-  const poster = useAuthenticatedSrc(thumbnailUrl || '');
+  const poster = useAuthenticatedSrc(thumbnailUrl || null);
   if (main.loading && !main.resolvedSrc) {
     return (
       <div className="flex items-center justify-center w-[260px] h-40 rounded-md border border-border bg-black/80">

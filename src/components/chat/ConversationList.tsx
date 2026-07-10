@@ -9,7 +9,7 @@
  *   ícone status/priority, timestamp relativo pt-BR
  * - Saved views: persiste combinação atual em localStorage por accountId
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Search,
@@ -206,6 +206,14 @@ export function ConversationList({
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // AUDIT-UNREAD-GHOST: o handler de socket abaixo é registrado uma vez
+  // (deps [account?.id]) — ler selectedConversationId direto criaria closure
+  // stale. Ref sempre atualizada resolve sem re-subscrever a cada seleção.
+  const selectedConversationIdRef = useRef(selectedConversationId);
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
+
   const [filters, setFilters] = useState<ListFiltersState>(DEFAULT_FILTERS);
   const [searchInput, setSearchInput] = useState('');
   const [savedViews, setSavedViews] = useState<SavedView[]>(() =>
@@ -279,10 +287,10 @@ export function ConversationList({
         // lista se essa conversa nao e a atualmente aberta. Se e a aberta,
         // o ConversationThread mesmo emite mark-as-read via useEffect.
         const isInbound = incoming.senderType === 'customer';
-        const isOpenHere =
-          typeof window !== 'undefined' &&
-          window.location.pathname.includes('/admin/chat') &&
-          new URLSearchParams(window.location.search).get('conversationId') === targetId;
+        // AUDIT-UNREAD-GHOST: antes lia ?conversationId= da URL, que NUNCA é
+        // setado (AdminChatPage guarda a seleção em useState) — isOpenHere era
+        // sempre false e o badge incrementava mesmo com a conversa aberta.
+        const isOpenHere = selectedConversationIdRef.current === targetId;
         queryClient.setQueriesData<{ data?: Conversation[] } | undefined>(
           { queryKey: ['conversations'] },
           (old) => {

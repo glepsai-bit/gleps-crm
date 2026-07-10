@@ -1253,6 +1253,11 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
 
       {/* Composer — recebe replyingTo pra montar preview + enviar replyToId */}
       <MessageComposer
+        // AUDIT-DRAFT-LEAK: sem key, o React reconcilia a MESMA instância ao
+        // trocar de conversa e o rascunho (texto/anexos/nota privada) vazava
+        // para a conversa seguinte — Enter mandava o texto de A pro contato B.
+        // key={conversationId} força remount limpo por conversa.
+        key={conversationId}
         conversationId={conversationId}
         replyingTo={replyingTo}
         onCancelReply={handleCancelReply}

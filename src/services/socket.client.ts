@@ -327,14 +327,25 @@ export class ChatSocket {
 
   private subscribe<T>(event: string, cb: Listener<T>): Unsubscribe {
     if (!this.socket) {
-      // Não derrubamos a aplicação — apenas retornamos um no-op.
-      // O caller deve garantir connect() antes, mas em React isso pode rodar
-      // num ordering em que o efeito monta antes do connect.
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[chatSocket] subscribe('${event}') chamado antes de connect(); listener será ignorado.`
-      );
-      return () => {};
+      // AUDIT-H-DASH-3: antes este ramo era um no-op com console.warn — o
+      // buffer pendingSubscriptions existia mas NUNCA era populado, então
+      // efeitos filhos que montavam antes do connect() do layout pai perdiam
+      // o listener para sempre (live-attendance congelado, só polling).
+      // Agora enfileiramos de verdade; flushPendingSubscriptions() anexa no
+      // connect() e o unsubscribe cobre os dois estados (buffered/anexado).
+      const entry = {
+        event,
+        cb: cb as (...args: unknown[]) => void,
+        attached: false,
+      };
+      this.pendingSubscriptions.push(entry);
+      return () => {
+        const idx = this.pendingSubscriptions.indexOf(entry);
+        if (idx >= 0) this.pendingSubscriptions.splice(idx, 1);
+        if (entry.attached && this.socket) {
+          this.socket.off(entry.event, entry.cb);
+        }
+      };
     }
     const socket = this.socket;
     socket.on(event, cb as (...args: unknown[]) => void);
