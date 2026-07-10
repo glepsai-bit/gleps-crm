@@ -255,83 +255,91 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
     setMarkedReadFor(null);
   }, [conversationId]);
 
-  // BUG-5: Preserva scroll position entre refetchs.
-  // Salvamos scrollTop ANTES do re-render (via ref) e restauramos DEPOIS,
-  // somente quando o numero de mensagens NAO mudou (= refetch sem msg nova).
-  // Quando a lista cresce (mensagem nova chegou), deixamos o efeito de
-  // auto-scroll abaixo levar pra ultima.
+  // ============================================
+  // SCROLL (reescrito) — modelo robusto em 3 regras.
+  // Pre-requisito: scrollRef aponta pro VIEWPORT rolavel do Radix ScrollArea
+  // (ver bloco do <ScrollArea> mais abaixo). Antes apontava pra raiz
+  // overflow-hidden e TODO scrollTop era no-op — causa real do bug de "abrir
+  // conversa e nao ver a ultima mensagem".
+  // ============================================
+  const currentMessageCount = conversationQuery.data?.messages?.length ?? 0;
+  // Com placeholderData:(prev)=>prev, durante a TROCA de conversa o
+  // conversationQuery.data ainda e o da conversa ANTERIOR. So agimos quando os
+  // dados REAIS da conversa selecionada chegaram (data.id === conversationId).
+  const loadedConversationId =
+    (conversationQuery.data as { id?: string } | undefined)?.id ?? null;
+  const dataMatchesSelected = loadedConversationId === conversationId;
+
   const prevMessageCountRef = useRef<number>(0);
   const savedScrollTopRef = useRef<number | null>(null);
-  const currentMessageCount = conversationQuery.data?.messages?.length ?? 0;
+  // Marca pra qual conversationId ja fizemos o scroll inicial (evita repetir e
+  // evita brigar com o scroll de nova-mensagem).
+  const initialScrollForRef = useRef<string | null>(null);
 
-  // Antes do paint: capturamos o scrollTop atual ANTES do React reconciliar.
+  // Reset ao trocar de conversa: permite novo scroll inicial da proxima.
+  useEffect(() => {
+    initialScrollForRef.current = null;
+    prevMessageCountRef.current = 0;
+    savedScrollTopRef.current = null;
+  }, [conversationId]);
+
+  // Antes do paint: guarda a posicao atual (pra preservar em refetch silencioso).
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
-    savedScrollTopRef.current = el.scrollTop;
+    if (el) savedScrollTopRef.current = el.scrollTop;
   });
 
-  // Depois do paint: se a quantidade de mensagens NAO mudou (refetch silencioso),
-  // restauramos a posicao salva. Se mudou, o useEffect de auto-scroll abaixo
-  // levara pra ultima mensagem.
+  // REGRA 1 — Scroll inicial ao ABRIR/TROCAR de conversa.
+  // Dispara UMA vez, quando os dados reais da conversa chegam. Scroll
+  // instantaneo pro fim + re-scrolls curtos cobrindo o layout shift de
+  // imagens/audios que so ganham altura depois do primeiro paint.
   useLayoutEffect(() => {
+    if (!dataMatchesSelected || currentMessageCount === 0) return;
+    if (initialScrollForRef.current === conversationId) return;
     const el = scrollRef.current;
     if (!el) return;
-    const prev = prevMessageCountRef.current;
-    if (
-      prev === currentMessageCount &&
-      savedScrollTopRef.current !== null &&
-      currentMessageCount > 0
-    ) {
-      el.scrollTop = savedScrollTopRef.current;
-    }
-    prevMessageCountRef.current = currentMessageCount;
-  }, [currentMessageCount]);
-
-  // Auto-scroll quando lista CRESCE (mensagem nova).
-  // `smooth` porque o usuario ja esta no thread e queremos animar suave.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    requestAnimationFrame(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    });
-  }, [currentMessageCount]);
-
-  // BUG-SCROLL-OPEN: ao TROCAR de conversa, o thread precisa aparecer na
-  // ultima mensagem, nao em uma msg antiga. O effect acima falhava porque:
-  //   1) enquanto `useQuery` refetcha o thread da nova conversa, os dados
-  //      antigos ficam na tela (`data` ainda tem a conversa anterior);
-  //      `currentMessageCount` vai de 50 -> ? e o comportamento fica racy.
-  //   2) `behavior: 'smooth'` e assincrono; quando imagens/audios do thread
-  //      terminam de carregar depois, o scrollHeight cresce e o scroll para
-  //      no meio.
-  // Fix: efeito dedicado por `conversationId` que, tao logo o data novo
-  // apareca, scrolla `instantaneo` pro bottom e re-scrolla nos proximos
-  // ~500ms cobrindo o load das imagens (ResizeObserver seria mais rigoroso
-  // mas o custo/beneficio nao compensa aqui).
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (currentMessageCount === 0) return;
-    const scrollToBottom = () => {
+    const toBottom = () => {
       el.scrollTop = el.scrollHeight;
     };
-    scrollToBottom();
-    // Cobre layout shift de imagens/audios que renderizam depois do primeiro paint.
-    const t1 = window.setTimeout(scrollToBottom, 100);
-    const t2 = window.setTimeout(scrollToBottom, 300);
-    const t3 = window.setTimeout(scrollToBottom, 600);
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.clearTimeout(t3);
-    };
-    // Depende de conversationId (nao de currentMessageCount) — o efeito
-    // acima ja cuida do crescer-por-mensagem-nova. Este ativa somente quando
-    // o usuario troca de conversa. Damos o count no dep so pra re-disparar
-    // quando o data chega vazio (0) e depois hidrata (>0).
-  }, [conversationId, currentMessageCount > 0]);
+    toBottom();
+    const timers = [60, 160, 320, 640].map((ms) =>
+      window.setTimeout(toBottom, ms)
+    );
+    initialScrollForRef.current = conversationId;
+    prevMessageCountRef.current = currentMessageCount;
+    return () => timers.forEach((t) => window.clearTimeout(t));
+  }, [conversationId, dataMatchesSelected, currentMessageCount]);
+
+  // REGRA 2 — Nova mensagem na conversa JA aberta -> segue pro fim (suave),
+  // mas so se o usuario ja estava perto do fim (nao arranca quem leu historico).
+  // REGRA 3 — Refetch silencioso sem msg nova -> preserva a posicao.
+  useLayoutEffect(() => {
+    // So depois do scroll inicial desta conversa (senao briga com a Regra 1).
+    if (initialScrollForRef.current !== conversationId) return;
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const prevCount = prevMessageCountRef.current;
+    prevMessageCountRef.current = currentMessageCount;
+
+    if (currentMessageCount > prevCount) {
+      // Chegou mensagem nova. Segue pro fim se estava perto do fim.
+      const nearBottom =
+        (savedScrollTopRef.current ?? 0) + el.clientHeight >=
+        el.scrollHeight - 160;
+      if (nearBottom) {
+        requestAnimationFrame(() =>
+          el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+        );
+      }
+    } else if (
+      currentMessageCount === prevCount &&
+      savedScrollTopRef.current !== null
+    ) {
+      // Refetch silencioso (mesma quantidade) -> nao pula, restaura posicao.
+      el.scrollTop = savedScrollTopRef.current;
+    }
+  }, [conversationId, currentMessageCount]);
 
   // ============================================
   // Socket.IO — real-time updates (T-022 Sprint 4)
@@ -1125,16 +1133,24 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
         </div>
       </div>
 
-      {/* Mensagens — flex-1 + min-h-0 garante que a ScrollArea não vaze */}
-      <ScrollArea className="flex-1 min-h-0" ref={scrollRef as never}>
+      {/* Mensagens — flex-1 + min-h-0 garante que a ScrollArea não vaze.
+          BUG-SCROLL (raiz real): o Radix ScrollArea encaminha `ref` para o
+          ROOT (overflow-hidden, NAO rola). O elemento rolavel e o VIEWPORT
+          interno ([data-radix-scroll-area-viewport], overflow:scroll). Antes
+          havia `ref={scrollRef}` na <ScrollArea> E um callback resolvendo o
+          viewport — mas o ref do ScrollArea (pai, dispara depois do filho)
+          SOBRESCREVIA o viewport pela raiz. Resultado: todo `scrollTop` caia
+          num elemento que nao rola -> auto-scroll silenciosamente inope. */}
+      <ScrollArea className="flex-1 min-h-0">
         <div
           ref={(el) => {
-            // ScrollArea encapsula o viewport; usamos o div interno para scrollTo.
-            if (el && !scrollRef.current) {
+            // Resolve SEMPRE o viewport rolavel a partir deste div interno.
+            // Sem guarda `!scrollRef.current` — o ScrollArea nao seta mais o
+            // ref, entao aqui e a unica fonte e deve reatribuir com seguranca.
+            if (el) {
               const viewport = el.closest('[data-radix-scroll-area-viewport]');
-              if (viewport instanceof HTMLDivElement) {
-                scrollRef.current = viewport;
-              }
+              scrollRef.current =
+                viewport instanceof HTMLDivElement ? viewport : null;
             }
           }}
           className="p-4 space-y-4"
