@@ -34,9 +34,12 @@ const adminOnlyRoutes = new Set<string>([
   '/admin/warmup',
   '/admin/integracoes',
   '/admin/opt-outs',
-  // Atendimento (T-022) - apenas admin/super_admin
-  '/admin/chat',
-  '/admin/chat/dashboard',
+  // Atendimento (T-022): o CHAT em si (/admin/chat) NAO e admin-only — e a
+  // capacidade fundamental de todo agente num CRM de WhatsApp. O backend ja
+  // libera a rota (requireRole inclui 'agent') e escopa as conversas por
+  // agente (assigneeId/team/participant em conversation.service). O que fica
+  // admin-only sao as telas de GESTAO/CONFIG do atendimento, abaixo.
+  '/admin/chat/dashboard', // metricas de atendimento (visao gerencial)
   '/admin/inboxes',
   '/admin/teams',
   '/admin/canned-responses',
@@ -46,6 +49,11 @@ const adminOnlyRoutes = new Set<string>([
   // T-024 — admin gerencia agentes da propria conta
   '/admin/agentes',
 ]);
+
+// Rotas que TODO agente acessa por padrao, independente da lista granular de
+// permissions. Chat entra aqui porque e o nucleo do produto e o isolamento
+// ja e garantido pelo backend (o agente so ve as proprias conversas).
+const agentDefaultRoutes = new Set<string>(['/admin/chat']);
 
 export function usePermissions() {
   const { user } = useAuth();
@@ -83,6 +91,11 @@ export function usePermissions() {
       return false;
     }
 
+    // Rotas liberadas a todo agente por padrao (chat). Precede o mapa granular.
+    if (agentDefaultRoutes.has(route)) {
+      return true;
+    }
+
     const permission = routePermissionMap[route];
     if (permission) {
       const allowed = hasPermission(permission);
@@ -111,8 +124,10 @@ export function usePermissions() {
       return '/admin';
     }
 
-    // For agents, find the first permitted route
+    // For agents, find the first permitted route.
+    // Chat vem primeiro: e onde o agente trabalha (atendimento).
     const routeOrder = [
+      '/admin/chat',
       '/admin',
       '/admin/kanban',
       '/admin/leads',
