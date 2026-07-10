@@ -10,7 +10,10 @@ import {
   type MessageContentType,
   type MessageSenderType,
 } from '../services/message.service';
-import { conversationService } from '../services/conversation.service';
+import {
+  conversationService,
+  type ConversationActor,
+} from '../services/conversation.service';
 import { evolutionService } from '../services/evolution.service';
 import { apiKeyHasScope } from '../middlewares/apiKey.middleware';
 import {
@@ -267,6 +270,201 @@ function checkAiCircuitBreaker(
   return { blocked: false };
 }
 
+/**
+ * AUDIT-RBAC-MSG: monta o ConversationActor do req.user — mesmo formato de
+ * conversation.controller.getActor. Usado para aplicar o guard de acesso do
+ * agente (assignee/participante/time) na camada de mensagens, que estava
+ * exposta a IDOR intra-tenant (agente lia/escrevia em qualquer conversa da conta).
+ */
+function getActor(req: AuthenticatedRequest): ConversationActor {
+  return {
+    userId: req.user!.id,
+    role: req.user!.role as ConversationActor['role'],
+  };
+}
+
+/**
+ * AUDIT-RBAC-MSG: resolve a conversa de uma mensagem (escopada por conta) e
+ * aplica ensureConversationAccess. Para endpoints /messages/:id/* onde o
+ * conversationId não vem na URL.
+ */
+async function ensureMessageConversationAccess(
+  messageId: string,
+  accountId: string,
+  actor: ConversationActor
+): Promise<string> {
+  const msg = await prisma.message.findFirst({
+    where: { id: messageId, conversation: { accountId } },
+    select: { conversationId: true },
+  });
+  if (!msg) throw new NotFoundError('Mensagem');
+  await conversationService.ensureConversationAccess(
+    msg.conversationId,
+    accountId,
+    actor
+  );
+  return msg.conversationId;
+}
+
+type OutboundQuoted = {
+  id: string;
+  remoteJid: string;
+  fromMe: boolean;
+  text?: string | null;
+};
+
+interface OutboundDispatchInput {
+  accountId: string;
+  conversationId: string;
+  phone: string;
+  instance: string | null;
+  content: string | null;
+  attachments: CreateAttachmentInput[];
+  quotedPayload: OutboundQuoted | null;
+}
+
+interface OutboundDispatchResult {
+  firstMessageId: string;
+  allMessageIds: string[];
+  failures: Array<{ index: number; fileType?: string; error: string }>;
+}
+
+/**
+ * AUDIT-MULTI-ANEXO: despacha uma mensagem outbound completa para o WhatsApp,
+ * percorrendo TODOS os anexos na ordem (antes só attachments[0] era enviado —
+ * os demais ficavam 'sent' no CRM sem nunca chegar ao cliente) e enviando o
+ * texto que acompanha áudio/sticker como mensagem separada (WhatsApp não
+ * suporta caption em PTT; antes o content era descartado).
+ *
+ * Regras de erro:
+ *  - ValidationError/NotFoundError ANTES de qualquer envio propaga (vira 4xx
+ *    no create, mesma semântica anterior);
+ *  - depois que algo já saiu pro cliente, falhas viram `failures` (falha
+ *    parcial registrada em metadata) — deletar/failed duplicaria o entregue.
+ */
+async function dispatchOutboundToWhatsApp(
+  input: OutboundDispatchInput
+): Promise<OutboundDispatchResult> {
+  const { accountId, conversationId, phone, instance, quotedPayload } = input;
+  const content =
+    typeof input.content === 'string' && input.content.trim() !== ''
+      ? input.content
+      : null;
+  const attachments = input.attachments ?? [];
+
+  const allMessageIds: string[] = [];
+  const failures: OutboundDispatchResult['failures'] = [];
+
+  // Primeiro anexo capaz de carregar caption (image/video/document).
+  const captionIndex = content
+    ? attachments.findIndex(
+        (a) =>
+          a.fileType === 'image' ||
+          a.fileType === 'video' ||
+          a.fileType === 'document'
+      )
+    : -1;
+
+  // Texto vai como mensagem própria quando nenhum anexo carrega caption
+  // (texto puro, PTT+texto, sticker+texto).
+  if (content && captionIndex === -1) {
+    const result = quotedPayload
+      ? await evolutionService.sendTextWithQuote(accountId, {
+          number: phone,
+          text: content,
+          quotedKey: {
+            id: quotedPayload.id,
+            remoteJid: quotedPayload.remoteJid,
+            fromMe: quotedPayload.fromMe,
+          },
+          quotedText: quotedPayload.text ?? '',
+          instance,
+        })
+      : await evolutionService.sendText(accountId, {
+          number: phone,
+          text: content,
+          instance,
+        });
+    if (result.messageId) allMessageIds.push(result.messageId);
+  }
+
+  for (let i = 0; i < attachments.length; i++) {
+    const att = attachments[i];
+    try {
+      let result: { messageId: string; raw: any };
+      if (att.fileType === 'audio') {
+        // Chrome/Edge gravam WebM/Opus mas o WhatsApp so renderiza bubble
+        // PTT nativo com OGG/Opus — transcodamos via ffmpeg antes de enviar.
+        const sourceBuffer = await resolveAudioSourceBuffer(
+          att.fileUrl,
+          accountId
+        );
+        const sourceMime = att.mimeType ?? null;
+        const transcoded = await transcodeToOggOpus(sourceBuffer, sourceMime);
+        if (!transcoded.transcoded && !isOggOpus(sourceMime)) {
+          logger.error(
+            '[message] audio nao-OGG enviado sem transcode — WhatsApp entregara como documento',
+            {
+              accountId,
+              conversationId,
+              sourceMime,
+              sourceBytes: sourceBuffer.length,
+            }
+          );
+        }
+        result = await evolutionService.sendWhatsAppAudio(accountId, {
+          number: phone,
+          audioBase64: transcoded.buffer.toString('base64'),
+          instance,
+        });
+      } else if (att.fileType === 'sticker') {
+        // Evolution aceita URL http(s) ou base64 puro; data URL vira base64.
+        const sticker = att.fileUrl.startsWith('data:')
+          ? att.fileUrl.slice(att.fileUrl.indexOf(',') + 1)
+          : att.fileUrl;
+        result = await evolutionService.sendSticker(accountId, {
+          number: phone,
+          sticker,
+          instance,
+        });
+      } else {
+        result = await evolutionService.sendMedia(accountId, {
+          number: phone,
+          mediaUrl: att.fileUrl,
+          mediaType: att.fileType,
+          caption: i === captionIndex && content ? content : undefined,
+          fileName: att.fileName,
+          instance,
+        });
+      }
+      if (result.messageId) allMessageIds.push(result.messageId);
+    } catch (err) {
+      if (
+        allMessageIds.length === 0 &&
+        failures.length === 0 &&
+        (err instanceof ValidationError || err instanceof NotFoundError)
+      ) {
+        throw err;
+      }
+      const errMsg = err instanceof Error ? err.message : String(err);
+      failures.push({ index: i, fileType: att.fileType, error: errMsg });
+      logger.warn('[message] falha ao enviar anexo via Evolution', {
+        conversationId,
+        accountId,
+        attachmentIndex: i,
+        fileType: att.fileType,
+        error: errMsg,
+      });
+    }
+  }
+
+  return {
+    firstMessageId: allMessageIds[0] ?? '',
+    allMessageIds,
+    failures,
+  };
+}
+
 export class MessageController {
   // ============================================
   // JWT (agent/admin/super_admin)
@@ -288,6 +486,14 @@ export class MessageController {
 
       const conversationId = req.params.conversationId as string;
       const parsed = listMessagesQuerySchema.parse(req.query);
+
+      // AUDIT-RBAC-MSG: agente só lê mensagens de conversas às quais tem
+      // acesso — mesmo guard das mutations de conversation.controller.
+      await conversationService.ensureConversationAccess(
+        conversationId,
+        accountId,
+        getActor(req)
+      );
 
       const data = await messageService.list(conversationId, accountId, {
         limit: parsed.limit,
@@ -322,6 +528,14 @@ export class MessageController {
 
       const conversationId = req.params.conversationId as string;
       const parsed = createMessageBodySchema.parse(req.body ?? {});
+
+      // AUDIT-RBAC-MSG: agente só envia mensagem em conversa que lhe pertence
+      // (assignee/participante/time) — evita write cross-agente + impersonation.
+      await conversationService.ensureConversationAccess(
+        conversationId,
+        accountId,
+        getActor(req)
+      );
 
       const senderType: MessageSenderType = 'agent';
       const contentType: MessageContentType = parsed.contentType ?? 'text';
@@ -455,98 +669,54 @@ export class MessageController {
               }
             }
 
-            // CHAT-MIC-RECORDING + media routing:
-            //  - attachments[0].fileType === 'audio'  → sendWhatsAppAudio (PTT)
-            //  - fileType image|video|document       → sendMedia
-            //  - só texto                            → sendText (com quoted opcional)
-            const firstAttachment =
-              hasAttachmentDispatch && parsed.attachments
-                ? parsed.attachments[0]
-                : null;
+            // AUDIT-MULTI-ANEXO: dispatch percorre TODOS os anexos e envia
+            // texto de PTT/sticker como mensagem separada (ver helper).
+            const dispatch = await dispatchOutboundToWhatsApp({
+              accountId,
+              conversationId,
+              phone,
+              instance,
+              content: parsed.content ?? null,
+              attachments: (parsed.attachments ?? []) as CreateAttachmentInput[],
+              quotedPayload,
+            });
 
-            let result: { messageId: string; raw: any };
-            if (firstAttachment && firstAttachment.fileType === 'audio') {
-              // Chrome/Edge gravam WebM/Opus mas o WhatsApp so renderiza bubble
-              // PTT nativo com OGG/Opus — transcodamos via ffmpeg antes de enviar.
-              // O buffer pode vir de dois lugares:
-              //   (a) data URL base64 inline (arquivos <=5MB no composer)
-              //   (b) /api/attachments/<uuid> — upload multipart dedicado
-              //       ja materializado em disco (arquivos >5MB ou tudo em
-              //       clientes custom).
-              // Precisamos resolver os DOIS antes de transcodar; do contrario
-              // (b) e decodificado como base64 de string curta e vira lixo.
-              const sourceBuffer = await resolveAudioSourceBuffer(
-                firstAttachment.fileUrl,
-                accountId
+            if (dispatch.allMessageIds.length === 0) {
+              // Nenhum item saiu — mesma semântica do fluxo legado (failed).
+              throw new Error(
+                dispatch.failures.map((f) => f.error).join(' | ') ||
+                  'Dispatch não retornou messageId'
               );
-              const sourceMime = firstAttachment.mimeType ?? null;
-              const transcoded = await transcodeToOggOpus(sourceBuffer, sourceMime);
-              // Observabilidade: se o util nao rodou ffmpeg com sucesso E o
-              // source nao era OGG, o dispatch cai no fallback pre-fix (envia
-              // WebM/MP4 -> chega como documento no WhatsApp). Log em error
-              // pra alarme, sem quebrar o envio.
-              if (!transcoded.transcoded && !isOggOpus(sourceMime)) {
-                logger.error(
-                  '[message] audio nao-OGG enviado sem transcode — WhatsApp entregara como documento',
-                  {
-                    accountId,
-                    conversationId,
-                    sourceMime,
-                    sourceBytes: sourceBuffer.length,
-                  }
-                );
-              }
-              result = await evolutionService.sendWhatsAppAudio(accountId, {
-                number: phone,
-                audioBase64: transcoded.buffer.toString('base64'),
-                instance,
-              });
-            } else if (
-              firstAttachment &&
-              (firstAttachment.fileType === 'image' ||
-                firstAttachment.fileType === 'video' ||
-                firstAttachment.fileType === 'document')
-            ) {
-              result = await evolutionService.sendMedia(accountId, {
-                number: phone,
-                mediaUrl: firstAttachment.fileUrl,
-                mediaType: firstAttachment.fileType,
-                caption:
-                  typeof parsed.content === 'string' && parsed.content.trim()
-                    ? parsed.content
-                    : undefined,
-                fileName: firstAttachment.fileName,
-                instance,
-              });
-            } else if (quotedPayload) {
-              result = await evolutionService.sendTextWithQuote(accountId, {
-                number: phone,
-                text: parsed.content as string,
-                quotedKey: {
-                  id: quotedPayload.id,
-                  remoteJid: quotedPayload.remoteJid,
-                  fromMe: quotedPayload.fromMe,
-                },
-                quotedText: quotedPayload.text ?? '',
-                instance,
-              });
-            } else {
-              result = await evolutionService.sendText(accountId, {
-                number: phone,
-                text: parsed.content as string,
-                instance,
-              });
             }
 
-            if (result.messageId) {
+            if (dispatch.firstMessageId) {
               // Troca o pending:<uuid> pelo messageId real da Evolution.
               // Se o webhook fromMe já tiver chegado e criado/atualizado a
               // linha pelo externalId real, este update vai falhar
               // silenciosamente — mas a mensagem original com pending
               // continua íntegra e pode ser reconciliada via metadata.
+              const extraMeta: Record<string, unknown> = {};
+              if (dispatch.allMessageIds.length > 1) {
+                extraMeta.providerMessageIds = dispatch.allMessageIds;
+              }
+              if (dispatch.failures.length > 0) {
+                extraMeta.dispatchWarning = `${dispatch.failures.length} item(ns) do envio falharam`;
+                extraMeta.dispatchFailures = dispatch.failures;
+              }
               finalMessage = await prisma.message.update({
                 where: { id: message.id },
-                data: { externalId: result.messageId, status: 'sent' },
+                data: {
+                  externalId: dispatch.firstMessageId,
+                  status: 'sent',
+                  ...(Object.keys(extraMeta).length > 0
+                    ? {
+                        metadata: {
+                          ...((message.metadata as Record<string, unknown> | null) ?? {}),
+                          ...extraMeta,
+                        } as any,
+                      }
+                    : {}),
+                },
               });
             }
           } catch (err) {
@@ -636,6 +806,7 @@ export class MessageController {
       const message = await prisma.message.findFirst({
         where: { id, conversation: { accountId } },
         include: {
+          attachments: true,
           conversation: {
             include: {
               contact: { select: { telefone: true } },
@@ -648,11 +819,26 @@ export class MessageController {
       });
       if (!message) throw new NotFoundError('Mensagem');
 
+      // AUDIT-RBAC-MSG: retry dispara WhatsApp real — mesmo guard do create.
+      await conversationService.ensureConversationAccess(
+        message.conversationId,
+        accountId,
+        getActor(req)
+      );
+
       if (message.isPrivate) {
         throw new ValidationError('Nota interna não pode ser reenviada');
       }
-      if (!message.content || message.content.trim() === '') {
-        throw new ValidationError('Mensagem sem conteúdo não pode ser reenviada');
+      // AUDIT-RETRY-MEDIA: mídia sem content agora é reenviável (antes PTT/
+      // imagem falhados ficavam presos em failed para sempre).
+      const retryAttachments = message.attachments ?? [];
+      const hasRetryContent = Boolean(
+        message.content && message.content.trim() !== ''
+      );
+      if (!hasRetryContent && retryAttachments.length === 0) {
+        throw new ValidationError(
+          'Mensagem sem conteúdo nem anexos não pode ser reenviada'
+        );
       }
 
       // Resetar para 'sending'; falha aqui (status != failed) propaga 422.
@@ -663,15 +849,33 @@ export class MessageController {
 
       if (channel === 'whatsapp' && phone) {
         try {
-          const result = await evolutionService.sendText(accountId, {
-            number: phone,
-            text: message.content,
+          // AUDIT-RETRY-MEDIA: re-despacha pelo MESMO roteamento do create()
+          // (áudio→sendWhatsAppAudio, mídia→sendMedia, texto→sendText) — antes
+          // o retry mandava só o content como texto e perdia o anexo.
+          const dispatch = await dispatchOutboundToWhatsApp({
+            accountId,
+            conversationId: message.conversationId,
+            phone,
             instance: message.conversation.inbox?.evolutionInstance ?? null,
+            content: message.content,
+            attachments: retryAttachments.map((att) => ({
+              fileType: att.fileType as CreateAttachmentInput['fileType'],
+              fileUrl: att.fileUrl,
+              fileName: att.fileName ?? undefined,
+              mimeType: att.mimeType ?? undefined,
+            })),
+            quotedPayload: null,
           });
-          if (result.messageId) {
+          if (dispatch.allMessageIds.length === 0) {
+            throw new Error(
+              dispatch.failures.map((f) => f.error).join(' | ') ||
+                'Dispatch não retornou messageId'
+            );
+          }
+          if (dispatch.firstMessageId) {
             updated = await prisma.message.update({
               where: { id },
-              data: { externalId: result.messageId, status: 'sent' },
+              data: { externalId: dispatch.firstMessageId, status: 'sent' },
             });
           }
         } catch (err) {
@@ -772,6 +976,9 @@ export class MessageController {
       const id = req.params.id as string;
       const parsed = reactionBodySchema.parse(req.body ?? {});
 
+      // AUDIT-RBAC-MSG
+      await ensureMessageConversationAccess(id, accountId, getActor(req));
+
       const data = await messageService.addReaction(
         id,
         accountId,
@@ -803,6 +1010,9 @@ export class MessageController {
       const id = req.params.id as string;
       const emojiParam = decodeURIComponent(req.params.emoji as string);
 
+      // AUDIT-RBAC-MSG
+      await ensureMessageConversationAccess(id, accountId, getActor(req));
+
       const data = await messageService.removeReaction(
         id,
         accountId,
@@ -833,6 +1043,10 @@ export class MessageController {
       if (!accountId) throw new ValidationError('accountId obrigatório');
 
       const id = req.params.id as string;
+
+      // AUDIT-RBAC-MSG
+      await ensureMessageConversationAccess(id, accountId, getActor(req));
+
       const data = await messageService.listReactions(id, accountId);
 
       res.json({ data });
@@ -856,6 +1070,10 @@ export class MessageController {
       if (!accountId) throw new ValidationError('accountId obrigatório');
 
       const id = req.params.id as string;
+
+      // AUDIT-RBAC-MSG
+      await ensureMessageConversationAccess(id, accountId, getActor(req));
+
       const data = await messageService.markRead(id, accountId, req.user.id);
 
       res.json({ data });
