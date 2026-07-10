@@ -1,12 +1,18 @@
 import { Router } from 'express';
 import { prospectingController } from '../controllers/prospecting.controller';
 import { prospectingAudienceController } from '../controllers/prospecting-audience.controller';
-import { authenticate, requireAccountId, requireRole } from '../middlewares/auth.middleware';
+import { authenticate, requireAccountId, requirePermission } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 router.use(authenticate, requireAccountId);
-router.use(requireRole('admin', 'super_admin'));
+// AUDIT-RBAC-PROSPECCAO: o front oferece a permissão granular 'extracao'
+// (AgenteFormDialog → "Prospecção") e libera /admin/extracao|/admin/prospeccao
+// para agentes com ela, mas o backend estava requireRole('admin','super_admin')
+// — todo agente com a permissão via a tela e tomava 403 em TODAS as chamadas.
+// requirePermission já dá passe livre a admin/super_admin e exige 'extracao'
+// para agentes, alinhando as duas pontas.
+router.use(requirePermission('extracao'));
 
 router.post('/extract', (req, res, next) => prospectingController.extractLeads(req, res, next));
 router.get('/usage', (req, res, next) => prospectingController.getUsage(req, res, next));
