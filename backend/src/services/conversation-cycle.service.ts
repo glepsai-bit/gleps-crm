@@ -148,20 +148,45 @@ class ConversationCycleService {
     const openedAt = opts.openedAt ?? new Date();
 
     // Cria + aponta openCycleId numa única transação curta.
-    return prisma.$transaction(async (tx) => {
-      const cycle = await tx.conversationCycle.create({
-        data: {
-          conversationId,
-          accountId,
-          openedAt,
-        },
+    // AUDIT-CYCLE-RACE: o findOpenCycle acima não fecha a janela de corrida —
+    // dois maybeReopen quase simultâneos liam openCycleId=NULL e AMBOS criavam
+    // um ciclo (um ficava órfão eterno, inflando as métricas). O índice único
+    // parcial (migration 0051) faz o create perdedor levantar P2002; nesse
+    // caso re-buscamos o ciclo vencedor — mesmo padrão de
+    // findOrCreateForCustomer/resolveOrCreateContact.
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const cycle = await tx.conversationCycle.create({
+          data: {
+            conversationId,
+            accountId,
+            openedAt,
+          },
+        });
+        await tx.conversation.update({
+          where: { id: conversationId },
+          data: { openCycleId: cycle.id },
+        });
+        return cycle;
       });
-      await tx.conversation.update({
-        where: { id: conversationId },
-        data: { openCycleId: cycle.id },
-      });
-      return cycle;
-    });
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const winner = await this.findOpenCycle(conversationId, accountId);
+        if (winner) {
+          // Garante o ponteiro openCycleId apontando pro ciclo vencedor
+          // (a transação perdedora deu rollback no update dela).
+          await prisma.conversation.updateMany({
+            where: { id: conversationId, accountId, openCycleId: null },
+            data: { openCycleId: winner.id },
+          });
+          return winner;
+        }
+      }
+      throw err;
+    }
   }
 
   // ============================================
