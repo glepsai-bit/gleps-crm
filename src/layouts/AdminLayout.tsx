@@ -49,7 +49,6 @@ import {
   BarChart3,
   Inbox,
   Zap,
-  Clock,
   Settings2,
   Flame,
   UserCog,
@@ -134,8 +133,8 @@ const adminNavItems = [
   { title: 'Equipe', href: '/admin/agentes', icon: UserCog },
   { title: 'Times', href: '/admin/teams', icon: Users },
   { title: 'Respostas Rápidas', href: '/admin/canned-responses', icon: Zap },
-  { title: 'SLA', href: '/admin/sla-policies', icon: Clock },
-  { title: 'SLA Dashboard', href: '/admin/sla/dashboard', icon: BarChart3 },
+  // SLA oculto por decisao do produto ("depois vemos isso"). Rotas/paginas/
+  // service preservados no repo — reversivel. Ver App.tsx.
   { title: 'Atributos Custom', href: '/admin/custom-attributes', icon: Settings2 },
   { title: 'Opt-outs WA', href: '/admin/opt-outs', icon: Ban },
   { title: 'Integrações', href: '/admin/integracoes', icon: Webhook },

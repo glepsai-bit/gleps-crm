@@ -43,8 +43,7 @@ const adminOnlyRoutes = new Set<string>([
   '/admin/inboxes',
   '/admin/teams',
   '/admin/canned-responses',
-  '/admin/sla-policies',
-  '/admin/sla/dashboard',
+  // SLA oculto (rotas removidas do App.tsx). Entradas SLA retiradas daqui.
   '/admin/custom-attributes',
   // T-024 — admin gerencia agentes da propria conta
   '/admin/agentes',

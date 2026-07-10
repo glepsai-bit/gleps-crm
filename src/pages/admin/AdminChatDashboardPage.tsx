@@ -97,7 +97,6 @@ import {
 import {
   MessageSquare,
   Clock,
-  AlertTriangle,
   CheckCircle2,
   Bot,
   User as UserIcon,
@@ -487,7 +486,7 @@ export default function AdminChatDashboardPage() {
             Dashboard de Chat
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground">
-            Métricas de conversas, SLA e performance dos agentes
+            Métricas de conversas e performance dos agentes
           </p>
         </div>
       </div>
@@ -700,12 +699,9 @@ export default function AdminChatDashboardPage() {
           tone="primary"
           isLoading={isLoading}
         />
-        <KpiCard
-          icon={<AlertTriangle className="w-4 h-4" />}
-          label="SLA estourados"
-          value={isLoading ? null : metrics?.slaBreaches ?? 0}
-          tone="destructive"
-        />
+        {/* KpiCard "SLA estourados" oculto por decisao do produto (SLA em
+            standby — "depois vemos isso"). metrics.slaBreaches segue vindo do
+            backend; so o card foi removido da UI. */}
       </div>
 
       {/* T-022 — Atendimento ao vivo (IA vs Humano vs Em Aberto) */}

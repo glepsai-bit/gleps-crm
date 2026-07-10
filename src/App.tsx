@@ -61,8 +61,6 @@ import AdminChatDashboardPage from "./pages/admin/AdminChatDashboardPage";
 import AdminInboxesPage from "./pages/admin/AdminInboxesPage";
 import AdminTeamsPage from "./pages/admin/AdminTeamsPage";
 import AdminCannedResponsesPage from "./pages/admin/AdminCannedResponsesPage";
-import AdminSLAPoliciesPage from "./pages/admin/AdminSLAPoliciesPage";
-import AdminSlaDashboardPage from "./pages/admin/AdminSlaDashboardPage";
 import AdminCustomAttributesPage from "./pages/admin/AdminCustomAttributesPage";
 import AdminAgentesPage from "./pages/admin/AdminAgentesPage";
 
@@ -152,8 +150,9 @@ const App = () => (
             <Route path="/admin/inboxes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminInboxesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/teams" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminTeamsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/canned-responses" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminCannedResponsesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
-            <Route path="/admin/sla-policies" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminSLAPoliciesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
-            <Route path="/admin/sla/dashboard" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminSlaDashboardPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            {/* SLA oculto por decisao do produto ("depois vemos isso"). Rotas
+                /admin/sla-policies e /admin/sla/dashboard removidas; paginas e
+                service preservados no repo (reversivel — so re-adicionar aqui). */}
             <Route path="/admin/custom-attributes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminCustomAttributesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
 
             {/* T-024 — Equipe (admin gerencia agentes da própria conta) */}
