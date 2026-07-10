@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { Prisma, type Message } from '@prisma/client';
 import { prisma } from '../config/database';
 import { AuthenticatedRequest } from '../types';
 import {
@@ -327,6 +328,8 @@ interface OutboundDispatchResult {
   firstMessageId: string;
   allMessageIds: string[];
   failures: Array<{ index: number; fileType?: string; error: string }>;
+  /** Envios 2xx cujo corpo não trouxe messageId em formato conhecido. */
+  sentWithoutId: number;
 }
 
 /**
@@ -354,6 +357,7 @@ async function dispatchOutboundToWhatsApp(
 
   const allMessageIds: string[] = [];
   const failures: OutboundDispatchResult['failures'] = [];
+  let sentWithoutId = 0;
 
   // Primeiro anexo capaz de carregar caption (image/video/document).
   const captionIndex = content
@@ -386,6 +390,7 @@ async function dispatchOutboundToWhatsApp(
           instance,
         });
     if (result.messageId) allMessageIds.push(result.messageId);
+    else sentWithoutId += 1;
   }
 
   for (let i = 0; i < attachments.length; i++) {
@@ -438,6 +443,7 @@ async function dispatchOutboundToWhatsApp(
         });
       }
       if (result.messageId) allMessageIds.push(result.messageId);
+      else sentWithoutId += 1;
     } catch (err) {
       if (
         allMessageIds.length === 0 &&
@@ -462,7 +468,54 @@ async function dispatchOutboundToWhatsApp(
     firstMessageId: allMessageIds[0] ?? '',
     allMessageIds,
     failures,
+    sentWithoutId,
   };
+}
+
+/**
+ * AUDIT-PENDING-RACE: troca o externalId 'pending:<uuid>' pelo id real do
+ * provider. Se o webhook fromMe da Evolution chegou ANTES e materializou uma
+ * linha própria com o externalId real, este update viola
+ * @@unique([conversationId, externalId]) (P2002). O comportamento legado caía
+ * no catch genérico e marcava a mensagem ENTREGUE como failed — o agente
+ * reenviava e o cliente recebia duplicata real. Agora: P2002 ⇒ removemos a
+ * linha duplicada criada pelo webhook e reivindicamos o externalId para a
+ * linha original (que tem senderId, replyTo e attachments corretos).
+ */
+async function reconcileDispatchedExternalId(
+  messageRowId: string,
+  conversationId: string,
+  updateData: Prisma.MessageUpdateInput
+): Promise<Message> {
+  try {
+    return await prisma.message.update({
+      where: { id: messageRowId },
+      data: updateData,
+    });
+  } catch (err) {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    ) {
+      const externalId = updateData.externalId as string;
+      const removed = await prisma.message.deleteMany({
+        where: {
+          conversationId,
+          externalId,
+          id: { not: messageRowId },
+        },
+      });
+      logger.info(
+        '[message] P2002 na reconciliação do externalId — duplicata do webhook fromMe removida',
+        { messageRowId, conversationId, externalId, removed: removed.count }
+      );
+      return await prisma.message.update({
+        where: { id: messageRowId },
+        data: updateData,
+      });
+    }
+    throw err;
+  }
 }
 
 export class MessageController {
@@ -681,7 +734,10 @@ export class MessageController {
               quotedPayload,
             });
 
-            if (dispatch.allMessageIds.length === 0) {
+            if (
+              dispatch.allMessageIds.length === 0 &&
+              dispatch.sentWithoutId === 0
+            ) {
               // Nenhum item saiu — mesma semântica do fluxo legado (failed).
               throw new Error(
                 dispatch.failures.map((f) => f.error).join(' | ') ||
@@ -703,9 +759,10 @@ export class MessageController {
                 extraMeta.dispatchWarning = `${dispatch.failures.length} item(ns) do envio falharam`;
                 extraMeta.dispatchFailures = dispatch.failures;
               }
-              finalMessage = await prisma.message.update({
-                where: { id: message.id },
-                data: {
+              finalMessage = await reconcileDispatchedExternalId(
+                message.id,
+                conversationId,
+                {
                   externalId: dispatch.firstMessageId,
                   status: 'sent',
                   ...(Object.keys(extraMeta).length > 0
@@ -716,6 +773,26 @@ export class MessageController {
                         } as any,
                       }
                     : {}),
+                }
+              );
+            } else {
+              // AUDIT-EMPTY-MSGID: provider aceitou (2xx) mas o corpo não
+              // trouxe messageId em formato conhecido. A msg provavelmente
+              // FOI entregue — marcar failed induziria reenvio duplicado.
+              // Logamos em error e sinalizamos no metadata para não deixar
+              // 'pending:' como estado final silencioso.
+              logger.error(
+                '[message] dispatch 2xx sem messageId — externalId permanece pending',
+                { messageId: message.id, conversationId, accountId }
+              );
+              finalMessage = await prisma.message.update({
+                where: { id: message.id },
+                data: {
+                  metadata: {
+                    ...((message.metadata as Record<string, unknown> | null) ?? {}),
+                    dispatchWarning:
+                      'Provider aceitou o envio mas não retornou messageId; ACKs podem não reconciliar.',
+                  } as any,
                 },
               });
             }
@@ -774,6 +851,21 @@ export class MessageController {
               channel: conversation?.inbox?.channelType ?? null,
             }
           );
+          // AUDIT-SKIPPED-SENT: antes a mensagem ficava status='sent' sem
+          // nenhum envio real — o agente via ✓ para algo que nunca saiu.
+          try {
+            finalMessage = await messageService.markFailed(
+              message.id,
+              accountId,
+              'Envio não realizado: contato sem telefone ou canal não-WhatsApp'
+            );
+          } catch (markErr) {
+            logger.warn('[message] falha ao marcar dispatch pulado como failed', {
+              messageId: message.id,
+              error:
+                markErr instanceof Error ? markErr.message : String(markErr),
+            });
+          }
         }
       }
 
@@ -866,16 +958,27 @@ export class MessageController {
             })),
             quotedPayload: null,
           });
-          if (dispatch.allMessageIds.length === 0) {
+          if (
+            dispatch.allMessageIds.length === 0 &&
+            dispatch.sentWithoutId === 0
+          ) {
             throw new Error(
               dispatch.failures.map((f) => f.error).join(' | ') ||
                 'Dispatch não retornou messageId'
             );
           }
           if (dispatch.firstMessageId) {
+            updated = await reconcileDispatchedExternalId(
+              id,
+              message.conversationId,
+              { externalId: dispatch.firstMessageId, status: 'sent' }
+            );
+          } else {
+            // 2xx sem messageId: entregue com alta probabilidade — não deixar
+            // em 'sending' (induz novo retry/duplicata).
             updated = await prisma.message.update({
               where: { id },
-              data: { externalId: dispatch.firstMessageId, status: 'sent' },
+              data: { status: 'sent' },
             });
           }
         } catch (err) {
