@@ -524,15 +524,27 @@ class WhatsappWarmupService {
       });
     }
 
-    await prisma.warmupNumber.update({
-      where: { id: num.id },
+    // AUDIT-WARMUP-ROLLOVER: `increment` não é idempotente — dois ticks
+    // concorrentes (ou 2 réplicas) passavam ambos pelo guard de data e o
+    // currentDay avançava 2 dias de uma vez, pulando um dia do protocolo e
+    // duplicando o lote de warmup (risco real de ban). Compare-and-swap:
+    // só avança se currentDay ainda for o valor lido; count=0 ⇒ outro
+    // tick/réplica já fez o rollover.
+    const advanced = await prisma.warmupNumber.updateMany({
+      where: { id: num.id, currentDay: num.currentDay },
       data: {
-        currentDay: { increment: 1 },
+        currentDay: num.currentDay + 1,
         dailyEnviadasHoje: 0,
         dailyRecebidasHoje: 0,
         lastActivityAt: now,
       },
     });
+    if (advanced.count === 0) {
+      logger.info(
+        '[warmup] rollover já executado por outro tick/réplica — skip',
+        { numberId: num.id, currentDay: num.currentDay }
+      );
+    }
   }
 
   // ============================================
