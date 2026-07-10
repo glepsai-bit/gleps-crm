@@ -1281,10 +1281,15 @@ export class MessageController {
       // SE-H5: mesma estratégia da rota JWT — reserva externalId pending
       // antes do create para fechar a janela de race com webhook fromMe.
       // BE-CTRL-H2: contentType restrito pelo integrationContentTypeEnum.
+      // AUDIT-INTEGRATION-MEDIA: attachments também disparam dispatch — antes
+      // uma mensagem attachments-only da IA/n8n era persistida como 'sent'
+      // mas NUNCA enviada ao WhatsApp (perda silenciosa).
+      const integrationHasContent =
+        typeof parsed.content === 'string' && parsed.content.trim() !== '';
+      const integrationHasAttachments =
+        Array.isArray(parsed.attachments) && parsed.attachments.length > 0;
       const shouldDispatch =
-        !isPrivate &&
-        typeof parsed.content === 'string' &&
-        parsed.content.trim() !== '';
+        !isPrivate && (integrationHasContent || integrationHasAttachments);
 
       const pendingExternalId = shouldDispatch
         ? `pending:${randomUUID()}`
@@ -1318,16 +1323,32 @@ export class MessageController {
           try {
             // Per-Inbox: idem rota JWT — passar instance do Inbox para
             // garantir que o dispatch vai pela conexão certa.
-            const result = await evolutionService.sendText(accountId, {
-              number: phone,
-              text: parsed.content as string,
+            // AUDIT-INTEGRATION-MEDIA: mesmo roteamento do create() JWT
+            // (áudio→sendWhatsAppAudio, mídia→sendMedia, texto→sendText).
+            const dispatch = await dispatchOutboundToWhatsApp({
+              accountId,
+              conversationId,
+              phone,
               instance: conversation.inbox.evolutionInstance ?? null,
+              content: parsed.content ?? null,
+              attachments: (parsed.attachments ?? []) as CreateAttachmentInput[],
+              quotedPayload: null,
             });
-            if (result.messageId) {
-              finalMessage = await prisma.message.update({
-                where: { id: message.id },
-                data: { externalId: result.messageId, status: 'sent' },
-              });
+            if (
+              dispatch.allMessageIds.length === 0 &&
+              dispatch.sentWithoutId === 0
+            ) {
+              throw new Error(
+                dispatch.failures.map((f) => f.error).join(' | ') ||
+                  'Dispatch não retornou messageId'
+              );
+            }
+            if (dispatch.firstMessageId) {
+              finalMessage = await reconcileDispatchedExternalId(
+                message.id,
+                conversationId,
+                { externalId: dispatch.firstMessageId, status: 'sent' }
+              );
             }
           } catch (err) {
             const errMsg =
@@ -1358,6 +1379,34 @@ export class MessageController {
                 }
               );
             }
+          }
+        } else {
+          // AUDIT-SKIPPED-SENT (integração): sem telefone/canal WhatsApp o
+          // registro ficava 'sent' sem envio real.
+          logger.info(
+            '[message-integration] dispatch ignorado — canal não suportado ou telefone ausente',
+            {
+              conversationId,
+              accountId,
+              hasPhone: Boolean(phone),
+              channel: conversation.inbox?.channelType ?? null,
+            }
+          );
+          try {
+            finalMessage = await messageService.markFailed(
+              message.id,
+              accountId,
+              'Envio não realizado: contato sem telefone ou canal não-WhatsApp'
+            );
+          } catch (markErr) {
+            logger.warn(
+              '[message-integration] falha ao marcar dispatch pulado como failed',
+              {
+                messageId: message.id,
+                error:
+                  markErr instanceof Error ? markErr.message : String(markErr),
+              }
+            );
           }
         }
       }
