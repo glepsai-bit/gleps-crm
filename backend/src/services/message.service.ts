@@ -3,6 +3,7 @@ import { prisma } from '../config/database';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
 import { escapeLike } from '../utils/helpers';
 import { logger } from '../utils/logger';
+import { sanitizeMessageAttachments } from '../utils/attachment-api.util';
 import { eventService } from './event.service';
 import { webhookOutboundService } from './webhook-outbound.service';
 import {
@@ -262,7 +263,10 @@ class MessageService {
       },
     });
 
-    return rows.map((m) => ({
+    // AUDIT-PERF-INLINE: nunca devolver base64 inline na listagem.
+    const sanitized = rows.map((m) => sanitizeMessageAttachments(m));
+
+    return sanitized.map((m) => ({
       ...m,
       reactions: aggregateMessageReactions(m.reactions ?? []),
     })) as unknown as Message[];
@@ -503,9 +507,10 @@ class MessageService {
           where: { id: created.id },
           include: { attachments: true },
         });
-        return refreshed ?? created;
+        // AUDIT-PERF-INLINE: emit/webhook/response nunca carregam base64.
+        return sanitizeMessageAttachments(refreshed ?? created);
       }
-      return created;
+      return sanitizeMessageAttachments(created);
     });
 
     // CYCLE-WIRE: contadores e first-response no ConversationCycle aberto.
@@ -962,7 +967,7 @@ class MessageService {
       ];
     }
 
-    return prisma.message.findMany({
+    const found = await prisma.message.findMany({
       where: {
         conversation: conversationFilter,
         isPrivate: false,
@@ -978,6 +983,8 @@ class MessageService {
         },
       },
     });
+    // AUDIT-PERF-INLINE
+    return found.map((m) => sanitizeMessageAttachments(m));
   }
 
   // ============================================
@@ -1312,8 +1319,16 @@ class MessageService {
       message.conversation.inbox?.channelType === 'whatsapp'
     ) {
       try {
+        // AUDIT-REACTION-JID: usa o remoteJid REAL gravado pelo webhook no
+        // metadata da mensagem (nº brasileiro com/sem 9 diverge do JID
+        // derivado do telefone e o WhatsApp não acha a msg alvo).
+        const meta =
+          message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+            ? (message.metadata as Record<string, unknown>)
+            : {};
         await evolutionService.sendReaction(accountId, {
           number: phone,
+          remoteJid: typeof meta.remoteJid === 'string' ? meta.remoteJid : null,
           reaction: emojiTrim,
           reactionToMsgId: externalId,
           // A msg reagida foi enviada por nós se senderType!=='customer'.
@@ -1385,8 +1400,14 @@ class MessageService {
       message.conversation.inbox?.channelType === 'whatsapp'
     ) {
       try {
+        // AUDIT-REACTION-JID: mesmo tratamento do addReaction.
+        const meta =
+          message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+            ? (message.metadata as Record<string, unknown>)
+            : {};
         await evolutionService.sendReaction(accountId, {
           number: phone,
+          remoteJid: typeof meta.remoteJid === 'string' ? meta.remoteJid : null,
           reaction: '',
           reactionToMsgId: externalId,
           fromMe: message.senderType !== 'customer',

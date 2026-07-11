@@ -5,6 +5,7 @@ import { escapeLike, slugify } from '../utils/helpers';
 import { eventService } from './event.service';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
+import { sanitizeMessageAttachments } from '../utils/attachment-api.util';
 import { teamService } from './team.service';
 import { conversationCycleService } from './conversation-cycle.service';
 import { aggregateMessageReactions } from './message.service';
@@ -300,6 +301,11 @@ class ConversationService {
           ? {
               // T2-MSG-ORDER: tiebreaker por id quando createdAt colide (ms).
               orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+              // AUDIT-PERF-INLINE: take negativo = ÚLTIMAS 200 mensagens em
+              // ordem ascendente. Antes o thread-full carregava o histórico
+              // INTEIRO da conversa a cada abertura — junto com anexos
+              // base64, a causa do delay ao abrir/trocar conversas.
+              take: -200,
               include: {
                 attachments: true,
                 // CHAT-REACTIONS FURO 2: hidratação inicial dos pills. O
@@ -361,6 +367,10 @@ class ConversationService {
       for (const m of msgs) {
         m.reactions = aggregateMessageReactions(m.reactions ?? []) as unknown as typeof m.reactions;
       }
+      // AUDIT-PERF-INLINE: thread-full também nunca devolve base64 inline.
+      out.messages = (out.messages as Array<{ attachments?: { id: string; fileUrl: string; thumbnailUrl?: string | null }[] | null }>).map(
+        (m) => sanitizeMessageAttachments(m)
+      ) as unknown as typeof out.messages;
     }
 
     return out as Conversation;
