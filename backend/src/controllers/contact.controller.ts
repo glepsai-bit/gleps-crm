@@ -1,7 +1,10 @@
+import { prisma } from '../config/database';
+import { createReadStream } from 'node:fs';
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { contactService } from '../services/contact.service';
 import { conversationService } from '../services/conversation.service';
+import { avatarStorageService } from '../services/avatar-storage.service';
 import { AuthenticatedRequest } from '../types';
 import { getPaginationParams } from '../utils/helpers';
 
@@ -364,6 +367,48 @@ export class ContactController {
       next(error);
     }
   }
+
+  /**
+   * GET /api/contacts/:id/avatar
+   * AUDIT-AVATAR: serve a foto de perfil persistida em disco (o CDN do
+   * WhatsApp expira em minutos). Autenticado + escopado por conta; sem
+   * permissão granular — agentes de chat também precisam ver avatares.
+   */
+  async serveAvatar(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const accountId = req.user!.accountId!;
+      const id = req.params.id as string;
+
+      const contact = await prisma.contact.findFirst({
+        where: { id, accountId },
+        select: { id: true },
+      });
+      if (!contact) {
+        res.status(404).json({ error: { message: 'Contato não encontrado' } });
+        return;
+      }
+
+      const file = await avatarStorageService.stat(accountId, id);
+      if (!file) {
+        res.status(404).json({ error: { message: 'Contato sem foto de perfil' } });
+        return;
+      }
+
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Content-Length', String(file.byteLength));
+      res.setHeader('Cache-Control', 'private, max-age=86400');
+      createReadStream(file.absolutePath)
+        .on('error', (err) => next(err))
+        .pipe(res);
+    } catch (error) {
+      next(error);
+    }
+  }
+
 }
 
 export const contactController = new ContactController();

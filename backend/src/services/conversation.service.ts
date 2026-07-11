@@ -6,6 +6,7 @@ import { eventService } from './event.service';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
 import { sanitizeMessageAttachments } from '../utils/attachment-api.util';
+import { avatarStorageService } from './avatar-storage.service';
 import { teamService } from './team.service';
 import { conversationCycleService } from './conversation-cycle.service';
 import { aggregateMessageReactions } from './message.service';
@@ -2026,10 +2027,16 @@ class ConversationService {
         const url = await evolutionService.fetchProfilePictureUrl(accountId, {
           number: phone,
         });
+        // AUDIT-AVATAR: a URL do CDN expira em minutos — persistimos os bytes
+        // localmente e gravamos a URL estável /api/contacts/:id/avatar.
+        // Fallback: se o download falhar, guarda a URL do CDN mesmo (efêmera).
+        const localUrl = url
+          ? await avatarStorageService.persistFromCdn(accountId, contactId, url)
+          : null;
         await prisma.contact.update({
           where: { id: contactId },
           data: {
-            profilePicUrl: url,
+            profilePicUrl: localUrl ?? url,
             profilePicFetchedAt: new Date(),
           },
         });
@@ -2072,11 +2079,15 @@ class ConversationService {
     const url = await evolutionService.fetchProfilePictureUrl(accountId, {
       number: contact.telefone,
     });
+    // AUDIT-AVATAR: idem maybeRefreshProfilePic — bytes locais, URL estável.
+    const localUrl = url
+      ? await avatarStorageService.persistFromCdn(accountId, contactId, url)
+      : null;
     await prisma.contact.update({
       where: { id: contact.id },
-      data: { profilePicUrl: url, profilePicFetchedAt: new Date() },
+      data: { profilePicUrl: localUrl ?? url, profilePicFetchedAt: new Date() },
     });
-    return url;
+    return localUrl ?? url;
   }
 
   /**

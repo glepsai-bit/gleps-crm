@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { AuthAvatarImage } from '@/components/chat/AuthAvatarImage';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -1094,7 +1095,7 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
               metadata mas em linha separada do canal. */}
           <Avatar className="h-10 w-10 shrink-0">
             {conversation.contact?.profilePicUrl ? (
-              <AvatarImage src={conversation.contact.profilePicUrl} alt={contactName} />
+              <AuthAvatarImage src={conversation.contact.profilePicUrl} alt={contactName} />
             ) : null}
             <AvatarFallback className="text-base bg-primary/10 text-primary">
               {headerAvatarInitials ?? <Phone className="w-4 h-4" />}

@@ -29,6 +29,7 @@ import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { AuthAvatarImage } from '@/components/chat/AuthAvatarImage';
 import {
   Accordion,
   AccordionContent,
@@ -368,7 +369,7 @@ export function ContactSidePanel({ conversation, onClose }: ContactSidePanelProp
             )}
             <Avatar className="h-16 w-16">
               {conversation.contact?.profilePicUrl ? (
-                <AvatarImage
+                <AuthAvatarImage
                   src={conversation.contact.profilePicUrl}
                   alt={displayName}
                 />

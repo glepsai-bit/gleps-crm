@@ -12,6 +12,10 @@ router.use(requireAccountId);
 // ANTES de /:id pra nao colidir. Popula contatos sem foto; ?force=true reprocessa.
 router.post('/refresh-avatars', requireAdmin, (req, res, next) => contactController.refreshAvatars(req, res, next));
 
+// AUDIT-AVATAR: foto de perfil persistida — precisa vir ANTES de /:id.
+// Sem permissão granular: agentes do chat (sem 'leads') também renderizam avatar.
+router.get('/:id/avatar', (req, res, next) => contactController.serveAvatar(req, res, next));
+
 router.get('/', requirePermission('leads', 'kanban'), (req, res, next) => contactController.list(req, res, next));
 router.post('/', requirePermission('leads', 'kanban'), (req, res, next) => contactController.create(req, res, next));
 router.get('/:id', requirePermission('leads', 'kanban'), (req, res, next) => contactController.getById(req, res, next));

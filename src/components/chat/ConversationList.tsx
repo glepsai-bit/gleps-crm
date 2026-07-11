@@ -28,6 +28,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { AuthAvatarImage } from '@/components/chat/AuthAvatarImage';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Select,
@@ -824,7 +825,7 @@ export function ConversationList({
                 >
                   <Avatar className="h-9 w-9 shrink-0">
                     {conv.contact?.profilePicUrl ? (
-                      <AvatarImage
+                      <AuthAvatarImage
                         src={conv.contact.profilePicUrl}
                         alt={contactName}
                       />
