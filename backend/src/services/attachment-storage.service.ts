@@ -142,16 +142,32 @@ function isWhatsAppCdn(url: string): boolean {
 }
 
 function decodeDataUrl(url: string): { mimeType: string; bytes: Buffer } | null {
-  // data:audio/ogg;base64,XXXX
-  const match = url.match(/^data:([^;]+)(;base64)?,(.+)$/i);
-  if (!match) return null;
-  const mimeType = match[1] || 'application/octet-stream';
-  const isBase64 = match[2] === ';base64';
-  const payload = match[3] || '';
-  const bytes = isBase64
-    ? Buffer.from(payload, 'base64')
-    : Buffer.from(decodeURIComponent(payload), 'utf-8');
-  return { mimeType, bytes };
+  // RFC 2397: data:[<mediatype>][;param=value...][;base64],<data>
+  // AUDIT-AUDIO-DATAURL: a regex antiga (`data:([^;]+)(;base64)?,`) não
+  // aceitava parâmetros entre o mime e o ;base64 — e o MediaRecorder do
+  // Chrome/Edge grava exatamente `data:audio/webm;codecs=opus;base64,...`.
+  // TODO áudio gravado no composer falhava a materialização ('data URL
+  // malformado' → storageStatus=failed) e o player do CRM mostrava "Não foi
+  // possível carregar o áudio", embora o dispatch pro WhatsApp funcionasse
+  // (usa decodeDataUrlBase64, que corta no primeiro ','). Parser alinhado.
+  if (!/^data:/i.test(url)) return null;
+  const comma = url.indexOf(',');
+  if (comma < 0) return null;
+  const header = url.slice(5, comma); // sem o prefixo 'data:'
+  const payload = url.slice(comma + 1);
+  const parts = header.split(';');
+  const mimeType =
+    (parts[0] || '').trim() || 'application/octet-stream';
+  const isBase64 = parts.some((p) => p.trim().toLowerCase() === 'base64');
+  try {
+    const bytes = isBase64
+      ? Buffer.from(payload, 'base64')
+      : Buffer.from(decodeURIComponent(payload), 'utf-8');
+    if (payload.length > 0 && bytes.length === 0) return null;
+    return { mimeType, bytes };
+  } catch {
+    return null;
+  }
 }
 
 async function ensureDir(absDir: string): Promise<void> {
