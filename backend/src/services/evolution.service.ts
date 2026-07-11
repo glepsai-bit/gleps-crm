@@ -116,6 +116,12 @@ export interface SendStickerInput {
 
 export interface SendReactionInput {
   number: string;
+  /**
+   * AUDIT-REACTION-JID: JID real da conversa (metadata.remoteJid do webhook).
+   * Quando presente, tem prioridade sobre o derivado de `number` — números BR
+   * com/sem o 9 divergem do JID e o WhatsApp não localiza a msg alvo.
+   */
+  remoteJid?: string | null;
   /** Emoji unicode (ex: '👍') */
   reaction: string;
   /** evolutionMsgId da mensagem que sera reagida */
@@ -796,18 +802,25 @@ class EvolutionService {
     const config = await this.getAccountConfig(accountId, input.instance);
     const number = this.normalizeNumber(input.number);
 
-    // Evolution espera remoteJid no formato '<digits>@s.whatsapp.net'
-    const remoteJid = `${number}@s.whatsapp.net`;
+    // Evolution espera remoteJid no formato '<digits>@s.whatsapp.net'.
+    // AUDIT-REACTION-JID: preferir o JID real vindo do webhook quando houver.
+    const remoteJid =
+      input.remoteJid && input.remoteJid.includes('@')
+        ? input.remoteJid
+        : `${number}@s.whatsapp.net`;
 
+    // AUDIT-REACTION-V2: a Evolution v2 espera { key, reaction } no TOPO do
+    // body (mesmo padrão dos demais endpoints v2 já usados aqui: sendText
+    // { number, text } etc.). O wrapper `reactionMessage` era formato v1 —
+    // a v2 respondia 400 e a reação nunca chegava ao WhatsApp (o erro era
+    // engolido como best-effort no service).
     const body: Record<string, any> = {
-      reactionMessage: {
-        key: {
-          remoteJid,
-          fromMe: input.fromMe ?? false,
-          id: input.reactionToMsgId,
-        },
-        reaction: input.reaction,
+      key: {
+        remoteJid,
+        fromMe: input.fromMe ?? false,
+        id: input.reactionToMsgId,
       },
+      reaction: input.reaction,
     };
 
     const raw = await this.makeRequest<any>(
