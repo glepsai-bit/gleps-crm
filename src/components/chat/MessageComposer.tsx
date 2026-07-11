@@ -422,9 +422,9 @@ export function MessageComposer({
       // roteado independentemente pelo seu size — user pode enviar 1 foto
       // pequena + 1 video grande na mesma message; a primeira vai inline,
       // a segunda sobe primeiro e depois eh linkada por fileUrl relativo.
-      const hasSmall = vars.pendingAttachments.some(
-        (p) => p.file.size <= MULTIPART_THRESHOLD_BYTES
-      );
+      // AUDIT-UX: o toast de anexo inline (base64) era ruído em TODO envio de
+      // áudio/imagem pequeno — removido. Mantém só o aviso de arquivo grande,
+      // que tem upload dedicado mais demorado e merece feedback.
       const hasLarge = vars.pendingAttachments.some(
         (p) => p.file.size > MULTIPART_THRESHOLD_BYTES
       );
@@ -435,15 +435,6 @@ export function MessageComposer({
             'Anexo(s) acima de ' +
             formatBytes(MULTIPART_THRESHOLD_BYTES) +
             ' — subindo via upload dedicado antes de enviar a mensagem.',
-        });
-      } else if (hasSmall) {
-        toast({
-          title: 'Enviando anexo inline (base64)',
-          description:
-            'Arquivos ate ' +
-            formatBytes(MULTIPART_THRESHOLD_BYTES) +
-            ' viajam inline. Limite total por arquivo: ' +
-            formatBytes(MAX_ATTACHMENT_BYTES),
         });
       }
 
