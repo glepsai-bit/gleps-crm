@@ -137,7 +137,10 @@ describe('evolutionService.sendSticker', () => {
 });
 
 describe('evolutionService.sendReaction', () => {
-  it('forma payload correto com reactionMessage envelope', async () => {
+  // AUDIT-REACTION-V2 (patch 0015): a Evolution v2 espera { key, reaction } no
+  // TOPO do body — o envelope v1 `reactionMessage` respondia 400 e a reacao
+  // nunca chegava ao WhatsApp. Teste alinhado ao formato v2 correto.
+  it('forma payload correto no formato v2 { key, reaction }', async () => {
     const acc = await createAccountWithEvolution();
     const fetchMock = mockFetchOnce({ key: { id: 'evo-reaction-id-1' } });
 
@@ -151,11 +154,11 @@ describe('evolutionService.sendReaction', () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toContain('/message/sendReaction/inst-test');
     const body = JSON.parse((opts as any).body);
-    expect(body.reactionMessage).toBeDefined();
-    expect(body.reactionMessage.reaction).toBe('👍');
-    expect(body.reactionMessage.key.id).toBe('msg-id-anterior');
-    expect(body.reactionMessage.key.remoteJid).toBe('5534993383017@s.whatsapp.net');
-    expect(body.reactionMessage.key.fromMe).toBe(false);
+    expect(body.key).toBeDefined();
+    expect(body.reaction).toBe('👍');
+    expect(body.key.id).toBe('msg-id-anterior');
+    expect(body.key.remoteJid).toBe('5534993383017@s.whatsapp.net');
+    expect(body.key.fromMe).toBe(false);
   });
 
   it('throws se reactionToMsgId vazio', async () => {
@@ -208,9 +211,9 @@ describe('evolutionService.sendReaction', () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toContain('/message/sendReaction/inst-test');
     const body = JSON.parse((opts as any).body);
-    expect(body.reactionMessage).toBeDefined();
-    expect(body.reactionMessage.reaction).toBe('');
-    expect(body.reactionMessage.key.id).toBe('msg-id-anterior');
+    expect(body.key).toBeDefined();
+    expect(body.reaction).toBe('');
+    expect(body.key.id).toBe('msg-id-anterior');
   });
 });
 
