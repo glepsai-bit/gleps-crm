@@ -1206,63 +1206,6 @@ class EvolutionService {
     }
   }
 
-  /**
-   * DIAGNOSTICO (temporario): chama /chat/fetchProfilePictureUrl SEM engolir o
-   * erro e devolve status HTTP + corpo cru da Evolution, pra entender por que a
-   * foto de perfil volta null. Tenta tambem formatos alternativos de numero e o
-   * endpoint fetchProfile (perfil completo). Nao usar em fluxo normal.
-   */
-  async probeProfilePicture(
-    accountId: string,
-    rawNumber: string,
-    instanceOverride?: string | null
-  ): Promise<any> {
-    const config = await this.getAccountConfig(accountId, instanceOverride);
-    let normalized = rawNumber;
-    try {
-      normalized = this.normalizeNumber(rawNumber);
-    } catch {
-      /* mantem cru se normalize reclamar */
-    }
-    const call = async (path: string, body: Record<string, any>) => {
-      try {
-        const res = await fetch(`${config.baseUrl}${path}`, {
-          method: 'POST',
-          headers: { apikey: config.apiKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const text = await res.text();
-        let parsed: any = null;
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          /* nao-json */
-        }
-        return {
-          path,
-          sent: body,
-          httpStatus: res.status,
-          rawBody: text.slice(0, 600),
-          parsedProfileUrl:
-            parsed?.profilePictureUrl ?? parsed?.url ?? parsed?.profilePicUrl ?? null,
-        };
-      } catch (err) {
-        return { path, sent: body, error: err instanceof Error ? err.message : String(err) };
-      }
-    };
-    const inst = encodeURIComponent(config.instance);
-    return {
-      baseUrl: config.baseUrl,
-      instance: config.instance,
-      attempts: [
-        await call(`/chat/fetchProfilePictureUrl/${inst}`, { number: normalized }),
-        await call(`/chat/fetchProfilePictureUrl/${inst}`, {
-          number: `${normalized}@s.whatsapp.net`,
-        }),
-        await call(`/chat/fetchProfile/${inst}`, { number: normalized }),
-      ],
-    };
-  }
 }
 
 export const evolutionService = new EvolutionService();
