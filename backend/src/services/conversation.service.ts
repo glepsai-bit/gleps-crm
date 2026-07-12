@@ -2005,6 +2005,30 @@ class ConversationService {
   // ============================================
 
   /**
+   * AVATAR-FIX (root cause): esta conta usa o modelo per-Inbox — a instância
+   * Evolution vive em Inbox.evolutionInstance, e Account.evolutionInstance é
+   * null. As chamadas de foto de perfil chamavam getAccountConfig SEM instance,
+   * caíam no fallback account (null) e getAccountConfig lançava "sem instância
+   * Evolution" — engolido pelo catch → foto null pra TODOS.
+   * Resolve a instância a partir da conversa mais recente do contato.
+   */
+  async resolveContactInstance(
+    accountId: string,
+    contactId: string
+  ): Promise<string | null> {
+    const conv = await prisma.conversation.findFirst({
+      where: {
+        accountId,
+        contactId,
+        inbox: { evolutionInstance: { not: null } },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { inbox: { select: { evolutionInstance: true } } },
+    });
+    return conv?.inbox?.evolutionInstance ?? null;
+  }
+
+  /**
    * Fire-and-forget: busca profile pic da Evolution e persiste em Contact.
    * NAO da await no caller — webhook processing continua sem esperar.
    * Skip quando fetchedAt e recente (< 24h). Erros sao logados no util
@@ -2024,8 +2048,10 @@ class ConversationService {
     }
     void (async () => {
       try {
+        const instance = await this.resolveContactInstance(accountId, contactId);
         const url = await evolutionService.fetchProfilePictureUrl(accountId, {
           number: phone,
+          instance,
         });
         // AUDIT-AVATAR: a URL do CDN expira em minutos — persistimos os bytes
         // localmente e gravamos a URL estável /api/contacts/:id/avatar.
@@ -2076,8 +2102,10 @@ class ConversationService {
     ) {
       return null; // ainda fresco — nao bate na Evolution
     }
+    const instance = await this.resolveContactInstance(accountId, contactId);
     const url = await evolutionService.fetchProfilePictureUrl(accountId, {
       number: contact.telefone,
+      instance,
     });
     // AUDIT-AVATAR: idem maybeRefreshProfilePic — bytes locais, URL estável.
     const localUrl = url

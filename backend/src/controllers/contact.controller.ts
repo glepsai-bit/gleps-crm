@@ -368,8 +368,19 @@ export class ContactController {
           res.json({ debug: 'nenhum contato com telefone' });
           return;
         }
-        const probe = await evolutionService.probeProfilePicture(accountId, c.telefone!);
-        res.json({ debug: { contato: { id: c.id, nome: c.nome, telefone: c.telefone }, probe } });
+        const instance = await conversationService.resolveContactInstance(accountId, c.id);
+        const probe = await evolutionService.probeProfilePicture(
+          accountId,
+          c.telefone!,
+          instance
+        );
+        res.json({
+          debug: {
+            contato: { id: c.id, nome: c.nome, telefone: c.telefone },
+            instanceResolvida: instance,
+            probe,
+          },
+        });
         return;
       }
 
