@@ -392,7 +392,23 @@ export class ContactController {
         return;
       }
 
-      const file = await avatarStorageService.stat(accountId, id);
+      let file = await avatarStorageService.stat(accountId, id);
+      if (!file) {
+        // AVATAR-SELFHEAL: o arquivo em disco pode ter sido perdido num rebuild
+        // do container (uploads/ é efêmero — sem volume persistente no EasyPanel).
+        // O profilePicUrl segue no banco apontando pra cá, mas o JPEG sumiu.
+        // Re-baixamos da Evolution (com a instância do inbox) e re-persistimos,
+        // pra servir na MESMA request — a foto reaparece na 1ª visualização,
+        // sem o usuário precisar rodar backfill nem configurar volume.
+        try {
+          await conversationService.refreshContactAvatarById(accountId, id, {
+            force: true,
+          });
+          file = await avatarStorageService.stat(accountId, id);
+        } catch {
+          /* best-effort — se falhar, cai no 404 abaixo (fallback pra iniciais) */
+        }
+      }
       if (!file) {
         res.status(404).json({ error: { message: 'Contato sem foto de perfil' } });
         return;
