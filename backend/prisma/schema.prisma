@@ -107,6 +107,8 @@ model Account {
   warmupTemplates WarmupTemplate[]
 
   @@index([status])
+  trackingConfig  TrackingConfig?
+  trackingEvents  TrackingEvent[]
   @@map("accounts")
 }
 
@@ -1316,6 +1318,13 @@ model Conversation {
   customAttributes Json?      @default("{}") @map("custom_attributes")
   unreadCount      Int        @default(0) @map("unread_count")
   openCycleId      String?    @map("open_cycle_id") @db.Uuid // ciclo ativo (open) OU null
+  // TRACKING (Meta Ads / CTWA): origem da conversa. ctwa_clid = click ID da
+  // Meta (vem no referral/externalAdReply da 1ª msg de quem clicou no anúncio).
+  sourceType       String?    @map("source_type") @db.VarChar(20) // ctwa | organic (null = legado)
+  ctwaClid         String?    @map("ctwa_clid") @db.Text
+  adSourceId       String?    @map("ad_source_id") @db.VarChar(120)
+  adSourceUrl      String?    @map("ad_source_url") @db.Text
+  adHeadline       String?    @map("ad_headline") @db.Text
   createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1348,6 +1357,7 @@ model Conversation {
   @@index([assigneeId])
   @@index([teamId])
   @@index([externalId])
+  @@index([accountId, sourceType])
   @@map("conversations")
 }
 
@@ -1836,4 +1846,47 @@ model PushSubscription {
 
   @@index([userId])
   @@map("push_subscriptions")
+}
+
+
+// ============================================
+// TRACKING (Meta Ads / CTWA) — módulo de inteligência de rastreamento
+// ============================================
+
+model TrackingConfig {
+  id           String   @id @default(uuid()) @db.Uuid
+  accountId    String   @unique @map("account_id") @db.Uuid
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  accessToken  String?  @map("access_token") @db.Text
+  pixelId      String?  @map("pixel_id") @db.VarChar(64)
+  adAccountId  String?  @map("ad_account_id") @db.VarChar(64)
+  active       Boolean  @default(false)
+  sendLead     Boolean  @default(true) @map("send_lead")
+  sendSchedule Boolean  @default(true) @map("send_schedule")
+  sendPurchase Boolean  @default(true) @map("send_purchase")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("tracking_configs")
+}
+
+model TrackingEvent {
+  id             String    @id @default(uuid()) @db.Uuid
+  accountId      String    @map("account_id") @db.Uuid
+  account        Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  conversationId String?   @map("conversation_id") @db.Uuid
+  contactId      String?   @map("contact_id") @db.Uuid
+  eventName      String    @map("event_name") @db.VarChar(40) // Lead | Schedule | Purchase
+  ctwaClid       String    @map("ctwa_clid") @db.Text
+  value          Decimal?  @db.Decimal(12, 2)
+  currency       String?   @db.VarChar(8)
+  status         String    @default("pending") @db.VarChar(20) // pending | sent | failed
+  error          String?   @db.Text
+  sentAt         DateTime? @map("sent_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([accountId, createdAt])
+  @@index([accountId, eventName])
+  @@index([status])
+  @@map("tracking_events")
 }
