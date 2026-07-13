@@ -31,6 +31,7 @@ const routePermissionMap: Record<string, AgentPermission> = {
 // Rotas restritas a admin/super_admin (sem permissao equivalente para agents)
 const adminOnlyRoutes = new Set<string>([
   '/admin/whatsapp-templates',
+  '/admin/tracking', // TRACKING (Meta Ads) — token/gasto: admin-only
   '/admin/warmup',
   '/admin/integracoes',
   '/admin/opt-outs',

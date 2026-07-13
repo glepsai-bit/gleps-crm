@@ -52,6 +52,7 @@ import {
   Settings2,
   Flame,
   UserCog,
+  Radar,
 } from 'lucide-react';
 import { Logo } from '@/components/branding/Logo';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -125,6 +126,7 @@ const adminNavItems = [
   { title: 'Produtos', href: '/admin/products', icon: Package },
   // Captação / marketing
   { title: 'Prospecção', href: '/admin/prospeccao', icon: Crosshair },
+  { title: 'Tracking Ads', href: '/admin/tracking', icon: Radar },
   { title: 'E-mails', href: '/admin/emails', icon: Mail },
   { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },
   { title: 'Aquecimento', href: '/admin/warmup', icon: Flame },

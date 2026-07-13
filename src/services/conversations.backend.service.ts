@@ -170,6 +170,14 @@ export interface Conversation {
   externalId: string | null;
   customAttributes: Record<string, unknown> | null;
   unreadCount: number;
+  /**
+   * TRACKING (Meta Ads / CTWA): origem da conversa. 'ctwa' = veio de anúncio
+   * Click-to-WhatsApp; 'organic' = espontânea; null = legado (antes do módulo).
+   */
+  sourceType?: 'ctwa' | 'organic' | string | null;
+  ctwaClid?: string | null;
+  adSourceId?: string | null;
+  adHeadline?: string | null;
   createdAt: string;
   updatedAt: string;
   // Relações incluídas conforme `include` e listagem default

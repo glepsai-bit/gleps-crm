@@ -869,6 +869,15 @@ export function ConversationList({
                           {conv.inbox.channelType}
                         </Badge>
                       )}
+                      {/* TRACKING-CTWA: separação visual anúncio × orgânico */}
+                      {conv.sourceType === 'ctwa' && (
+                        <Badge
+                          className="text-[9px] py-0 px-1 h-4 bg-blue-600 text-white hover:bg-blue-600"
+                          title={conv.adHeadline ?? 'Conversa originada em anúncio Click-to-WhatsApp'}
+                        >
+                          Anúncio
+                        </Badge>
+                      )}
                       {isOutOfFilter && (
                         <Badge
                           variant="outline"

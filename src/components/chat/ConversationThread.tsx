@@ -1119,6 +1119,15 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
               </Badge>
               <span className="shrink-0">•</span>
               <span className="shrink-0">P: {PRIORITY_LABEL[conversation.priority]}</span>
+              {/* TRACKING-CTWA: origem da conversa no header */}
+              {conversation.sourceType === 'ctwa' && (
+                <Badge
+                  className="text-[10px] py-0 px-1 h-4 shrink-0 bg-blue-600 text-white hover:bg-blue-600 border-0"
+                  title={conversation.adHeadline ?? 'Conversa originada em anúncio Click-to-WhatsApp'}
+                >
+                  Anúncio
+                </Badge>
+              )}
               {conversation.assignee?.nome && (
                 <>
                   <span className="shrink-0">•</span>
