@@ -1,4 +1,5 @@
 import { prisma } from '../config/database';
+import { trackingService } from './tracking.service';
 import { CalendarEventType, CalendarEventStatus } from '@prisma/client';
 import { PaginationParams, DateRangeFilter } from '../types';
 import { NotFoundError, AppError } from '../utils/errors';
@@ -251,6 +252,25 @@ class CalendarService {
       },
       include: { attendees: true },
     });
+
+    // TRACKING-CTWA: reunião agendada com contato vindo de anúncio →
+    // evento 'Schedule' pra Meta (CAPI). Best-effort, nunca lança.
+    if (input.contactId) {
+      void trackingService
+        .resolveCtwaForContact(input.accountId, input.contactId)
+        .then((ctwa) => {
+          if (!ctwa) return;
+          return trackingService.recordConversionEvent({
+            accountId: input.accountId,
+            eventName: 'Schedule',
+            ctwaClid: ctwa.ctwaClid,
+            conversationId: ctwa.conversationId,
+            contactId: input.contactId,
+          });
+        })
+        .catch(() => undefined);
+    }
+
     return event;
   }
 

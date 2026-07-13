@@ -7,6 +7,7 @@ import { whatsappConsentService } from '../services/whatsapp-consent.service';
 import { inboxChannelService } from '../services/inbox.service';
 import { conversationService } from '../services/conversation.service';
 import { csatService } from '../services/csat.service';
+import { trackingService } from '../services/tracking.service';
 import {
   messageService,
   MessageContentType,
@@ -780,6 +781,69 @@ export class EvolutionController {
   }
 
   /**
+   * TRACKING-CTWA: extrai a atribuição de anúncio Click-to-WhatsApp da 1ª
+   * mensagem. Cobre os dois formatos que chegam via Evolution:
+   *  - Baileys (não-oficial): contextInfo.externalAdReply (title/sourceId/
+   *    sourceUrl) + ctwaClid (no contextInfo ou dentro do externalAdReply).
+   *  - Cloud API (oficial): objeto `referral` plano (ctwa_clid, source_id,
+   *    source_url, headline).
+   * Retorna null quando a mensagem não tem atribuição de anúncio.
+   */
+  private extractCtwaReferral(data: any): {
+    ctwaClid: string | null;
+    sourceId: string | null;
+    sourceUrl: string | null;
+    headline: string | null;
+  } | null {
+    const msg = data?.message ?? {};
+    const contextCandidates: any[] = [
+      data?.contextInfo,
+      msg?.extendedTextMessage?.contextInfo,
+      msg?.conversation?.contextInfo,
+      msg?.imageMessage?.contextInfo,
+      msg?.videoMessage?.contextInfo,
+      msg?.audioMessage?.contextInfo,
+      msg?.buttonsResponseMessage?.contextInfo,
+    ];
+    for (const ctx of contextCandidates) {
+      if (!ctx || typeof ctx !== 'object') continue;
+      const ad = ctx.externalAdReply;
+      const ctwaClid: string | null =
+        (typeof ctx.ctwaClid === 'string' && ctx.ctwaClid) ||
+        (ad && typeof ad.ctwaClid === 'string' && ad.ctwaClid) ||
+        null;
+      if (ctwaClid || (ad && typeof ad === 'object')) {
+        return {
+          ctwaClid,
+          sourceId:
+            ad && typeof ad.sourceId === 'string' ? ad.sourceId : null,
+          sourceUrl:
+            ad && typeof ad.sourceUrl === 'string' ? ad.sourceUrl : null,
+          headline: ad && typeof ad.title === 'string' ? ad.title : null,
+        };
+      }
+    }
+    // Formato Cloud API (referral plano)
+    const referral = data?.referral;
+    if (referral && typeof referral === 'object') {
+      const ctwaClid =
+        typeof referral.ctwa_clid === 'string' ? referral.ctwa_clid : null;
+      if (ctwaClid || referral.source_id || referral.source_url) {
+        return {
+          ctwaClid,
+          sourceId:
+            typeof referral.source_id === 'string' ? referral.source_id : null,
+          sourceUrl:
+            typeof referral.source_url === 'string' ? referral.source_url : null,
+          headline:
+            typeof referral.headline === 'string' ? referral.headline : null,
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
    * Processa um evento `messages.upsert` da Evolution e cria a Message correspondente,
    * abrindo/reabrindo a Conversation conforme necessário.
    * Idempotente: se já existe Message com o mesmo externalId na conversa, faz skip.
@@ -861,6 +925,52 @@ export class EvolutionController {
         contactName: !fromMe && pushName ? pushName : null,
       }
     );
+
+    // TRACKING-CTWA: atribuição de origem da conversa (anúncio × orgânico).
+    // Mensagem inbound com externalAdReply/referral = veio de anúncio CTWA.
+    // Grava UMA vez (updateMany condicionado a ctwa_clid IS NULL — quem vence
+    // a corrida envia o Lead) e marca as demais como orgânicas. Best-effort:
+    // nunca pode abortar a ingestão da mensagem.
+    if (!fromMe) {
+      try {
+        const referral = this.extractCtwaReferral(data);
+        if (referral && (referral.ctwaClid || referral.sourceId)) {
+          const claimed = await prisma.conversation.updateMany({
+            where: { id: conversation.id, accountId, ctwaClid: null },
+            data: {
+              sourceType: 'ctwa',
+              ctwaClid: referral.ctwaClid,
+              adSourceId: referral.sourceId,
+              adSourceUrl: referral.sourceUrl,
+              adHeadline: referral.headline,
+            },
+          });
+          // Conversa REAL de anúncio (a pessoa mandou mensagem de verdade —
+          // cliques sem mensagem nunca chegam aqui). Só com ctwa_clid: sem
+          // ele a Meta não atribui o evento a nada.
+          if (claimed.count > 0 && referral.ctwaClid) {
+            void trackingService.recordConversionEvent({
+              accountId,
+              eventName: 'Lead',
+              ctwaClid: referral.ctwaClid,
+              conversationId: conversation.id,
+              contactId: conversation.contactId ?? null,
+            });
+          }
+        } else {
+          await prisma.conversation.updateMany({
+            where: { id: conversation.id, accountId, sourceType: null },
+            data: { sourceType: 'organic' },
+          });
+        }
+      } catch (err) {
+        logger.warn('[evolution-webhook] atribuição CTWA falhou', {
+          accountId,
+          conversationId: conversation.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     // BUG-2: o `contactName` acima só é aplicado no CREATE do Contact.
     // Em mensagens subsequentes precisamos manter `Contact.pushName` em dia

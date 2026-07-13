@@ -4,6 +4,7 @@ import { PaginationParams, DateRangeFilter } from '../types';
 import { NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
 import { getPaginationMeta } from '../utils/helpers';
 import { eventService } from './event.service';
+import { trackingService } from './tracking.service';
 
 export interface CreateSaleItemInput {
   productId: string;
@@ -285,6 +286,26 @@ class SaleService {
       entityId: id,
       payload: { valor: Number(updatedSale.valor) },
     });
+
+    // TRACKING-CTWA: venda paga de contato vindo de anúncio → 'Purchase'
+    // com valor pra Meta (CAPI). Best-effort, nunca lança.
+    if (updatedSale.contactId) {
+      void trackingService
+        .resolveCtwaForContact(accountId, updatedSale.contactId)
+        .then((ctwa) => {
+          if (!ctwa) return;
+          return trackingService.recordConversionEvent({
+            accountId,
+            eventName: 'Purchase',
+            ctwaClid: ctwa.ctwaClid,
+            conversationId: ctwa.conversationId,
+            contactId: updatedSale.contactId,
+            value: Number(updatedSale.valor),
+            currency: 'BRL',
+          });
+        })
+        .catch(() => undefined);
+    }
 
     return this.getById(id, accountId);
   }

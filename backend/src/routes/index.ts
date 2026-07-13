@@ -12,6 +12,7 @@ import accountIntegrationsRoutes from './account-integrations.routes';
 import financeRoutes from './finance.routes';
 import insightsRoutes from './insights.routes';
 import calendarRoutes from './calendar.routes';
+import trackingRoutes from './tracking.routes';
 import eventRoutes from './event.routes';
 import prospectingRoutes from './prospecting.routes';
 import emailRoutes from './email.routes';
@@ -99,6 +100,8 @@ router.use('/tags', tagRoutes);
 router.use('/funnels', funnelRouter);
 router.use('/sales', saleRoutes);
 router.use('/dashboard', dashboardRoutes);
+// TRACKING (Meta Ads / CTWA)
+router.use('/tracking', trackingRoutes);
 // T-024: rota dedicada ao admin de conta gerenciar agentes da PROPRIA tenancy.
 // DEVE ser registrada ANTES de /admin (adminRouter do dashboard) para evitar
 // que o catch-all de /admin/* engula /admin/users.
