@@ -741,7 +741,7 @@ export function ConversationList({
           mesmo com `min-w-0` em todos os ancestrais, o botao da conversa
           consegue expandir o wrapper alem dos 320px da coluna. Forcamos
           `block` para neutralizar o table-shrink-wrap. */}
-      <ScrollArea className="flex-1 [&>[data-radix-scroll-area-viewport]>div]:!block">
+      <ScrollArea className="flex-1 [&>[data-radix-scroll-area-viewport]>div]:!block [&>[data-radix-scroll-area-viewport]>div]:w-full [&>[data-radix-scroll-area-viewport]>div]:!min-w-0">
         {listQuery.isLoading ? (
           // C2 — Skeleton rows (5) imitando o card real (avatar + 2 linhas)
           // dão sensação concreta de "tem conteúdo vindo" em vez do spinner

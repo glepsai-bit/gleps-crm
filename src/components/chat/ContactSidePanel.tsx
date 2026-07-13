@@ -425,7 +425,8 @@ export function ContactSidePanel({ conversation, onClose }: ContactSidePanelProp
           </div>
         );
       })()}
-      <ScrollArea className="flex-1">
+      {/* AUDIT-RESPONSIVE: mesmo fix do viewport display:table do Radix. */}
+      <ScrollArea className="flex-1 [&>[data-radix-scroll-area-viewport]>div]:!block [&>[data-radix-scroll-area-viewport]>div]:w-full [&>[data-radix-scroll-area-viewport]>div]:!min-w-0">
         <div className="p-2 space-y-1">
           {contact && (
             <div className="px-3 pt-2 pb-1">

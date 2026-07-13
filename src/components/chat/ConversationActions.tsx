@@ -502,8 +502,11 @@ export function ConversationActions({
           className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
           onClick={() => setResolveConfirm('human')}
         >
-          <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
-          Resolver
+          <CheckCircle2 className="w-3.5 h-3.5 min-[1440px]:mr-1" />
+          {/* AUDIT-RESPONSIVE: em janelas 1280-1439px (3 colunas + nav) a
+              thread fica com ~350px úteis e o rótulo esmagava o nome do
+              contato no header — vira icon-only nessa faixa. */}
+          <span className="hidden min-[1440px]:inline">Resolver</span>
         </Button>
       )}
 

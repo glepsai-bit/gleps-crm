@@ -1142,7 +1142,13 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
           viewport — mas o ref do ScrollArea (pai, dispara depois do filho)
           SOBRESCREVIA o viewport pela raiz. Resultado: todo `scrollTop` caia
           num elemento que nao rola -> auto-scroll silenciosamente inope. */}
-      <ScrollArea className="flex-1 min-h-0">
+      {/* AUDIT-RESPONSIVE: o Viewport interno do Radix ScrollArea envolve o
+          conteúdo num div com display:table, que cresce além da coluna quando
+          algum filho é largo — os bubbles outbound (justify-end) alinhavam na
+          borda desse container invisível e eram CORTADOS pela coluna (prints
+          do teste em produção). Mesmo fix já aplicado na ConversationList:
+          força display:block + largura 100% no wrapper do viewport. */}
+      <ScrollArea className="flex-1 min-h-0 [&>[data-radix-scroll-area-viewport]>div]:!block [&>[data-radix-scroll-area-viewport]>div]:w-full [&>[data-radix-scroll-area-viewport]>div]:!min-w-0 [&>[data-radix-scroll-area-viewport]]:overscroll-contain">
         <div
           ref={(el) => {
             // Resolve SEMPRE o viewport rolavel a partir deste div interno.

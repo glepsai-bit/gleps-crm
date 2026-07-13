@@ -170,11 +170,11 @@ function MessageBubbleInner({
     <div
       className={cn('flex w-full', isCustomer ? 'justify-start' : 'justify-end')}
     >
-      <div className={cn('max-w-[80%] flex flex-col', isCustomer ? 'items-start' : 'items-end')}>
+      <div className={cn('max-w-[80%] min-w-0 flex flex-col', isCustomer ? 'items-start' : 'items-end')}>
         <div
           className={cn(
             // `group relative` habilita o group-hover no trigger do menu.
-            'group relative rounded-lg px-3 py-2 space-y-1.5',
+            'group relative rounded-lg px-3 py-2 space-y-1.5 min-w-0 max-w-full overflow-hidden',
             isPrivate
               ? 'bg-yellow-100 dark:bg-yellow-900/40 border border-yellow-400/40'
               : isCustomer

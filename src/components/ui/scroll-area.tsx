@@ -8,7 +8,13 @@ const ScrollArea = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root>
 >(({ className, children, ...props }, ref) => (
   <ScrollAreaPrimitive.Root ref={ref} className={cn("relative overflow-hidden", className)} {...props}>
-    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit]">{children}</ScrollAreaPrimitive.Viewport>
+    {/* AUDIT-RESPONSIVE: o Radix envolve o conteúdo do Viewport num div com
+        display:table, que cresce além do container quando algum filho é
+        largo — causava corte horizontal de conteúdo (ex.: bubbles do chat).
+        Nenhum uso no projeto depende de scroll horizontal via ScrollArea
+        (todas as tabelas têm wrapper overflow-auto próprio), então forçamos
+        display:block + largura 100% globalmente. */}
+    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit] [&>div]:!block [&>div]:w-full [&>div]:!min-w-0">{children}</ScrollAreaPrimitive.Viewport>
     <ScrollBar />
     <ScrollAreaPrimitive.Corner />
   </ScrollAreaPrimitive.Root>
