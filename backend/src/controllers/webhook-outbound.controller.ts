@@ -1,4 +1,5 @@
 import { Response, NextFunction } from 'express';
+import { WEBHOOK_EVENT_VALUES } from '../config/webhook-events';
 import { z } from 'zod';
 import { webhookOutboundService } from '../services/webhook-outbound.service';
 import { AuthenticatedRequest } from '../types';
@@ -28,12 +29,26 @@ const safeWebhookUrl = z
     }
   });
 
+// Shape dos filtros por assinatura (anti-loop — migration 0054).
+const filtersSchema = z
+  .object({
+    senderTypes: z
+      .array(z.enum(['customer', 'agent', 'ai_bot', 'system', 'integration']))
+      .optional(),
+    excludePrivate: z.boolean().optional(),
+    inboxIds: z.array(z.string().uuid()).optional(),
+  })
+  .strict();
+
 const createSubscriptionSchema = z.object({
   name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
   url: safeWebhookUrl,
+  // Catálogo único (webhook-events.ts): impede assinar evento inexistente —
+  // antes era z.string() livre e a UI oferecia eventos que nunca disparavam.
   events: z
-    .array(z.string().min(1, 'eventType inválido'))
+    .array(z.enum(WEBHOOK_EVENT_VALUES))
     .min(1, 'Informe ao menos um evento'),
+  filters: filtersSchema.optional(),
   active: z.boolean().optional(),
 });
 
@@ -41,10 +56,14 @@ const updateSubscriptionSchema = z
   .object({
     name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres').optional(),
     url: safeWebhookUrl.optional(),
+    // Update mantém z.string() de propósito (plano §6): assinaturas legadas
+    // podem carregar eventos fora do catálogo e não podem quebrar na edição.
+    // O enum estrito vale para o create.
     events: z
       .array(z.string().min(1, 'eventType inválido'))
       .min(1, 'Informe ao menos um evento')
       .optional(),
+    filters: filtersSchema.optional(),
     active: z.boolean().optional(),
   })
   .refine(data => Object.keys(data).length > 0, {
@@ -145,6 +164,7 @@ export class WebhookOutboundController {
           name: result.name,
           url: result.url,
           events: result.events,
+          filters: result.filters,
           active: result.active,
           lastDeliveryAt: result.lastDeliveryAt,
           createdAt: result.createdAt,

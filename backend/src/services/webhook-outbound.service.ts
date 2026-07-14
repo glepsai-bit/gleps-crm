@@ -11,10 +11,17 @@ import { safeFetch } from '../utils/ssrf-guard';
 
 export type WebhookSubscriptionSafe = Omit<WebhookSubscription, 'secret'>;
 
+export interface SubscriptionFilters {
+  senderTypes?: string[];
+  excludePrivate?: boolean;
+  inboxIds?: string[];
+}
+
 export interface CreateSubscriptionInput {
   name: string;
   url: string;
   events: string[];
+  filters?: SubscriptionFilters;
   active?: boolean;
 }
 
@@ -22,6 +29,7 @@ export interface UpdateSubscriptionInput {
   name?: string;
   url?: string;
   events?: string[];
+  filters?: SubscriptionFilters;
   active?: boolean;
 }
 
@@ -39,6 +47,46 @@ export interface TestSubscriptionResult {
 const MAX_ATTEMPTS = 5;
 const REQUEST_TIMEOUT_MS = 10_000;
 const RETRY_BATCH_SIZE = 50;
+
+/**
+ * Filtros por assinatura (shape validado no controller):
+ *   { senderTypes?: string[], excludePrivate?: boolean, inboxIds?: string[] }
+ * '{}' ou null = sem filtro (comportamento legado preservado).
+ * senderTypes/excludePrivate só se aplicam a message.created; inboxIds a
+ * qualquer payload que carregue inboxId.
+ */
+function matchesSubscriptionFilters(
+  eventType: string,
+  payload: Record<string, unknown>,
+  rawFilters: unknown
+): boolean {
+  if (!rawFilters || typeof rawFilters !== 'object' || Array.isArray(rawFilters)) {
+    return true;
+  }
+  const filters = rawFilters as {
+    senderTypes?: unknown;
+    excludePrivate?: unknown;
+    inboxIds?: unknown;
+  };
+  if (Object.keys(filters).length === 0) return true;
+
+  if (eventType === 'message.created') {
+    if (Array.isArray(filters.senderTypes) && filters.senderTypes.length > 0) {
+      if (!filters.senderTypes.includes(payload.senderType)) return false;
+    }
+    if (filters.excludePrivate === true && payload.isPrivate === true) {
+      return false;
+    }
+  }
+
+  if (Array.isArray(filters.inboxIds) && filters.inboxIds.length > 0) {
+    if (payload.inboxId && !filters.inboxIds.includes(payload.inboxId)) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 class WebhookOutboundService {
   // ============================================
@@ -58,6 +106,7 @@ class WebhookOutboundService {
         name: true,
         url: true,
         events: true,
+        filters: true,
         active: true,
         lastDeliveryAt: true,
         createdAt: true,
@@ -86,6 +135,7 @@ class WebhookOutboundService {
         name: input.name,
         url: input.url,
         events: input.events,
+        filters: (input.filters ?? {}) as object,
         active: input.active ?? true,
         secret,
       },
@@ -118,6 +168,9 @@ class WebhookOutboundService {
         ...(partial.name !== undefined && { name: partial.name }),
         ...(partial.url !== undefined && { url: partial.url }),
         ...(partial.events !== undefined && { events: partial.events }),
+        ...(partial.filters !== undefined && {
+          filters: partial.filters as object,
+        }),
         ...(partial.active !== undefined && { active: partial.active }),
       },
       select: {
@@ -126,6 +179,7 @@ class WebhookOutboundService {
         name: true,
         url: true,
         events: true,
+        filters: true,
         active: true,
         lastDeliveryAt: true,
         createdAt: true,
@@ -262,14 +316,21 @@ class WebhookOutboundService {
     eventType: string,
     payload: Record<string, unknown>
   ): Promise<void> {
-    const subscriptions = await prisma.webhookSubscription.findMany({
+    const allSubscriptions = await prisma.webhookSubscription.findMany({
       where: {
         accountId,
         active: true,
         events: { has: eventType },
       },
-      select: { id: true },
+      select: { id: true, filters: true },
     });
+
+    // ANTI-LOOP (migration 0054): aplica os filtros da assinatura antes de
+    // enfileirar. Sem isso, message.created dispara também para a resposta
+    // da própria IA (ai_bot) → webhook → IA responde a si mesma → ∞.
+    const subscriptions = allSubscriptions.filter((sub) =>
+      matchesSubscriptionFilters(eventType, payload, sub.filters)
+    );
 
     if (subscriptions.length === 0) {
       return;

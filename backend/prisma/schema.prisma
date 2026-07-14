@@ -141,6 +141,11 @@ model WebhookSubscription {
   name           String    @db.VarChar(160)
   url            String    @db.VarChar(1000)
   events         String[]  @default([])
+  // Filtros/condições da assinatura (migration 0054). Shape validado no
+  // controller: { senderTypes?, excludePrivate?, inboxIds? }. '{}' = sem
+  // filtro. Anti-loop: a UI cria regras de message.created com
+  // senderTypes:['customer'] + excludePrivate:true por padrão.
+  filters        Json      @default("{}")
   secret         String    @db.VarChar(255) // HMAC SHA-256 secret
   active         Boolean   @default(true)
   lastDeliveryAt DateTime? @map("last_delivery_at") @db.Timestamptz
