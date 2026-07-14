@@ -4,6 +4,7 @@ import { PaginationParams } from '../types';
 import { ConflictError, NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
 import { getPaginationMeta, escapeLike } from '../utils/helpers';
 import { eventService } from './event.service';
+import { webhookOutboundService } from './webhook-outbound.service';
 
 export interface CreateContactInput {
   accountId: string;
@@ -164,6 +165,19 @@ class ContactService {
       payload: { nome: contact.nome, origem: contact.origem },
     });
 
+    // PLANO-INTEGRACOES §3.3: evento era FANTASMA (UI oferecia, nunca
+    // disparava). Fire-and-forget: falha de webhook não quebra o create.
+    webhookOutboundService
+      .emit(input.accountId, 'contact.created', {
+        id: contact.id,
+        nome: contact.nome,
+        telefone: contact.telefone,
+        email: contact.email,
+        origem: contact.origem,
+        createdAt: contact.createdAt,
+      })
+      .catch(() => undefined);
+
     return contact;
   }
 
@@ -192,6 +206,17 @@ class ContactService {
       entityId: contact.id,
       payload: { changes: input },
     });
+
+    // PLANO-INTEGRACOES §3.3: evento era FANTASMA.
+    webhookOutboundService
+      .emit(contact.accountId, 'contact.updated', {
+        id: contact.id,
+        nome: contact.nome,
+        telefone: contact.telefone,
+        email: contact.email,
+        updatedAt: contact.updatedAt,
+      })
+      .catch(() => undefined);
 
     return contact;
   }

@@ -7,6 +7,7 @@ import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
 import { sanitizeMessageAttachments } from '../utils/attachment-api.util';
 import { avatarStorageService } from './avatar-storage.service';
+import { webhookOutboundService } from './webhook-outbound.service';
 import { teamService } from './team.service';
 import { conversationCycleService } from './conversation-cycle.service';
 import { aggregateMessageReactions } from './message.service';
@@ -41,6 +42,24 @@ function stripHeavyRelationsForBroadcast(conv: Conversation): Conversation {
     messages?: unknown;
   };
   return rest as Conversation;
+}
+
+/**
+ * PLANO-INTEGRACOES §3.3: emit outbound SEMPRE fire-and-forget — falha de
+ * webhook nunca pode quebrar o fluxo de negócio (criar conversa/contato,
+ * resolver, pagar venda). Mesmo padrão do message.service.
+ */
+function safeWebhookEmit(
+  accountId: string,
+  eventType: string,
+  payload: Record<string, unknown>
+): void {
+  webhookOutboundService.emit(accountId, eventType, payload).catch((err) =>
+    logger.warn('[conversation] falha ao emitir webhook outbound', {
+      eventType,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  );
 }
 
 function safeEmitUpdated(accountId: string, id: string, conv: Conversation): void {
@@ -529,6 +548,16 @@ class ConversationService {
       },
     });
 
+    // PLANO-INTEGRACOES §3.3: evento era FANTASMA (a UI oferecia
+    // conversation.created mas nada nunca disparava o webhook).
+    safeWebhookEmit(accountId, 'conversation.created', {
+      id: conversation.id,
+      contactId: conversation.contactId,
+      inboxId: conversation.inboxId,
+      status: conversation.status,
+      createdAt: conversation.createdAt,
+    });
+
     return conversation;
   }
 
@@ -959,6 +988,15 @@ class ConversationService {
         resolvedBy: input.resolvedBy,
         userId: input.userId,
       },
+    });
+
+    // PLANO-INTEGRACOES §3.3: evento era FANTASMA na UI.
+    safeWebhookEmit(accountId, 'conversation.resolved', {
+      id,
+      contactId: updated.contactId,
+      resolvedBy: input.resolvedBy,
+      outcome: input.outcome ?? null,
+      resolvedAt,
     });
 
     // Emite também o status_changed pra UIs que escutam só esse canal
@@ -1831,6 +1869,16 @@ class ConversationService {
         },
       });
 
+      // PLANO-INTEGRACOES §3.3: idem create() — inclui conversas criadas
+      // pelo webhook inbound (o caminho mais comum).
+      safeWebhookEmit(accountId, 'conversation.created', {
+        id: conversation.id,
+        contactId: resolvedContactId,
+        inboxId,
+        status: conversation.status,
+        createdAt: conversation.createdAt,
+      });
+
       if (wasAssigned && preselectedAssignee && inbox.defaultTeamId) {
         await eventService.create({
           accountId,
@@ -1982,6 +2030,16 @@ class ConversationService {
           accountId,
           contactId: created.id,
           phone,
+        });
+        // PLANO-INTEGRACOES §3.3: contact.created também para contatos
+        // nascidos do webhook inbound (não só do CRUD manual).
+        safeWebhookEmit(accountId, 'contact.created', {
+          id: created.id,
+          nome: input.contactName ?? null,
+          telefone: phone,
+          email: null,
+          origem: 'whatsapp',
+          createdAt: new Date().toISOString(),
         });
         // Fetch de profile pic da Evolution — fire-and-forget, primeiro contato.
         this.maybeRefreshProfilePic(accountId, created.id, phone, null);

@@ -5,6 +5,7 @@ import { NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
 import { getPaginationMeta } from '../utils/helpers';
 import { eventService } from './event.service';
 import { trackingService } from './tracking.service';
+import { webhookOutboundService } from './webhook-outbound.service';
 
 export interface CreateSaleItemInput {
   productId: string;
@@ -286,6 +287,17 @@ class SaleService {
       entityId: id,
       payload: { valor: Number(updatedSale.valor) },
     });
+
+    // PLANO-INTEGRACOES §3.3: sale.paid era FANTASMA (UI oferecia, nunca
+    // disparava). Fire-and-forget: falha de webhook não quebra o pagamento.
+    webhookOutboundService
+      .emit(accountId, 'sale.paid', {
+        id: updatedSale.id,
+        contactId: updatedSale.contactId,
+        valor: Number(updatedSale.valor),
+        paidAt: updatedSale.paidAt,
+      })
+      .catch(() => undefined);
 
     // TRACKING-CTWA: venda paga de contato vindo de anúncio → 'Purchase'
     // com valor pra Meta (CAPI). Best-effort, nunca lança.
