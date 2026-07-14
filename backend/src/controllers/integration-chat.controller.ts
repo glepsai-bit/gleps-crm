@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { prisma } from '../config/database';
+import { attachmentStorageService } from '../services/attachment-storage.service';
 import { conversationService } from '../services/conversation.service';
 import { csatService } from '../services/csat.service';
 import { messageService, type MessageSenderType } from '../services/message.service';
@@ -943,6 +946,105 @@ class IntegrationChatController {
       });
 
       res.status(200).json({ data: updated });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/integrations/chat/attachments/:id
+   *
+   * Serve a MIDIA de uma mensagem (audio, imagem, documento) para integracoes
+   * autenticadas por API key.
+   *
+   * PORQUE EXISTE: o `fileUrl` que vai no webhook `message.created` aponta pra
+   * GET /api/attachments/:id — que e autenticado por **JWT** (sessao de usuario).
+   * Uma integracao (n8n/IA) so tem API key, entao nao conseguia baixar o audio
+   * do cliente pra transcrever. Sem isso, todo fluxo de IA quebra em mensagem
+   * de voz — que no WhatsApp e altissimo volume.
+   *
+   * Espelha a logica de attachment.controller.serveFile, trocando o escopo por
+   * JWT pelo `req.accountId` populado pelo middleware requireApiKey. O
+   * pertencimento a conta e checado de duas formas (mesma regra do proxy JWT):
+   *   a) attachment ligado a uma message de uma conversation da conta; OU
+   *   b) attachment orfao (messageId null) com storagePath prefixado por `<accountId>/`.
+   */
+  async getAttachment(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const accountId = req.accountId;
+      if (!accountId) {
+        throw new UnauthorizedError();
+      }
+      const id = req.params.id as string;
+      if (!id) throw new ValidationError('id é obrigatório');
+
+      const att = await prisma.attachment.findFirst({
+        where: {
+          id,
+          OR: [
+            { message: { conversation: { accountId } } },
+            { messageId: null, storagePath: { startsWith: `${accountId}/` } },
+          ],
+        },
+        select: {
+          id: true,
+          fileName: true,
+          mimeType: true,
+          fileType: true,
+          storagePath: true,
+          storageStatus: true,
+        },
+      });
+      if (!att) throw new NotFoundError('Attachment não encontrado');
+
+      let absolutePath: string | null = null;
+      let byteLength: number | null = null;
+      let mimeType: string | null = att.mimeType ?? null;
+
+      if (att.storagePath && att.storageStatus === 'downloaded') {
+        try {
+          const candidate = attachmentStorageService.resolveAbsolutePath(att.storagePath);
+          const s = await stat(candidate);
+          if (s.size > 0) {
+            absolutePath = candidate;
+            byteLength = s.size;
+          }
+        } catch {
+          /* arquivo sumiu do disco — cai no materialize abaixo */
+        }
+      }
+
+      // Lazy materialize: baixa da Evolution se ainda nao esta em disco (ou se
+      // o rebuild do container apagou o uploads/ efemero).
+      if (!absolutePath) {
+        const materialized = await attachmentStorageService.materialize(att.id);
+        if (!materialized) {
+          throw new NotFoundError('Attachment indisponível (falha ao baixar)');
+        }
+        absolutePath = materialized.absolutePath;
+        byteLength = materialized.byteLength;
+        mimeType = materialized.mimeType ?? mimeType;
+      }
+
+      const contentType = mimeType || 'application/octet-stream';
+      const safeName = (att.fileName || `attachment-${id}`).replace(/"/g, '');
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', String(byteLength));
+      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+      res.setHeader('X-Accel-Buffering', 'no');
+
+      const stream = createReadStream(absolutePath);
+      stream.on('error', (err) => {
+        logger.error('[integration-chat] erro lendo anexo do disco', {
+          accountId,
+          attachmentId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (!res.headersSent) res.status(500).end();
+        else res.end();
+      });
+      stream.pipe(res);
     } catch (error) {
       next(error);
     }

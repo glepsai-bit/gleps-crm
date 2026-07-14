@@ -77,6 +77,18 @@ router.get(
   (req, res, next) => integrationChatController.getConversation(req, res, next)
 );
 
+// Download da MIDIA de uma mensagem (audio/imagem/documento).
+// O fileUrl que vai no webhook aponta pra /api/attachments/:id, que exige JWT —
+// integracoes (n8n/IA) so tem API key e nao conseguiam baixar o audio do cliente
+// pra transcrever. Este endpoint serve o mesmo arquivo, autenticado por API key
+// e escopado pela conta da chave.
+router.get(
+  '/attachments/:id',
+  integrationReadLimiter,
+  requireScope('chat:read', 'chat:write'),
+  (req, res, next) => integrationChatController.getAttachment(req, res, next)
+);
+
 // ──────────────────────────────────────────────────────────────────────────
 // WRITE
 // ──────────────────────────────────────────────────────────────────────────
