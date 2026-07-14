@@ -29,29 +29,53 @@ import { apiClient } from '@/api/client';
 // ---------------------------------------------------------------------------
 
 export type WebhookEvent =
+  | 'message.created'
+  | 'conversation.created'
+  | 'conversation.resolved'
   | 'contact.created'
   | 'contact.updated'
   | 'sale.paid'
-  | 'conversation.created'
-  | 'conversation.resolved'
+  | 'sla.breached'
+  | 'optout.created'
   | 'campaign.completed'
-  | 'optout.created';
+  | 'campaign.cancelled';
 
-export const WEBHOOK_EVENTS: { value: WebhookEvent; label: string }[] = [
-  { value: 'contact.created', label: 'Contato criado' },
-  { value: 'contact.updated', label: 'Contato atualizado' },
-  { value: 'sale.paid', label: 'Venda paga' },
-  { value: 'conversation.created', label: 'Conversa criada' },
-  { value: 'conversation.resolved', label: 'Conversa resolvida' },
-  { value: 'campaign.completed', label: 'Campanha concluída' },
-  { value: 'optout.created', label: 'Opt-out registrado' },
+/**
+ * PLANO-INTEGRACOES §4.1: espelho EXATO do catálogo do backend
+ * (backend/src/config/webhook-events.ts). Antes esta lista divergia: oferecia
+ * 5 eventos que o backend nunca emitia e NÃO oferecia message.created — o que
+ * tornava impossível criar pela tela a automação principal (msg → IA/n8n).
+ */
+export const WEBHOOK_EVENTS: {
+  value: WebhookEvent;
+  label: string;
+  group: string;
+}[] = [
+  { value: 'message.created', label: 'Mensagem recebida', group: 'Atendimento' },
+  { value: 'conversation.created', label: 'Conversa criada', group: 'Atendimento' },
+  { value: 'conversation.resolved', label: 'Conversa resolvida', group: 'Atendimento' },
+  { value: 'contact.created', label: 'Contato criado', group: 'CRM' },
+  { value: 'contact.updated', label: 'Contato atualizado', group: 'CRM' },
+  { value: 'sale.paid', label: 'Venda paga', group: 'Vendas' },
+  { value: 'sla.breached', label: 'SLA estourado', group: 'Atendimento' },
+  { value: 'optout.created', label: 'Opt-out recebido', group: 'WhatsApp' },
+  { value: 'campaign.completed', label: 'Campanha concluída', group: 'WhatsApp' },
+  { value: 'campaign.cancelled', label: 'Campanha cancelada', group: 'WhatsApp' },
 ];
+
+/** Filtros/condições por assinatura (anti-loop — migration 0054). */
+export interface WebhookFilters {
+  senderTypes?: ('customer' | 'agent' | 'ai_bot' | 'system' | 'integration')[];
+  excludePrivate?: boolean;
+  inboxIds?: string[];
+}
 
 export interface WebhookSubscription {
   id: string;
   name: string;
   url: string;
   events: WebhookEvent[];
+  filters?: WebhookFilters | null;
   active: boolean;
   createdAt: string;
   lastDeliveryAt: string | null;
@@ -66,6 +90,7 @@ export interface CreateWebhookInput {
   name: string;
   url: string;
   events: WebhookEvent[];
+  filters?: WebhookFilters;
   active: boolean;
 }
 
