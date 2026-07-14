@@ -19,7 +19,14 @@ import {
   type CreatedWebhook,
   type WebhookEvent,
   type WebhookDelivery,
+  type WebhookFilters,
 } from '@/services/webhooks.backend.service';
+import {
+  apiKeysBackendService,
+  type ApiKey,
+  type CreatedApiKey,
+} from '@/services/api-keys.backend.service';
+import { inboxesBackendService } from '@/services/inboxes.backend.service';
 import {
   inboundIntegrationsBackendService,
   INBOUND_HANDLERS,
@@ -104,8 +111,33 @@ const webhookSchema = z.object({
   url: z.string().url('URL inválida'),
   events: z.array(z.string()).min(1, 'Selecione ao menos um evento'),
   active: z.boolean(),
+  // Condições (anti-loop) — plano §4.3. LIGADAS por padrão.
+  onlyCustomers: z.boolean(),
+  excludePrivate: z.boolean(),
+  inboxIds: z.array(z.string()),
 });
 type WebhookFormData = z.infer<typeof webhookSchema>;
+
+/** Monta o objeto filters da assinatura a partir do formulário. */
+function buildFilters(data: WebhookFormData): WebhookFilters | undefined {
+  const filters: WebhookFilters = {};
+  if (data.events.includes('message.created')) {
+    if (data.onlyCustomers) filters.senderTypes = ['customer'];
+    if (data.excludePrivate) filters.excludePrivate = true;
+  }
+  if (data.inboxIds.length > 0) filters.inboxIds = data.inboxIds;
+  return Object.keys(filters).length > 0 ? filters : undefined;
+}
+
+const FORM_DEFAULTS: WebhookFormData = {
+  name: '',
+  url: '',
+  events: [],
+  active: true,
+  onlyCustomers: true,
+  excludePrivate: true,
+  inboxIds: [],
+};
 
 const inboundSchema = z.object({
   slug: z
@@ -188,7 +220,13 @@ function AbaWebhooksSaida() {
 
   const form = useForm<WebhookFormData>({
     resolver: zodResolver(webhookSchema),
-    defaultValues: { name: '', url: '', events: [], active: true },
+    defaultValues: FORM_DEFAULTS,
+  });
+
+  // Inboxes para a condição opcional "apenas destes inboxes"
+  const { data: inboxes = [] } = useQuery({
+    queryKey: ['inboxes'],
+    queryFn: () => inboxesBackendService.listInboxes(),
   });
 
   const createMutation = useMutation({
@@ -197,6 +235,7 @@ function AbaWebhooksSaida() {
         name: data.name,
         url: data.url,
         events: data.events as WebhookEvent[],
+        filters: buildFilters(data),
         active: data.active,
       }),
     onSuccess: (data) => {
@@ -214,6 +253,7 @@ function AbaWebhooksSaida() {
         name: data.name,
         url: data.url,
         events: data.events as WebhookEvent[],
+        filters: buildFilters(data) ?? {},
         active: data.active,
       }),
     onSuccess: () => {
@@ -253,14 +293,25 @@ function AbaWebhooksSaida() {
   function abrirNovoDialog() {
     setEditando(null);
     setCriado(null);
-    form.reset({ name: '', url: '', events: [], active: true });
+    form.reset(FORM_DEFAULTS);
     setIsDialogOpen(true);
   }
 
   function abrirEditarDialog(wh: WebhookSubscription) {
     setEditando(wh);
     setCriado(null);
-    form.reset({ name: wh.name, url: wh.url, events: wh.events, active: wh.active });
+    const f = wh.filters ?? {};
+    form.reset({
+      name: wh.name,
+      url: wh.url,
+      events: wh.events,
+      active: wh.active,
+      onlyCustomers: Array.isArray(f.senderTypes)
+        ? f.senderTypes.includes('customer') && f.senderTypes.length === 1
+        : false,
+      excludePrivate: f.excludePrivate === true,
+      inboxIds: Array.isArray(f.inboxIds) ? f.inboxIds : [],
+    });
     setIsDialogOpen(true);
   }
 
@@ -308,7 +359,7 @@ function AbaWebhooksSaida() {
         </p>
         <Button onClick={abrirNovoDialog} className="gap-2">
           <Plus className="w-4 h-4" />
-          Novo Webhook
+          Nova automação
         </Button>
       </div>
 
@@ -460,7 +511,7 @@ function AbaWebhooksSaida() {
           ) : (
             <form onSubmit={form.handleSubmit(onSubmit)}>
               <DialogHeader>
-                <DialogTitle>{editando ? 'Editar Webhook' : 'Novo Webhook'}</DialogTitle>
+                <DialogTitle>{editando ? 'Editar automação' : 'Nova automação'}</DialogTitle>
                 <DialogDescription>
                   {editando
                     ? 'Atualize as configurações do webhook.'
@@ -471,10 +522,10 @@ function AbaWebhooksSaida() {
               <div className="space-y-4 py-4">
                 {/* Nome */}
                 <div className="space-y-2">
-                  <Label htmlFor="wh-name">Nome</Label>
+                  <Label htmlFor="wh-name">Nome da automação</Label>
                   <Input
                     id="wh-name"
-                    placeholder="Ex: Notificação ERP"
+                    placeholder="Ex: Mensagem recebida → n8n (IA)"
                     {...form.register('name')}
                   />
                   {form.formState.errors.name && (
@@ -482,38 +533,123 @@ function AbaWebhooksSaida() {
                   )}
                 </div>
 
-                {/* URL */}
+                {/* QUANDO — gatilhos agrupados */}
                 <div className="space-y-2">
-                  <Label htmlFor="wh-url">URL de destino</Label>
-                  <Input
-                    id="wh-url"
-                    placeholder="https://meuservidor.com/webhook"
-                    {...form.register('url')}
-                  />
-                  {form.formState.errors.url && (
-                    <p className="text-xs text-destructive">{form.formState.errors.url.message}</p>
-                  )}
-                </div>
-
-                {/* Eventos */}
-                <div className="space-y-2">
-                  <Label>Eventos</Label>
-                  <div className="grid grid-cols-2 gap-2 border rounded-md p-3">
-                    {WEBHOOK_EVENTS.map((ev) => (
-                      <div key={ev.value} className="flex items-center gap-2">
-                        <Checkbox
-                          id={`ev-${ev.value}`}
-                          checked={selectedEvents.includes(ev.value)}
-                          onCheckedChange={() => toggleEvent(ev.value)}
-                        />
-                        <Label htmlFor={`ev-${ev.value}`} className="text-sm cursor-pointer font-normal">
-                          {ev.label}
-                        </Label>
+                  <Label className="font-semibold">Quando (gatilhos)</Label>
+                  <div className="border rounded-md p-3 space-y-3 max-h-56 overflow-y-auto">
+                    {Array.from(new Set(WEBHOOK_EVENTS.map((e) => e.group))).map((group) => (
+                      <div key={group} className="space-y-1.5">
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          {group}
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {WEBHOOK_EVENTS.filter((e) => e.group === group).map((ev) => (
+                            <div key={ev.value} className="flex items-center gap-2">
+                              <Checkbox
+                                id={`ev-${ev.value}`}
+                                checked={selectedEvents.includes(ev.value)}
+                                onCheckedChange={() => toggleEvent(ev.value)}
+                              />
+                              <Label
+                                htmlFor={`ev-${ev.value}`}
+                                className="text-sm cursor-pointer font-normal"
+                              >
+                                {ev.label}
+                              </Label>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
                   {form.formState.errors.events && (
                     <p className="text-xs text-destructive">{form.formState.errors.events.message}</p>
+                  )}
+                </div>
+
+                {/* SE — condições anti-loop (só para message.created) */}
+                {selectedEvents.includes('message.created') && (
+                  <div className="space-y-2">
+                    <Label className="font-semibold">Se (condições)</Label>
+                    <div className="border rounded-md p-3 space-y-3 bg-muted/30">
+                      <div className="flex items-start gap-2">
+                        <Checkbox
+                          id="wh-only-customers"
+                          checked={form.watch('onlyCustomers')}
+                          onCheckedChange={(v) =>
+                            form.setValue('onlyCustomers', v === true)
+                          }
+                        />
+                        <div>
+                          <Label htmlFor="wh-only-customers" className="text-sm cursor-pointer font-normal">
+                            Apenas mensagens de clientes
+                          </Label>
+                          <p className="text-[11px] text-muted-foreground">
+                            Impede que a resposta da própria IA dispare a automação de novo (loop).
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <Checkbox
+                          id="wh-exclude-private"
+                          checked={form.watch('excludePrivate')}
+                          onCheckedChange={(v) =>
+                            form.setValue('excludePrivate', v === true)
+                          }
+                        />
+                        <Label htmlFor="wh-exclude-private" className="text-sm cursor-pointer font-normal">
+                          Ignorar notas internas
+                        </Label>
+                      </div>
+                      {inboxes.length > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="text-sm">Apenas destes inboxes (opcional)</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            {inboxes.map((ib) => {
+                              const selected = form.watch('inboxIds').includes(ib.id);
+                              return (
+                                <div key={ib.id} className="flex items-center gap-2">
+                                  <Checkbox
+                                    id={`wh-ib-${ib.id}`}
+                                    checked={selected}
+                                    onCheckedChange={() => {
+                                      const cur = form.getValues('inboxIds');
+                                      form.setValue(
+                                        'inboxIds',
+                                        selected
+                                          ? cur.filter((i) => i !== ib.id)
+                                          : [...cur, ib.id]
+                                      );
+                                    }}
+                                  />
+                                  <Label
+                                    htmlFor={`wh-ib-${ib.id}`}
+                                    className="text-sm cursor-pointer font-normal truncate"
+                                  >
+                                    {ib.name}
+                                  </Label>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* ENTÃO — destino */}
+                <div className="space-y-2">
+                  <Label htmlFor="wh-url" className="font-semibold">
+                    Então (dispara webhook para)
+                  </Label>
+                  <Input
+                    id="wh-url"
+                    placeholder="https://seu-n8n.com/webhook/abc"
+                    {...form.register('url')}
+                  />
+                  {form.formState.errors.url && (
+                    <p className="text-xs text-destructive">{form.formState.errors.url.message}</p>
                   )}
                 </div>
 
@@ -1262,6 +1398,296 @@ function AbaIA() {
 }
 
 // ---------------------------------------------------------------------------
+// Aba: Chaves de API (plano §4.3) — duas seções OPOSTAS:
+//   1. Chaves do CRM: o CRM GERA (glk_) pra sistemas externos nos acessarem.
+//   2. Provedores de IA: você COLA a chave de fora pro CRM consumir IA.
+// ---------------------------------------------------------------------------
+
+function SecaoChavesCrm() {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const accountId = user?.account_id ?? '';
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [nomeChave, setNomeChave] = useState('');
+  const [criada, setCriada] = useState<CreatedApiKey | null>(null);
+  const [revogando, setRevogando] = useState<ApiKey | null>(null);
+
+  const { data: chaves = [], isLoading } = useQuery({
+    queryKey: ['api-keys', accountId],
+    queryFn: () => apiKeysBackendService.listApiKeys(accountId),
+    enabled: Boolean(accountId),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      apiKeysBackendService.createApiKey(accountId, { name: nomeChave.trim() }),
+    onSuccess: (data) => {
+      setCriada(data);
+      setNomeChave('');
+      queryClient.invalidateQueries({ queryKey: ['api-keys', accountId] });
+    },
+    onError: (err: unknown) => {
+      toast.error(
+        'Erro ao gerar chave: ' + ((err as { message?: string })?.message ?? 'desconhecido')
+      );
+    },
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: (id: string) => apiKeysBackendService.revokeApiKey(id, accountId),
+    onSuccess: () => {
+      toast.success('Chave revogada');
+      setRevogando(null);
+      queryClient.invalidateQueries({ queryKey: ['api-keys', accountId] });
+    },
+    onError: (err: unknown) => {
+      toast.error(
+        'Erro ao revogar: ' + ((err as { message?: string })?.message ?? 'desconhecido')
+      );
+    },
+  });
+
+  async function copiarChave() {
+    if (!criada) return;
+    try {
+      await navigator.clipboard.writeText(criada.plaintextKey);
+      toast.success('Chave copiada para a área de transferência');
+    } catch {
+      toast.error('Não foi possível copiar — copie manualmente');
+    }
+  }
+
+  const ativas = chaves.filter((c) => !c.revokedAt);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Chaves do CRM</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Gere uma chave para que sistemas externos (n8n, ERP) acessem os
+          endpoints do CRM. Formato: <code className="text-xs">glk_…</code>
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            className="gap-2"
+            onClick={() => {
+              setCriada(null);
+              setNomeChave('');
+              setDialogOpen(true);
+            }}
+          >
+            <Plus className="w-4 h-4" />
+            Gerar chave
+          </Button>
+        </div>
+
+        {isLoading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : ativas.length === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-6">
+            Nenhuma chave ativa. Gere uma para conectar o n8n/ERP.
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Nome</TableHead>
+                <TableHead>Prefixo</TableHead>
+                <TableHead>Criada em</TableHead>
+                <TableHead>Último uso</TableHead>
+                <TableHead className="text-right">Ações</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {ativas.map((k) => (
+                <TableRow key={k.id}>
+                  <TableCell className="font-medium">{k.name}</TableCell>
+                  <TableCell>
+                    <code className="text-xs">{k.prefix}…</code>
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {safeFormatDateBR(k.createdAt, 'dd/MM/yyyy')}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {k.lastUsedAt
+                      ? safeFormatDateBR(k.lastUsedAt, 'dd/MM/yyyy HH:mm')
+                      : 'Nunca'}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setRevogando(k)}
+                    >
+                      Revogar
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+
+        {/* Dialog gerar chave */}
+        <Dialog open={dialogOpen} onOpenChange={(open) => !open && setDialogOpen(false)}>
+          <DialogContent className="max-w-md">
+            {criada ? (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Chave gerada</DialogTitle>
+                  <DialogDescription>
+                    Guarde agora — <strong>não será exibida novamente</strong>.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="rounded-lg border-2 border-amber-500/40 bg-amber-500/10 p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-xs font-mono bg-background/60 px-3 py-2 rounded border break-all select-all">
+                      {criada.plaintextKey}
+                    </code>
+                    <Button size="icon" variant="outline" onClick={copiarChave} title="Copiar chave">
+                      <Copy className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button onClick={() => setDialogOpen(false)}>Fechar</Button>
+                </DialogFooter>
+              </>
+            ) : (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Gerar chave de API</DialogTitle>
+                  <DialogDescription>
+                    Dê um nome que identifique quem vai usar (ex.: n8n produção).
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-2 py-2">
+                  <Label htmlFor="ak-name">Nome</Label>
+                  <Input
+                    id="ak-name"
+                    placeholder="Ex: n8n produção"
+                    value={nomeChave}
+                    onChange={(e) => setNomeChave(e.target.value)}
+                  />
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setDialogOpen(false)}>
+                    Cancelar
+                  </Button>
+                  <Button
+                    onClick={() => createMutation.mutate()}
+                    disabled={nomeChave.trim().length < 2 || createMutation.isPending}
+                  >
+                    {createMutation.isPending && (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    )}
+                    Gerar
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Confirmar revogação */}
+        <AlertDialog open={!!revogando} onOpenChange={(open) => !open && setRevogando(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Revogar chave?</AlertDialogTitle>
+              <AlertDialogDescription>
+                A chave <strong>{revogando?.name}</strong> deixará de funcionar
+                imediatamente. Sistemas que a usam perderão o acesso.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={revokeMutation.isPending}>Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => revogando && revokeMutation.mutate(revogando.id)}
+                disabled={revokeMutation.isPending}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {revokeMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Revogar
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AbaChavesApi() {
+  return (
+    <div className="space-y-6">
+      <SecaoChavesCrm />
+      <div>
+        <div className="mb-3">
+          <h3 className="text-base font-semibold">Provedores de IA</h3>
+          <p className="text-sm text-muted-foreground">
+            Cole a chave do provedor (OpenAI/Anthropic) para o CRM consumir IA.
+          </p>
+        </div>
+        <AbaIA />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Aba: Automações (plano §4.3) — regras de saída + webhooks de entrada
+// ---------------------------------------------------------------------------
+
+function GuiaN8n() {
+  const [aberto, setAberto] = useState(false);
+  return (
+    <Card>
+      <CardHeader
+        className="cursor-pointer py-3"
+        onClick={() => setAberto((v) => !v)}
+      >
+        <CardTitle className="text-sm flex items-center justify-between">
+          Como conectar o n8n
+          <span className="text-muted-foreground text-xs">
+            {aberto ? 'ocultar' : 'ver os 3 passos'}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      {aberto && (
+        <CardContent className="text-sm text-muted-foreground space-y-1.5 pt-0">
+          <p>1. Gere a chave em <strong>Chaves de API</strong> → use como <code className="text-xs">GLEPS_API_KEY</code> no n8n.</p>
+          <p>2. Crie a regra <strong>Mensagem recebida (só clientes)</strong> apontando pra URL do n8n → copie o <strong>secret</strong> exibido → <code className="text-xs">GLEPS_WEBHOOK_SECRET</code>.</p>
+          <p>3. Clique <strong>Testar</strong> na regra e confira o 200 no n8n.</p>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+function AbaAutomacoes() {
+  return (
+    <div className="space-y-6">
+      <GuiaN8n />
+      <AbaWebhooksSaida />
+      <div>
+        <div className="mb-3">
+          <h3 className="text-base font-semibold">Webhooks de entrada</h3>
+          <p className="text-sm text-muted-foreground">
+            Endpoints que recebem chamadas de sistemas externos para dentro do CRM.
+          </p>
+        </div>
+        <AbaWebhooksEntrada />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Página raiz
 // ---------------------------------------------------------------------------
 
@@ -1281,19 +1707,17 @@ export default function AdminIntegracoesPage() {
         </div>
       </div>
 
-      <Tabs defaultValue="saida">
-        <TabsList className="w-full sm:grid sm:grid-cols-4">
-          <TabsTrigger value="saida" className="gap-2">
+      {/* PLANO-INTEGRACOES §2: 3 abas pelo modelo mental do operador.
+          A antiga aba "IA" migrou para dentro de "Chaves de API". */}
+      <Tabs defaultValue="automacoes">
+        <TabsList className="w-full sm:grid sm:grid-cols-3">
+          <TabsTrigger value="automacoes" className="gap-2">
             <Webhook className="w-4 h-4" />
-            Webhooks de saída
+            Automações
           </TabsTrigger>
-          <TabsTrigger value="entrada" className="gap-2">
-            <Plug className="w-4 h-4" />
-            Webhooks de entrada
-          </TabsTrigger>
-          <TabsTrigger value="ia" className="gap-2">
+          <TabsTrigger value="chaves" className="gap-2">
             <Sparkles className="w-4 h-4" />
-            IA
+            Chaves de API
           </TabsTrigger>
           <TabsTrigger value="logs" className="gap-2">
             <ScrollText className="w-4 h-4" />
@@ -1301,16 +1725,12 @@ export default function AdminIntegracoesPage() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="saida" className="mt-4">
-          <AbaWebhooksSaida />
+        <TabsContent value="automacoes" className="mt-4">
+          <AbaAutomacoes />
         </TabsContent>
 
-        <TabsContent value="entrada" className="mt-4">
-          <AbaWebhooksEntrada />
-        </TabsContent>
-
-        <TabsContent value="ia" className="mt-4">
-          <AbaIA />
+        <TabsContent value="chaves" className="mt-4">
+          <AbaChavesApi />
         </TabsContent>
 
         <TabsContent value="logs" className="mt-4">
