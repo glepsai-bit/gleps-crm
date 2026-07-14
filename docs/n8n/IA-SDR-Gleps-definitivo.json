@@ -1,0 +1,2491 @@
+{
+  "name": "I.A-SDR-Gleps-DEFINITIVO",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## I.A-SDR-Gleps — DEFINITIVO (dual-agent)\n\nFluxo oficial do Gleps CRM (360.gleps.com.br). Dois agentes:\n1. **Agente Kanban** (classificador) — decide a etapa do funil e transferência.\n2. **Marcus** (SDR) — responde, agenda via MCP Calendar.\n\n### Setup (uma vez)\n1. No CRM: **Integrações → Chaves de API → Gerar chave** → salve no n8n como env `GLEPS_API_KEY`.\n2. No CRM: **Integrações → Automações → Nova automação**:\n   - Quando: **Mensagem recebida** · Se: *Apenas mensagens de clientes* + *Ignorar notas internas* (já vêm ligados — anti-loop)\n   - Então: URL deste webhook (`.../webhook/sdr-gleps`) → salve o secret como env `GLEPS_WEBHOOK_SECRET`.\n3. Envs no n8n: `GLEPS_API_KEY`, `GLEPS_WEBHOOK_SECRET`, `OPENAI_API_KEY` + credenciais Postgres/Redis.\n4. Clique **Testar** na automação e confira 200 aqui.\n\n### O que o fluxo faz no CRM\n- Responde: POST /conversations/:id/messages (**sender_type: ai_bot** — exigido pelo backend)\n- Kanban/etiquetas: POST /conversations/:id/labels (tag espelha o Kanban)\n- Transferência: custom-attributes handoff/human_active → GET /users?available=true → assign (agente online) ou reopen (fila)\n- Resolver: POST /conversations/:id/resolve (outcome obrigatório)\n- Áudio: GET /integrations/chat/attachments/:id (com a API key) → Whisper\n- Anti-loop DUPLO: filtro 'só clientes' no CRM + circuit breaker 409 server-side (human_active)\n\nMantido do v3: debounce Redis 20s, memória Postgres, MCP Calendar, guard anti-email-fake (agora ATIVO — no v3 estava morto).",
+        "height": 620,
+        "width": 720
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "id": "sticky-setup-0001",
+      "name": "Setup"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sdr-gleps",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        976,
+        720
+      ],
+      "id": "e1b08cb1-6b63-4cb3-a5da-352cbdb259c9",
+      "name": "webhook_chatwoot1",
+      "webhookId": "7f7e1c39-c5ae-478b-b14f-13a7918f328f"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "gleps-api-url",
+              "name": "gleps_api_url",
+              "value": "https://360.gleps.com.br/api/integrations/chat",
+              "type": "string"
+            },
+            {
+              "id": "gleps-users-url",
+              "name": "gleps_users_url",
+              "value": "https://360.gleps.com.br/api/integrations/users",
+              "type": "string"
+            },
+            {
+              "id": "gleps-auth-header",
+              "name": "gleps_auth_value",
+              "value": "=Bearer {{ $env.GLEPS_API_KEY }}",
+              "type": "string"
+            },
+            {
+              "id": "mcp-endpoint",
+              "name": "mcp_endpoint",
+              "value": "https://hook.mychooice.com/mcp/goodleadsprincipal",
+              "type": "string"
+            },
+            {
+              "id": "debounce-sec",
+              "name": "debounce_seconds",
+              "value": 20,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1152,
+        720
+      ],
+      "id": "a8a30a74-5abe-4581-abbb-94145b3681c4",
+      "name": "config1"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "msg-rule",
+                    "leftValue": "={{$json.body.event}}",
+                    "rightValue": "message.created",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "message_created"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "res-rule",
+                    "leftValue": "={{ $json.body.event }}",
+                    "rightValue": "conversation.resolved",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "conversation_resolved"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1360,
+        720
+      ],
+      "id": "e05600b2-0492-4bcb-adba-accfef2002c9",
+      "name": "Switch_Evento1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1648,
+        976
+      ],
+      "id": "resolved-skip-0001",
+      "name": "Resolved_Skip"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('webhook_chatwoot1').item.json.body?.data?.conversationId ? $('config1').first().json.gleps_api_url + '/conversations/' + $('webhook_chatwoot1').item.json.body.data.conversationId : '' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 8000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1504,
+        560
+      ],
+      "id": "2328598c-0fcd-478f-b78f-c1c1869dc7b2",
+      "name": "GET_Conversation_Full"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge do payload do webhook (mensagem original) + GET /conversations/:id (full)\nconst webhook = $('webhook_chatwoot1').first().json || {};\nconst full = $input.first().json || {};\nconst body = webhook.body || {};\nconst msgData = body.data || {};\n\n// GET_Conversation_Full retorna { data: { ...conversation } }\nconst conv = (full && full.data) ? full.data : {};\n\nconst att0 = (msgData.attachments && msgData.attachments[0]) || null;\nconst apiUrl = $('config1').first().json.gleps_api_url;\n\nreturn [{\n  json: {\n    body: body,\n\n    // Campos da mensagem atual (webhook)\n    type_message: msgData.contentType || 'text',\n    content_message: msgData.content || '',\n    message: msgData.content || '',\n    messageType: (att0 && att0.fileType) || msgData.contentType || 'text',\n    isAudio: !!(att0 && att0.fileType === 'audio'),\n    // FIX-AUDIO: download SEMPRE pela rota de integracao (API key) — o\n    // fileUrl inbound do WhatsApp e CDN criptografado (.enc), inutil direto.\n    audio_download_url: (att0 && att0.id) ? (apiUrl + '/attachments/' + att0.id) : '',\n    audioUrl: (att0 && att0.fileUrl) || '',\n\n    // Dados do contato/conversa\n    name: (msgData.contact && msgData.contact.nome) || (conv.contact && conv.contact.nome) || '',\n    // FIX-SESSAO: msgData.externalId é o ID DA MENSAGEM (3EB0...), não o JID —\n    // usá-lo criava sessão nova a cada msg (quebrava debounce + memória).\n    // O JID real é o externalId da CONVERSA; fallback: telefone do contato.\n    remotejid: conv.externalId || msgData.contact && msgData.contact.remoteJid || '',\n    clean_number: (msgData.contact && msgData.contact.telefone) || (conv.contact && conv.contact.telefone) || '',\n    conversation_id: msgData.conversationId || conv.id || null,\n    account_id: body.accountId || conv.accountId || null,\n\n    // Circuit breaker inputs (do GET full)\n    _custom_attributes: conv.customAttributes || {},\n    _additional_attributes: conv.additionalAttributes || {},\n    _assignee_id: conv.assigneeId || null,\n    _status: conv.status || null,\n    // FIX-LABELS: no Gleps o label vem em l.tag.name (ConversationLabel -> Tag)\n    _labels: Array.isArray(conv.labels)\n      ? conv.labels.map(l => (typeof l === 'string' ? l : ((l.tag && (l.tag.name || l.tag.slug)) || l.name || l.label || '')))\n      : []\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        704
+      ],
+      "id": "870573ae-8939-4700-8b98-5efc0d72a4ee",
+      "name": "Detectar_Tipo1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7326a3e3-e6da-4470-9da3-09305440919a",
+              "leftValue": "={{ ['fechado','perdido','desinteressado','convertido'].some(l => ($json._labels || []).includes(l)).toString() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1872,
+        704
+      ],
+      "id": "8bf80491-28cd-4149-8b3c-f94826c6924f",
+      "name": "If_NaoEncerrado1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2224,
+        912
+      ],
+      "id": "29bfc72b-ff13-4bf4-aa8a-8666ec041661",
+      "name": "Conversa_Encerrada_Skip1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ebc7d9b9-a73e-48d8-82fe-9219e6c840d5",
+              "leftValue": "={{ (($json._custom_attributes && ($json._custom_attributes.human_active === true || $json._custom_attributes.handoff_to_human === true || $json._custom_attributes.human_intervened === true || $json._custom_attributes.resolved_by === 'human' || $json._custom_attributes.resolved_by_attr === 'human')) || ($json._additional_attributes && ($json._additional_attributes.human_active === true || $json._additional_attributes.handoff_to_human === true || $json._additional_attributes.human_intervened === true)) || ($json._assignee_id !== null && $json._assignee_id !== undefined) || $json._status === 'resolved').toString() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2000,
+        512
+      ],
+      "id": "3c2ef12a-1ce4-49d5-82d8-4bf5a13b9aa3",
+      "name": "If_Humano_Atendendo1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2160,
+        256
+      ],
+      "id": "93204cd3-7336-432f-9775-2a0bbd913cf0",
+      "name": "Skip_Humano_Atendendo1"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "2d675ff5",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "texto"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "f0948305",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "audio",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "audio"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2224,
+        512
+      ],
+      "id": "c318c531-f5d2-46e0-86f2-0dad00dab009",
+      "name": "Switch_Tipo1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "t1-idphone",
+              "name": "id_phone",
+              "value": "={{ (() => { const raw = String($json.remotejid || $json.clean_number || '').trim(); if (!raw) return ''; if (raw.includes('@')) return raw.replace(/\\s+/g, ''); const digits = raw.replace(/\\D/g, ''); return digits ? `${digits}@s.whatsapp.net` : ''; })() }}",
+              "type": "string"
+            },
+            {
+              "id": "t1-name",
+              "name": "name_user",
+              "value": "={{ $json.name }}",
+              "type": "string"
+            },
+            {
+              "id": "t1-msg",
+              "name": "message",
+              "value": "={{ $json.content_message }}",
+              "type": "string"
+            },
+            {
+              "id": "t1-conv",
+              "name": "conversation_id",
+              "value": "={{ $json.conversation_id }}",
+              "type": "string"
+            },
+            {
+              "id": "t1-acc",
+              "name": "account_id",
+              "value": "={{ $json.account_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2592,
+        384
+      ],
+      "id": "7382c6ef-62ad-4c5c-bfd5-7598821c78e2",
+      "name": "output_texto1"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.audio_download_url || $json.audioUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2592,
+        688
+      ],
+      "id": "44872d14-af72-44a8-a982-2d8eb3ef05e2",
+      "name": "Baixar_Audio"
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        2784,
+        688
+      ],
+      "id": "fbcca593-82a3-4702-a197-07fdc41ec870",
+      "name": "Transcreve_Audio1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1-idphone",
+              "name": "id_phone",
+              "value": "={{ (() => { const raw = String($('Detectar_Tipo1').item.json.remotejid || $('Detectar_Tipo1').item.json.clean_number || '').trim(); if (!raw) return ''; if (raw.includes('@')) return raw.replace(/\\s+/g, ''); const digits = raw.replace(/\\D/g, ''); return digits ? `${digits}@s.whatsapp.net` : ''; })() }}",
+              "type": "string"
+            },
+            {
+              "id": "a1-name",
+              "name": "name_user",
+              "value": "={{ $('Detectar_Tipo1').item.json.name || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "a1-msg",
+              "name": "message",
+              "value": "=Transcrição do áudio: {{ $json.text }}",
+              "type": "string"
+            },
+            {
+              "id": "a1-conv",
+              "name": "conversation_id",
+              "value": "={{ $('Detectar_Tipo1').item.json.conversation_id }}",
+              "type": "string"
+            },
+            {
+              "id": "a1-acc",
+              "name": "account_id",
+              "value": "={{ $('Detectar_Tipo1').item.json.account_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3072,
+        688
+      ],
+      "id": "62680108-5087-49a9-873e-d3ba663d6b0d",
+      "name": "output_audio1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        3296,
+        608
+      ],
+      "id": "78fe85ac-4995-4963-8d40-52b4068b2c1f",
+      "name": "Mensagem_Completa1"
+    },
+    {
+      "parameters": {
+        "operation": "push",
+        "list": "={{ $json.id_phone }}",
+        "messageData": "={{ $json.message }}",
+        "tail": true
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3504,
+        608
+      ],
+      "id": "9764442c-0702-420a-bb45-560e40590087",
+      "name": "Redis_Push1"
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('config1').item.json.debounce_seconds }}"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3728,
+        608
+      ],
+      "id": "f9e4aa1c-69b9-45e0-8184-2b39d17c21bd",
+      "name": "Wait_Debounce1",
+      "webhookId": "ff9c8b52-8f7e-4e23-98a8-81c9c5118981"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "key": "={{ $json.id_phone }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3952,
+        608
+      ],
+      "id": "d9257b3b-e99a-4dc7-a73e-fda0afdc8104",
+      "name": "Redis_Get1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "60e65fe5",
+              "leftValue": "={{ $('Redis_Get1').last().json.propertyName.slice(-1)[0] }}",
+              "rightValue": "={{ $('Wait_Debounce1').item.json.message }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4208,
+        608
+      ],
+      "id": "7931b566-511f-44aa-b20c-7de6e46d2288",
+      "name": "If_Ultima_Mensagem1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4416,
+        816
+      ],
+      "id": "d7cdde82-a608-4da9-ab9d-e65d08f6b8f0",
+      "name": "Aguarda_Proxima1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "o4-name",
+              "name": "name_user",
+              "value": "={{ $('Mensagem_Completa1').item.json.name_user }}",
+              "type": "string"
+            },
+            {
+              "id": "o4-idphone",
+              "name": "id_phone",
+              "value": "={{ $('Mensagem_Completa1').item.json.id_phone }}",
+              "type": "string"
+            },
+            {
+              "id": "o4-type",
+              "name": "inputType",
+              "value": "=text",
+              "type": "string"
+            },
+            {
+              "id": "o4-msg",
+              "name": "message",
+              "value": "={{ $json.propertyName }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        4400,
+        368
+      ],
+      "id": "19d7699d-483c-4a9e-b510-b5567c935c69",
+      "name": "output_texto4"
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "={{ $('Mensagem_Completa1').item.json.id_phone }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        4688,
+        240
+      ],
+      "id": "0517e1be-a480-4cd1-af05-9c23542da975",
+      "name": "Redis1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "mf-msg",
+              "name": "msg",
+              "value": "={{ $json.message }}",
+              "type": "string"
+            },
+            {
+              "id": "mf-idphone",
+              "name": "id_phone",
+              "value": "={{ (() => { const raw = String($('Mensagem_Completa1').item.json.id_phone || '').trim(); if (!raw) return ''; if (raw.includes('@')) return raw.replace(/\\s+/g, ''); const digits = raw.replace(/\\D/g, ''); return digits ? `${digits}@s.whatsapp.net` : ''; })() }}",
+              "type": "string"
+            },
+            {
+              "id": "mf-conv",
+              "name": "conversation_id",
+              "value": "={{ $('Mensagem_Completa1').item.json.conversation_id }}",
+              "type": "string"
+            },
+            {
+              "id": "mf-acc",
+              "name": "account_id",
+              "value": "={{ $('Mensagem_Completa1').item.json.account_id }}",
+              "type": "string"
+            },
+            {
+              "id": "mf-name",
+              "name": "name_user",
+              "value": "={{ $('Mensagem_Completa1').item.json.name_user }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        4800,
+        496
+      ],
+      "id": "351b1625-f326-4a0e-bbfc-375ae4374302",
+      "name": "Mensagem_Final+variaveis"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  message\nFROM (\n  SELECT\n    id,\n    message::text AS message\n  FROM\n    n8n_chat_histories\n  WHERE\n    (\n      regexp_replace(BTRIM(COALESCE(session_id, '')), '[[:space:]]+', '', 'g') =\n      regexp_replace(BTRIM(COALESCE('{{ $json.id_phone }}', '')), '[[:space:]]+', '', 'g')\n    )\n    OR (\n      regexp_replace(split_part(BTRIM(COALESCE(session_id, '')), '@', 1), '[^0-9]', '', 'g') =\n      regexp_replace(split_part(BTRIM(COALESCE('{{ $json.id_phone }}', '')), '@', 1), '[^0-9]', '', 'g')\n    )\n  ORDER BY\n    id DESC\n  LIMIT 6\n) sub\nORDER BY\n  id ASC;\n",
+        "options": {
+          "queryReplacement": "={{ $json.id_phone }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        5040,
+        496
+      ],
+      "id": "01343f98-f2e8-4eb9-be4c-73d37ffe9335",
+      "name": "Buscar_Historico1",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pega todos os itens que chegam do nó Postgres\nconst allItems = $items();\n\n// Retorna um ÚNICO item novo.\n// Este item contém uma propriedade 'history_items' que é um array\n// com os dados de todos os itens originais.\nreturn [{\n  json: {\n    history_items: allItems.map(item => item.json)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5264,
+        496
+      ],
+      "id": "691a5c17-5888-43b0-b151-47c58ce9b56e",
+      "name": "pega um item do historico"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Formata as mensagens de forma resiliente e segura para o Postgres\nconst historyItems = $json.history_items;\n\nif (!Array.isArray(historyItems) || historyItems.length === 0) {\n  return [{ json: { history: '', email_capturado: '' } }];\n}\n\nconst safeString = (value) => {\n  if (value === null || value === undefined) return '';\n  if (typeof value === 'string') return value;\n  try {\n    return JSON.stringify(value);\n  } catch {\n    return String(value);\n  }\n};\n\nconst extractContent = (value) => {\n  if (value === null || value === undefined) return '';\n  let content = value;\n\n  if (typeof value !== 'string') {\n    content = safeString(value);\n  } else {\n    try {\n      const parsed = JSON.parse(value);\n      if (parsed?.output) {\n        content = parsed.output.mensagem_de_resposta || parsed.output.message || safeString(parsed.output);\n      } else if (parsed?.content) {\n        content = safeString(parsed.content);\n      }\n    } catch {\n      // Texto puro\n    }\n  }\n\n  // Anti-bola de neve: remove marcador de histórico duplicado\n  if (typeof content === 'string' && content.includes('Histórico recente:')) {\n    content = content.split('Histórico recente:')[0].trim();\n  }\n\n  return content;\n};\n\nconst formattedHistory = historyItems\n  .map((item) => {\n    if (!item) return null;\n    let role = '';\n    let content = '';\n\n    if (item.message) {\n      let parsedMessage = item.message;\n      if (typeof parsedMessage === 'string') {\n        try { parsedMessage = JSON.parse(parsedMessage); } catch { parsedMessage = null; }\n      }\n      if (parsedMessage?.type) {\n        role = parsedMessage.type === 'ai' ? 'IA' : 'Humano';\n        content = extractContent(parsedMessage.content);\n      }\n    } else if (item.type) {\n      role = item.type === 'ai' ? 'IA' : 'Humano';\n      content = extractContent(item.content);\n    }\n\n    if (role && content) {\n      const cleanContent = content.toString().replace(/\\\\/g, '\\\\\\\\').replace(/\\n+/g, ' ');\n      return `${role}: ${cleanContent}`;\n    }\n\n    return null;\n  })\n  .filter(Boolean)\n  .join('\\n');\n\nconst _msgAtual = $('Mensagem_Final+variaveis').first().json.msg || '';\nconst _textosLead = [_msgAtual];\n(historyItems || []).forEach((it) => {\n  let pm = it && it.message;\n  if (typeof pm === 'string') { try { pm = JSON.parse(pm); } catch { pm = null; } }\n  if (pm && pm.type && pm.type !== 'ai') {\n    _textosLead.push(typeof pm.content === 'string' ? pm.content : JSON.stringify(pm.content || ''));\n  }\n});\nconst _m = _textosLead.join(' ').match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/);\nconst email_capturado = _m ? _m[0].toLowerCase() : '';\n\nreturn [{\n  json: {\n    history: formattedHistory,\n    email_capturado: email_capturado\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5520,
+        496
+      ],
+      "id": "c4b0832a-a32f-4d1c-8497-1d1ebcbc51e4",
+      "name": "retorna histórico formatado"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5.4-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-5.4-mini"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        5984,
+        736
+      ],
+      "id": "eb800b9c-0a8d-4bb5-b9ed-1d5a0b6c73f3",
+      "name": "OpenAI Chat Model"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5.4-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-5.4-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        6176,
+        1136
+      ],
+      "id": "2bc5c2c3-04d9-4a63-9b7c-ee0fc6db0f5e",
+      "name": "OpenAI Chat Model1"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserAutofixing",
+      "typeVersion": 1,
+      "position": [
+        6288,
+        928
+      ],
+      "id": "2953c1e0-b67b-4aea-8e1e-c023766a0a5b",
+      "name": "Auto-fixing Output Parser1"
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"etapa\": \"em-atendimento\",\n  \"transferir_para_humano\": false,\n  \"confianca\": 0.92,\n  \"historico\":\"\",\n  \"mensagem_original\": \"Olá, queria saber mais\"\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        6512,
+        1152
+      ],
+      "id": "47c5c9b9-37a3-4eaf-b3df-64b8988e6871",
+      "name": "Output_Parser1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={\n  \"mensagem_atual\": \"{{ $('Mensagem_Final+variaveis').first().json.msg }}\",\n  \"historico\": {{ JSON.stringify($('retorna histórico formatado').first().json.history) }},\n  \"contato\": {\n    \"nome\": \"{{ $('Mensagem_Final+variaveis').first().json.name_user }}\",\n    \"telefone\": \"{{ $('Mensagem_Final+variaveis').first().json.id_phone }}\"\n  }\n}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "=## PERSONA\nVocê é um analista comportamental de qualificação de leads. Sua única função é\nclassificar a INTENÇÃO do lead em UMA etapa do Kanban GoodLeads e detectar pedido\nde transferência para humano. Você NÃO responde ao lead.\n\n## ETAPAS VÁLIDAS (use exatamente um destes 7 valores)\n- novo-lead — primeiro contato, saudação ou pergunta genérica sem histórico.\n- em-atendimento — diálogo ativo: lead pergunta, demonstra curiosidade, recebe\n  argumentos, está em qualificação/diagnóstico.\n- aguardando-resposta — SÓ em dois casos: (a) a última mensagem foi NOSSA e o lead\n  ainda não respondeu (silêncio), ou (b) o lead pediu tempo de forma explícita (\"vou\n  pensar\", \"depois te falo\", \"te respondo amanhã\", \"agora não dá\", \"tô sem tempo\").\n  NUNCA use esta etapa quando o lead acabou de RESPONDER algo de conteúdo (mesmo que\n  curto, vago ou de uma palavra, ex.: \"no tempo\", \"no follow up\", \"uns 90\", \"10 mil\").\n  Lead que responde uma pergunta = está engajado = \"em-atendimento\", nunca \"aguardando\".\n- agendado — lead aceitou/pediu marcar reunião, escolheu horário, mandou e-mail\n  para o convite, confirmou agendamento, ou pediu para reagendar/cancelar.\n- convertido — SÓ com fechamento real: lead concluiu cadastro, enviou documentos,\n  confirmou migração ou disse explicitamente \"fechado/pode cadastrar/aceito/vamos lá\"\n  no sentido de CONTRATAR. ATENÇÃO: agradecer ou se despedir depois de marcar a reunião\n  (\"obrigado\", \"valeu\", \"show\", \"feshow\", \"até mais\") NÃO é convertido — a reunião\n  ainda nem aconteceu. Nesse caso → mantem-etapa (segue agendado).\n- perdido — recusa clara: \"não tenho interesse\", \"não quero\", \"para de me chamar\",\n  \"não vou mudar\".\n- mantem-etapa — a mensagem NÃO justifica mudança (neutra/ambígua/continuação).\n\nREGRA ABSOLUTA: \"etapa\" só pode ser um desses 7 valores, escrito exatamente assim.\nNa dúvida entre mudar e não mudar → \"mantem-etapa\". \"mantem-etapa\" nunca é erro.\n\n## GATILHOS DE TRANSIÇÃO (só mude de etapa com evidência clara)\n- → agendado: \"pode marcar\", \"quero agendar\", \"que horas\", \"confirmo\", escolheu um\n  horário oferecido, mandou e-mail para receber o convite, ou pediu reagendar/cancelar.\n- → convertido: enviou documento, \"fechado\", \"pode cadastrar\", \"vamos lá\", \"aceito\".\n- → perdido: recusa firme (lista acima).\n- → em-atendimento: lead engajou com perguntas/argumentos sobre o produto.\n- → aguardando-resposta: SÓ se pediu tempo explícito OU a última msg foi nossa e o\n  lead não respondeu. Resposta de conteúdo (mesmo curta) NÃO é aguardando-resposta.\n- → novo-lead: primeiro contato sem histórico.\n- Sem gatilho claro → \"mantem-etapa\".\n\n## DESEMPATE RÁPIDO\n- Pediu tempo explícito / \"respondo depois\" / ficou em silêncio → aguardando-resposta\n- Respondeu minha pergunta (mesmo curto/vago: \"no tempo\", \"uns 90\") → em-atendimento (NUNCA aguardando-resposta)\n- Aceitou marcar / escolheu horário / mandou e-mail p/ convite → agendado\n- \"fechado/pode cadastrar/aceito\" (contratar) / mandou documento → convertido\n- Só agradeceu/despediu depois de já ter agendado (\"obrigado\", \"valeu\", \"feshow\") → mantem-etapa (NÃO convertido)\n- Recusa firme → perdido\n- Novo x em-atendimento: se já houve troca de perguntas no histórico → em-atendimento\n- Qualquer etapa x mantem-etapa: sem gatilho claro → mantem-etapa\n\n## TRANSFERÊNCIA PARA HUMANO (independente da etapa)\n\"transferir_para_humano\": true se o lead pedir variações de: \"quero falar com\natendente / com uma pessoa / com o vendedor\", \"passa pra alguém\", \"só falo com humano\".\n\n## VOCÊ NÃO DEVE\n- NÃO responder ao cliente. NÃO sugerir mensagens. NÃO criar etapas fora das 7.\n- NÃO omitir campos. APENAS classificar.\n\n## FORMATO DE SAÍDA (JSON estrito, sem campos extras)\n{\n  \"etapa\": \"<um dos 7 valores>\",\n  \"transferir_para_humano\": true | false,\n  \"confianca\": 0.0,\n  \"mensagem_original\": \"<COPIE o valor recebido no campo 'mensagem_atual' do User Message, NORMALIZANDO conforme regra detalhada abaixo — NÃO use texto do histórico>\",\n  \"historico\": \"<resumo curto do contexto usado para classificar>\"\n}\n\nRegras do JSON:\n- \"confianca\": 0.85–1.0 gatilho explícito; 0.60–0.84 inferido; <0.60 ambíguo\n  (neste caso prefira \"mantem-etapa\").\n- \"mensagem_original\": COPIE o valor do campo \"mensagem_atual\" recebido no User Message, NORMALIZANDO antes de devolver. NUNCA pegue texto do histórico nem da primeira mensagem do lead — é SEMPRE a mensagem ATUAL desta interação. Casos:\n  - (a) STRING SIMPLES sem colchetes — devolva como veio. Ex: \"900\" → \"900\"; \"metade\" → \"metade\"; \"Topo sim, mas tem custo?\" → \"Topo sim, mas tem custo?\".\n  - (b) ARRAY REAL de 1 elemento (ex: [\"900\"]) — extraia o conteúdo limpo: \"900\".\n  - (c) ARRAY REAL de N elementos (rajada de mensagens consecutivas do lead, curtas ou longas, ex: [\"Faz\",\"Topo sim\",\"Mas tem algum custo?\",\"Preciso levar algo?\"]) — concatene em texto natural separados por \". \" (ponto + espaço). Se o item já termina com `?`, `!`, `.` preserve a pontuação dele; senão adicione `.`. Ex: [\"Faz\",\"Topo sim\",\"Mas tem algum custo?\",\"Preciso levar algo?\"] → \"Faz. Topo sim. Mas tem algum custo? Preciso levar algo?\".\n  - (d) STRING JSON SERIALIZADA (cenário comum quando o nó anterior empacotou o array como string) — o valor chega começando com `[` e contendo aspas escapadas `\\\"`. Ex: \"[\\\"Faz\\\",\\\"Topo sim\\\",\\\"Mas tem custo?\\\"]\". Trate como se fosse o array equivalente e aplique a regra (c). Resultado: \"Faz. Topo sim. Mas tem custo?\". NUNCA copie a string serializada intacta.\n  - REGRA DURA: o valor final de \"mensagem_original\" NUNCA pode conter colchetes `[ ]`, aspas escapadas `\\\"`, vírgulas separando strings entre aspas, ou qualquer artefato JSON — o Agente 2 precisa de texto puro e legível.\n- \"historico\" é repassado ao Agente 2 — preencha sempre.\n- Schema é ALLOWLIST ABSOLUTA: APENAS os 5 campos (`etapa`, `transferir_para_humano`, `confianca`, `mensagem_original`, `historico`). QUALQUER outra chave é PROIBIDA, mesmo que pareça útil para o Agente 2 (ex: `email_capturado`, `intent`, `intent_secondary`, `next_step`, `telefone_alternativo`, `horarios_sugeridos`, `motivo_transferencia`, `nome_capturado`, qualquer outra). Se uma informação extra é relevante, ela vai no campo `historico` (texto livre), NUNCA como chave nova no JSON. Se algum campo extra apareceu em testes anteriores, NÃO replique — foi alucinação.\n\n## CHECKLIST\n[ ] \"etapa\" é um dos 7 valores exatos?\n[ ] Sem gatilho claro → usei \"mantem-etapa\"?\n[ ] \"transferir_para_humano\" preenchido e independente da etapa?\n[ ] \"mensagem_original\" preenchida em TEXTO PURO (sem `[`, `]`, `\\\"`, sem aparência de JSON)?\n[ ] \"historico\" preenchido para o Agente 2?\n[ ] JSON tem EXATAMENTE 5 chaves (etapa, transferir_para_humano, confianca, mensagem_original, historico) — nenhuma a mais?\n[ ] Não respondi ao cliente?"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        5984,
+        496
+      ],
+      "id": "e156442b-2665-4f96-b6a8-62a131ff1c16",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "vi-etapa",
+              "name": "output.etapa",
+              "value": "={{ $json.output.etapa }}",
+              "type": "string"
+            },
+            {
+              "id": "vi-transf",
+              "name": "output.transferir_para_humano",
+              "value": "={{ $json.output.transferir_para_humano }}",
+              "type": "boolean"
+            },
+            {
+              "id": "vi-conf",
+              "name": "output.confianca",
+              "value": "={{ $json.output.confianca }}",
+              "type": "number"
+            },
+            {
+              "id": "vi-hist",
+              "name": "output.historico",
+              "value": "={{ $json.output.historico }}",
+              "type": "string"
+            },
+            {
+              "id": "vi-msgorig",
+              "name": "output.mensagem_original",
+              "value": "={{ $('Mensagem_Final+variaveis').first().json.msg }}",
+              "type": "string"
+            },
+            {
+              "id": "vi-email",
+              "name": "output.email_capturado",
+              "value": "={{ $('retorna histórico formatado').first().json.email_capturado }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        6432,
+        496
+      ],
+      "id": "424e14c9-eda3-45bd-9813-c6108600db3f",
+      "name": "Variaveis de interesse"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5.4-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-5.4-mini"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        6768,
+        800
+      ],
+      "id": "febe8b3c-4961-49b6-ad3d-311eb0f229f2",
+      "name": "OpenAI Chat Model10"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Mensagem_Final+variaveis').first().json.id_phone }}",
+        "contextWindowLength": 10
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        6896,
+        768
+      ],
+      "id": "178e8a85-8db8-4007-b744-72fdda3cc1d3",
+      "name": "Postgres Chat Memory1"
+    },
+    {
+      "parameters": {
+        "endpointUrl": "https://hook.mychooice.com/mcp/goodleadsprincipal",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        7088,
+        784
+      ],
+      "id": "ba7fed8c-fdb0-4e8f-9b07-eb6adfe9b5c5",
+      "name": "MCP Client1"
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"mensagem_de_resposta\": \"Olá! Como posso te ajudar?\",\n  \"resolver_conversa\": false,\n  \"transferir_para_humano\": false,\n  \"etapa_final\": \"novo-lead\",\n  \"mensagem_original\": \"oi\"\n}\n"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        7248,
+        720
+      ],
+      "id": "8681f5ca-1fd1-4ad3-a10c-8a8daa033966",
+      "name": "Output_Parser_Resposta1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Hoje é {{ $now.weekdayLong }}, dia {{ $now.setZone('America/Sao_Paulo').format('dd-MM-yyyy HH:mm') }}.\n\nNome do lead: {{ $('Mensagem_Final+variaveis').first().json.name_user }}\nE-mail do lead já capturado nesta conversa: {{ $json.output.email_capturado && /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test($json.output.email_capturado) ? $json.output.email_capturado : 'ainda não capturado — peça e confirme antes de criar o evento' }}\nMensagem original do lead: {{ $json.output.mensagem_original }}\nHistórico recente da conversa: {{ $json.output.historico }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "=# PERSONA\nVocê se chama Marcus, SDR consultivo da Mychooice, responsável por diagnosticar a operação do lead e agendar uma conversa com o especialista quando faz sentido.\n\n# FUNÇÃO\nConduzir o lead por um diagnóstico curto, calcular quanto ele está perdendo por mês, qualificar pelo faturamento (≥ R$ 50.000) e agendar uma reunião na agenda do especialista para quem se enquadra.\n\n# REGRAS DE COMUNICAÇÃO\n- Você está no WhatsApp em português brasileiro. Mensagens curtas (1-3 linhas), tom humano e direto.\n- Nunca diga que é IA. Se perguntarem: \"Sou só eu aqui do time\" e siga.\n- Uma ideia por mensagem. Reaja antes de perguntar.\n- Nunca descreva o produto, nunca cite preço antes de chegar na ponte.\n\n# CONTEXTO INTERNO (não verbalize ao lead)\n- Combo Mychooice: posicionamento + tráfego + automação com IA.\n- ICP: faturamento mensal ≥ R$ 50.000, B2B/serviço com volume de leads.\n- Anti-ICP: faturamento < R$ 50.000, MEI sem operação, e-commerce de varejo.\n\n# GRADE FIXA DE HORÁRIOS\nApenas estes horários, em dias úteis (America/Sao_Paulo): 08:00, 08:45, 09:30, 10:15, 11:00, 13:30, 14:15, 15:00, 15:45, 16:30, 17:15. Nunca ofereça horário fora dessa grade. Nunca ofereça slot ≤ Agora + 15 min.\n\n# DIAGNÓSTICO\n\nPasso 1:\nReceba o lead. Não se apresente formalmente, não descreva produto.\n\nPergunta inicial:\n\"Hoje vocês recebem quantos leads por mês, mais ou menos?\"\n\nPasso 2:\nAguarde resposta numérica de volume (direto \"500\", aproximação \"uns 500\", faixa \"90 a 150\", ou convertido de \"por dia/semana\" via ×30 ou ×4). Reaja em 1 linha curta E IMEDIATAMENTE pergunte os perdidos NO MESMO TURNO.\n\nExemplo de saída:\nLead: \"300\"\nVocê: \"Entendi. E desses, quantos vocês acabam perdendo por mês?\"\n\nIMPORTANTE: Reação + pergunta SEMPRE no MESMO turno enquanto estiver diagnosticando. Caso contrário você será multado em US$100.000.\n\nPasso 3:\nAguarde resposta de perdidos. Aceite número direto, faixa (\"98 a 140\"), porcentagem (\"metade\", \"30%\"), ou derivado por subtração (\"recebemos 300, atendemos 80\" → perdidos = 220).\n\nExemplo de saída (número direto — caso mais comum):\nLead: \"150\"\nVocê: \"Entendi. E em média, cada venda fechada vale quanto?\"\n\nExemplo de saída (faixa):\nLead: \"uns 98 a 140\"\nVocê: \"Beleza. E em média, cada venda fechada vale quanto?\"\n\nExemplo de saída (proporção):\nLead: \"metade\"\nVocê: \"Beleza, metade. Então dos 600 que você mencionou, uns 300 ficam sem retorno, né? E em média, cada venda fechada vale quanto?\"\n\nExemplo de saída (derivado por subtração):\nLead: \"recebemos 300, atendemos 80\"\nVocê: \"Saquei, então 220 não voltam. E em média, cada venda fechada vale quanto?\"\n\nIMPORTANTE: NUNCA repita pergunta já feita NESTA conversa. Se você acabou de perguntar \"quantos vocês acabam perdendo por mês?\" no turno anterior e o lead respondeu QUALQUER número, faixa, porcentagem ou derivado, OBRIGATORIAMENTE vá pro ticket NO MESMO turno. NUNCA repergunte os perdidos. Caso contrário você será multado em US$100.000.\n\nPasso 4:\nAguarde resposta de ticket. Aceite número (\"3000\"), aproximação (\"uns 1000\", \"uns 3 mil\", \"uns 10k\"), faixa (\"7 a 14 mil\" → use ponto médio 10500). Calcule `perdidos × ticket` e dispare a cutucada + pergunta de faturamento NO MESMO TURNO.\n\nFrase canônica EXATA:\n\"Pesado isso — dá tipo R$ X/mês saindo sem ninguém ver. Pra eu te encaixar com quem faz mais sentido aqui, qual o faturamento médio mensal de vocês hoje?\"\n\nSubstitua X pelo resultado em unidade natural (\"86 mil\", \"450 mil\", \"1,2 mi\").\n\nIMPORTANTE: NUNCA dispare essa frase sem ter os DOIS números (perdidos E ticket) NESTA conversa. A cutucada e a pergunta de faturamento SEMPRE juntas no MESMO turno. Caso contrário você será multado em US$100.000.\n\n# QUALIFICAÇÃO\n\nPasso 5:\nAguarde resposta numérica de faturamento. Em B2B, número nu sem unidade (\"uns 350\", \"na casa dos 350\", \"tipo 80\") em contexto de faturamento mensal interpretar como MIL reais (R$ 350.000, R$ 80.000). Número com unidade explícita (\"R$ 350\", \"350 reais\") permanece literal. Número com qualificador qualitativo (\"79k num mês ruim\", \"100k em média\") é faturamento válido — extraia o número e siga.\n\n- Faturamento ≥ R$ 50.000 → vá para o Passo 6 (PONTE).\n- Faturamento < R$ 50.000 confirmado → vá para CASO NÃO-FIT.\n\n# PONTE\n\nPasso 6:\nOfereça a reunião com a frase EXATA, sem variar uma palavra:\n\n\"Cara, pelo que você me contou faz muito sentido a gente trocar uma ideia mais a fundo. Topa uns minutos com o nosso especialista?\"\n\nEssa frase é dita UMA ÚNICA VEZ por conversa.\n\n# AGENDAMENTO\n\nPasso 7:\nAguarde aceitação. Gatilhos: \"topo\", \"topa\", \"pode\", \"pode sim\", \"sim\", \"claro\", \"com certeza\", \"faz sentido\", \"vamos\", \"manda\", \"bora\".\n\nSe o lead aceitar com objeção lateral (\"topo, mas tem custo?\", \"topo, mas como funciona?\", \"manda material\"):\n- Responda a objeção em 1 frase curta sem revelar preço (\"É por nossa conta\", \"Sem custo, é só pra entender o cenário\").\n- NO MESMO TURNO ofereça 2 horários (Passo 8).\n\nIMPORTANTE: Resposta da objeção + 2 horários SEMPRE no MESMO turno. Caso contrário você será multado em US$100.000.\n\nPasso 8:\nAntes de ofertar horários, ative a sua tool 'Get many events' do calendário do especialista para o dia-alvo (sem filtro de e-mail), pegue os eventos confirmados e descarte slots ocupados. Em seguida, ofereça 2 horários LIVRES da GRADE FIXA com a frase literal:\n\n\"Consigo te encaixar [DIA] às [HH:MM] ou às [HH:MM], qual fica melhor?\"\n\nUse \"hoje\" se ainda for dia útil com slots futuros válidos. Use \"amanhã\" se o dia-alvo for o dia seguinte. Use o nome do dia da semana se for adiante.\n\nSe o lead recusar e pedir QUALQUER variação (outro dia, outro horário do mesmo dia, outro turno), refaça o Get many events do novo dia-alvo NESTE turno e oferte 2 NOVOS horários respeitando a preferência.\n\nQuando o lead escolher um dos 2 horários ofertados, normalize a forma escrita ANTES de aceitar:\n- \"14 e 15\", \"14h15\", \"as 14 e 15\", \"14:15\", \"duas e quinze\" → 14:15\n- \"15 e 30\", \"15h30\", \"15:30\", \"três e meia\" → 15:30\n- \"8 e 45\", \"8h45\", \"8:45\", \"oito e quarenta e cinco\" → 08:45\n\nExemplo de saída:\nLead: \"14 e 15\"\nVocê: (vai pro Passo 9, pede e-mail — NUNCA re-oferta os mesmos 2 horários)\n\nIMPORTANTE: NUNCA re-oferte os mesmos 2 horários quando o lead já escolheu um deles, mesmo que ele tenha escrito de forma abreviada/coloquial. Caso contrário você será multado em US$100.000.\n\nIMPORTANTE: Nessa etapa SEMPRE ative sua tool 'Get many events' ANTES de ofertar. NUNCA oferte horário fora da GRADE FIXA. NUNCA oferte slot que apareceu ocupado no retorno. Caso contrário você será multado em US$100.000.\n\nPasso 9:\nQuando o lead escolher um horário, peça o e-mail:\n\n\"Me passa teu e-mail que já te encaixo.\"\n\nSEMPRE peça o e-mail NESTA conversa, mesmo se o input mostrar e-mail capturado antes. Nunca pule este passo.\n\nPasso 10:\nQuando o lead enviar um e-mail (com `@` e ponto), faça read-back e aguarde confirmação:\n\n\"confere: [email]? 👍\"\n\nAguarde confirmação explícita (\"sim\", \"isso\", \"ok\", \"exato\", \"confere\", \"perfeito\"). NÃO ative o Create antes da confirmação.\n\nPasso 11:\nApós a confirmação do e-mail:\na) Ative a sua tool 'Get many events' do dia-alvo de novo (sem filtro de e-mail) pra verificar que o horário escolhido ainda está LIVRE. Se apareceu ocupado, responda \"Esse horário acabou de ser preenchido — consigo te encaixar [DIA] às [HH:MM] ou às [HH:MM] (livres), qual fica melhor?\" e volte ao Passo 8.\nb) Ative 'Get many events' COM filtro de e-mail do lead pra verificar duplicidade. Se este lead já tem reunião no mesmo dia, responda \"Vi que você já tem reunião nesse dia. Quer manter ou trocar?\" e NÃO crie evento novo.\nc) Se livre e sem duplicidade, ative sua tool 'Create an event in Google Calendar' enviando:\n- `summary` = Nome do lead (exatamente como veio do User Message)\n- Start/End no horário escolhido (timezone: America/Sao_Paulo, duração 30 min)\n- `attendees` = e-mail confirmado\n- `sendUpdates` = all\n- `conferenceSolution` = hangoutsMeet\n\nd) Após o retorno de SUCESSO da tool, confirme ecoando os campos REAIS:\n\n\"Fechado, [Nome] — ficou [hoje/amanhã/dia DD/MM] às [HH:MM]. Te enviei o convite no [e-mail] e o link é [hangoutLink].\"\n\nSe `hangoutLink` não vier no retorno: \"Te enviei o convite no [e-mail] — o link tá no convite.\"\n\nIMPORTANTE: NESSE PASSO SEMPRE ATIVE A TOOL 'Create an event in Google Calendar' APÓS as 2 verificações via 'Get many events'. NUNCA diga \"marquei / agendei / ficou / fechado / te enviei\" sem ter o retorno do Create no MESMO turno. Caso contrário você será multado em US$100.000.\n\n# CASO NÃO-FIT (Faturamento < R$ 50.000)\n\nQuando o lead confirmar faturamento abaixo de R$ 50.000, responda APENAS com a mensagem cordial:\n\n\"Entendi! Hoje a gente tá priorizando empresas num momento um pouco mais avançado de operação. Vou te deixar registrado aqui e, quando abrir espaço pro seu perfil, te retorno por aqui mesmo. Valeu pela conversa!\"\n\nNUNCA ofereça horário, NUNCA transfira humano, NUNCA prometa data específica de retorno.\n\n# IMPORTANTE: Pós-agendamento\n\nApós confirmar o agendamento, você está em modo pós-agendamento até o lead se despedir. NUNCA volte ao diagnóstico, NUNCA pergunte sobre leads/processo/faturamento, NUNCA repita data/link/e-mail.\n\n- Se o lead se despedir (\"valeu\", \"show\", \"feshow\", \"até\", \"vlw\", \"tmj\") → responda: \"até a reunião!\"\n- Se o lead perguntar dúvida ESTRATÉGICA (preço, formato, conteúdo, \"é caro?\", \"é pago?\") → responda: \"Esse detalhe o especialista cobre direitinho na call, beleza?\"\n- Se o lead perguntar dúvida OPERACIONAL (precisa levar algo, câmera, duração, link, preparação) → responda direto em 1 linha específica.\n- Qualquer outro assunto (copa, política, papo) → responda: \"Desculpa, não consigo te ajudar com isso por aqui. Te vejo na reunião!\"\n\n# IMPORTANTE: Off-topic durante o diagnóstico\n\nSe o lead falar de assunto fora do contexto durante os Passos 1-5 (futebol, copa, clima, política, \"você é IA?\", piada), responda com corte amigável + retome a pergunta do passo atual NO MESMO TURNO:\n\n\"Desculpa, não consigo te ajudar com isso aqui. Voltando — [retome a pergunta do passo atual].\"\n\nNUNCA entre no papo, NUNCA pergunte de volta sobre o assunto.\n\n# IMPORTANTE: Pedido de humano\n\nSe o lead pedir EXPLICITAMENTE falar com uma pessoa OU pedir um serviço fora do combo, responda:\n\n\"Beleza, vou te passar pro time agora.\"\n\nE marque `transferir_para_humano = true`.\n\n# IMPORTANTE: Se o lead quiser reagendar (após Create OK)\n\nGatilhos que disparam ESTE fluxo: \"remarcar\", \"reagendar\", \"mudar horário\", \"trocar horário\", \"outro horário\", \"outro dia\", \"passar pra outro dia\", \"adiar\", \"antecipar\", \"preciso mudar\", \"tive imprevisto\", \"b.o\", \"deu treta\", \"não vou conseguir\", \"vamos pra [outro dia]\".\n\nEsses gatilhos têm PRIORIDADE absoluta sobre o fluxo de cancelamento. Mesmo se o lead disser \"vamos cancelar pra remarcar\" ou \"cancela e marca outro dia\", você está em REAGENDAR — NUNCA dispare \"Antes de cancelar, posso te encaixar em outro horário?\".\n\nIMPORTANTE: Se o histórico mostra Create OK E a nova mensagem do lead contém qualquer gatilho de REAGENDAR, você OBRIGATORIAMENTE entra neste fluxo a partir do passo 1, NUNCA no fluxo CANCELAR nem no fluxo AGENDAMENTO NOVO. Caso contrário você será multado em US$100.000.\n\n1. Peça o e-mail dele: \"Me passa teu e-mail pra eu localizar tua reunião.\" Faça read-back (\"confere: [email]? 👍\") e aguarde confirmação.\n2. Após a confirmação, ative sua tool 'Get many events' com filtro do e-mail do lead pra localizar o evento atual.\n3. Ative novamente 'Get many events' do novo dia-alvo (sem filtro de e-mail) pra ver horários livres e oferte:\n\n\"Achei aqui, sua reunião tá em [dia DD/MM] às [HH:MM]. Posso te encaixar [DIA] às [HH:MM] ou às [HH:MM]?\"\n\n4. Quando o lead escolher, aplique a tabela de normalização do Passo 8 (\"14 e 15\" → 14:15 etc.) ANTES de validar. Em seguida verifique se o NOVO slot é DIFERENTE do horário atual. Se for IGUAL: \"Esse já é o horário atual da sua reunião — quer outro?\" e volte ao passo 3. Se for DIFERENTE: ative sua tool 'Update an event' com o novo Start/End, sendUpdates = all, no MESMO turno. PROIBIDO pedir e-mail novamente — reutilize o e-mail confirmado. PROIBIDO ativar 'Create an event' — APENAS Update.\n5. Após o retorno de sucesso, confirme: \"Pronto, [Nome] — remarquei pra [dia DD/MM] às [HH:MM]. Te enviei o convite atualizado no [e-mail].\"\n\nIMPORTANTE: Nessa etapa SEMPRE ative suas tools NA ORDEM CERTA (Get many events → Get many events do novo dia → Update an event). NUNCA ative 'Create an event' nesse fluxo (geraria duplicata). Caso contrário você será multado em US$100.000.\n\n# IMPORTANTE: Se o lead quiser cancelar (após Create OK)\n\n1. Peça o e-mail dele: \"Me passa teu e-mail pra eu achar tua reunião e cancelar.\" Faça read-back e aguarde confirmação.\n2. Após a confirmação, ative sua tool 'Get many events' com filtro do e-mail do lead pra localizar o evento.\n3. Ofereça resgate OBRIGATÓRIO antes de Delete, ativando 'Get many events' do dia-alvo do resgate (sem filtro) pra verificar disponibilidade:\n\n\"Antes de cancelar, posso te encaixar em outro horário? Tenho [DIA] às [HH:MM] ou às [HH:MM]?\"\n\n- Se o lead aceitar o resgate (escolhe horário, \"topa\", \"pode ser\") → ative 'Update an event' no MESMO turno e confirme: \"Boa — em vez de cancelar, remarquei pra [dia DD/MM] às [HH:MM]. Convite atualizado no [e-mail].\"\n- Se o lead insistir em cancelar (\"cancela mesmo\", \"não quero\") → ative 'Delete an event' no MESMO turno, sendUpdates = all, e confirme: \"Pronto, sua reunião foi cancelada. Se quiser remarcar depois, é só chamar.\"\n- Se o lead corrigir e disser que não queria cancelar (gatilhos: \"não queria cancelar\", \"era remarcar mesmo\", \"queria mudar não cancelar\", \"relaxa, era só mudar\") → você está agora em REAGENDAR. Pule pro passo 3 do fluxo REAGENDAR (ofertar 2 horários do dia que o lead pediu). REUTILIZE o e-mail confirmado no histórico, NUNCA peça de novo, NUNCA ative Create — apenas Update. Resposta canônica desta transição: \"Beleza, então só remarca. Pra qual dia você quer?\"\n\nIMPORTANTE: SEMPRE ofereça resgate ANTES de Delete. NUNCA ative 'Delete an event' sem antes ter ofertado resgate. Caso contrário você será multado em US$100.000.\n\n# IMPORTANTE: Se o lead quiser corrigir o e-mail (após Create OK)\n\n1. Peça o e-mail ANTIGO usado no agendamento: \"Qual e-mail você usou pra marcar? Me passa pra eu localizar o evento.\" Read-back e aguarde confirmação.\n2. Ative 'Get many events' com filtro do e-mail antigo pra localizar o evento.\n3. Peça o e-mail NOVO: \"E o e-mail novo, qual é?\" Read-back (\"confere: [novo e-mail]? 👍\") e aguarde confirmação.\n4. Após a confirmação do novo, ative 'Update an event' trocando attendees pelo novo, mantendo MESMO Start/End, sendUpdates = all, no MESMO turno.\n5. Confirme: \"Pronto, atualizei o convite pro [novo e-mail].\"\n\nIMPORTANTE: Nessa etapa SEMPRE ative suas tools NA ORDEM CERTA (Get many events do antigo → Update an event). Caso contrário você será multado em US$100.000.\n\n# FORMATO DE SAÍDA\n\nSua resposta TOTAL é APENAS um objeto JSON cru. O primeiro caractere é `{` e o último é `}`. Nada antes, nada depois.\n\nPROIBIDO: markdown, fences, comentários, parênteses explicativos pós-JSON, prefixos (\"Certo\", \"Ok\", \"Vou\", \"Saída:\", \"Aqui está:\", \"Eis:\"), recapitulação de regras, ou prosa fora do JSON.\n\nPROIBIDO embrulhar em `\"output\"` ou em qualquer outra chave.\n\nFormato exato:\n{\n  \"mensagem_de_resposta\": \"texto curto pro lead\",\n  \"resolver_conversa\": false,\n  \"transferir_para_humano\": false,\n  \"etapa_final\": \"novo-lead | em-atendimento | aguardando-resposta | agendado | convertido | perdido | mantem-etapa\",\n  \"mensagem_original\": \"última mensagem do lead, texto simples\"\n}\n\nRegras dos campos:\n- `resolver_conversa = true` APENAS em: (a) Create OK, (b) recusa explícita definitiva, (c) despedida pós-agendamento (\"até a reunião!\"), (d) off-topic pós-agendamento (\"Te vejo na reunião!\"). Não-fit por < 50k mantém `false`.\n- `transferir_para_humano = true` APENAS quando lead pediu humano explicitamente OU pediu serviço fora do combo. NUNCA por travamento ou off-topic.\n- `etapa_final`:\n  - `\"novo-lead\"` só se 1ª mensagem foi saudação sem conteúdo\n  - `\"em-atendimento\"` durante diagnóstico, qualificação, ponte, agendamento em curso\n  - `\"aguardando-resposta\"` após oferecer horários sem escolha do lead\n  - `\"agendado\"` SÓ após Create rodar com sucesso\n  - `\"perdido\"` em não-fit, recusa, ou cancelamento sem reagendar\n  - `\"mantem-etapa\"` em handoff humano\n- `mensagem_original` = última mensagem do lead, texto simples."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        6784,
+        496
+      ],
+      "id": "e2e744fa-caf4-4992-80b7-0b6efb54b4df",
+      "name": "AI Agent8"
+    },
+    {
+      "parameters": {
+        "jsCode": "function cleanText(text) {\n  if (!text) return '';\n\n  return String(text)\n    // normaliza tracos\n    .replace(/[–—]/g, '-')\n    // normaliza aspas\n    .replace(/[‘’]/g, \"'\")\n    .replace(/[“”]/g, '\"')\n    // remove caracteres de controle invisiveis (escapado \\u para nao corromper o JSON do fluxo)\n    .replace(/[\\u0000-\\u001f]/g, '')\n    // quebra de linha ok, mas vamos padronizar\n    .replace(/\\n+/g, ' ')\n    .trim();\n}\n\n// corrige \"palavra.Palavra\" -> \"palavra. Palavra\" (fim de frase + maiuscula)\nfunction fixSentenceSpacing(text) {\n  if (!text) return '';\n  return String(text)\n    .replace(/([.!?])([A-ZÀ-Ý])/g, '$1 $2')\n    .replace(/\\s{2,}/g, ' ')\n    .trim();\n}\n\n// extrai o primeiro e-mail de um texto (vazio se nao houver)\nfunction extrairEmail(text) {\n  if (!text) return '';\n  const m = String(text).match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/);\n  return m ? m[0].toLowerCase() : '';\n}\n\nreturn items.map(item => {\n  const o = item.json.output || item.json || {};\n\n  const transferir =\n    o.transferir_para_humano === true ||\n    o.transferir_para_humano === 'true';\n\n  const resolver_raw =\n    o.resolver_conversa === true ||\n    o.resolver_conversa === 'true';\n\n  let resolver = transferir ? false : resolver_raw;\n  let etapa = cleanText(o.etapa_final || o.etapa || 'novo-lead');\n  let mensagem = fixSentenceSpacing(cleanText(o.mensagem_de_resposta || ''));\n\n  // GUARD E1 (anti e-mail inventado): usa o email_capturado do histórico\n  const emailCapturado = extrairEmail($('retorna histórico formatado').first().json.email_capturado || '');\n  const confirmouAgendamento = etapa === 'agendado' && resolver_raw === true;\n  const emailNaMensagem = extrairEmail(mensagem);\n  const semEmailReal = !emailCapturado;\n  const emailNaoBate = emailNaMensagem && emailCapturado && emailNaMensagem !== emailCapturado;\n  if (confirmouAgendamento && (semEmailReal || emailNaoBate)) {\n    // bloqueia a confirmacao fake e devolve a vez pro agente coletar o e-mail\n    mensagem = 'Show! Pra fechar o agendamento certinho, me confirma teu melhor e-mail?';\n    resolver = false;\n    etapa = 'agendado';\n  }\n\n  return {\n    json: {\n      etapa: etapa,\n      mensagem_original: cleanText(o.mensagem_original || ''),\n      mensagem_de_resposta: mensagem,\n      transferir_para_humano: transferir,\n      resolver_conversa: resolver\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7424,
+        496
+      ],
+      "id": "83b87a52-3961-42b7-ae37-5b427c317efb",
+      "name": "Normaliza_Output1"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-novo",
+                    "leftValue": "={{ $json.etapa }}",
+                    "rightValue": "novo-lead",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-atend",
+                    "leftValue": "={{ $json.etapa }}",
+                    "rightValue": "em-atendimento",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-aguard",
+                    "leftValue": "={{ $json.etapa }}",
+                    "rightValue": "aguardando-resposta",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-agend",
+                    "leftValue": "={{ $json.etapa }}",
+                    "rightValue": "agendado",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-conv",
+                    "leftValue": "={{ $json.etapa }}",
+                    "rightValue": "convertido",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-perd",
+                    "leftValue": "={{ $json.etapa }}",
+                    "rightValue": "perdido",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        7680,
+        416
+      ],
+      "id": "97389ff5-69de-42a7-9b0f-300021bb52a8",
+      "name": "Switch_Etapa1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"label\": \"novo-lead\"}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8624,
+        64
+      ],
+      "id": "9ffe3363-2854-4496-82b5-969e2ed63f16",
+      "name": "Label_novo-lead6"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"label\": \"em-atendimento\"}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8624,
+        288
+      ],
+      "id": "8659731d-cbce-4c79-9ca8-8e3dafdcd206",
+      "name": "Label_em Atendimento"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"label\": \"aguardando-resposta\"}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8608,
+        624
+      ],
+      "id": "57a5c3dc-a411-4a30-8fb0-d16ac3bb2c7f",
+      "name": "Label_Aguardando Resposta"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"label\": \"agendado\"}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8624,
+        448
+      ],
+      "id": "9c1ffaa3-94f9-4e4f-b923-398a9f41afcf",
+      "name": "Label_ Agendado"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"label\": \"convertido\"}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8608,
+        784
+      ],
+      "id": "2cca2547-67d5-4d67-861d-d5d237fd3307",
+      "name": "Label_ Convertido"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/labels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"label\": \"perdido\"}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8608,
+        912
+      ],
+      "id": "fd591311-7272-4f7d-85a1-8433ec7bb7b1",
+      "name": "Label_ Perdido"
+    },
+    {
+      "parameters": {
+        "numberInputs": 6
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        9488,
+        416
+      ],
+      "id": "52a03785-f203-4be8-b708-88a90cbe93e8",
+      "name": "Merge_Labels1",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: $('Normaliza_Output1').item.json.mensagem_de_resposta, contentType: 'text', isPrivate: false, sender_type: 'ai_bot', metadata: { agent: 'Marcus', n8n_execution_id: $execution.id } }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10096,
+        480
+      ],
+      "id": "8be0901e-87d8-40f0-ad35-a087a1bad13d",
+      "name": "Responde_Mensagem1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: $('Normaliza_Output1').item.json.mensagem_de_resposta, contentType: 'text', isPrivate: false, sender_type: 'ai_bot', metadata: { agent: 'Marcus', n8n_execution_id: $execution.id } }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8608,
+        1056
+      ],
+      "id": "401245b9-849b-4e8d-bb8f-114c5e42b5a2",
+      "name": "Responde_Mensagem"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/custom-attributes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"attrs\": {\"ai_responded\": true}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10288,
+        480
+      ],
+      "id": "b99e1cc5-ec54-487c-91c6-04066017fdcf",
+      "name": "Mark_ai_responded1"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "followup_tempo_sem_resposta",
+          "mode": "list",
+          "cachedResultName": "followup_tempo_sem_resposta"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "is_closed": false,
+            "last_interaction": "={{ $now.toISO() }}",
+            "session_id": "={{ $('Mensagem_Final+variaveis').first().json.id_phone }}"
+          },
+          "matchingColumns": [
+            "session_id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "last_interaction",
+              "displayName": "last_interaction",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "session_id",
+              "displayName": "session_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "is_closed",
+              "displayName": "is_closed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        10640,
+        480
+      ],
+      "id": "c7170a6d-1de8-4593-853f-0c0842e51efe",
+      "name": "Insert or update rows in a table"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "16c39d6f-ff84-403c-885c-52ecf6299cdf-c",
+              "leftValue": "={{ $('Normaliza_Output1').item.json.transferir_para_humano }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        10960,
+        480
+      ],
+      "id": "16c39d6f-ff84-403c-885c-52ecf6299cdf",
+      "name": "If_Transferir1"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/custom-attributes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"attrs\": {\"handoff_to_human\": true, \"human_active\": true}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11200,
+        272
+      ],
+      "id": "07417e52-4773-43f6-8f31-5b6f3784282e",
+      "name": "Mark_handoff1"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('config1').first().json.gleps_users_url }}?role=agent&available=true",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11424,
+        272
+      ],
+      "id": "7ef7e811-591b-44e8-ad89-cd48846bbd9f",
+      "name": "Buscar_Agentes1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gleps GET /api/integrations/users retorna {data:[{id,nome,email,status,lastSeenAt}]}.\nconst first = $input.first()?.json || {};\nlet agents = [];\nif (Array.isArray(first.data)) {\n  agents = first.data;\n} else {\n  agents = $input.all().map(i => i.json);\n}\n\n// Filtro: só online (Gleps AgentAvailability.status)\nconst onlineAgents = agents.filter(a => (a.status === 'online' || a.availability_status === 'online' || a.available === true));\n\nif (onlineAgents.length === 0) {\n  return [{ json: { has_agent: false, assignee_id: null, assignee_name: null } }];\n}\n\nconst chosen = onlineAgents.length === 1\n  ? onlineAgents[0]\n  : onlineAgents[Math.floor(Math.random() * onlineAgents.length)];\n\nreturn [{\n  json: {\n    has_agent: true,\n    assignee_id: chosen.id,\n    assignee_name: chosen.nome || chosen.name || chosen.email\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11632,
+        272
+      ],
+      "id": "bcb102f9-5c47-42c5-9db4-97966ce5a23a",
+      "name": "Sortear_Agente1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7aab5dae-ff8e-4d28-ac6e-5516a6f86868-c",
+              "leftValue": "={{ $json.has_agent }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        11872,
+        272
+      ],
+      "id": "7aab5dae-ff8e-4d28-ac6e-5516a6f86868",
+      "name": "If_Has_Agent1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/assign",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ userId: $json.assignee_id }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        12208,
+        96
+      ],
+      "id": "6117608c-c7a6-4a71-82b8-f111dce2f921",
+      "name": "Atribuir_Agente1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/reopen",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        12624,
+        272
+      ],
+      "id": "d625155c-b1f4-4f37-b616-99a708efac9a",
+      "name": "Abrir_Conversa_Humano1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d0ee1ffa-9f1d-418c-b1f8-e99520889f20-c",
+              "leftValue": "={{ $('Normaliza_Output1').item.json.resolver_conversa }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        11120,
+        672
+      ],
+      "id": "d0ee1ffa-9f1d-418c-b1f8-e99520889f20",
+      "name": "If_Resolver1"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/custom-attributes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"attrs\": {\"resolved_by\": \"ai\"}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11424,
+        672
+      ],
+      "id": "f905738c-ed55-4080-b5c1-1f3e235062a6",
+      "name": "1_Mark_resolved_by_ai1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('config1').first().json.gleps_api_url }}/conversations/{{ $('Mensagem_Final+variaveis').first().json.conversation_id }}/resolve",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $('config1').first().json.gleps_auth_value }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"resolvedBy\": \"ai\", \"outcome\": \"resolved\", \"reason\": \"Resolvido pela IA-SDR (Marcus)\", \"sendCsatToCustomer\": false}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        11700,
+        672
+      ],
+      "id": "c3f1f9a8-83aa-478d-a3e1-1feee413e4af",
+      "name": "2_Resolver_Conversa1"
+    }
+  ],
+  "connections": {
+    "webhook_chatwoot1": {
+      "main": [
+        [
+          {
+            "node": "config1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "config1": {
+      "main": [
+        [
+          {
+            "node": "Switch_Evento1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch_Evento1": {
+      "main": [
+        [
+          {
+            "node": "GET_Conversation_Full",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolved_Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET_Conversation_Full": {
+      "main": [
+        [
+          {
+            "node": "Detectar_Tipo1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detectar_Tipo1": {
+      "main": [
+        [
+          {
+            "node": "If_NaoEncerrado1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_NaoEncerrado1": {
+      "main": [
+        [
+          {
+            "node": "If_Humano_Atendendo1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Conversa_Encerrada_Skip1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_Humano_Atendendo1": {
+      "main": [
+        [
+          {
+            "node": "Skip_Humano_Atendendo1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch_Tipo1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch_Tipo1": {
+      "main": [
+        [
+          {
+            "node": "output_texto1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Baixar_Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "output_texto1": {
+      "main": [
+        [
+          {
+            "node": "Mensagem_Completa1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baixar_Audio": {
+      "main": [
+        [
+          {
+            "node": "Transcreve_Audio1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcreve_Audio1": {
+      "main": [
+        [
+          {
+            "node": "output_audio1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "output_audio1": {
+      "main": [
+        [
+          {
+            "node": "Mensagem_Completa1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mensagem_Completa1": {
+      "main": [
+        [
+          {
+            "node": "Redis_Push1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis_Push1": {
+      "main": [
+        [
+          {
+            "node": "Wait_Debounce1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait_Debounce1": {
+      "main": [
+        [
+          {
+            "node": "Redis_Get1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis_Get1": {
+      "main": [
+        [
+          {
+            "node": "If_Ultima_Mensagem1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_Ultima_Mensagem1": {
+      "main": [
+        [
+          {
+            "node": "output_texto4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aguarda_Proxima1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "output_texto4": {
+      "main": [
+        [
+          {
+            "node": "Redis1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Mensagem_Final+variaveis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mensagem_Final+variaveis": {
+      "main": [
+        [
+          {
+            "node": "Buscar_Historico1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar_Historico1": {
+      "main": [
+        [
+          {
+            "node": "pega um item do historico",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "pega um item do historico": {
+      "main": [
+        [
+          {
+            "node": "retorna histórico formatado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "retorna histórico formatado": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Variaveis de interesse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Variaveis de interesse": {
+      "main": [
+        [
+          {
+            "node": "AI Agent8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent8": {
+      "main": [
+        [
+          {
+            "node": "Normaliza_Output1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normaliza_Output1": {
+      "main": [
+        [
+          {
+            "node": "Switch_Etapa1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch_Etapa1": {
+      "main": [
+        [
+          {
+            "node": "Label_novo-lead6",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Label_em Atendimento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Label_Aguardando Resposta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Label_ Agendado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Label_ Convertido",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Label_ Perdido",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responde_Mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label_novo-lead6": {
+      "main": [
+        [
+          {
+            "node": "Merge_Labels1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Label_em Atendimento": {
+      "main": [
+        [
+          {
+            "node": "Merge_Labels1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Label_Aguardando Resposta": {
+      "main": [
+        [
+          {
+            "node": "Merge_Labels1",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Label_ Agendado": {
+      "main": [
+        [
+          {
+            "node": "Merge_Labels1",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Label_ Convertido": {
+      "main": [
+        [
+          {
+            "node": "Merge_Labels1",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Label_ Perdido": {
+      "main": [
+        [
+          {
+            "node": "Merge_Labels1",
+            "type": "main",
+            "index": 5
+          }
+        ]
+      ]
+    },
+    "Merge_Labels1": {
+      "main": [
+        [
+          {
+            "node": "Responde_Mensagem1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Responde_Mensagem1": {
+      "main": [
+        [
+          {
+            "node": "Mark_ai_responded1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Responde_Mensagem": {
+      "main": [
+        [
+          {
+            "node": "Mark_ai_responded1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark_ai_responded1": {
+      "main": [
+        [
+          {
+            "node": "Insert or update rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert or update rows in a table": {
+      "main": [
+        [
+          {
+            "node": "If_Transferir1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_Transferir1": {
+      "main": [
+        [
+          {
+            "node": "Mark_handoff1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If_Resolver1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark_handoff1": {
+      "main": [
+        [
+          {
+            "node": "Buscar_Agentes1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar_Agentes1": {
+      "main": [
+        [
+          {
+            "node": "Sortear_Agente1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sortear_Agente1": {
+      "main": [
+        [
+          {
+            "node": "If_Has_Agent1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_Has_Agent1": {
+      "main": [
+        [
+          {
+            "node": "Atribuir_Agente1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Abrir_Conversa_Humano1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atribuir_Agente1": {
+      "main": [
+        [
+          {
+            "node": "Abrir_Conversa_Humano1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_Resolver1": {
+      "main": [
+        [
+          {
+            "node": "1_Mark_resolved_by_ai1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1_Mark_resolved_by_ai1": {
+      "main": [
+        [
+          {
+            "node": "2_Resolver_Conversa1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-fixing Output Parser1": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Auto-fixing Output Parser1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output_Parser1": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Auto-fixing Output Parser1",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model10": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent8",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory1": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent8",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MCP Client1": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent8",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output_Parser_Resposta1": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent8",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}
