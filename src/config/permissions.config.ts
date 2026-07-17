@@ -14,6 +14,7 @@ export const PERMISSIONS = {
   KANBAN: 'kanban',
   LEADS: 'leads',
   CONVERSATIONS: 'conversations',
+  CONVERSATIONS_ALL: 'conversations_all',
   
   // Sales & Finance
   SALES: 'sales',
@@ -52,7 +53,7 @@ export const ROLE_PERMISSIONS = {
 export const PERMISSION_GROUPS = {
   ATENDIMENTO: {
     label: 'Atendimento',
-    permissions: [PERMISSIONS.KANBAN, PERMISSIONS.LEADS, PERMISSIONS.CONVERSATIONS],
+    permissions: [PERMISSIONS.KANBAN, PERMISSIONS.LEADS, PERMISSIONS.CONVERSATIONS, PERMISSIONS.CONVERSATIONS_ALL],
   },
   VENDAS: {
     label: 'Vendas',

@@ -118,6 +118,13 @@ const ACTION_PERMISSIONS = [
   { id: 'refunds', label: 'Realizar Estornos', icon: RotateCcw },
 ];
 
+// Permissões de supervisão — agente vê TODAS as conversas da conta sem virar
+// admin (recepção/supervisor). A visibilidade real é decidida no backend
+// (conversation.service — guards de list/get/ensureConversationAccess).
+const SUPERVISION_PERMISSIONS = [
+  { id: 'conversations_all', label: 'Acesso total às conversas', icon: Eye },
+];
+
 // ============================================
 // Props
 // ============================================
@@ -502,6 +509,43 @@ export function AgenteFormDialog({
                       <action.icon className="w-4 h-4 text-muted-foreground" />
                       <span className="text-sm font-medium leading-none flex-1">
                         {action.label}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Supervisão
+              </p>
+              <div className="grid grid-cols-1 gap-2">
+                {SUPERVISION_PERMISSIONS.map((sup) => {
+                  const checked = (currentPermissions ?? []).includes(sup.id);
+                  return (
+                    <label
+                      key={sup.id}
+                      htmlFor={`perm-${sup.id}`}
+                      className={cn(
+                        'flex items-start gap-2 p-2 rounded-md border cursor-pointer transition-colors',
+                        checked ? 'bg-primary/10 border-primary' : 'bg-background hover:bg-muted'
+                      )}
+                    >
+                      <Checkbox
+                        id={`perm-${sup.id}`}
+                        checked={checked}
+                        onCheckedChange={() => togglePermission(sup.id)}
+                        className="mt-0.5"
+                      />
+                      <sup.icon className="w-4 h-4 text-muted-foreground mt-0.5" />
+                      <span className="text-sm leading-tight flex-1">
+                        <span className="font-medium block">{sup.label}</span>
+                        <span className="text-xs text-muted-foreground">
+                          Vê e atende qualquer conversa da conta, mesmo as de outros
+                          atendentes. Ideal pra recepção / supervisão. Não dá poder de
+                          administrador.
+                        </span>
                       </span>
                     </label>
                   );

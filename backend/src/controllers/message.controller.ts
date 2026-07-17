@@ -281,6 +281,7 @@ function getActor(req: AuthenticatedRequest): ConversationActor {
   return {
     userId: req.user!.id,
     role: req.user!.role as ConversationActor['role'],
+    permissions: req.user!.permissions,
   };
 }
 

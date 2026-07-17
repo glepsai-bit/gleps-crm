@@ -172,6 +172,8 @@ export type ConversationActorRole = 'super_admin' | 'admin' | 'agent';
 export interface ConversationActor {
   userId: string;
   role: ConversationActorRole;
+  /** Permissões do usuário — usado para checar 'conversations_all'. */
+  permissions?: string[];
 }
 
 const ALLOWED_STATUSES: ConversationStatus[] = ['open', 'pending', 'resolved', 'snoozed'];
@@ -253,7 +255,7 @@ class ConversationService {
     // RBAC: agente só enxerga conversas onde é assignee, está em um time
     // dono da conversa, ou foi adicionado como participante (CHAT-AUTH-H1).
     // super_admin/admin (ou chamadas internas sem actor) veem tudo da conta.
-    if (actor && actor.role === 'agent') {
+    if (actor && actor.role === 'agent' && !actor.permissions?.includes('conversations_all')) {
       const teamIds = await prisma.teamMember
         .findMany({
           where: { userId: actor.userId },
@@ -355,7 +357,7 @@ class ConversationService {
 
     // RBAC: agente só pode ler conversa que lhe pertence (CHAT-AUTH-H1).
     // Faz fetch on-demand de participants/team quando precisa validar.
-    if (actor && actor.role === 'agent') {
+    if (actor && actor.role === 'agent' && !actor.permissions?.includes('conversations_all')) {
       await this.assertAgentCanAccess(conversation as Conversation, actor.userId);
     }
 
@@ -422,7 +424,10 @@ class ConversationService {
     });
     if (!conversation) throw new NotFoundError('Conversa');
 
-    if (actor.role !== 'agent') return conversation as Conversation;
+    // Agente com 'conversations_all' (supervisão/recepção) pula a restrição.
+    if (actor.role !== 'agent' || actor.permissions?.includes('conversations_all')) {
+      return conversation as Conversation;
+    }
 
     await this.assertAgentCanAccess(conversation, actor.userId);
     return conversation as Conversation;
