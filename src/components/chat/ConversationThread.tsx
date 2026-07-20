@@ -277,11 +277,17 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
   // evita brigar com o scroll de nova-mensagem).
   const initialScrollForRef = useRef<string | null>(null);
 
+  // WHATSAPP-SCROLL: quando o PROPRIO agente envia, a lista desce SEMPRE —
+  // mesmo se ele estava lá em cima lendo histórico (comportamento WhatsApp).
+  // Mensagem recebida continua respeitando o near-bottom (não arranca leitura).
+  const forceScrollOnSendRef = useRef(false);
+
   // Reset ao trocar de conversa: permite novo scroll inicial da proxima.
   useEffect(() => {
     initialScrollForRef.current = null;
     prevMessageCountRef.current = 0;
     savedScrollTopRef.current = null;
+    forceScrollOnSendRef.current = false;
   }, [conversationId]);
 
   // Antes do paint: guarda a posicao atual (pra preservar em refetch silencioso).
@@ -324,11 +330,14 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
     prevMessageCountRef.current = currentMessageCount;
 
     if (currentMessageCount > prevCount) {
-      // Chegou mensagem nova. Segue pro fim se estava perto do fim.
+      // Chegou mensagem nova. Segue pro fim se estava perto do fim — OU se a
+      // mensagem é do próprio agente (WHATSAPP-SCROLL: envio sempre desce).
       const nearBottom =
         (savedScrollTopRef.current ?? 0) + el.clientHeight >=
         el.scrollHeight - 160;
-      if (nearBottom) {
+      const sentByMe = forceScrollOnSendRef.current;
+      forceScrollOnSendRef.current = false;
+      if (nearBottom || sentByMe) {
         requestAnimationFrame(() =>
           el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
         );
@@ -1284,6 +1293,8 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
         onMessageSent={() => {
           // Após enviar, limpa reply — o quote foi "consumido".
           setReplyingTo(null);
+          // WHATSAPP-SCROLL: envio próprio desce a lista sempre.
+          forceScrollOnSendRef.current = true;
         }}
       />
 
