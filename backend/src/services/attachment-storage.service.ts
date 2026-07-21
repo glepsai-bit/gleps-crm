@@ -27,6 +27,11 @@ import path from 'node:path';
 import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
 
+// FIX-INBOUND-MEDIA: sentinel de sourceUrl para mídia criptografada inbound
+// sem url plana — materialize descriptografa via getBase64FromMediaMessage
+// pelo externalId da mensagem.
+export const WA_ENCRYPTED_MEDIA_SENTINEL = 'wa-encrypted-media://pending';
+
 // ============================================
 // Config
 // ============================================
@@ -282,7 +287,9 @@ class AttachmentStorageService {
         mimeType: true,
         message: {
           select: {
+            id: true,
             externalId: true,
+            conversationId: true,
             conversation: {
               select: {
                 accountId: true,
@@ -342,10 +349,11 @@ class AttachmentStorageService {
         if (!decoded) throw new Error('data URL malformado');
         bytes = decoded.bytes;
         mimeType = mimeType || decoded.mimeType;
-      } else if (isWhatsAppCdn(sourceUrl)) {
-        // WhatsApp CDN entrega arquivo criptografado end-to-end (magic bytes
-        // aleatórios). Precisamos pedir a Evolution que descriptografe usando
-        // a mediaKey armazenada pelo Baileys — endpoint chat/getBase64FromMediaMessage.
+      } else if (isWhatsAppCdn(sourceUrl) || sourceUrl === WA_ENCRYPTED_MEDIA_SENTINEL) {
+        // WhatsApp CDN (ou mídia inbound sem url plana — sentinel) entrega
+        // arquivo criptografado end-to-end (magic bytes aleatórios). Pedimos a
+        // Evolution que descriptografe usando a mediaKey armazenada pelo
+        // Baileys — endpoint chat/getBase64FromMediaMessage, pelo messageId.
         const messageKeyId = att.message?.externalId;
         const instance = att.message?.conversation?.inbox?.evolutionInstance ?? null;
         if (!messageKeyId) {
@@ -399,6 +407,30 @@ class AttachmentStorageService {
         mimeType,
         storagePath: relative,
       });
+
+      // FIX-INBOUND-MEDIA: re-emite a mensagem via socket com o fileUrl real
+      // (/api/attachments/<id>). Sem isto, a imagem/vídeo inbound aparecia
+      // quebrada (fileUrl ainda era a URL cifrada/sentinel do momento do
+      // create) até o refetch de 60s. Best-effort: nunca lança.
+      const linkedMsgId = att.message?.id;
+      const linkedConvId = att.message?.conversationId;
+      if (linkedMsgId && linkedConvId) {
+        try {
+          const fresh = await prisma.message.findUnique({
+            where: { id: linkedMsgId },
+            include: { attachments: true },
+          });
+          if (fresh) {
+            const { emitMessageUpdated } = await import('../socket');
+            emitMessageUpdated(accountId, linkedConvId, fresh);
+          }
+        } catch (emitErr) {
+          logger.debug('[attachment-storage] re-emit pós-materialize falhou', {
+            attachmentId,
+            error: emitErr instanceof Error ? emitErr.message : String(emitErr),
+          });
+        }
+      }
 
       return {
         storagePath: relative,

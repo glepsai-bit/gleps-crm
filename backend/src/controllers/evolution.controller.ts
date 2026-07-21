@@ -14,6 +14,7 @@ import {
   CreateAttachmentInput,
 } from '../services/message.service';
 import { logger } from '../utils/logger';
+import { WA_ENCRYPTED_MEDIA_SENTINEL } from '../services/attachment-storage.service';
 import { AuthenticatedRequest } from '../types';
 import { ForbiddenError, ErrorCodes } from '../utils/errors';
 import { emitInboxConnection } from '../socket';
@@ -677,16 +678,27 @@ export class EvolutionController {
       node: any
     ): CreateAttachmentInput | null => {
       if (!node || typeof node !== 'object') return null;
-      const url: string | undefined =
+      const rawUrl: string | undefined =
         node.url || node.mediaUrl || node.directPath || node.downloadUrl;
-      if (!url) return null;
+      // FIX-INBOUND-MEDIA: o Baileys nem sempre popula `url` http(s) no
+      // imageMessage/documentMessage inbound (só a mediaKey cifrada, ou um
+      // directPath RELATIVO tipo /v/t62...enc). Antes, sem url http, o anexo
+      // era descartado (ou virava sourceUrl inútil sem scheme) e a imagem
+      // sumia. Regra: se há mediaKey (mídia cifrada do WhatsApp) e a url não
+      // é http(s) absoluta, usamos o sentinel — o materialize descriptografa
+      // via getBase64FromMediaMessage pelo externalId da mensagem (mesmo
+      // caminho já validado pro áudio inbound).
+      const hasMediaKey = Boolean(node.mediaKey || node.fileEncSha256);
+      const isHttpUrl = typeof rawUrl === 'string' && /^https?:\/\//i.test(rawUrl);
+      if (!isHttpUrl && !hasMediaKey) return null;
+      const sourceUrl = isHttpUrl ? (rawUrl as string) : WA_ENCRYPTED_MEDIA_SENTINEL;
       return {
         fileType,
         // Bug A: fileUrl recebe a URL da Evolution só como placeholder.
         // O message.service grava em sourceUrl e dispara materialize();
         // após o download, fileUrl passa a ser '/api/attachments/<id>'.
-        fileUrl: url,
-        sourceUrl: url,
+        fileUrl: sourceUrl,
+        sourceUrl,
         fileName: node.fileName ?? null,
         mimeType: node.mimetype ?? node.mimeType ?? null,
         fileSize:
@@ -738,7 +750,66 @@ export class EvolutionController {
       return { content: null, contentType: 'media', attachments: att ? [att] : [] };
     }
 
+    // FIX-LOCATION: localização (estática ou ao vivo) não tinha handler — o
+    // cliente enviava o pino e nada chegava. Convertemos em texto com link do
+    // Google Maps (+ nome/endereço quando o WhatsApp manda).
+    const loc = m.locationMessage || m.liveLocationMessage;
+    if (loc && typeof loc === 'object') {
+      const lat = loc.degreesLatitude ?? loc.latitude;
+      const lng = loc.degreesLongitude ?? loc.longitude;
+      if (typeof lat === 'number' && typeof lng === 'number') {
+        const label = loc.name || loc.address || 'Localização';
+        const maps = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+        const extra = loc.address && loc.address !== loc.name ? `\n${loc.address}` : '';
+        return {
+          content: `📍 ${label}${extra}\n${maps}`,
+          contentType: 'text',
+          attachments: [],
+        };
+      }
+    }
+
+    // Contato compartilhado (vCard) — vira texto com nome + telefone.
+    const contactMsg = m.contactMessage;
+    if (contactMsg && typeof contactMsg === 'object') {
+      const dn = contactMsg.displayName || 'Contato';
+      const phone = (contactMsg.vcard || '').match(/waid=([0-9]+)/)?.[1];
+      return {
+        content: `👤 ${dn}${phone ? `\n+${phone}` : ''}`,
+        contentType: 'text',
+        attachments: [],
+      };
+    }
+
     return { content: null, contentType: 'text', attachments: [] };
+  }
+
+  /**
+   * FIX-REPLY-INBOUND: extrai o stanzaId da mensagem CITADA quando o cliente
+   * responde a uma mensagem no WhatsApp (contextInfo.stanzaId). Devolvido pra
+   * resolver o replyToId — sem isso o CRM não mostrava qual msg foi citada.
+   */
+  private extractQuotedStanzaId(message: any): string | null {
+    const m = message || {};
+    const ctxCandidates: any[] = [
+      m.extendedTextMessage?.contextInfo,
+      m.imageMessage?.contextInfo,
+      m.videoMessage?.contextInfo,
+      m.audioMessage?.contextInfo,
+      m.documentMessage?.contextInfo,
+      m.stickerMessage?.contextInfo,
+      m.contextInfo,
+    ];
+    for (const ctx of ctxCandidates) {
+      if (ctx && typeof ctx === 'object') {
+        const stanzaId =
+          (typeof ctx.stanzaId === 'string' && ctx.stanzaId) ||
+          (typeof ctx.stanzaID === 'string' && ctx.stanzaID) ||
+          null;
+        if (stanzaId && ctx.quotedMessage) return stanzaId;
+      }
+    }
+    return null;
   }
 
   /**
@@ -1078,6 +1149,18 @@ export class EvolutionController {
     // dura é o @@unique([conversationId, externalId]) no schema, que faz o INSERT
     // levantar P2002 — tratamos como skip silencioso pra não inflar unreadCount nem
     // re-disparar webhookOutbound 'message.created' a partir de messageService.create.
+    // FIX-REPLY-INBOUND: se o cliente respondeu a uma msg, resolve o replyToId
+    // localizando a nossa Message com aquele externalId (stanzaId citado).
+    let replyToId: string | null = null;
+    const quotedStanzaId = this.extractQuotedStanzaId(data?.message);
+    if (quotedStanzaId) {
+      const quoted = await prisma.message.findFirst({
+        where: { conversationId: conversation.id, externalId: quotedStanzaId },
+        select: { id: true },
+      });
+      replyToId = quoted?.id ?? null;
+    }
+
     try {
       await messageService.create(accountId, {
         conversationId: conversation.id,
@@ -1085,6 +1168,7 @@ export class EvolutionController {
         content: content ?? null,
         contentType,
         externalId: messageId,
+        replyToId,
         attachments: attachments.length > 0 ? attachments : undefined,
         metadata: {
           source: 'evolution',
