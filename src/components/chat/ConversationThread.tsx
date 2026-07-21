@@ -172,6 +172,25 @@ interface ConversationThreadProps {
   onBack?: () => void;
 }
 
+/**
+ * PERF-TROCA: busca a conversa-alvo no cache da lista ['conversations'] pra
+ * semear a thread instantaneamente na troca. Retorna undefined se não houver.
+ * O shape casa com o que a thread espera (contato/inbox/messages parciais).
+ */
+function seedFromListCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  conversationId: string
+): unknown | undefined {
+  const caches = queryClient.getQueriesData<{ data?: Array<{ id: string }> }>({
+    queryKey: ['conversations'],
+  });
+  for (const [, value] of caches) {
+    const found = value?.data?.find((c) => c.id === conversationId);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 export function ConversationThread({ conversationId, onBack }: ConversationThreadProps) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -215,7 +234,17 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
     // [] durante a transicao de fetch. Forma explicita (prev) => prev
     // garante que TROCA de conversationId tambem mantenha o ultimo cache
     // valido visivel ate o novo fetch resolver (em vez de empty state).
-    placeholderData: (prev) => prev,
+    // PERF-TROCA: ao trocar de conversa, o placeholder anterior era
+    // (prev) => prev — mostrava as mensagens da conversa ANTERIOR até o fetch
+    // da nova terminar (parecia "travar" por um instante). Agora, se a
+    // conversa-alvo já está no cache da lista (contato + última mensagem),
+    // mostramos ELA na hora (troca instantânea e correta); o thread completo
+    // preenche em seguida. Só cai no prev quando não há nada da nova ainda.
+    placeholderData: (prev) => {
+      const seeded = seedFromListCache(queryClient, conversationId);
+      if (seeded) return seeded as typeof prev;
+      return prev;
+    },
     staleTime: 30_000,
     // BUG-2 (race residual): mantem o cache em memoria por toda a vida da
     // pagina. Sem isso, o React Query pode descartar o cache durante
