@@ -58,12 +58,26 @@ export const usersBackendService = {
     return mapProfile(raw);
   },
 
-  async update(userId: string, input: Partial<Profile> & { role?: 'admin' | 'agent' }): Promise<Profile> {
+  async update(
+    userId: string,
+    input: Partial<Profile> & {
+      role?: 'admin' | 'agent' | 'super_admin';
+      /** Reset de senha pelo admin/super_admin (Editar Usuário). */
+      password?: string;
+      email?: string;
+    }
+  ): Promise<Profile> {
+    // FIX-RESET-SENHA: este body era montado na mão só com nome/status/role/
+    // permissions — a senha (e o e-mail) digitados no dialog "Editar Usuário"
+    // eram DESCARTADOS aqui, antes mesmo de sair do navegador. Por isso a
+    // troca de senha parecia salvar mas o login continuava com a antiga.
     const response = await apiClient.put<any>(API_ENDPOINTS.USERS.UPDATE(userId), {
       nome: input.nome,
       status: input.status,
       role: input.role,
       permissions: input.permissions,
+      ...(input.email ? { email: input.email } : {}),
+      ...(input.password ? { password: input.password } : {}),
     });
     const raw = response?.data ?? response;
     return mapProfile(raw);
