@@ -96,9 +96,22 @@ export function AudioPlayer({ src, mimeType, className }: AudioPlayerProps) {
     })
       .then(async (res) => {
         if (!res.ok) throw new Error(`status ${res.status}`);
-        const blob = await res.blob();
+        const raw = await res.blob();
         if (cancelled) return;
         cleanupBlob();
+        // FIX-AUDIO-PLAY: o <audio> recusa reproduzir (MEDIA_ERR_SRC_NOT_
+        // SUPPORTED) quando o blob chega com type genérico
+        // (application/octet-stream) ou vazio — o download funciona, mas o
+        // player dá erro. Áudio do WhatsApp é OGG/Opus; forçamos um type
+        // válido de áudio pra o browser decodificar.
+        const isAudioMime = (t: string) => /^audio\//i.test(t);
+        const goodType = isAudioMime(raw.type)
+          ? raw.type
+          : mimeType && isAudioMime(mimeType)
+            ? mimeType
+            : 'audio/ogg';
+        const blob =
+          raw.type === goodType ? raw : new Blob([raw], { type: goodType });
         const objectUrl = URL.createObjectURL(blob);
         blobUrlRef.current = objectUrl;
         setResolvedSrc(objectUrl);
@@ -115,7 +128,7 @@ export function AudioPlayer({ src, mimeType, className }: AudioPlayerProps) {
       cancelled = true;
       cleanupBlob();
     };
-  }, [src]);
+  }, [src, mimeType]);
 
   const onLoadedMetadata = useCallback(() => {
     const el = audioRef.current;
