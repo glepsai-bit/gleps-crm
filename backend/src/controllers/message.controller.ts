@@ -123,6 +123,51 @@ async function resolveAudioSourceBuffer(
   );
 }
 
+/**
+ * FIX-SEND-MEDIA: resolve o fileUrl de um anexo (imagem/vídeo/documento) para
+ * um formato que a Evolution aceita no envio:
+ *  - data URL → devolve como está (sendMedia extrai o base64 puro);
+ *  - /api/attachments/<uuid> → lê do disco e monta uma data URL (a Evolution
+ *    NÃO consegue baixar a URL relativa protegida por JWT do nosso servidor);
+ *  - http(s):// público → passa direto.
+ * Documentos/mídia >5MB do composer viram /api/attachments/<id> — sem isto,
+ * a Evolution recebia uma URL que não resolve e o envio falhava.
+ */
+async function resolveMediaUrlForSend(
+  fileUrl: string,
+  accountId: string,
+  mimeTypeHint?: string | null
+): Promise<string> {
+  if (fileUrl.startsWith('data:')) return fileUrl;
+  if (/^https?:\/\//i.test(fileUrl)) return fileUrl;
+
+  const apiMatch = fileUrl.match(API_ATTACHMENT_URL);
+  if (apiMatch) {
+    const attachmentId = apiMatch[1];
+    const att = await prisma.attachment.findFirst({
+      where: {
+        id: attachmentId,
+        OR: [
+          { message: { conversation: { accountId } } },
+          { messageId: null, storagePath: { startsWith: `${accountId}/` } },
+        ],
+      },
+      select: { storagePath: true, storageStatus: true, mimeType: true },
+    });
+    if (!att || !att.storagePath || att.storageStatus !== 'downloaded') {
+      throw new ValidationError('Anexo ainda não materializado para envio');
+    }
+    const abs = attachmentStorageService.resolveAbsolutePath(att.storagePath);
+    const buf = await readFile(abs);
+    const mime = att.mimeType || mimeTypeHint || 'application/octet-stream';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  }
+
+  throw new ValidationError(
+    `fileUrl de mídia não suportado: aceita data:, http(s):// ou /api/attachments/<uuid>.`
+  );
+}
+
 // ============================================
 // Validation schemas
 // ============================================
@@ -434,12 +479,20 @@ async function dispatchOutboundToWhatsApp(
           instance,
         });
       } else {
+        // FIX-SEND-MEDIA: resolve /api/attachments (>5MB) pra base64; data URL
+        // e http passam direto. sendMedia extrai o base64 puro + mimetype.
+        const mediaUrl = await resolveMediaUrlForSend(
+          att.fileUrl,
+          accountId,
+          att.mimeType ?? null
+        );
         result = await evolutionService.sendMedia(accountId, {
           number: phone,
-          mediaUrl: att.fileUrl,
-          mediaType: att.fileType,
+          mediaUrl,
+          mediaType: att.fileType as 'image' | 'video' | 'document',
           caption: i === captionIndex && content ? content : undefined,
           fileName: att.fileName,
+          mimeType: att.mimeType ?? null,
           instance,
         });
       }

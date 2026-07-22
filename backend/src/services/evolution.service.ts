@@ -33,6 +33,8 @@ export interface SendMediaInput {
   mediaType: 'image' | 'video' | 'document';
   caption?: string;
   fileName?: string;
+  /** mimetype explícito — usado quando media é base64 puro (Evolution exige). */
+  mimeType?: string | null;
   instance?: string | null;
 }
 
@@ -441,11 +443,31 @@ class EvolutionService {
     const config = await this.getAccountConfig(accountId, input.instance);
     const number = this.normalizeNumber(input.number);
 
+    // FIX-SEND-MEDIA: a Evolution v2 espera no campo `media` uma URL http(s)
+    // pública OU base64 PURO. Uma data URL completa (`data:mime;base64,XXXX`)
+    // era rejeitada — por isso documentos/mídia inline (anexos <=5MB do
+    // composer viram data URL) falhavam com o ícone de erro e nunca chegavam
+    // ao WhatsApp. Aqui extraímos o base64 puro e o mimetype do data URL.
+    let media = input.mediaUrl;
+    let mimetype: string | null = input.mimeType ?? null;
+    if (/^data:/i.test(input.mediaUrl)) {
+      const comma = input.mediaUrl.indexOf(',');
+      const header = input.mediaUrl.slice(5, comma); // sem 'data:'
+      const mimeFromHeader = header.split(';')[0]?.trim();
+      if (mimeFromHeader) mimetype = mimeFromHeader;
+      media = input.mediaUrl.slice(comma + 1); // base64 puro
+    }
+
     const body: Record<string, any> = {
       number,
       mediatype: input.mediaType,
-      media: input.mediaUrl,
+      media,
     };
+
+    // Documento no WhatsApp precisa de mimetype pra abrir com o app certo.
+    if (mimetype) {
+      body.mimetype = mimetype;
+    }
 
     if (input.caption) {
       body.caption = input.caption;
