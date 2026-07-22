@@ -21,6 +21,8 @@ export interface UpdateUserInput {
   role?: UserRole;
   status?: UserStatus;
   permissions?: string[];
+  /** Reset de senha pelo admin/super_admin (Editar Usuário). */
+  password?: string;
 }
 
 export interface UserFilters {
@@ -225,6 +227,14 @@ class UserService {
       }
     }
 
+    // Reset de senha (admin/super_admin no "Editar Usuário"): faz o hash
+    // quando informado; sem senha, não toca no passwordHash. Antes o campo
+    // era descartado e a nova senha nunca era aplicada — o login continuava
+    // com a senha antiga ("Credenciais inválidas" ao tentar a nova).
+    const passwordHash = input.password
+      ? await authService.hashPassword(input.password)
+      : undefined;
+
     const user = await prisma.user.update({
       where: { id },
       data: {
@@ -233,6 +243,7 @@ class UserService {
         role: input.role,
         status: input.status,
         permissions,
+        ...(passwordHash ? { passwordHash } : {}),
       },
       select: {
         id: true,
@@ -603,6 +614,12 @@ class UserService {
       }
     }
 
+    // Reset de senha também no update escopado (admin da conta editando um
+    // agente/admin da própria conta). Mesmo motivo do update() global.
+    const passwordHash = input.password
+      ? await authService.hashPassword(input.password)
+      : undefined;
+
     const user = await prisma.user.update({
       where: { id },
       data: {
@@ -611,6 +628,7 @@ class UserService {
         role: input.role,
         status: input.status,
         permissions,
+        ...(passwordHash ? { passwordHash } : {}),
       },
       select: {
         id: true,

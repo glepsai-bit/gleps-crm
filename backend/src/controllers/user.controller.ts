@@ -23,6 +23,11 @@ const updateUserSchema = z.object({
   role: z.enum(['super_admin', 'admin', 'agent']).optional(),
   status: z.enum(['active', 'inactive', 'suspended']).optional(),
   permissions: z.array(z.string()).optional(),
+  // Reset de senha pelo admin/super_admin no "Editar Usuário". Antes o campo
+  // não existia no schema — o Zod descartava a senha nova silenciosamente e o
+  // login continuava com a senha antiga ("Credenciais inválidas" ao tentar a
+  // nova).
+  password: z.string().min(6, 'Senha deve ter pelo menos 6 caracteres').optional(),
 });
 
 const changePasswordSchema = z.object({

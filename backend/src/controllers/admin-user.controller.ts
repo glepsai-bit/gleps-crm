@@ -30,6 +30,9 @@ const updateUserSchema = z.object({
   role: manageableRole.optional(),
   status: z.enum(['active', 'inactive', 'suspended']).optional(),
   permissions: z.array(z.string()).optional(),
+  // Reset de senha pelo admin da conta (Editar Agente). Sem o campo, o Zod
+  // descartava a senha nova e ela nunca era aplicada.
+  password: z.string().min(6, 'Senha deve ter pelo menos 6 caracteres').optional(),
 });
 
 const listUsersSchema = z.object({
