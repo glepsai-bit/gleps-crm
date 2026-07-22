@@ -11,6 +11,7 @@ export interface CreateTeamInput {
   name: string;
   description?: string;
   allowAutoAssign?: boolean;
+  sharedVisibility?: boolean;
   businessHours?: any;
 }
 
@@ -88,6 +89,7 @@ class TeamService {
         name,
         description: input.description ?? null,
         allowAutoAssign: input.allowAutoAssign ?? true,
+        sharedVisibility: input.sharedVisibility ?? true,
         businessHours: input.businessHours ?? undefined,
       },
     });
@@ -129,6 +131,9 @@ class TeamService {
 
     if (partial.allowAutoAssign !== undefined) {
       data.allowAutoAssign = partial.allowAutoAssign;
+    }
+    if (partial.sharedVisibility !== undefined) {
+      data.sharedVisibility = partial.sharedVisibility;
     }
 
     if (partial.businessHours !== undefined) {

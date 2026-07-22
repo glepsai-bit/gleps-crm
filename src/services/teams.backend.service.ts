@@ -28,6 +28,7 @@ export interface Team {
   name: string;
   description: string | null;
   allowAutoAssign: boolean;
+  sharedVisibility: boolean;
   businessHours: any | null;
   createdAt: string;
   updatedAt: string;
@@ -39,6 +40,7 @@ export interface CreateTeamInput {
   name: string;
   description?: string;
   allowAutoAssign?: boolean;
+  sharedVisibility?: boolean;
   businessHours?: any;
 }
 
@@ -46,6 +48,7 @@ export interface UpdateTeamInput {
   name?: string;
   description?: string | null;
   allowAutoAssign?: boolean;
+  sharedVisibility?: boolean;
   businessHours?: any;
 }
 
@@ -75,6 +78,7 @@ function mapTeam(raw: any): Team {
     name: raw.name,
     description: raw.description ?? null,
     allowAutoAssign: raw.allowAutoAssign ?? raw.allow_auto_assign ?? false,
+    sharedVisibility: raw.sharedVisibility ?? raw.shared_visibility ?? true,
     businessHours: raw.businessHours ?? raw.business_hours ?? null,
     createdAt: raw.createdAt ?? raw.created_at,
     updatedAt: raw.updatedAt ?? raw.updated_at,

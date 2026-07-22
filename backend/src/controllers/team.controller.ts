@@ -13,6 +13,7 @@ const createTeamSchema = z.object({
   name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
   description: z.string().optional(),
   allowAutoAssign: z.boolean().optional(),
+  sharedVisibility: z.boolean().optional(),
   businessHours: z.any().optional(),
 });
 
@@ -20,6 +21,7 @@ const updateTeamSchema = z.object({
   name: z.string().min(2).optional(),
   description: z.preprocess((v) => (v === null ? undefined : v), z.string().optional()),
   allowAutoAssign: z.boolean().optional(),
+  sharedVisibility: z.boolean().optional(),
   businessHours: z.any().optional(),
 });
 

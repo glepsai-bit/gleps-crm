@@ -168,6 +168,7 @@ const teamFormSchema = z.object({
   name: z.string().trim().min(2, 'Nome deve ter pelo menos 2 caracteres'),
   description: z.string().trim().max(500, 'Máximo 500 caracteres').optional().or(z.literal('')),
   allowAutoAssign: z.boolean().default(false),
+  sharedVisibility: z.boolean().default(true),
 });
 type TeamFormData = z.infer<typeof teamFormSchema>;
 
@@ -197,7 +198,7 @@ export default function AdminTeamsPage() {
   // --- Form ---
   const form = useForm<TeamFormData>({
     resolver: zodResolver(teamFormSchema),
-    defaultValues: { name: '', description: '', allowAutoAssign: false },
+    defaultValues: { name: '', description: '', allowAutoAssign: false, sharedVisibility: true },
   });
 
   const {
@@ -210,6 +211,7 @@ export default function AdminTeamsPage() {
   } = form;
 
   const allowAutoAssignValue = watch('allowAutoAssign');
+  const sharedVisibilityValue = watch('sharedVisibility');
 
   // --- Queries ---
   const teamsQuery = useQuery<TeamWithMembers[]>({
@@ -295,7 +297,7 @@ export default function AdminTeamsPage() {
   // --- Handlers ---
   function openCreate() {
     setEditingTeam(null);
-    reset({ name: '', description: '', allowAutoAssign: false });
+    reset({ name: '', description: '', allowAutoAssign: false, sharedVisibility: true });
     setBusinessHours({ ...DEFAULT_BUSINESS_HOURS });
     setEditDialogOpen(true);
   }
@@ -306,6 +308,7 @@ export default function AdminTeamsPage() {
       name: team.name,
       description: team.description ?? '',
       allowAutoAssign: team.allowAutoAssign,
+      sharedVisibility: team.sharedVisibility,
     });
     setBusinessHours(parseBusinessHours(team.businessHours));
     setEditDialogOpen(true);
@@ -314,7 +317,7 @@ export default function AdminTeamsPage() {
   function closeEditDialog() {
     setEditDialogOpen(false);
     setEditingTeam(null);
-    reset({ name: '', description: '', allowAutoAssign: false });
+    reset({ name: '', description: '', allowAutoAssign: false, sharedVisibility: true });
     setBusinessHours({ ...DEFAULT_BUSINESS_HOURS });
   }
 
@@ -326,6 +329,7 @@ export default function AdminTeamsPage() {
       name: data.name.trim(),
       description: data.description?.trim() || undefined,
       allowAutoAssign: data.allowAutoAssign,
+      sharedVisibility: data.sharedVisibility,
       businessHours: hasBh ? bh : null,
     };
 
@@ -536,6 +540,27 @@ export default function AdminTeamsPage() {
                 <p className="text-xs text-muted-foreground">
                   Conversas atribuídas a este time serão distribuídas automaticamente
                   entre os membros disponíveis (round-robin).
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 rounded-lg border border-border p-3">
+              <Switch
+                id="team-shared-visibility"
+                checked={sharedVisibilityValue}
+                onCheckedChange={(checked) =>
+                  setValue('sharedVisibility', checked, { shouldDirty: true })
+                }
+              />
+              <div className="space-y-0.5">
+                <Label htmlFor="team-shared-visibility" className="cursor-pointer">
+                  Visibilidade compartilhada
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Ligado: todos os membros veem as conversas do time. Desligado
+                  (carteira individual): cada membro só vê as conversas
+                  atribuídas a ele — mesmo com a distribuição automática ligada.
+                  Ideal pra times comerciais com carteira própria.
                 </p>
               </div>
             </div>

@@ -1270,6 +1270,10 @@ model Team {
   name            String   @db.VarChar(120)
   description     String?  @db.Text
   allowAutoAssign Boolean  @default(true) @map("allow_auto_assign")
+  // Visibilidade das conversas do time (migration 0055):
+  //  true  = compartilhada (todos os membros veem) — comportamento legado
+  //  false = carteira individual (cada agente só vê as próprias atribuídas)
+  sharedVisibility Boolean @default(true) @map("shared_visibility")
   businessHours   Json?    @map("business_hours")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

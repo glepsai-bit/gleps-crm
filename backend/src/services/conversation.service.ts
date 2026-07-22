@@ -256,9 +256,12 @@ class ConversationService {
     // dono da conversa, ou foi adicionado como participante (CHAT-AUTH-H1).
     // super_admin/admin (ou chamadas internas sem actor) veem tudo da conta.
     if (actor && actor.role === 'agent' && !actor.permissions?.includes('conversations_all')) {
+      // Só times COMPARTILHADOS concedem visibilidade cruzada; times de
+      // carteira individual (sharedVisibility=false) NÃO expõem os leads dos
+      // outros membros — o agente só vê onde é assignee/participante.
       const teamIds = await prisma.teamMember
         .findMany({
-          where: { userId: actor.userId },
+          where: { userId: actor.userId, team: { sharedVisibility: true } },
           select: { teamId: true },
         })
         .then((rows) => rows.map((r) => r.teamId));
@@ -457,13 +460,20 @@ class ConversationService {
     if (participants.some((p) => p.userId === userId)) return;
 
     if (conversation.teamId) {
-      const teamMembers =
-        conversation.team?.members ??
-        (await prisma.teamMember.findMany({
-          where: { teamId: conversation.teamId },
-          select: { userId: true },
-        }));
-      if (teamMembers.some((m) => m.userId === userId)) return;
+      // Carteira individual: o time da conversa não concede acesso cruzado.
+      const team = await prisma.team.findUnique({
+        where: { id: conversation.teamId },
+        select: { sharedVisibility: true },
+      });
+      if (team?.sharedVisibility) {
+        const teamMembers =
+          conversation.team?.members ??
+          (await prisma.teamMember.findMany({
+            where: { teamId: conversation.teamId },
+            select: { userId: true },
+          }));
+        if (teamMembers.some((m) => m.userId === userId)) return;
+      }
     }
 
     throw new ForbiddenError('Você não tem acesso a esta conversa');
