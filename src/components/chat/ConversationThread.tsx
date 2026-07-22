@@ -1060,7 +1060,12 @@ export function ConversationThread({ conversationId, onBack }: ConversationThrea
   // exigiam clicar "Carregar mais" logo apos auto-scroll pousar no fim, mas o
   // botao ficava fora do viewport (topo). Com 200 cobrimos a maioria das
   // conversas sem pagineacao visivel. Virtualizacao real fica como follow-up.
-  const PAGE_SIZE = 200;
+  // PERF-RENDER: renderiza só as ÚLTIMAS 60 mensagens no primeiro paint (antes
+  // eram 200 — DOM pesado que travava a troca). O restante das 200 já
+  // carregadas fica em memória e "Carregar mais" revela +60 instantaneamente
+  // (sem nova rede). Reativa o botão de paginação, que na prática nunca
+  // aparecia (PAGE_SIZE == take do backend).
+  const PAGE_SIZE = 60;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
 
   // Reset paginacao ao trocar de conversa — sem isso, abrir uma conversa

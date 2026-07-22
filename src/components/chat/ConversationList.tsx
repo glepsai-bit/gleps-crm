@@ -207,6 +207,23 @@ export function ConversationList({
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // PERF-PREFETCH: ao passar o mouse / pressionar sobre a conversa, já busca o
+  // thread completo em background — quando o usuário clica, as mensagens já
+  // estão em cache (some o delay de "carregando mensagens" na 1ª visita).
+  // Idempotente: prefetchQuery não refaz se já há dado fresco (staleTime).
+  const prefetchThread = (conversationId: string) => {
+    queryClient.prefetchQuery({
+      queryKey: ['conversation', conversationId, 'thread-full'],
+      queryFn: () =>
+        conversationsBackendService.getConversation(conversationId, {
+          messages: true,
+          labels: true,
+          participants: true,
+        }),
+      staleTime: 30_000,
+    });
+  };
+
   // AUDIT-UNREAD-GHOST: o handler de socket abaixo é registrado uma vez
   // (deps [account?.id]) — ler selectedConversationId direto criaria closure
   // stale. Ref sempre atualizada resolve sem re-subscrever a cada seleção.
@@ -814,6 +831,9 @@ export function ConversationList({
                   key={conv.id}
                   type="button"
                   onClick={() => onSelectConversation(conv.id)}
+                  onMouseEnter={() => prefetchThread(conv.id)}
+                  onPointerDown={() => prefetchThread(conv.id)}
+                  onFocus={() => prefetchThread(conv.id)}
                   aria-current={isSelected ? 'true' : undefined}
                   aria-selected={isSelected}
                   data-state={isSelected ? 'active' : 'inactive'}
