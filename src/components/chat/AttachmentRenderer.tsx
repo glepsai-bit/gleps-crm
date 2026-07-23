@@ -39,12 +39,16 @@ function isProxyUrl(src: string | null): boolean {
  * Hook: se src é o proxy autenticado, baixa com Bearer e devolve blob URL.
  * Caso contrário (URL pública/legacy), retorna src direto.
  */
-function useAuthenticatedSrc(src: string | null): { resolvedSrc: string | null; loading: boolean; error: boolean } {
+function useAuthenticatedSrc(src: string | null): { resolvedSrc: string | null; loading: boolean; error: boolean; retry: () => void } {
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(
     isProxyUrl(src) ? null : src
   );
   const [loading, setLoading] = useState<boolean>(isProxyUrl(src));
   const [error, setError] = useState<boolean>(false);
+  // FIX-MEDIA-RETRY: bump pra re-tentar o fetch. Casa com o lazy-retry do
+  // backend (o proxy /api/attachments/<id> re-materializa on-demand), então
+  // "tentar de novo" pode resolver mídia que falhou no primeiro load.
+  const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     // AUDIT-DOUBLE-FETCH: src null ⇒ hook inerte (usado quando o thumb deve
@@ -93,9 +97,9 @@ function useAuthenticatedSrc(src: string | null): { resolvedSrc: string | null; 
       cancelled = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [src]);
+  }, [src, nonce]);
 
-  return { resolvedSrc, loading, error };
+  return { resolvedSrc, loading, error, retry: () => setNonce((n) => n + 1) };
 }
 
 export function AttachmentRenderer({ attachment }: AttachmentRendererProps) {
@@ -151,8 +155,11 @@ function ImageAttachment({
   }
   if (main.error && !src) {
     return (
-      <div className="w-[260px] rounded-md border border-destructive/40 bg-destructive/5 px-3 py-6 text-center text-xs text-destructive">
-        Falha ao carregar imagem
+      <div className="w-[260px] rounded-md border border-destructive/40 bg-destructive/5 px-3 py-5 text-center text-xs text-destructive space-y-2">
+        <p>Imagem não carregou</p>
+        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={main.retry}>
+          Tentar de novo
+        </Button>
       </div>
     );
   }
@@ -218,8 +225,11 @@ function VideoAttachment({
   }
   if (main.error || !main.resolvedSrc) {
     return (
-      <div className="w-[260px] rounded-md border border-destructive/40 bg-destructive/5 px-3 py-6 text-center text-xs text-destructive">
-        Falha ao carregar vídeo
+      <div className="w-[260px] rounded-md border border-destructive/40 bg-destructive/5 px-3 py-5 text-center text-xs text-destructive space-y-2">
+        <p>Vídeo não carregou</p>
+        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={main.retry}>
+          Tentar de novo
+        </Button>
       </div>
     );
   }

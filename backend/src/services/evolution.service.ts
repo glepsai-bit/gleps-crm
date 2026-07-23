@@ -933,7 +933,12 @@ class EvolutionService {
             message: { key: { id: input.messageKeyId } },
             convertToMp4: input.convertToMp4 === true,
           }),
-        }
+        },
+        // FIX-VIDEO-TIMEOUT: descriptografar e trafegar a mídia como base64 pode
+        // passar MUITO dos 15s padrão em vídeo grande (.mp4/.mov de 20MB+ viram
+        // ~27MB de base64) — era a causa de vídeo virar storageStatus='failed'
+        // e sumir do chat enquanto áudio (pequeno) passava. 60s, igual sendMedia.
+        60000
       );
       const base64 = raw?.base64 || raw?.data?.base64;
       if (typeof base64 !== 'string' || base64.length === 0) return null;

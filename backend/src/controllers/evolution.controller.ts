@@ -8,13 +8,9 @@ import { inboxChannelService } from '../services/inbox.service';
 import { conversationService } from '../services/conversation.service';
 import { csatService } from '../services/csat.service';
 import { trackingService } from '../services/tracking.service';
-import {
-  messageService,
-  MessageContentType,
-  CreateAttachmentInput,
-} from '../services/message.service';
+import { messageService } from '../services/message.service';
 import { logger } from '../utils/logger';
-import { WA_ENCRYPTED_MEDIA_SENTINEL } from '../services/attachment-storage.service';
+import { extractWhatsappMessagePayload } from '../utils/whatsapp-media.util';
 import { AuthenticatedRequest } from '../types';
 import { ForbiddenError, ErrorCodes } from '../utils/errors';
 import { emitInboxConnection } from '../socket';
@@ -649,142 +645,6 @@ export class EvolutionController {
   }
 
   /**
-   * Extrai conteúdo + tipo a partir do objeto `message` do Evolution.
-   * Cobre os formatos mais comuns: text, extendedText, image, video, document, audio.
-   * Para mídias, monta também o array de attachments com a melhor URL/base64 disponível.
-   */
-  private extractMessagePayload(rawMessage: any): {
-    content: string | null;
-    contentType: MessageContentType;
-    attachments: CreateAttachmentInput[];
-  } {
-    const m = rawMessage || {};
-
-    // texto puro
-    if (typeof m.conversation === 'string' && m.conversation.length > 0) {
-      return { content: m.conversation, contentType: 'text', attachments: [] };
-    }
-    if (typeof m.extendedTextMessage?.text === 'string') {
-      return {
-        content: m.extendedTextMessage.text,
-        contentType: 'text',
-        attachments: [],
-      };
-    }
-
-    // mídia (image, video, document, audio)
-    const buildAttachment = (
-      fileType: CreateAttachmentInput['fileType'],
-      node: any
-    ): CreateAttachmentInput | null => {
-      if (!node || typeof node !== 'object') return null;
-      const rawUrl: string | undefined =
-        node.url || node.mediaUrl || node.directPath || node.downloadUrl;
-      // FIX-INBOUND-MEDIA: o Baileys nem sempre popula `url` http(s) no
-      // imageMessage/documentMessage inbound (só a mediaKey cifrada, ou um
-      // directPath RELATIVO tipo /v/t62...enc). Antes, sem url http, o anexo
-      // era descartado (ou virava sourceUrl inútil sem scheme) e a imagem
-      // sumia. Regra: se há mediaKey (mídia cifrada do WhatsApp) e a url não
-      // é http(s) absoluta, usamos o sentinel — o materialize descriptografa
-      // via getBase64FromMediaMessage pelo externalId da mensagem (mesmo
-      // caminho já validado pro áudio inbound).
-      const hasMediaKey = Boolean(node.mediaKey || node.fileEncSha256);
-      const isHttpUrl = typeof rawUrl === 'string' && /^https?:\/\//i.test(rawUrl);
-      if (!isHttpUrl && !hasMediaKey) return null;
-      const sourceUrl = isHttpUrl ? (rawUrl as string) : WA_ENCRYPTED_MEDIA_SENTINEL;
-      return {
-        fileType,
-        // Bug A: fileUrl recebe a URL da Evolution só como placeholder.
-        // O message.service grava em sourceUrl e dispara materialize();
-        // após o download, fileUrl passa a ser '/api/attachments/<id>'.
-        fileUrl: sourceUrl,
-        sourceUrl,
-        fileName: node.fileName ?? null,
-        mimeType: node.mimetype ?? node.mimeType ?? null,
-        fileSize:
-          typeof node.fileLength === 'number'
-            ? node.fileLength
-            : typeof node.fileSize === 'number'
-              ? node.fileSize
-              : null,
-        thumbnailUrl: node.jpegThumbnail || node.thumbnailUrl || null,
-        duration: typeof node.seconds === 'number' ? node.seconds : null,
-      } as CreateAttachmentInput;
-    };
-
-    if (m.imageMessage) {
-      const att = buildAttachment('image', m.imageMessage);
-      return {
-        content: m.imageMessage.caption ?? null,
-        contentType: 'media',
-        attachments: att ? [att] : [],
-      };
-    }
-    if (m.videoMessage) {
-      const att = buildAttachment('video', m.videoMessage);
-      return {
-        content: m.videoMessage.caption ?? null,
-        contentType: 'media',
-        attachments: att ? [att] : [],
-      };
-    }
-    if (m.documentMessage) {
-      const att = buildAttachment('document', m.documentMessage);
-      return {
-        content: m.documentMessage.caption ?? m.documentMessage.fileName ?? null,
-        contentType: 'document',
-        attachments: att ? [att] : [],
-      };
-    }
-    if (m.audioMessage) {
-      const att = buildAttachment('audio', m.audioMessage);
-      return { content: null, contentType: 'audio', attachments: att ? [att] : [] };
-    }
-
-    // Sticker (WEBP estatico ou animado — recebimento apenas; nao renderizamos
-    // botao de envio por regra de negocio). A msg fica sem content, so com
-    // attachment fileType='sticker' — o AttachmentRenderer no frontend
-    // renderiza como <img> menor (~180x180) sem contorno de bubble.
-    if (m.stickerMessage) {
-      const att = buildAttachment('sticker', m.stickerMessage);
-      return { content: null, contentType: 'media', attachments: att ? [att] : [] };
-    }
-
-    // FIX-LOCATION: localização (estática ou ao vivo) não tinha handler — o
-    // cliente enviava o pino e nada chegava. Convertemos em texto com link do
-    // Google Maps (+ nome/endereço quando o WhatsApp manda).
-    const loc = m.locationMessage || m.liveLocationMessage;
-    if (loc && typeof loc === 'object') {
-      const lat = loc.degreesLatitude ?? loc.latitude;
-      const lng = loc.degreesLongitude ?? loc.longitude;
-      if (typeof lat === 'number' && typeof lng === 'number') {
-        const label = loc.name || loc.address || 'Localização';
-        const maps = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
-        const extra = loc.address && loc.address !== loc.name ? `\n${loc.address}` : '';
-        return {
-          content: `📍 ${label}${extra}\n${maps}`,
-          contentType: 'text',
-          attachments: [],
-        };
-      }
-    }
-
-    // Contato compartilhado (vCard) — vira texto com nome + telefone.
-    const contactMsg = m.contactMessage;
-    if (contactMsg && typeof contactMsg === 'object') {
-      const dn = contactMsg.displayName || 'Contato';
-      const phone = (contactMsg.vcard || '').match(/waid=([0-9]+)/)?.[1];
-      return {
-        content: `👤 ${dn}${phone ? `\n+${phone}` : ''}`,
-        contentType: 'text',
-        attachments: [],
-      };
-    }
-
-    return { content: null, contentType: 'text', attachments: [] };
-  }
-
-  /**
    * FIX-REPLY-INBOUND: extrai o stanzaId da mensagem CITADA quando o cliente
    * responde a uma mensagem no WhatsApp (contextInfo.stanzaId). Devolvido pra
    * resolver o replyToId — sem isso o CRM não mostrava qual msg foi citada.
@@ -1079,7 +939,7 @@ export class EvolutionController {
       return;
     }
 
-    const { content, contentType, attachments } = this.extractMessagePayload(data?.message);
+    const { content, contentType, attachments } = extractWhatsappMessagePayload(data?.message);
 
     // CHAT-REACTIONS: MESSAGES_UPSERT com reactionMessage vem SEM content nem
     // mídia — o payload real fica em message.reactionMessage. Tratamos antes
