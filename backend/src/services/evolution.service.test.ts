@@ -72,7 +72,9 @@ describe('evolutionService.sendMedia', () => {
     const body = JSON.parse((opts as any).body);
     expect(body.number).toBe('5534993383017');
     expect(body.mediatype).toBe('image');
-    expect(body.media).toBe('data:image/jpeg;base64,AAAA');
+    // 0037: a Evolution exige base64 PURO (sem prefixo data:) pra renderizar
+    // como bubble — o service extrai o payload do data URL. (teste estava stale)
+    expect(body.media).toBe('AAAA');
     expect(body.caption).toBe('legenda');
   });
 
