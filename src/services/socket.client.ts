@@ -141,6 +141,15 @@ export class ChatSocket {
   private currentToken: string | null = null;
 
   /**
+   * FIX-REALTIME-REJOIN: as salas de conversa são por-conexão no servidor e se
+   * perdem em CADA reconnect (deploy do backend, restart, blip de rede). Sem
+   * re-entrar, a thread aberta parava de receber `message:created` — a mensagem
+   * aparecia só na lista (poll 30s) e no chat só no poll de 60s. Rastreamos aqui
+   * as conversas em que o app quer estar e re-emitimos join no evento 'connect'.
+   */
+  private joinedConversations = new Set<string>();
+
+  /**
    * H-DASH-3: buffer de listeners que tentaram se registrar ANTES do
    * connect(). Em React, é comum que uma página filha do AdminLayout monte
    * e dispare seu useEffect (subscribe) antes do useEffect do layout pai
@@ -199,6 +208,17 @@ export class ChatSocket {
       withCredentials: true,
     });
 
+    // FIX-REALTIME-REJOIN: dispara no connect inicial E em cada reconnect
+    // (socket.io emite 'connect' nas duas situações). Re-entra em todas as
+    // salas de conversa ativas — de outro modo, após um rebuild do backend o
+    // cliente ficava fora da sala e a thread aberta não recebia mais mensagem
+    // em tempo real (só via polling). join no servidor é idempotente.
+    this.socket.on('connect', () => {
+      for (const id of this.joinedConversations) {
+        this.socket?.emit('join-conversation', { conversationId: id });
+      }
+    });
+
     // Flush dos listeners que tentaram subscribe antes do connect.
     this.flushPendingSubscriptions();
 
@@ -248,12 +268,14 @@ export class ChatSocket {
   /** Entra na sala de uma conversa (passa a receber 'message:created' dela). */
   joinConversation(conversationId: string): void {
     if (!conversationId) return;
+    this.joinedConversations.add(conversationId);
     this.socket?.emit('join-conversation', { conversationId });
   }
 
   /** Sai da sala da conversa. */
   leaveConversation(conversationId: string): void {
     if (!conversationId) return;
+    this.joinedConversations.delete(conversationId);
     this.socket?.emit('leave-conversation', { conversationId });
   }
 
