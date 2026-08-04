@@ -332,6 +332,7 @@ export const API_ENDPOINTS = {
     DEPENDENCIES: (id: string) => `/api/inboxes/${id}/dependencies`,
     WHATSAPP_CONNECT: (id: string) => `/api/inboxes/${id}/whatsapp/connect`,
     WHATSAPP_STATUS: (id: string) => `/api/inboxes/${id}/whatsapp/status`,
+    WHATSAPP_NUMBER: (id: string) => `/api/inboxes/${id}/whatsapp/number`,
     WHATSAPP_DISCONNECT: (id: string) =>
       `/api/inboxes/${id}/whatsapp/disconnect`,
   },

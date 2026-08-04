@@ -457,6 +457,47 @@ export class InboxChannelController {
    * Retorna o estado da conexão Evolution para o Inbox: open | connecting |
    * close | unknown.
    */
+  /**
+   * GET /inboxes/:id/whatsapp/number
+   * Número WhatsApp conectado da instância do inbox (E.164). Usado pra
+   * auto-preencher o telefone ao selecionar a instância (ex.: adicionar chip
+   * ao pool de aquecimento). Nunca erra: se a instância não estiver pareada ou
+   * a Evolution estiver offline, devolve number=null.
+   */
+  async getWhatsAppNumber(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const accountId = req.user!.accountId!;
+      const inbox = await inboxChannelService.get(id, accountId);
+
+      let number: string | null = null;
+      if (inbox.channelType === 'whatsapp' && inbox.evolutionInstance) {
+        try {
+          number = await evolutionService.getConnectedNumber(
+            accountId,
+            inbox.evolutionInstance
+          );
+        } catch {
+          number = null; // Evolution offline / instância não pareada
+        }
+      }
+
+      res.json({
+        data: {
+          inboxId: inbox.id,
+          evolutionInstance: inbox.evolutionInstance ?? null,
+          number,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getWhatsAppStatus(
     req: AuthenticatedRequest,
     res: Response,

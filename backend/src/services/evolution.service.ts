@@ -897,6 +897,26 @@ class EvolutionService {
   }
 
   /**
+   * Número WhatsApp conectado da instância, em E.164 (com +). O
+   * `connectionState` só devolve o estado; o dono/número vem do
+   * `fetchInstances`. Retorna null se a instância não estiver pareada ou a
+   * Evolution não expuser o número (a extração é defensiva — shapes variam
+   * entre versões).
+   */
+  async getConnectedNumber(
+    accountId: string,
+    instanceOverride?: string | null
+  ): Promise<string | null> {
+    const config = await this.getAccountConfig(accountId, instanceOverride);
+    const raw = await this.makeRequest<any>(
+      config,
+      `/instance/fetchInstances?instanceName=${encodeURIComponent(config.instance)}`,
+      { method: 'GET' }
+    );
+    return extractConnectedNumber(raw, config.instance);
+  }
+
+  /**
    * Baixa mídia de uma mensagem WhatsApp descriptografando via Evolution.
    *
    * Bug áudio (2026-07-03): o backend estava fazendo GET direto no `sourceUrl`
@@ -1236,3 +1256,36 @@ class EvolutionService {
 }
 
 export const evolutionService = new EvolutionService();
+
+/**
+ * Extrai o número WhatsApp conectado (E.164 com +) da resposta do
+ * `fetchInstances` da Evolution. Defensivo contra as variações de shape entre
+ * versões: a resposta pode ser array ou objeto único; o número pode vir como
+ * `ownerJid` / `owner` / `number` / `wid`, no nível raiz ou aninhado em
+ * `instance`. Retorna null quando nenhum candidato válido é encontrado.
+ */
+export function extractConnectedNumber(
+  raw: unknown,
+  instanceName?: string
+): string | null {
+  const list: any[] = Array.isArray(raw) ? raw : raw ? [raw as any] : [];
+  const nameOf = (i: any): string | undefined =>
+    i?.name ?? i?.instanceName ?? i?.instance?.instanceName ?? i?.instance?.name;
+  const pick =
+    (instanceName ? list.find((i) => nameOf(i) === instanceName) : undefined) ??
+    list[0];
+  if (!pick) return null;
+  const src = (pick as any).instance ?? pick;
+  const candidate =
+    src?.ownerJid ??
+    src?.owner ??
+    src?.number ??
+    src?.wid ??
+    (pick as any)?.ownerJid ??
+    (pick as any)?.owner ??
+    (pick as any)?.number ??
+    null;
+  if (!candidate) return null;
+  const digits = String(candidate).replace(/@.*/, '').replace(/\D+/g, '');
+  return digits ? `+${digits}` : null;
+}

@@ -64,6 +64,14 @@ router.get(
   (req, res, next) => inboxChannelController.getWhatsAppStatus(req, res, next)
 );
 
+// Número conectado da instância (auto-preencher telefone ao selecionar a
+// instância — ex.: adicionar chip ao pool de aquecimento).
+router.get(
+  '/:id/whatsapp/number',
+  requireRole('super_admin', 'admin', 'agent'),
+  (req, res, next) => inboxChannelController.getWhatsAppNumber(req, res, next)
+);
+
 router.post(
   '/:id/whatsapp/disconnect',
   requireRole('super_admin', 'admin', 'agent'),

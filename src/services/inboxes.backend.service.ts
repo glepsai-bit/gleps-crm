@@ -148,6 +148,19 @@ export const inboxesBackendService = {
     return mapInbox(unwrap(response));
   },
 
+  /**
+   * Número WhatsApp conectado da instância deste inbox (E.164), buscado sob
+   * demanda na Evolution. Retorna null se não estiver pareado / offline — o
+   * caller decide o fallback (ex.: deixar o usuário digitar).
+   */
+  async getWhatsappNumber(id: string): Promise<string | null> {
+    const response = await apiClient.get<any>(
+      API_ENDPOINTS.INBOXES.WHATSAPP_NUMBER(id)
+    );
+    const data = unwrap<{ number?: string | null }>(response);
+    return data?.number ?? null;
+  },
+
   async createInbox(body: CreateInboxInput): Promise<Inbox> {
     const response = await apiClient.post<any>(API_ENDPOINTS.INBOXES.CREATE, body);
     return mapInbox(unwrap(response));

@@ -287,6 +287,8 @@ export default function AdminWarmupPage() {
   const [deletingPool, setDeletingPool] = useState<WarmupPool | null>(null);
 
   const [numberDialogOpen, setNumberDialogOpen] = useState(false);
+  // Auto-preenchimento do telefone a partir da instância Evolution selecionada.
+  const [loadingNumber, setLoadingNumber] = useState(false);
   const [deletingNumber, setDeletingNumber] = useState<WarmupNumber | null>(null);
 
   const [statsNumberId, setStatsNumberId] = useState<string | null>(null);
@@ -1192,11 +1194,32 @@ export default function AdminWarmupPage() {
               <Label>Instância Evolution</Label>
               <Select
                 value={numberForm.watch('evolutionInstance')}
-                onValueChange={(v) =>
+                onValueChange={(v) => {
                   numberForm.setValue('evolutionInstance', v, {
                     shouldValidate: true,
-                  })
-                }
+                  });
+                  // Auto-preenche o telefone com o número conectado da
+                  // instância — o usuário não deve digitar na mão. Busca sob
+                  // demanda; se falhar/offline, deixa o campo pro usuário.
+                  const inbox = whatsappInstances.find(
+                    (i) => i.evolutionInstance === v
+                  );
+                  if (!inbox) return;
+                  setLoadingNumber(true);
+                  inboxesBackendService
+                    .getWhatsappNumber(inbox.id)
+                    .then((number) => {
+                      if (number) {
+                        numberForm.setValue('phoneE164', number, {
+                          shouldValidate: true,
+                        });
+                      }
+                    })
+                    .catch(() => {
+                      /* silencioso: fallback pro input manual */
+                    })
+                    .finally(() => setLoadingNumber(false));
+                }}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Selecione um canal WhatsApp" />
@@ -1231,8 +1254,17 @@ export default function AdminWarmupPage() {
               <Label>Telefone (E.164)</Label>
               <Input
                 {...numberForm.register('phoneE164')}
-                placeholder="+5534993383017"
+                placeholder={
+                  loadingNumber
+                    ? 'Puxando o número da instância…'
+                    : '+5534993383017'
+                }
               />
+              {loadingNumber && (
+                <p className="text-xs text-muted-foreground">
+                  Puxando o número da instância…
+                </p>
+              )}
               {numberForm.formState.errors.phoneE164 && (
                 <p className="text-xs text-destructive">
                   {numberForm.formState.errors.phoneE164.message}
