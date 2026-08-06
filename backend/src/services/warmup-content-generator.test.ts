@@ -101,6 +101,23 @@ describe('WarmupContentGenerator — useAi=false (default)', () => {
   });
 });
 
+describe('WarmupContentGenerator — FIX-WARMUP-NO-TEMPLATE (sem template não trava)', () => {
+  it('useAi=false e ZERO template de texto -> greeting hardcoded (content nunca vazio)', async () => {
+    // Slate limpo de templates de texto pra exercitar o fallback hardcoded —
+    // o bug era: sem WarmupTemplate, o gerador devolvia content='' e o tick
+    // pulava com 'no-template' (aquecimento travado em 0 enviadas).
+    await prismaTest.warmupTemplate.deleteMany({ where: { type: 'text' } });
+    const { pool, number } = await setupAccountAndPool({ useAi: false });
+
+    const out = await warmupContentGenerator.pick(pool, null, number);
+
+    expect(out.type).toBe('text');
+    expect(out.content).toBeTruthy(); // antes vinha ''
+    expect(out.content.length).toBeGreaterThan(0);
+    expect(out.source).toBe('fallback'); // veio do hardcoded, não do banco
+  });
+});
+
 describe('WarmupContentGenerator — useAi=true + provider habilitado + IA OK', () => {
   it('OpenAI retorna conteudo -> source=openai', async () => {
     const { pool, number } = await setupAccountAndPool({

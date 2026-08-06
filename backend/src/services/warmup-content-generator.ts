@@ -74,6 +74,36 @@ function pickTypeByWeights(weights: TypeWeights): WarmupMessageType {
 }
 
 const ALLOWED_TONES: ReadonlyArray<WarmupTone> = ['casual', 'formal', 'gym', 'clinic'];
+
+/**
+ * FIX-WARMUP-NO-TEMPLATE: fallback de texto hardcoded. Sem isto, uma account
+ * que nunca cadastrou WarmupTemplate (nem rodou o seed) trava o aquecimento em
+ * 0 enviadas — o gerador devolvia content vazio e o tick pulava com
+ * 'no-template' indefinidamente. Como o aquecimento é tráfego sintético entre
+ * os próprios chips, mensagens casuais curtas bastam pra gerar volume natural.
+ */
+const DEFAULT_TEXT_FALLBACKS: readonly string[] = [
+  'oi, tudo bem?',
+  'bom dia!',
+  'e aí, como você tá?',
+  'tudo tranquilo por aí?',
+  'opa, beleza?',
+  'como foi o dia?',
+  'tudo certo?',
+  'oi! alguma novidade?',
+  'boa tarde',
+  'fala! tudo bem contigo?',
+  'e aí, tudo em cima?',
+  'oi, sumido! como vai?',
+  'tudo joia?',
+  'como tá a semana?',
+  'oi, tudo bem por aí?',
+  'salve! tudo certo?',
+  'e aí, firmeza?',
+  'bom te falar 🙂',
+  'tudo bem? bom te ver por aqui',
+  'oi 😄 como vc tá?',
+];
 function normalizeTone(tone?: string | null): WarmupTone {
   if (tone && (ALLOWED_TONES as readonly string[]).includes(tone)) {
     return tone as WarmupTone;
@@ -191,24 +221,23 @@ export class WarmupContentGenerator {
     });
 
     if (templates.length === 0) {
-      // V2 fail-soft: se for midia (audio/sticker/image) e a account ainda
-      // nao subiu nenhum template desse tipo, cai pra text greeting/response.
-      // Evita loop infinito com _depth guard.
-      if ((type === 'audio' || type === 'sticker' || type === 'image') && _depth < 1) {
-        logger.debug('[warmup-content] no media available for type, falling back to text', {
-          type,
-          currentDay,
-          accountId,
-        });
+      // FIX-WARMUP-NO-TEMPLATE: sem template do tipo sorteado, caímos no text
+      // fallback — que agora SEMPRE tem conteúdo (templates do banco OU
+      // greetings hardcoded). Antes, text/reaction sem template devolvia vazio
+      // e o tick pulava com 'no-template' pra sempre (aquecimento travado em 0
+      // quando a account não tem WarmupTemplate). Vale pra todos os tipos;
+      // _depth guard evita recursão.
+      if (_depth < 1) {
+        if (type === 'audio' || type === 'sticker' || type === 'image') {
+          logger.debug('[warmup-content] sem mídia do tipo, fallback pra texto', {
+            type,
+            currentDay,
+            accountId,
+          });
+        }
         return this.pickTextFallback(currentDay, accountId);
       }
-      // Sem template — retorna placeholder vazio com source template; caller
-      // pode tratar como skip se quiser.
-      return {
-        source: 'template',
-        type,
-        content: '',
-      };
+      return { source: 'template', type, content: '' };
     }
 
     const total = templates.reduce((s, t) => s + (t.weight ?? 1), 0);
@@ -267,7 +296,15 @@ export class WarmupContentGenerator {
     });
 
     if (templates.length === 0) {
-      return { source: 'template', type: 'text', content: '' };
+      // FIX-WARMUP-NO-TEMPLATE: sem WarmupTemplate de texto (account nunca
+      // rodou o seed, ou não há template da categoria do dia), o retorno vazio
+      // travava o aquecimento em 0 enviadas. Greeting hardcoded garante que o
+      // ciclo sempre tem o que enviar.
+      const content =
+        DEFAULT_TEXT_FALLBACKS[
+          Math.floor(Math.random() * DEFAULT_TEXT_FALLBACKS.length)
+        ];
+      return { source: 'fallback', type: 'text', content };
     }
 
     const total = templates.reduce((s, t) => s + (t.weight ?? 1), 0);
