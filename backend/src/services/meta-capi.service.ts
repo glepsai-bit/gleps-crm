@@ -9,6 +9,7 @@
  *
  * Host fixo (graph.facebook.com) — sem SSRF surface. Nunca logamos o token.
  */
+import { createHash } from 'crypto';
 import { logger } from '../utils/logger';
 
 const GRAPH_BASE = 'https://graph.facebook.com/v21.0';
@@ -28,6 +29,10 @@ export interface CapiEventInput {
   eventTime: number;
   value?: number;
   currency?: string;
+  /** ID único do evento p/ deduplicação no Meta (evita contar em dobro). */
+  eventId?: string;
+  /** Telefone do lead — enviado HASHEADO em user_data.ph (2º sinal de match). */
+  phone?: string | null;
 }
 
 export interface AdSpendRow {
@@ -38,21 +43,40 @@ export interface AdSpendRow {
   spend: number;
 }
 
+/**
+ * Normaliza + SHA-256 do telefone pro campo user_data.ph do CAPI (padrão Meta:
+ * só dígitos com código do país, sem símbolos; hash hex minúsculo). Dá ao Meta
+ * um 2º sinal de match além do ctwa_clid — recupera leads que o clid sozinho
+ * não casa. Retorna null quando não há telefone utilizável.
+ */
+export function hashPhone(phone: string | null | undefined): string | null {
+  const digits = (phone || '').replace(/\D+/g, '');
+  if (!digits) return null;
+  return createHash('sha256').update(digits).digest('hex');
+}
+
 class MetaCapiService {
   /**
    * Envia UM evento de conversão. Lança em falha (o caller decide se é
    * best-effort) — a mensagem de erro nunca inclui o token.
    */
   async sendEvent(creds: CapiCredentials, input: CapiEventInput): Promise<unknown> {
+    const userData: Record<string, unknown> = { ctwa_clid: input.ctwaClid };
+    // Telefone hasheado: 2º sinal de match além do clid (padrão CAPI, array).
+    const ph = hashPhone(input.phone);
+    if (ph) userData.ph = [ph];
+
     const event: Record<string, unknown> = {
       event_name: input.eventName,
       event_time: input.eventTime,
       action_source: 'business_messaging',
       messaging_channel: 'whatsapp',
-      user_data: {
-        ctwa_clid: input.ctwaClid,
-      },
+      user_data: userData,
     };
+    // event_id: deduplicação — se o mesmo evento reenviar (retry/reconnect), o
+    // Meta conta uma vez só.
+    if (input.eventId) event.event_id = input.eventId;
+
     if (input.eventName === 'Purchase' || input.value != null) {
       event.custom_data = {
         value: input.value ?? 0,

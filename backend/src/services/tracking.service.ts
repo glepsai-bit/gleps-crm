@@ -117,6 +117,17 @@ class TrackingService {
         },
       });
 
+      // Telefone do lead p/ o match secundário (user_data.ph). Best-effort:
+      // uma falha aqui não pode impedir o envio do evento.
+      const contact = input.contactId
+        ? await prisma.contact
+            .findUnique({
+              where: { id: input.contactId },
+              select: { telefone: true },
+            })
+            .catch(() => null)
+        : null;
+
       try {
         await metaCapiService.sendEvent(
           { accessToken: config.accessToken, pixelId: config.pixelId },
@@ -126,6 +137,9 @@ class TrackingService {
             eventTime: Math.floor(Date.now() / 1000),
             value: input.value ?? undefined,
             currency: input.currency ?? undefined,
+            // event_id estável = id da row de log; retries não contam em dobro.
+            eventId: row.id,
+            phone: contact?.telefone ?? null,
           }
         );
         await prisma.trackingEvent.update({
