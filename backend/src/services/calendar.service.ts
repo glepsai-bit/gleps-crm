@@ -266,6 +266,8 @@ class CalendarService {
             ctwaClid: ctwa.ctwaClid,
             conversationId: ctwa.conversationId,
             contactId: input.contactId,
+            sourceType: 'calendar_event',
+            sourceId: event.id,
           });
         })
         .catch(() => undefined);

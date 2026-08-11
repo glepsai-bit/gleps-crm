@@ -1889,11 +1889,17 @@ model TrackingEvent {
   ctwaClid       String    @map("ctwa_clid") @db.Text
   value          Decimal?  @db.Decimal(12, 2)
   currency       String?   @db.VarChar(8)
-  status         String    @default("pending") @db.VarChar(20) // pending | sent | failed
+  status         String    @default("pending") @db.VarChar(20) // pending | sent | failed | skipped
   error          String?   @db.Text
   sentAt         DateTime? @map("sent_at") @db.Timestamptz
+  // Origem do evento no CRM — conversation | calendar_event | sale.
+  // É o que torna a reconciliação idempotente: sem isso não dá pra saber se
+  // uma reunião/venda já teve o evento enviado, e o backfill duplicaria.
+  sourceType     String?   @map("source_type") @db.VarChar(24)
+  sourceId       String?   @map("source_id") @db.Uuid
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
+  @@unique([accountId, eventName, sourceId], map: "tracking_events_account_event_source_key")
   @@index([accountId, createdAt])
   @@index([accountId, eventName])
   @@index([status])

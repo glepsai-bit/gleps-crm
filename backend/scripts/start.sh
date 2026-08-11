@@ -181,6 +181,69 @@ else
 fi
 fi
 
+# ---- 2.5. Rede de seguranca do schema de tracking ----
+# O passo 2 tolera falha de migration e sobe o servidor mesmo assim
+# ("funcionalidade parcial"). Isso e aceitavel pra features antigas, mas o
+# modulo de Tracking LE source_type/source_id em toda query: sem as colunas o
+# Prisma quebra em runtime na pagina inteira, nao so numa parte.
+#
+# Este bloco garante as colunas de forma idempotente, independente do
+# resultado do migrate deploy. Tudo e IF NOT EXISTS; rodar N vezes e inofensivo.
+echo ""
+echo "🛡️  Garantindo schema do modulo de tracking..."
+
+TRACKING_DDL=$(cat <<'SQL'
+DO $$
+BEGIN
+  IF to_regclass('public.tracking_events') IS NULL THEN
+    RAISE NOTICE 'tracking_events ainda nao existe - nada a garantir';
+    RETURN;
+  END IF;
+
+  ALTER TABLE tracking_events ADD COLUMN IF NOT EXISTS source_type VARCHAR(24);
+  ALTER TABLE tracking_events ADD COLUMN IF NOT EXISTS source_id   UUID;
+
+  -- Lead e 1:1 com a conversa, entao da pra inferir a origem com seguranca.
+  -- DISTINCT ON garante uma linha por (conta, conversa): se o historico tiver
+  -- Leads duplicados, so o mais antigo recebe a origem e o indice unico abaixo
+  -- nao quebra. Reuniao e venda nao sao inferiveis - ficam NULL.
+  UPDATE tracking_events te
+     SET source_type = 'conversation',
+         source_id   = te.conversation_id
+    FROM (
+      SELECT DISTINCT ON (account_id, conversation_id) id
+        FROM tracking_events
+       WHERE event_name = 'Lead'
+         AND source_id IS NULL
+         AND conversation_id IS NOT NULL
+       ORDER BY account_id, conversation_id, created_at ASC
+    ) primeiros
+   WHERE te.id = primeiros.id
+     -- Guarda contra colisao com linha que JA tem essa origem (a migration
+     -- 0056 faz o mesmo backfill; um dos dois roda primeiro). Sem isso o
+     -- UPDATE violaria o indice unico.
+     AND NOT EXISTS (
+       SELECT 1 FROM tracking_events x
+        WHERE x.account_id = te.account_id
+          AND x.event_name = te.event_name
+          AND x.source_id  = te.conversation_id
+     );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS tracking_events_account_event_source_key
+    ON tracking_events (account_id, event_name, source_id);
+  CREATE INDEX IF NOT EXISTS tracking_events_status_idx
+    ON tracking_events (status);
+END $$;
+SQL
+)
+
+if echo "$TRACKING_DDL" | npx prisma db execute --stdin > /dev/null 2>&1; then
+    echo "✅ Schema de tracking garantido"
+else
+    echo "⚠️  Nao foi possivel garantir o schema de tracking — a pagina de"
+    echo "    Tracking de Anuncios pode falhar. Demais modulos seguem normais."
+fi
+
 # ---- 3. Executar seed (se habilitado) ----
 # Se ja temos marker de reset gravado, NUNCA rodamos o seed legado (que
 # cria 3 super_admins + Account demo "Clinica Vida Plena" e contamina o

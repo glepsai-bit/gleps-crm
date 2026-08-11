@@ -886,6 +886,10 @@ export class EvolutionController {
               ctwaClid: referral.ctwaClid,
               conversationId: conversation.id,
               contactId: conversation.contactId ?? null,
+              // Origem = a própria conversa. É o que deixa a reconciliação
+              // saber que este Lead já foi enviado.
+              sourceType: 'conversation',
+              sourceId: conversation.id,
             });
           }
         } else {

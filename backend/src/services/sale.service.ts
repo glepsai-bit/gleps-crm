@@ -314,6 +314,8 @@ class SaleService {
             contactId: updatedSale.contactId,
             value: Number(updatedSale.valor),
             currency: 'BRL',
+            sourceType: 'sale',
+            sourceId: updatedSale.id,
           });
         })
         .catch(() => undefined);

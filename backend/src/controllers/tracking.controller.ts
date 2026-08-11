@@ -18,6 +18,12 @@ const configBodySchema = z.object({
   sendPurchase: z.boolean().optional(),
 });
 
+const reconcileBodySchema = z.object({
+  days: z.coerce.number().int().min(1).max(365).optional(),
+  /** Sem confirm=true a reconciliação roda em dry-run e não envia nada. */
+  confirm: z.boolean().optional(),
+});
+
 const funnelQuerySchema = z.object({
   from: z.string().datetime({ offset: true }).or(z.string().datetime()).optional(),
   to: z.string().datetime({ offset: true }).or(z.string().datetime()).optional(),
@@ -85,6 +91,47 @@ export class TrackingController {
       const accountId = req.user!.accountId!;
       const limit = Number(req.query.limit) || 50;
       const data = await trackingService.listRecentEvents(accountId, limit);
+      res.json({ data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/tracking/verify — diagnóstico read-only.
+   * Testa os ativos na Meta e mostra o que o CRM tem e a Meta não recebeu.
+   * NÃO envia nada: é seguro rodar quantas vezes quiser.
+   */
+  async verify(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const accountId = req.user!.accountId!;
+      const { days } = reconcileBodySchema.parse(req.body ?? {});
+
+      const checks = await trackingService.verifyConnection(accountId);
+      // O dry-run depende da conexão ativa; sem ela mostramos só os checks.
+      let report = null;
+      try {
+        report = await trackingService.reconcile(accountId, { days, dryRun: true });
+      } catch (err) {
+        if (!(err instanceof ValidationError)) throw err;
+      }
+
+      res.json({ data: { checks, report } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/tracking/reconcile — ENVIA à Meta os eventos que faltaram.
+   * Ação explícita e outward-facing: o padrão é dry-run, e só executa com
+   * confirm=true no corpo.
+   */
+  async reconcile(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const accountId = req.user!.accountId!;
+      const { days, confirm } = reconcileBodySchema.parse(req.body ?? {});
+      const data = await trackingService.reconcile(accountId, { days, dryRun: !confirm });
       res.json({ data });
     } catch (error) {
       next(error);
