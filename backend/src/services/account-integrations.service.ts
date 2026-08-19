@@ -22,6 +22,7 @@ import { NotFoundError } from '../utils/errors';
 import { eventService } from './event.service';
 import { openaiProvider } from './ai/openai-provider';
 import { anthropicProvider } from './ai/anthropic-provider';
+import { invalidateAccountKeys } from './ai/client-factory';
 
 export type IntegrationsKey = 'openaiApiKey' | 'anthropicApiKey';
 export const INTEGRATION_KEYS: readonly IntegrationsKey[] = [
@@ -104,6 +105,13 @@ class AccountIntegrationsService {
 
     if (Object.keys(data).length > 0) {
       await prisma.account.update({ where: { id: accountId }, data });
+
+      // T-027: o atendimento IA cacheia a chave da conta por 1min pra não fazer
+      // um SELECT por mensagem. Sem derrubar esse cache aqui, quem acabou de
+      // cadastrar a chave continua tomando "chave ausente" por até um minuto —
+      // e o worker de indexação, que roda a cada 30s, marca o documento como
+      // 'failed' nesse intervalo.
+      invalidateAccountKeys(accountId);
 
       // Auditoria: registra que houve update mas NUNCA loga o valor.
       await eventService.create({

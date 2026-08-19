@@ -267,6 +267,16 @@ async function chatAnthropic(
     return { role: m.role as 'user' | 'assistant', content: m.content };
   });
 
+  // A Messages API EXIGE que a primeira mensagem seja 'user' — começar com
+  // 'assistant' é 400. O histórico do CRM viola isso o tempo todo: conversa
+  // aberta por disparo começa com o bot, e mesmo conversa iniciada pelo lead é
+  // cortada pela janela de historyLimit num ponto arbitrário. A OpenAI aceita,
+  // então o corte fica aqui, no adapter da restrição, e não no chamador.
+  while (messages.length > 0 && messages[0].role === 'assistant') messages.shift();
+  if (messages.length === 0) {
+    throw new AppError('Nenhuma mensagem de usuário para enviar ao modelo.', 400);
+  }
+
   const body: Anthropic.MessageCreateParamsNonStreaming = {
     model,
     max_tokens: req.maxTokens ?? 1024,
@@ -286,11 +296,37 @@ async function chatAnthropic(
   }
   if (req.jsonSchema) {
     body.output_config = {
-      format: { type: 'json_schema', schema: req.jsonSchema.schema },
+      format: { type: 'json_schema', schema: sanitizeSchemaForStrictOutput(req.jsonSchema.schema) },
     } as Anthropic.MessageCreateParams['output_config'];
   }
 
-  const res = await client.messages.create(body);
+  let res: Anthropic.Message;
+  try {
+    res = await client.messages.create(body);
+  } catch (err) {
+    // A saída estruturada da Anthropic é sempre ESTRITA e o schema vem do
+    // usuário (campo livre na tela do agente). O sanitize acima cobre o que dá
+    // pra prever; o que sobrar não pode derrubar o atendimento — cai pro modo
+    // instrução, onde o schema vira texto no prompt e a validação + rodada de
+    // autocorreção do ai-agent.service seguram o formato.
+    if (req.jsonSchema && isSchemaRejection(err)) {
+      logger.warn('[ai/chat] schema rejeitado pela Anthropic; caindo pro modo instrução', {
+        model,
+        error: err instanceof Error ? err.message.slice(0, 300) : String(err),
+      });
+      delete body.output_config;
+      body.system = [
+        req.system ?? '',
+        'Responda EXCLUSIVAMENTE com um JSON válido que satisfaça este JSON Schema, sem texto ao redor e sem bloco de código:',
+        JSON.stringify(req.jsonSchema.schema),
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      res = await client.messages.create(body);
+    } else {
+      throw err;
+    }
+  }
 
   // Refusal: HTTP 200 com stop_reason 'refusal' e content vazio ou parcial —
   // os classificadores de segurança recusam antes de gerar. Não é exceção do
@@ -327,6 +363,68 @@ async function chatAnthropic(
     ),
     finishReason: res.stop_reason ?? 'unknown',
   };
+}
+
+/**
+ * Palavras-chave de JSON Schema que a saída estruturada estrita NÃO aceita.
+ * Restrição numérica/de tamanho é o caso comum: quem cola um schema de
+ * validação (o do Output_Parser do n8n, por exemplo) traz `minimum`/`maximum`
+ * junto e a chamada inteira é rejeitada.
+ */
+const UNSUPPORTED_SCHEMA_KEYWORDS = [
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+  'minLength',
+  'maxLength',
+  'pattern',
+  'minItems',
+  'maxItems',
+  'uniqueItems',
+  'minProperties',
+  'maxProperties',
+  'default',
+];
+
+/**
+ * Deixa o schema do usuário aceitável pro modo estrito: remove as palavras-chave
+ * não suportadas e fecha todo objeto com `additionalProperties: false` (exigido
+ * em cada nível). Não altera o schema original — o validador interno continua
+ * usando a versão completa, então as restrições removidas seguem valendo na
+ * checagem que roda depois da resposta.
+ */
+export function sanitizeSchemaForStrictOutput(schema: Record<string, unknown>): Record<string, unknown> {
+  const walk = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(walk);
+    if (typeof node !== 'object' || node === null) return node;
+
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (UNSUPPORTED_SCHEMA_KEYWORDS.includes(key)) continue;
+      out[key] = walk(value);
+    }
+    if (out.properties && typeof out.properties === 'object') {
+      out.additionalProperties = false;
+    }
+    return out;
+  };
+
+  return walk(schema) as Record<string, unknown>;
+}
+
+/** O erro é do schema/saída estruturada (e não rede, cota ou credencial)? */
+function isSchemaRejection(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  if (status !== 400) return false;
+  const msg = ((err as { message?: string })?.message ?? '').toLowerCase();
+  return (
+    msg.includes('schema') ||
+    msg.includes('output_config') ||
+    msg.includes('output format') ||
+    msg.includes('additionalproperties')
+  );
 }
 
 /**

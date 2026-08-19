@@ -19,6 +19,8 @@ export type DocSourceType = 'text' | 'file' | 'url';
 
 const MAX_CONTENT_CHARS = 400_000;
 const MAX_DOCS_PER_TICK = 3;
+/** Acima disso, um doc em 'indexing' é considerado órfão de restart, não trabalho em curso. */
+const STALE_INDEXING_MS = 15 * 60 * 1000;
 
 export interface CreateBaseInput {
   name: string;
@@ -211,6 +213,8 @@ class KnowledgeService {
    * chunks duplicados. O mutex do cron só protege dentro de um processo.
    */
   async processPendingDocs(limit = MAX_DOCS_PER_TICK): Promise<{ ok: number; failed: number }> {
+    await this.requeueStaleIndexing();
+
     const candidates = await prisma.knowledgeDoc.findMany({
       where: { status: 'pending' },
       orderBy: { createdAt: 'asc' },
@@ -243,6 +247,27 @@ class KnowledgeService {
     }
 
     return { ok, failed };
+  }
+
+  /**
+   * Devolve pra fila documentos travados em 'indexing'.
+   *
+   * O claim pending→indexing não sobrevive a um restart: se o processo cai no
+   * meio da indexação (deploy, OOM, Ctrl+C), o documento fica 'indexing' pra
+   * sempre — a tela gira indefinidamente e a base nunca recebe os trechos, sem
+   * nenhum erro em lugar nenhum. O corte por tempo é o que distingue "morto" de
+   * "outra réplica está trabalhando nele agora": indexação real leva dezenas de
+   * segundos, nunca 15 minutos.
+   */
+  private async requeueStaleIndexing(): Promise<void> {
+    const cutoff = new Date(Date.now() - STALE_INDEXING_MS);
+    const { count } = await prisma.knowledgeDoc.updateMany({
+      where: { status: 'indexing', updatedAt: { lt: cutoff } },
+      data: { status: 'pending' },
+    });
+    if (count > 0) {
+      logger.warn('[knowledge] documentos travados em indexing devolvidos à fila', { count });
+    }
   }
 
   /** Indexação de um doc já reclamado. Idempotente: apaga e regrava os trechos. */
