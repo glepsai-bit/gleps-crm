@@ -244,6 +244,32 @@ else
     echo "    Tracking de Anuncios pode falhar. Demais modulos seguem normais."
 fi
 
+# ---- 2.6. Rede de seguranca do schema de Atendimento IA (T-027) ----
+# Mesma razao do bloco de tracking acima: o passo 2 tolera falha de migration e
+# sobe o servidor assim mesmo. Se a migration 0057 nao aplicar, as telas de
+# Agentes IA e Conhecimento quebram inteiras (o Prisma nao acha as tabelas).
+#
+# O auto-recovery de P3009 do passo 2 so resolve tres migrations antigas
+# HARDCODED — uma migration falhada em qualquer outro ponto do historico passa
+# batido e bloqueia TODAS as posteriores, inclusive esta.
+#
+# A 0057 foi escrita idempotente de proposito (CREATE ... IF NOT EXISTS e
+# DO/EXCEPTION nas FKs), entao re-executar e inofensivo. `COPY prisma ./prisma/`
+# no Dockerfile garante o arquivo na imagem.
+echo ""
+echo "🛡️  Garantindo schema do modulo de Atendimento IA..."
+
+if [ -f prisma/migrations/0057_ai_core/migration.sql ]; then
+    if npx prisma db execute --file prisma/migrations/0057_ai_core/migration.sql > /dev/null 2>&1; then
+        echo "✅ Schema de IA garantido"
+    else
+        echo "⚠️  Nao foi possivel garantir o schema de IA — as telas de Agentes IA"
+        echo "    e Conhecimento podem falhar. Demais modulos seguem normais."
+    fi
+else
+    echo "ℹ️  migration 0057 nao encontrada na imagem — pulando (build antigo?)"
+fi
+
 # ---- 3. Executar seed (se habilitado) ----
 # Se ja temos marker de reset gravado, NUNCA rodamos o seed legado (que
 # cria 3 super_admins + Account demo "Clinica Vida Plena" e contamina o
