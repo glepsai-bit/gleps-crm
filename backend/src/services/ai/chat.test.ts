@@ -41,6 +41,10 @@ beforeEach(() => {
 
 const bodyEnviado = () => createMock.mock.calls[0][0];
 
+/** Nó de JSON Schema. Evita espalhar cast pelas asserções. */
+type No = Record<string, unknown>;
+const prop = (schema: No, nome: string): No => (schema.properties as Record<string, No>)[nome];
+
 describe('acceptsTemperature', () => {
   it('modelos que aceitam sampling', () => {
     expect(acceptsTemperature('claude-haiku-4-5-20251001')).toBe(true);
@@ -122,7 +126,7 @@ describe('sanitizeSchemaForStrictOutput', () => {
     });
 
     expect(out.additionalProperties).toBe(false);
-    expect((out.properties as Record<string, Record<string, unknown>>).meta.additionalProperties).toBe(false);
+    expect(prop(out, 'meta').additionalProperties).toBe(false);
   });
 
   it('remove restrições numéricas — a causa mais comum de 400', () => {
@@ -132,7 +136,7 @@ describe('sanitizeSchemaForStrictOutput', () => {
       required: ['confianca'],
     });
 
-    const campo = (out.properties as Record<string, Record<string, unknown>>).confianca;
+    const campo = prop(out, 'confianca');
     expect(campo.minimum).toBeUndefined();
     expect(campo.maximum).toBeUndefined();
     expect(campo.type).toBe('number');
@@ -144,7 +148,7 @@ describe('sanitizeSchemaForStrictOutput', () => {
       type: 'object',
       properties: { etapa: { type: 'string', enum: ['novo-lead', 'agendado'] } },
     });
-    expect((out.properties as Record<string, Record<string, unknown>>).etapa.enum).toEqual(['novo-lead', 'agendado']);
+    expect(prop(out, 'etapa').enum).toEqual(['novo-lead', 'agendado']);
   });
 
   it('não altera o schema original — o validador interno usa a versão completa', () => {
@@ -153,7 +157,7 @@ describe('sanitizeSchemaForStrictOutput', () => {
       properties: { n: { type: 'number', minimum: 0 } },
     };
     sanitizeSchemaForStrictOutput(original);
-    expect((original.properties as Record<string, Record<string, unknown>>).n.minimum).toBe(0);
+    expect(prop(original, 'n').minimum).toBe(0);
   });
 
   it('desce em items de array', () => {
@@ -163,9 +167,9 @@ describe('sanitizeSchemaForStrictOutput', () => {
         tags: { type: 'array', items: { type: 'object', properties: { v: { type: 'string' } }, minItems: 2 } },
       },
     });
-    const items = (out.properties as Record<string, Record<string, unknown>>).tags.items;
+    const items = prop(out, 'tags').items as No;
     expect(items.additionalProperties).toBe(false);
-    expect((out.properties as Record<string, Record<string, unknown>>).tags.items.minItems).toBeUndefined();
+    expect(items.minItems).toBeUndefined();
   });
 });
 
