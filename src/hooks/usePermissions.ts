@@ -33,6 +33,10 @@ const adminOnlyRoutes = new Set<string>([
   '/admin/whatsapp-templates',
   '/admin/tracking', // TRACKING (Meta Ads) — token/gasto: admin-only
   '/admin/warmup',
+  // T-027 — Atendimento IA: prompt/base de conhecimento gastam a chave de IA
+  // da conta (custo real por chamada), mesmo critério de /admin/integracoes.
+  '/admin/ia/agentes',
+  '/admin/ia/conhecimento',
   '/admin/integracoes',
   '/admin/opt-outs',
   // Atendimento (T-022): o CHAT em si (/admin/chat) NAO e admin-only — e a

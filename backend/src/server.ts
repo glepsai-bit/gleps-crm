@@ -36,6 +36,7 @@ import { webhookOutboundService } from './services/webhook-outbound.service';
 import { slaService } from './services/sla.service';
 import { csatService } from './services/csat.service';
 import { agentAvailabilityService } from './services/agent-availability.service';
+import { knowledgeService } from './services/knowledge.service';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import routes from './routes';
 import { logger } from './utils/logger';
@@ -71,6 +72,31 @@ async function bootstrap() {
     }
   }, EMAIL_CRON_INTERVAL_MS);
   logger.info(`📧 Email cadence cron started (interval: ${EMAIL_CRON_INTERVAL_MS / 1000}s)`);
+
+  // T-027 Fase 1 — worker de indexação da base de conhecimento (RAG).
+  // Documento entra 'pending' pela tela e é indexado aqui: quebrar em trechos +
+  // gerar embedding leva dezenas de segundos de chamada de API, tempo demais
+  // pra caber no request. O mutex evita sobreposição no processo; entre
+  // réplicas quem garante é o claim atômico pending→indexing no service.
+  {
+    const KB_CRON_INTERVAL_MS = 30 * 1000;
+    let isIndexing = false;
+    setInterval(async () => {
+      if (isIndexing) return;
+      isIndexing = true;
+      try {
+        const result = await knowledgeService.processPendingDocs();
+        if (result.ok > 0 || result.failed > 0) {
+          logger.info(`🧠 Knowledge index: ${result.ok} ok, ${result.failed} falhas`);
+        }
+      } catch (err) {
+        logger.error('Knowledge index cron error:', err);
+      } finally {
+        isIndexing = false;
+      }
+    }, KB_CRON_INTERVAL_MS);
+    logger.info(`🧠 Knowledge index cron started (interval: ${KB_CRON_INTERVAL_MS / 1000}s)`);
+  }
 
   // T-022 Sprint 2 — cron de campanhas WhatsApp agendadas
   // BUG-034: mutex global previne sobreposição de execuções caso a anterior

@@ -58,6 +58,8 @@ import AdminOptOutsPage from "./pages/admin/AdminOptOutsPage";
 // Atendimento (T-022)
 import AdminChatPage from "./pages/admin/AdminChatPage";
 import AdminTrackingPage from "./pages/admin/AdminTrackingPage";
+import AdminIaAgentesPage from "./pages/admin/AdminIaAgentesPage";
+import AdminIaConhecimentoPage from "./pages/admin/AdminIaConhecimentoPage";
 import AdminChatDashboardPage from "./pages/admin/AdminChatDashboardPage";
 import AdminInboxesPage from "./pages/admin/AdminInboxesPage";
 import AdminTeamsPage from "./pages/admin/AdminTeamsPage";
@@ -149,6 +151,9 @@ const App = () => (
             <Route path="/admin/chat" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminChatPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/chat/dashboard" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminChatDashboardPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/tracking" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminTrackingPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            {/* T-027 — Atendimento IA: agentes + base de conhecimento (admin-only: consome a chave de IA da conta) */}
+            <Route path="/admin/ia/agentes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIaAgentesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            <Route path="/admin/ia/conhecimento" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIaConhecimentoPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/inboxes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminInboxesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/teams" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminTeamsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/canned-responses" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminCannedResponsesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />

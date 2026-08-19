@@ -50,6 +50,7 @@ import chatMetricsRoutes from './chat-metrics.routes';
 import agentAvailabilityRoutes from './agent-availability.routes';
 import attachmentRoutes from './attachment.routes';
 import warmupRoutes from './warmup.routes';
+import aiRoutes from './ai.routes';
 import mentionRoutes from './mention.routes';
 import pushRoutes from './push.routes';
 import { Router as LeadTagRouter } from 'express';
@@ -197,6 +198,10 @@ router.use('/mentions', mentionRoutes);
 
 // T-023 — WhatsApp Warmup (aquecimento de chips Evolution)
 router.use('/warmup', warmupRoutes);
+
+// T-027 — Atendimento IA nativo: agentes, prompt e base de conhecimento (RAG).
+// Substitui o cérebro que hoje mora no n8n.
+router.use('/ai', aiRoutes);
 
 // Web Push subscriptions (VAPID) — notifica agente quando msg inbound chega
 // em conversa atribuida a ele mesmo com aba fechada.

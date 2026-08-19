@@ -106,6 +106,12 @@ model Account {
   warmupNumbers   WarmupNumber[]
   warmupTemplates WarmupTemplate[]
 
+  // T-027 — Atendimento IA nativo (agentes + base de conhecimento)
+  aiAgents        AiAgent[]
+  knowledgeBases  KnowledgeBase[]
+  knowledgeDocs   KnowledgeDoc[]
+  knowledgeChunks KnowledgeChunk[]
+
   @@index([status])
   trackingConfig  TrackingConfig?
   trackingEvents  TrackingEvent[]
@@ -1904,4 +1910,124 @@ model TrackingEvent {
   @@index([accountId, eventName])
   @@index([status])
   @@map("tracking_events")
+}
+
+// ============================================
+// T-027 — ATENDIMENTO IA NATIVO (Fase 1: agente + base de conhecimento)
+// ============================================
+// Substitui o cérebro que hoje mora no n8n: o prompt, o conhecimento do negócio
+// e a configuração do agente passam a ser dados da conta, versionáveis e
+// editáveis pelo admin — não um JSON exportado de outra ferramenta.
+
+// KnowledgeBase: um "assunto" de RAG (ex.: "Produto Mychooice", "Objeções").
+// Um agente aponta pra no máximo uma base; várias bases por conta.
+model KnowledgeBase {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @map("account_id") @db.Uuid
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String   @db.VarChar(120)
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  docs   KnowledgeDoc[]
+  chunks KnowledgeChunk[]
+  agents AiAgent[]
+
+  @@unique([accountId, name])
+  @@index([accountId])
+  @@map("knowledge_bases")
+}
+
+// KnowledgeDoc: o material cru que o usuário subiu (texto colado, arquivo, URL).
+// `content` guarda o texto extraído; a indexação (chunk + embedding) é assíncrona
+// — por isso `status`, e por isso o worker consegue retomar depois de restart.
+model KnowledgeDoc {
+  id         String        @id @default(uuid()) @db.Uuid
+  accountId  String        @map("account_id") @db.Uuid
+  account    Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  baseId     String        @map("base_id") @db.Uuid
+  base       KnowledgeBase @relation(fields: [baseId], references: [id], onDelete: Cascade)
+  title      String        @db.VarChar(300)
+  sourceType String        @default("text") @map("source_type") @db.VarChar(20) // text | file | url
+  sourceRef  String?       @map("source_ref") @db.Text // nome do arquivo ou URL de origem
+  content    String        @db.Text
+  status     String        @default("pending") @db.VarChar(20) // pending | indexing | ready | failed
+  error      String?       @db.Text
+  chunkCount Int           @default(0) @map("chunk_count")
+  tokens     Int           @default(0)
+  indexedAt  DateTime?     @map("indexed_at") @db.Timestamptz
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  chunks KnowledgeChunk[]
+
+  // O worker de indexação varre por status; o índice composto com baseId atende
+  // a listagem da tela (docs de uma base) sem sort em memória.
+  @@index([baseId, status])
+  @@index([accountId])
+  @@index([status])
+  @@map("knowledge_docs")
+}
+
+// KnowledgeChunk: pedaço indexado + embedding.
+// DECISÃO: embedding em `Json` (jsonb), similaridade calculada no Node — assim o
+// Postgres de produção (postgres:16-alpine, sem pgvector) não precisa mudar.
+// Todo acesso passa por knowledge-index.ts; trocar por pgvector depois é
+// reimplementar aquele arquivo, sem tocar em quem chama.
+// `accountId` é redundante com base.accountId de propósito: o filtro de
+// multi-tenancy da busca não pode depender de join.
+model KnowledgeChunk {
+  id        String        @id @default(uuid()) @db.Uuid
+  accountId String        @map("account_id") @db.Uuid
+  account   Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  baseId    String        @map("base_id") @db.Uuid
+  base      KnowledgeBase @relation(fields: [baseId], references: [id], onDelete: Cascade)
+  docId     String        @map("doc_id") @db.Uuid
+  doc       KnowledgeDoc  @relation(fields: [docId], references: [id], onDelete: Cascade)
+  ordem     Int
+  content   String        @db.Text
+  embedding Json
+  tokens    Int           @default(0)
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
+
+  // Reindex apaga e regrava os chunks do doc; o unique garante que uma corrida
+  // entre dois reindexes não deixe ordens duplicadas na mesma base.
+  @@unique([docId, ordem])
+  @@index([accountId, baseId])
+  @@map("knowledge_chunks")
+}
+
+// AiAgent: o agente configurável. `role` reproduz os dois papéis do fluxo n8n
+// atual — 'classifier' (classifica etapa, não fala com o lead) e 'responder'
+// (o "Marcus"). Multi-agente = vários registros; a variação de resposta sai da
+// combinação de prompt + temperatura + base.
+model AiAgent {
+  id              String         @id @default(uuid()) @db.Uuid
+  accountId       String         @map("account_id") @db.Uuid
+  account         Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name            String         @db.VarChar(120)
+  description     String?        @db.Text
+  role            String         @default("responder") @db.VarChar(20) // classifier | responder | custom
+  systemPrompt    String         @map("system_prompt") @db.Text
+  provider        String         @default("openai") @db.VarChar(20) // openai | anthropic
+  model           String?        @db.VarChar(80) // null = default do provider
+  temperature     Decimal        @default(0.7) @db.Decimal(3, 2)
+  maxTokens       Int            @default(1024) @map("max_tokens")
+  historyLimit    Int            @default(20) @map("history_limit") // msgs da conversa no contexto
+  knowledgeBaseId String?        @map("knowledge_base_id") @db.Uuid
+  knowledgeBase   KnowledgeBase? @relation(fields: [knowledgeBaseId], references: [id], onDelete: SetNull)
+  // Whitelist de ferramentas que ESTE agente pode chamar (string[]).
+  // Vazio = agente só conversa. Executadas no backend com o accountId do run.
+  tools           Json?          @default("[]")
+  // JSON Schema da resposta. Equivale ao Output_Parser do n8n: quando presente,
+  // a saída é validada e há 1 retry de autocorreção antes de falhar.
+  outputSchema    Json?          @map("output_schema")
+  active          Boolean        @default(true)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([accountId, name])
+  @@index([accountId, active])
+  @@map("ai_agents")
 }
