@@ -112,6 +112,10 @@ model Account {
   knowledgeDocs   KnowledgeDoc[]
   knowledgeChunks KnowledgeChunk[]
 
+  // T-028 — Motor de fluxo de atendimento
+  flows    Flow[]
+  flowRuns FlowRun[]
+
   @@index([status])
   trackingConfig  TrackingConfig?
   trackingEvents  TrackingEvent[]
@@ -2030,4 +2034,100 @@ model AiAgent {
   @@unique([accountId, name])
   @@index([accountId, active])
   @@map("ai_agents")
+}
+
+
+// ============================================
+// T-028 — MOTOR DE FLUXO DE ATENDIMENTO (Fase 2)
+// ============================================
+// O que hoje é um workflow de 62 nós no n8n vira dado da conta: um grafo
+// versionado que o motor interpreta. O formato do grafo já é o final — o canvas
+// da tela é só um editor dele, não uma camada por cima.
+
+// Flow: o fluxo de atendimento da conta.
+//
+// `status` é a trava de segurança do corte do n8n:
+//   draft  — não roda (rascunho)
+//   shadow — roda INTEIRO e grava cada passo, mas NÃO envia mensagem nem altera
+//            a conversa. É o que permite comparar com o n8n lado a lado antes
+//            de virar a chave.
+//   active — roda e age de verdade.
+model Flow {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @map("account_id") @db.Uuid
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name        String   @db.VarChar(120)
+  description String?  @db.Text
+  status      String   @default("draft") @db.VarChar(20) // draft | shadow | active
+  graph       Json
+  version     Int      @default(1)
+  // Inboxes onde o fluxo atua. null/vazio = todos os inboxes da conta.
+  inboxIds    Json?    @map("inbox_ids")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  runs FlowRun[]
+
+  @@unique([accountId, name])
+  @@index([accountId, status])
+  @@map("flows")
+}
+
+// FlowRun: uma execução do fluxo para uma conversa.
+//
+// `runAfter` é o coração do debounce sem Redis: o run fica em 'buffering' com
+// um horário-alvo, e cada mensagem nova do lead empurra esse horário pra frente.
+// O worker acorda o que já venceu. Diferente do Redis do n8n, isso sobrevive a
+// restart — o run continua no banco esperando.
+model FlowRun {
+  id             String    @id @default(uuid()) @db.Uuid
+  accountId      String    @map("account_id") @db.Uuid
+  account        Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  flowId         String    @map("flow_id") @db.Uuid
+  flow           Flow      @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  conversationId String    @map("conversation_id") @db.Uuid
+  status         String    @default("buffering") @db.VarChar(20) // buffering | running | done | failed | skipped
+  runAfter       DateTime? @map("run_after") @db.Timestamptz
+  // Variáveis acumuladas entre os nós (mensagem agrupada, saída do agente...).
+  context        Json      @default("{}")
+  // Cópia do modo no momento da execução: mudar o Flow depois não pode
+  // reescrever a história de um run que já rodou.
+  shadow         Boolean   @default(false)
+  stopReason     String?   @map("stop_reason") @db.VarChar(80)
+  error          String?   @db.Text
+  startedAt      DateTime? @map("started_at") @db.Timestamptz
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  steps FlowRunStep[]
+
+  // O worker varre por (status, runAfter) a cada poucos segundos.
+  @@index([status, runAfter])
+  @@index([accountId, createdAt(sort: Desc)])
+  @@index([conversationId])
+  // Um único run 'buffering' por conversa — garantido por índice único PARCIAL
+  // criado na migration (o Prisma não suporta partial unique no schema). É o que
+  // faz duas mensagens simultâneas AGRUPAREM em vez de virar dois atendimentos.
+  @@map("flow_runs")
+}
+
+// FlowRunStep: um passo executado. É a tela de execuções que hoje só existe
+// dentro do n8n — sem isso, quando a IA erra o rastro não está em lugar nenhum.
+model FlowRunStep {
+  id        String   @id @default(uuid()) @db.Uuid
+  runId     String   @map("run_id") @db.Uuid
+  run       FlowRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  nodeId    String   @map("node_id") @db.VarChar(80)
+  nodeType  String   @map("node_type") @db.VarChar(60)
+  status    String   @db.VarChar(20) // ok | error | skipped
+  input     Json?
+  output    Json?
+  ms        Int      @default(0)
+  error     String?  @db.Text
+  ordem     Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([runId, ordem])
+  @@map("flow_run_steps")
 }

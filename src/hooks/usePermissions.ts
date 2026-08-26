@@ -37,6 +37,8 @@ const adminOnlyRoutes = new Set<string>([
   // da conta (custo real por chamada), mesmo critério de /admin/integracoes.
   '/admin/ia/agentes',
   '/admin/ia/conhecimento',
+  '/admin/ia/fluxos',
+  '/admin/ia/execucoes',
   '/admin/integracoes',
   '/admin/opt-outs',
   // Atendimento (T-022): o CHAT em si (/admin/chat) NAO e admin-only — e a

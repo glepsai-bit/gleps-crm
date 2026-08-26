@@ -51,6 +51,7 @@ import agentAvailabilityRoutes from './agent-availability.routes';
 import attachmentRoutes from './attachment.routes';
 import warmupRoutes from './warmup.routes';
 import aiRoutes from './ai.routes';
+import flowRoutes from './flow.routes';
 import mentionRoutes from './mention.routes';
 import pushRoutes from './push.routes';
 import { Router as LeadTagRouter } from 'express';
@@ -202,6 +203,8 @@ router.use('/warmup', warmupRoutes);
 // T-027 — Atendimento IA nativo: agentes, prompt e base de conhecimento (RAG).
 // Substitui o cérebro que hoje mora no n8n.
 router.use('/ai', aiRoutes);
+// T-028 — motor de fluxo de atendimento (Fase 2)
+router.use('/flows', flowRoutes);
 
 // Web Push subscriptions (VAPID) — notifica agente quando msg inbound chega
 // em conversa atribuida a ele mesmo com aba fechada.

@@ -53,6 +53,8 @@ import {
   Flame,
   Bot,
   BookOpen,
+  Workflow,
+  ListChecks,
   UserCog,
   Radar,
 } from 'lucide-react';
@@ -135,6 +137,8 @@ const adminNavItems = [
   // T-027 — Atendimento IA (agentes + base de conhecimento)
   { title: 'Agentes IA', href: '/admin/ia/agentes', icon: Bot },
   { title: 'Conhecimento', href: '/admin/ia/conhecimento', icon: BookOpen },
+  { title: 'Fluxos', href: '/admin/ia/fluxos', icon: Workflow },
+  { title: 'Execuções', href: '/admin/ia/execucoes', icon: ListChecks },
   // Config do Chat (uso ocasional)
   { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox },
   { title: 'Equipe', href: '/admin/agentes', icon: UserCog },

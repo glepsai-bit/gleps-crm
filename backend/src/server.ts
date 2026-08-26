@@ -36,6 +36,7 @@ import { webhookOutboundService } from './services/webhook-outbound.service';
 import { slaService } from './services/sla.service';
 import { csatService } from './services/csat.service';
 import { agentAvailabilityService } from './services/agent-availability.service';
+import { flowService } from './services/flow.service';
 import { knowledgeService } from './services/knowledge.service';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import routes from './routes';
@@ -96,6 +97,35 @@ async function bootstrap() {
       }
     }, KB_CRON_INTERVAL_MS);
     logger.info(`🧠 Knowledge index cron started (interval: ${KB_CRON_INTERVAL_MS / 1000}s)`);
+  }
+
+  // T-028 — worker do fluxo de atendimento IA.
+  //
+  // Tick de 5s (o mais rápido do sistema) porque é ele que faz a IA responder:
+  // o lead está do outro lado esperando. Os demais crons são de tarefa de
+  // fundo; este é caminho de atendimento.
+  //
+  // O mutex evita sobreposição, mas a garantia dura contra execução dupla é o
+  // claim atômico dentro do processDueRuns — dois processos respondendo o mesmo
+  // lead seria pior que atrasar.
+  {
+    const FLOW_CRON_INTERVAL_MS = 5 * 1000;
+    let isRunningFlows = false;
+    setInterval(async () => {
+      if (isRunningFlows) return;
+      isRunningFlows = true;
+      try {
+        const r = await flowService.processDueRuns();
+        if (r.ok > 0 || r.failed > 0) {
+          logger.info(`🔀 Fluxo IA: ${r.ok} executados, ${r.failed} com falha`);
+        }
+      } catch (err) {
+        logger.error('Flow engine cron error:', err);
+      } finally {
+        isRunningFlows = false;
+      }
+    }, FLOW_CRON_INTERVAL_MS);
+    logger.info(`🔀 Flow engine cron started (interval: ${FLOW_CRON_INTERVAL_MS / 1000}s)`);
   }
 
   // T-022 Sprint 2 — cron de campanhas WhatsApp agendadas

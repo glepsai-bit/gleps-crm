@@ -8,6 +8,7 @@ import { inboxChannelService } from '../services/inbox.service';
 import { conversationService } from '../services/conversation.service';
 import { csatService } from '../services/csat.service';
 import { trackingService } from '../services/tracking.service';
+import { flowService } from '../services/flow.service';
 import { messageService } from '../services/message.service';
 import { logger } from '../utils/logger';
 import { extractWhatsappMessagePayload } from '../utils/whatsapp-media.util';
@@ -1025,8 +1026,9 @@ export class EvolutionController {
       replyToId = quoted?.id ?? null;
     }
 
+    let criada: { id: string } | null = null;
     try {
-      await messageService.create(accountId, {
+      criada = await messageService.create(accountId, {
         conversationId: conversation.id,
         senderType: fromMe ? 'agent' : 'customer',
         content: content ?? null,
@@ -1071,6 +1073,34 @@ export class EvolutionController {
       senderType: fromMe ? 'agent' : 'customer',
       contentType,
     });
+
+    // T-028 — gatilho do fluxo de atendimento IA.
+    //
+    // Só mensagem do LEAD dispara: `fromMe` é eco do que nós enviamos, e um
+    // fluxo que se auto-dispara com a própria resposta vira laço infinito.
+    //
+    // Não bloqueia nem derruba o webhook: o gatilho só grava/atualiza o run e
+    // volta na hora; quem executa é o worker. Se falhar, a mensagem já está
+    // persistida e o atendimento humano segue normal — por isso o catch engole
+    // o erro em vez de propagar pra Evolution (que reentregaria o webhook).
+    if (!fromMe && criada) {
+      void flowService
+        .onInboundMessage({
+          accountId,
+          conversationId: conversation.id,
+          inboxId: conversation.inboxId,
+          messageId: criada.id,
+          content: content ?? null,
+          contentType,
+        })
+        .catch((err: unknown) => {
+          logger.warn('[evolution-webhook] gatilho do fluxo IA falhou', {
+            accountId,
+            conversationId: conversation.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+    }
   }
 
   /**
