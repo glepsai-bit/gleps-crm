@@ -588,4 +588,186 @@ describe('Multi-tenant isolation — cross-tenant 404', () => {
     });
     expect(tagsApplied.length).toBe(0);
   });
+
+  // ============================================
+  // TAGS — REORDER EM LOTE (escrita cross-tenant)
+  //
+  // Achado de auditoria: POST /api/tags/reorder recebia `tagIds` do corpo e
+  // escrevia direto (`tag.update({ where: { id } })`), sem escopo por conta. O
+  // accountId chegava no service e não era usado. Isso é pior que vazamento de
+  // leitura: um admin qualquer reordenava o funil de OUTRO cliente. Os dois
+  // caminhos do endpoint (troca de par e reordenação completa) tinham o furo.
+  // ============================================
+  it('POST /api/tags/reorder — B nao reordena (swap) as etapas da conta A', async () => {
+    const A = await createTenant('Conta A');
+    const B = await createTenant('Conta B');
+
+    await createFunnelStagesRetry(A.account.id, ['Novo', 'Negociacao']);
+    const [t1, t2] = await prismaTest.tag.findMany({
+      where: { accountId: A.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+    });
+
+    const res = await request(app)
+      .post('/api/tags/reorder')
+      .set(authHeader(B.jwt))
+      .send({ tagIds: [t1.id, t2.id] });
+
+    expect(res.status).toBe(404);
+    expect(res.body?.error?.code).toBe('NOT_FOUND');
+
+    // O que realmente importa: a ordem do funil da A ficou intacta.
+    const depois = await prismaTest.tag.findMany({
+      where: { id: { in: [t1.id, t2.id] } },
+      select: { id: true, ordem: true },
+    });
+    expect(depois.find((t) => t.id === t1.id)?.ordem).toBe(t1.ordem);
+    expect(depois.find((t) => t.id === t2.id)?.ordem).toBe(t2.ordem);
+  });
+
+  it('POST /api/tags/reorder — B nao reordena (lista) as etapas da conta A', async () => {
+    const A = await createTenant('Conta A');
+    const B = await createTenant('Conta B');
+
+    // Três etapas: cai no caminho de reordenação completa, não no swap.
+    await createFunnelStagesRetry(A.account.id, ['Novo', 'Negociacao', 'Fechado']);
+    const antes = await prismaTest.tag.findMany({
+      where: { accountId: A.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+      select: { id: true, ordem: true },
+    });
+
+    const res = await request(app)
+      .post('/api/tags/reorder')
+      .set(authHeader(B.jwt))
+      // Ordem invertida: se passasse, o funil da A viraria de cabeça pra baixo.
+      .send({ tagIds: [...antes].reverse().map((t) => t.id) });
+
+    expect(res.status).toBe(404);
+
+    const depois = await prismaTest.tag.findMany({
+      where: { accountId: A.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+      select: { id: true, ordem: true },
+    });
+    expect(depois).toEqual(antes);
+  });
+
+  it('POST /api/tags/reorder — mistura de contas nao passa nem parcialmente', async () => {
+    const A = await createTenant('Conta A');
+    const B = await createTenant('Conta B');
+
+    await createFunnelStagesRetry(A.account.id, ['Novo A', 'Fechado A']);
+    await createFunnelStagesRetry(B.account.id, ['Novo B', 'Fechado B']);
+
+    const tagsA = await prismaTest.tag.findMany({
+      where: { accountId: A.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+    });
+    const tagsB = await prismaTest.tag.findMany({
+      where: { accountId: B.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+    });
+
+    // Uma tag própria e uma alheia: a validação tem que reprovar o lote INTEIRO.
+    // Reprovar só a alheia deixaria a escrita acontecer pela metade.
+    const res = await request(app)
+      .post('/api/tags/reorder')
+      .set(authHeader(B.jwt))
+      .send({ tagIds: [tagsB[1].id, tagsA[0].id] });
+
+    expect(res.status).toBe(404);
+
+    const bDepois = await prismaTest.tag.findMany({
+      where: { accountId: B.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+      select: { id: true, ordem: true },
+    });
+    expect(bDepois.map((t) => t.id)).toEqual(tagsB.map((t) => t.id));
+    expect(bDepois.map((t) => t.ordem)).toEqual(tagsB.map((t) => t.ordem));
+  });
+
+  // Caso de controle: a correção acima trocou `update` por `updateMany` com
+  // accountId. Sem este teste, um endurecimento de segurança poderia ter
+  // quebrado a reordenação legítima sem ninguém perceber.
+  it('POST /api/tags/reorder — a reordenacao da propria conta continua funcionando', async () => {
+    const A = await createTenant('Conta A');
+
+    await createFunnelStagesRetry(A.account.id, ['Novo', 'Negociacao', 'Fechado']);
+    const antes = await prismaTest.tag.findMany({
+      where: { accountId: A.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+      select: { id: true, name: true },
+    });
+
+    // Swap de duas: Novo e Negociacao trocam de lugar.
+    const swap = await request(app)
+      .post('/api/tags/reorder')
+      .set(authHeader(A.jwt))
+      .send({ tagIds: [antes[0].id, antes[1].id] });
+    expect(swap.status).toBe(200);
+
+    const posSwap = await prismaTest.tag.findMany({
+      where: { accountId: A.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+      select: { id: true },
+    });
+    expect(posSwap.map((t) => t.id)).toEqual([antes[1].id, antes[0].id, antes[2].id]);
+
+    // Reordenação completa: a posição no array vira a ordem.
+    const nova = [antes[2].id, antes[0].id, antes[1].id];
+    const full = await request(app)
+      .post('/api/tags/reorder')
+      .set(authHeader(A.jwt))
+      .send({ tagIds: nova });
+    expect(full.status).toBe(200);
+
+    const posFull = await prismaTest.tag.findMany({
+      where: { accountId: A.account.id, type: 'stage' },
+      orderBy: { ordem: 'asc' },
+      select: { id: true },
+    });
+    expect(posFull.map((t) => t.id)).toEqual(nova);
+  });
+
+  // ============================================
+  // WARMUP — START IDEMPOTENTE (vazamento de leitura)
+  //
+  // Achado de auditoria: o claim era escopado por conta, mas quando ele não
+  // casava o código caía num `findUnique({ where: { id } })` sem conta e
+  // devolvia 200 com os dados. Um id de outro tenant não batia no claim e
+  // saía pela porta de trás — status, dia atual e plano de disparo do vizinho.
+  // ============================================
+  it('POST /api/warmup/numbers/:id/start — B nao le o aquecimento da conta A', async () => {
+    const A = await createTenant('Conta A');
+    const B = await createTenant('Conta B');
+
+    const poolA = await withRetry(() =>
+      prismaSingleton.warmupPool.create({
+        data: { accountId: A.account.id, name: 'Pool da A' },
+      })
+    );
+    const numeroA = await withRetry(() =>
+      prismaSingleton.warmupNumber.create({
+        data: {
+          accountId: A.account.id,
+          poolId: poolA.id,
+          evolutionInstance: 'inst-conta-a',
+          phoneE164: '5511988887777',
+          status: 'warming',
+          currentDay: 7,
+        },
+      })
+    );
+
+    const res = await request(app)
+      .post(`/api/warmup/numbers/${numeroA.id}/start`)
+      .set(authHeader(B.jwt))
+      .send({});
+
+    expect(res.status).toBe(404);
+    expect(res.body?.error?.code).toBe('NOT_FOUND');
+    // Nada do estado da conta A pode aparecer na resposta.
+    expect(res.body?.data).toBeUndefined();
+  });
 });

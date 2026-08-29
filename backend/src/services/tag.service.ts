@@ -259,27 +259,43 @@ class TagService {
    * Reorder multiple tags (swap mode when exactly 2 IDs)
    */
   async reorderBulk(tagIds: string[], accountId: string, reorderedById: string) {
+    // ISOLAMENTO ENTRE CONTAS (achado de auditoria): este endpoint recebe os
+    // ids pelo corpo da requisição, e o `where: { id }` puro escreve em
+    // QUALQUER tag do banco. Um admin reordenava o funil de outro cliente só
+    // mandando os ids dele. A conferência abaixo é o que fecha isso, e as
+    // escritas repetem o accountId como segunda barreira — se um dia alguém
+    // mexer aqui e furar a conferência, a escrita ainda não atravessa.
+    const proprias = await prisma.tag.findMany({
+      where: { id: { in: tagIds }, accountId },
+      select: { id: true, ordem: true },
+    });
+    // Lote inteiro ou nada: aprovar só as próprias deixaria a reordenação pela
+    // metade, que é pior que recusar — o funil ficaria num estado que o usuário
+    // não pediu.
+    if (proprias.length !== new Set(tagIds).size) {
+      throw new NotFoundError('Uma ou ambas as tags não foram encontradas');
+    }
+    const ordemPorId = new Map(proprias.map((t) => [t.id, t.ordem]));
+
     if (tagIds.length === 2) {
       // Swap mode: exchange ordem values between the two tags
-      const [tag1, tag2] = await Promise.all([
-        prisma.tag.findUnique({ where: { id: tagIds[0] }, select: { id: true, ordem: true } }),
-        prisma.tag.findUnique({ where: { id: tagIds[1] }, select: { id: true, ordem: true } }),
-      ]);
-
-      if (!tag1 || !tag2) {
-        throw new NotFoundError('Uma ou ambas as tags não foram encontradas');
-      }
-
+      const [id1, id2] = tagIds;
       await prisma.$transaction([
-        prisma.tag.update({ where: { id: tag1.id }, data: { ordem: tag2.ordem } }),
-        prisma.tag.update({ where: { id: tag2.id }, data: { ordem: tag1.ordem } }),
+        prisma.tag.updateMany({
+          where: { id: id1, accountId },
+          data: { ordem: ordemPorId.get(id2)! },
+        }),
+        prisma.tag.updateMany({
+          where: { id: id2, accountId },
+          data: { ordem: ordemPorId.get(id1)! },
+        }),
       ]);
     } else {
       // Full reorder: assign ordem based on array position
       await prisma.$transaction(
         tagIds.map((id, index) =>
-          prisma.tag.update({
-            where: { id },
+          prisma.tag.updateMany({
+            where: { id, accountId },
             data: { ordem: index },
           })
         )
