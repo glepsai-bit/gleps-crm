@@ -1,11 +1,25 @@
 import { Router } from 'express';
 import { tagController, funnelController } from '../controllers/tag.controller';
-import { authenticate, requirePermission, requireAdmin } from '../middlewares/auth.middleware';
+import {
+  authenticate,
+  requirePermission,
+  requireAdmin,
+  requireAccountId,
+} from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // All routes require authentication
 router.use(authenticate);
+/**
+ * `requireAccountId` depois do `authenticate`: os controllers desta rota leem
+ * `req.user!.accountId!`, e esse `!` mente — a coluna é nullable, e um
+ * super_admin sem impersonar chega aqui com accountId nulo. No Prisma,
+ * `where: { accountId: undefined }` não devolve zero linhas: ele REMOVE o
+ * filtro e devolve as de todas as contas. A guarda troca esse silêncio por um
+ * 400 explícito. Nada aqui é de uso do painel super-admin.
+ */
+router.use(requireAccountId);
 
 // Tag routes
 router.get('/', requirePermission('kanban', 'leads'), (req, res, next) => tagController.list(req, res, next));

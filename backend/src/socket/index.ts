@@ -175,7 +175,10 @@ export function initSocket(httpServer: HttpServer): Namespace {
 
       let payload: JwtPayload;
       try {
-        payload = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+        // Mesmo algoritmo fixado do auth.middleware — o socket é outra porta
+        // de entrada com o mesmo segredo, e uma barreira só nas rotas HTTP
+        // deixaria a outra metade aberta.
+        payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
       } catch (err) {
         if (err instanceof jwt.TokenExpiredError) {
           return next(new Error('TOKEN_EXPIRED'));
@@ -339,7 +342,7 @@ export function initSocket(httpServer: HttpServer): Namespace {
         }
 
         try {
-          jwt.verify(token, env.JWT_SECRET);
+          jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] });
         } catch (err) {
           const reason =
             err instanceof jwt.TokenExpiredError ? 'TOKEN_EXPIRED' : 'TOKEN_INVALID';

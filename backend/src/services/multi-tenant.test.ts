@@ -160,6 +160,38 @@ async function createTenant(name: string): Promise<Tenant> {
 }
 
 /**
+ * Cria um super_admin SEM conta vinculada — o estado que expõe o `accountId!`
+ * dos controllers. É o cenário real: super_admin só ganha accountId quando
+ * impersona alguém.
+ */
+async function createSuperAdminSemConta(): Promise<string> {
+  const passwordHash = await bcrypt.hash('Test@1234', 10);
+  const user = await withRetry(() =>
+    prismaSingleton.user.create({
+      data: {
+        accountId: null,
+        nome: 'Super sem conta',
+        email: `super-${randomUUID().slice(0, 8)}@test.com`,
+        passwordHash,
+        role: 'super_admin',
+        status: 'active',
+        permissions: [],
+      },
+    })
+  );
+  await withRetry(async () => {
+    const u = await prismaSingleton.user.findUnique({ where: { id: user.id } });
+    if (!u) throw new Error('User ainda nao visivel apos commit');
+  }, 30, 100);
+
+  return jwt.sign(
+    { sub: user.id, email: user.email, role: 'super_admin', accountId: null, permissions: [] },
+    JWT_SECRET,
+    { expiresIn: '1h' }
+  );
+}
+
+/**
  * Cria uma API key real direto via prismaTest (sem dependencia de login).
  */
 async function createApiKeyForTenant(
@@ -587,6 +619,56 @@ describe('Multi-tenant isolation — cross-tenant 404', () => {
       where: { contactId: leadA.id },
     });
     expect(tagsApplied.length).toBe(0);
+  });
+
+  // ============================================
+  // ROTAS SEM requireAccountId (achado de auditoria — classe de bug)
+  //
+  // Os controllers destas rotas leem `req.user!.accountId!`, e esse `!` mente:
+  // a coluna é nullable e super_admin sem impersonar chega com nulo. No Prisma,
+  // `where: { accountId: undefined }` não devolve zero linhas — REMOVE o filtro
+  // e devolve as de todas as contas. Estes testes travam a guarda no lugar.
+  // ============================================
+  it('rotas por conta recusam super_admin sem conta vinculada (400, nao 200)', async () => {
+    const A = await createTenant('Conta A');
+    await createFunnelStagesRetry(A.account.id, ['Novo', 'Fechado']);
+    const superJwt = await createSuperAdminSemConta();
+
+    // Uma rota de cada família auditada.
+    const rotas = ['/api/tags', '/api/insights/kpis', '/api/finance/kpis'];
+
+    for (const rota of rotas) {
+      const res = await request(app).get(rota).set(authHeader(superJwt));
+
+      expect(res.status, `${rota} deveria recusar sem conta`).toBe(400);
+      expect(res.body?.error?.code, rota).toBe('ACCOUNT_REQUIRED');
+      // O que a guarda impede: a lista sem filtro de conta.
+      expect(res.body?.data, rota).toBeUndefined();
+    }
+  });
+
+  it('a mesma rota funciona quando o super_admin tem conta (impersonando)', async () => {
+    const A = await createTenant('Conta A');
+    await createFunnelStagesRetry(A.account.id, ['Novo', 'Fechado']);
+
+    // Impersonar é exatamente isto: um JWT de super_admin COM accountId.
+    const impersonado = jwt.sign(
+      {
+        sub: A.user.id,
+        email: A.user.email,
+        role: 'super_admin',
+        accountId: A.account.id,
+        permissions: [],
+      },
+      JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    const res = await request(app).get('/api/tags').set(authHeader(impersonado));
+
+    // A guarda não pode ter quebrado o caminho legítimo do painel super-admin.
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body?.data)).toBe(true);
   });
 
   // ============================================

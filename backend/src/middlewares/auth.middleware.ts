@@ -26,7 +26,11 @@ export async function authenticate(
 
     let payload: JwtPayload;
     try {
-      payload = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+      // Algoritmo fixado: sem isso o verify aceita qualquer HS* que o próprio
+      // token declarar no header. O jsonwebtoken 9 já não cai em `alg: none`
+      // nem troca HMAC por RSA com segredo string, então isto é barreira de
+      // profundidade — vale porque o custo é uma linha e a falha seria total.
+      payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload;
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
         throw new UnauthorizedError(ErrorCodes.TOKEN_EXPIRED);

@@ -6,7 +6,11 @@ import { JwtPayload } from '../types';
 import { UnauthorizedError, ErrorCodes, NotFoundError } from '../utils/errors';
 import { getExpirationDate } from '../utils/helpers';
 import { eventService } from './event.service';
-import { v4 as uuidv4 } from 'uuid';
+// randomUUID do Node em vez do pacote `uuid`: mesma fonte de aleatoriedade
+// (CSPRNG), uma dependência a menos pra auditar. O pacote só era usado aqui,
+// e a única função vulnerável do advisory (v3/v5/v6 com buf) nem era chamada —
+// tirar a dependência fecha o achado sem depender de versão de terceiro.
+import { randomUUID } from 'crypto';
 import { disconnectUserSockets } from '../socket';
 import { logger } from '../utils/logger';
 
@@ -197,7 +201,7 @@ class AuthService {
     // token e revogamos o antigo na mesma transaction (atomico). Se o
     // antigo for reusado depois, cai no branch revogado e devolve 401,
     // o que tambem permite detectar reuse no futuro.
-    const newToken = uuidv4();
+    const newToken = randomUUID();
     const newExpiresAt = getExpirationDate(env.REFRESH_TOKEN_EXPIRES_IN);
     await prisma.$transaction([
       prisma.refreshToken.update({
@@ -360,7 +364,7 @@ class AuthService {
    * Generate refresh token
    */
   private async generateRefreshToken(userId: string): Promise<string> {
-    const token = uuidv4();
+    const token = randomUUID();
     const expiresAt = getExpirationDate(env.REFRESH_TOKEN_EXPIRES_IN);
 
     await prisma.refreshToken.create({
