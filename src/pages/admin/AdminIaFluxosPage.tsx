@@ -24,6 +24,8 @@ import {
   MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { useTheme } from 'next-themes';
+import { FlowNodeCard, type FlowNodeData } from '@/components/flow/FlowNodeCard';
 import {
   ArrowLeft,
   Plus,
@@ -207,6 +209,26 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   const [selecionado, setSelecionado] = useState<string | null>(null);
   const [sujo, setSujo] = useState(false);
 
+  const { resolvedTheme } = useTheme();
+  const nodeTypes = useMemo(() => ({ passo: FlowNodeCard }), []);
+
+  /**
+   * Injeta o NOME do agente no cartão. Fica em useMemo (e não no estado) pra
+   * que carregar a lista de agentes depois não zere edições não salvas do
+   * canvas.
+   */
+  const nodesExibidos = useMemo(
+    () =>
+      nodes.map((n) => {
+        const d = n.data as FlowNodeData;
+        if (d.tipo !== 'ai.agent') return n;
+        const agentId = (d.config as { agentId?: string } | undefined)?.agentId;
+        const nome = agentes?.find((a) => a.id === agentId)?.name ?? null;
+        return { ...n, data: { ...d, agenteNome: nome, temProblema: !agentId } };
+      }),
+    [nodes, agentes]
+  );
+
   const infoPorTipo = useMemo(() => {
     const m = new Map<string, NodeTypeInfo>();
     catalogo?.nodes.forEach((n) => m.set(n.type, n));
@@ -219,10 +241,8 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
     setNodes(
       flow.graph.nodes.map((n, i) => ({
         id: n.id,
-        // Nó padrão do React Flow com alças dos dois lados — suficiente para o
-        // catálogo atual e evita manter renderer custom.
-        type: 'default',
-        position: n.position ?? { x: 320, y: i * 130 },
+        type: 'passo',
+        position: n.position ?? { x: 320, y: i * 150 },
         data: { label: n.label ?? n.type, tipo: n.type, config: n.config ?? {} },
       })) as Node[]
     );
@@ -234,6 +254,13 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         label: e.branch && e.branch !== 'default' ? e.branch : undefined,
         data: { branch: e.branch ?? null },
         markerEnd: { type: MarkerType.ArrowClosed },
+        // Rótulo do ramo legível nos dois temas — o padrão do React Flow é
+        // fundo branco com texto escuro, que some no modo escuro.
+        labelBgPadding: [6, 3] as [number, number],
+        labelBgBorderRadius: 4,
+        labelBgStyle: { fill: 'hsl(var(--muted))', fillOpacity: 1 },
+        labelStyle: { fill: 'hsl(var(--foreground))', fontSize: 11, fontWeight: 500 },
+        style: { stroke: 'hsl(var(--muted-foreground))', strokeWidth: 1.5 },
       })) as Edge[]
     );
     setSujo(false);
@@ -300,8 +327,8 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
       ...ns,
       {
         id,
-        type: 'default',
-        position: { x: 700, y: 80 + ns.length * 40 },
+        type: 'passo',
+        position: { x: 700, y: 80 + ns.length * 60 },
         data: { label: info?.label ?? tipo, tipo, config: {} },
       } as Node,
     ]);
@@ -427,8 +454,10 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         {/* Canvas */}
         <div className="flex-1 min-w-0">
           <ReactFlow
-            nodes={nodes}
+            nodes={nodesExibidos}
             edges={edges}
+            nodeTypes={nodeTypes}
+            colorMode={resolvedTheme === 'dark' ? 'dark' : 'light'}
             onNodesChange={(c) => {
               onNodesChange(c);
               if (c.some((x) => x.type === 'position' || x.type === 'remove')) setSujo(true);
@@ -443,9 +472,15 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
             fitView
             proOptions={{ hideAttribution: true }}
           >
-            <Background />
-            <Controls />
-            <MiniMap pannable zoomable />
+            <Background gap={16} size={1} />
+            <Controls showInteractive={false} />
+            <MiniMap
+              pannable
+              zoomable
+              className="!bg-card !border !border-border rounded-md"
+              maskColor="hsl(var(--muted) / 0.6)"
+              nodeColor="hsl(var(--muted-foreground))"
+            />
           </ReactFlow>
         </div>
 
