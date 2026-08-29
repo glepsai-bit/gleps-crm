@@ -110,6 +110,7 @@ const EMPTY_FORM: AiAgentInput & { name: string; systemPrompt: string } = {
   knowledgeBaseId: null,
   tools: [],
   outputSchema: null,
+  subAgentIds: [],
   active: true,
 };
 
@@ -185,6 +186,7 @@ export default function AdminIaAgentesPage() {
       knowledgeBaseId: agent.knowledgeBaseId,
       tools: agent.tools ?? [],
       outputSchema: agent.outputSchema,
+      subAgentIds: agent.subAgentIds ?? [],
       active: agent.active,
     });
     setSchemaText(agent.outputSchema ? JSON.stringify(agent.outputSchema, null, 2) : '');
@@ -518,6 +520,53 @@ export default function AdminIaAgentesPage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Especialistas que este agente pode consultar</Label>
+              <p className="text-[11px] text-muted-foreground">
+                Marque quem ele pode chamar no meio do raciocínio. O lead não vê a
+                consulta — só a resposta final. Quem é consultado não consulta ninguém.
+              </p>
+              {(agentsQuery.data ?? []).filter((a) => a.id !== editing?.id).length === 0 ? (
+                <p className="text-xs text-muted-foreground rounded-md border p-2.5">
+                  Crie outro agente primeiro para poder montar um time.
+                </p>
+              ) : (
+                <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                  {(agentsQuery.data ?? [])
+                    .filter((a) => a.id !== editing?.id)
+                    .map((a) => {
+                      const marcado = (form.subAgentIds ?? []).includes(a.id);
+                      return (
+                        <label
+                          key={a.id}
+                          className="flex items-start gap-3 rounded-md border p-2.5 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={marcado}
+                            onChange={(e) =>
+                              setForm({
+                                ...form,
+                                subAgentIds: e.target.checked
+                                  ? [...(form.subAgentIds ?? []), a.id]
+                                  : (form.subAgentIds ?? []).filter((id) => id !== a.id),
+                              })
+                            }
+                          />
+                          <span className="min-w-0">
+                            <span className="text-sm font-medium block">{a.name}</span>
+                            <span className="text-[11px] text-muted-foreground block">
+                              {a.description || 'sem descrição — o coordenador usa isso pra saber quando chamar'}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                </div>
+              )}
             </div>
 
             {(status?.tools.length ?? 0) > 0 && (

@@ -30,6 +30,7 @@ const agentCreateSchema = z.object({
   knowledgeBaseId: z.string().uuid().optional().nullable(),
   tools: z.array(z.string()).optional(),
   outputSchema: z.record(z.unknown()).optional().nullable(),
+  subAgentIds: z.array(z.string().uuid()).max(8).optional().nullable(),
   active: z.boolean().optional(),
 });
 

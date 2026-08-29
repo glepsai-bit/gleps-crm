@@ -316,6 +316,16 @@ class FlowService {
       return;
     }
 
+    // MEMÓRIA: cada mensagem abre uma execução nova, então as variáveis morrem
+    // no fim. O que persiste são os atributos da conversa — é neles que o nó
+    // "Salvar informações" grava. Carregá-los aqui é o que faz o agente lembrar
+    // do que apurou ontem em vez de recomeçar do zero a cada mensagem.
+    const conversa = await prisma.conversation.findFirst({
+      where: { id: run.conversationId, accountId: run.accountId },
+      select: { customAttributes: true },
+    });
+    const memoria = (conversa?.customAttributes ?? {}) as Record<string, unknown>;
+
     const resultado = await executeRun({
       runId,
       accountId: run.accountId,
@@ -323,11 +333,12 @@ class FlowService {
       conversationId: run.conversationId,
       shadow: run.shadow,
       graph: parseGraph(run.flow.graph),
-      vars: (run.context ?? {}) as Record<string, unknown>,
+      vars: { ...((run.context ?? {}) as Record<string, unknown>), memoria },
     });
 
-    // `__edges` é detalhe interno do motor; não polui o contexto salvo.
-    const { __edges: _descartado, ...contexto } = resultado.vars;
+    // `__edges` é interno do motor e `memoria` já vive nos atributos da
+    // conversa — nenhum dos dois precisa ser duplicado no contexto do run.
+    const { __edges: _descartado, memoria: _memoria, ...contexto } = resultado.vars;
 
     await prisma.flowRun.update({
       where: { id: runId },

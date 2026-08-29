@@ -2056,6 +2056,11 @@ model AiAgent {
   // JSON Schema da resposta. Equivale ao Output_Parser do n8n: quando presente,
   // a saída é validada e há 1 retry de autocorreção antes de falhar.
   outputSchema    Json?          @map("output_schema")
+  // Agentes que ESTE pode consultar no meio do próprio raciocínio (string[] de
+  // ids). É o que torna a arquitetura multi-agente de verdade: um coordenador
+  // com especialistas, em vez de agentes só se revezando no fluxo.
+  // Um nível apenas — quem é consultado não consulta ninguém.
+  subAgentIds     Json?          @map("sub_agent_ids")
   active          Boolean        @default(true)
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

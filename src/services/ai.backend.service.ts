@@ -35,6 +35,8 @@ export interface AiAgent {
   knowledgeBase?: { id: string; name: string } | null;
   tools: string[] | null;
   outputSchema: Record<string, unknown> | null;
+  /** Agentes que este pode consultar no meio do raciocínio. */
+  subAgentIds: string[] | null;
   active: boolean;
   createdAt: string;
   updatedAt: string;
@@ -53,6 +55,7 @@ export interface AiAgentInput {
   knowledgeBaseId?: string | null;
   tools?: string[];
   outputSchema?: Record<string, unknown> | null;
+  subAgentIds?: string[] | null;
   active?: boolean;
 }
 

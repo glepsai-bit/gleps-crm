@@ -21,6 +21,15 @@ export type AgentRole = 'classifier' | 'responder' | 'custom';
 
 /** Teto de rodadas de ferramenta por execução — trava anti-loop. */
 const MAX_TOOL_ROUNDS = 3;
+/**
+ * Profundidade máxima de consulta entre agentes. 1 = o coordenador consulta o
+ * especialista, e o especialista responde sozinho. Sem esse teto, dois agentes
+ * que se consultam mutuamente entrariam em laço queimando token até o limite
+ * de gasto da conta.
+ */
+const MAX_AGENT_DEPTH = 1;
+/** Nome fixo da ferramenta de delegação — o prompt do agente pode citá-la. */
+const FERRAMENTA_CONSULTA = 'consultar_especialista';
 const MAX_HISTORY = 60;
 
 export interface UpsertAgentInput {
@@ -28,6 +37,8 @@ export interface UpsertAgentInput {
   description?: string | null;
   role?: AgentRole;
   systemPrompt: string;
+  /** Ids de agentes que este pode consultar. */
+  subAgentIds?: string[] | null;
   provider?: AiProviderName;
   model?: string | null;
   temperature?: number;
@@ -48,6 +59,14 @@ export interface RunAgentInput {
   conversationId?: string;
   /** Variáveis do fluxo interpoladas no prompt como {{chave}}. */
   variables?: Record<string, string>;
+  /**
+   * O que já se sabe sobre este lead, acumulado entre mensagens anteriores.
+   * Sem isso cada agente recomeça do zero a cada mensagem — e nenhuma
+   * arquitetura multi-agente se sustenta.
+   */
+  memory?: Record<string, unknown>;
+  /** Profundidade da consulta entre agentes. 0 = chamada de origem. */
+  depth?: number;
 }
 
 export interface RunAgentResult {
@@ -203,6 +222,23 @@ class AiAgentService {
       data.tools = input.tools;
     }
 
+    if (input.subAgentIds !== undefined) {
+      const ids = input.subAgentIds ?? [];
+      if (ids.length > 0) {
+        const encontrados = await prisma.aiAgent.findMany({
+          where: { id: { in: ids }, accountId },
+          select: { id: true },
+        });
+        if (encontrados.length !== ids.length) {
+          throw new ValidationError('Algum agente especialista não existe nesta conta');
+        }
+        if (current && ids.includes(current.id)) {
+          throw new ValidationError('Um agente não pode consultar a si mesmo');
+        }
+      }
+      data.subAgentIds = ids;
+    }
+
     if (input.outputSchema !== undefined) {
       if (input.outputSchema && typeof input.outputSchema !== 'object') {
         throw new ValidationError('outputSchema precisa ser um objeto JSON Schema');
@@ -242,14 +278,50 @@ class AiAgentService {
       }
     }
 
-    const system = this.buildSystemPrompt(agent, hits, input.variables);
+    const system = this.buildSystemPrompt(agent, hits, input.variables, input.memory);
     const messages: ChatMessage[] = [
       ...(await this.loadHistory(input.accountId, input.conversationId, agent.historyLimit)),
       { role: 'user', content: userMessage },
     ];
 
     const toolNames = Array.isArray(agent.tools) ? (agent.tools as string[]) : [];
-    const tools = toolNames.map((n) => AVAILABLE_TOOLS[n].definition).filter(Boolean);
+    const tools: ChatToolDef[] = toolNames
+      .filter((n) => AVAILABLE_TOOLS[n])
+      .map((n) => AVAILABLE_TOOLS[n].definition);
+
+    // DELEGAÇÃO: o roster de especialistas vira uma ferramenta cujo enum são os
+    // nomes deles. Construída aqui (e não no catálogo estático) porque depende
+    // de QUAIS agentes este coordenador pode consultar.
+    const depth = input.depth ?? 0;
+    const subIds = Array.isArray(agent.subAgentIds) ? (agent.subAgentIds as string[]) : [];
+    let especialistas: { id: string; name: string; description: string | null }[] = [];
+
+    if (subIds.length > 0 && depth < MAX_AGENT_DEPTH) {
+      especialistas = await prisma.aiAgent.findMany({
+        where: { id: { in: subIds }, accountId: input.accountId, active: true },
+        select: { id: true, name: true, description: true },
+      });
+      if (especialistas.length > 0) {
+        tools.push({
+          name: FERRAMENTA_CONSULTA,
+          description:
+            'Consulta um especialista quando a pergunta sai do seu escopo. Ele responde ' +
+            'só a você — o lead não vê. Use a resposta para compor a SUA resposta.\n' +
+            especialistas.map((e) => `- ${e.name}: ${e.description ?? 'sem descrição'}`).join('\n'),
+          parameters: {
+            type: 'object',
+            properties: {
+              especialista: { type: 'string', enum: especialistas.map((e) => e.name) },
+              pergunta: {
+                type: 'string',
+                description: 'O que você precisa saber, com o contexto necessário.',
+              },
+            },
+            required: ['especialista', 'pergunta'],
+          },
+        });
+      }
+    }
 
     const schema = agent.outputSchema as Record<string, unknown> | null;
     const usageTotal: ChatUsage = { inputTokens: 0, outputTokens: 0, usdEstimate: 0, priced: true };
@@ -283,6 +355,17 @@ class AiAgentService {
       messages.push({ role: 'assistant', content: res.text, toolCalls: res.toolCalls });
 
       for (const call of res.toolCalls) {
+        if (call.name === FERRAMENTA_CONSULTA) {
+          const saida = await this.consultarEspecialista(
+            input.accountId,
+            especialistas,
+            call.arguments,
+            { conversationId: input.conversationId, memory: input.memory, depth: depth + 1 }
+          );
+          messages.push({ role: 'tool', content: saida, toolCallId: call.id });
+          continue;
+        }
+
         const tool = AVAILABLE_TOOLS[call.name];
         let output: string;
         if (!tool) {
@@ -359,10 +442,60 @@ class AiAgentService {
     };
   }
 
+  /**
+   * Roda um especialista a pedido do coordenador e devolve a resposta em texto.
+   *
+   * O especialista recebe a mesma memória e o mesmo histórico — ele precisa do
+   * contexto pra responder direito. O que ele NÃO recebe é o direito de
+   * delegar: `depth` já vem incrementado, e no próximo nível a ferramenta nem
+   * é oferecida.
+   */
+  private async consultarEspecialista(
+    accountId: string,
+    disponiveis: { id: string; name: string }[],
+    args: Record<string, unknown>,
+    ctx: { conversationId?: string; memory?: Record<string, unknown>; depth: number }
+  ): Promise<string> {
+    const nome = typeof args.especialista === 'string' ? args.especialista : '';
+    const pergunta = typeof args.pergunta === 'string' ? args.pergunta.trim() : '';
+
+    const alvo = disponiveis.find((e) => e.name.toLowerCase() === nome.toLowerCase());
+    if (!alvo) {
+      return `Especialista "${nome}" não está disponível. Opções: ${disponiveis
+        .map((e) => e.name)
+        .join(', ')}.`;
+    }
+    if (!pergunta) return 'Informe a pergunta para o especialista.';
+
+    try {
+      const r = await this.run({
+        accountId,
+        agentId: alvo.id,
+        userMessage: pergunta,
+        conversationId: ctx.conversationId,
+        memory: ctx.memory,
+        depth: ctx.depth,
+      });
+      logger.info('[ai-agent] especialista consultado', {
+        especialista: alvo.name,
+        custoUsd: r.usage.usdEstimate,
+      });
+      // Saída estruturada vira JSON legível; texto puro vai como está.
+      return r.structured ? JSON.stringify(r.structured) : r.text;
+    } catch (err) {
+      // Especialista que falha não derruba o coordenador — ele segue com o que
+      // tem e o motivo fica no log do passo.
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('[ai-agent] consulta ao especialista falhou', { especialista: alvo.name, error: msg });
+      return `Não foi possível consultar ${alvo.name}: ${msg}`;
+    }
+  }
+
   private buildSystemPrompt(
     agent: AiAgent,
     hits: SearchHit[],
-    variables?: Record<string, string>
+    variables?: Record<string, string>,
+    memory?: Record<string, unknown>
   ): string {
     let prompt = agent.systemPrompt;
 
@@ -376,8 +509,18 @@ class AiAgentService {
       }
     }
 
+    const blocos = [prompt];
+
+    // MEMÓRIA: o que ficou de mensagens anteriores. Vai antes da base de
+    // conhecimento porque é o mais específico — fato apurado sobre ESTE lead
+    // vale mais que material genérico do negócio.
+    const memoriaTexto = formatMemoryForPrompt(memory);
+    if (memoriaTexto) blocos.push(memoriaTexto);
+
     const knowledge = formatHitsForPrompt(hits);
-    return knowledge ? `${prompt}\n\n---\n\n${knowledge}` : prompt;
+    if (knowledge) blocos.push(knowledge);
+
+    return blocos.join('\n\n---\n\n');
   }
 
   /**
@@ -419,6 +562,24 @@ class AiAgentService {
         content: m.content as string,
       }));
   }
+}
+
+/**
+ * Transforma a memória num bloco legível pro modelo. Valor vazio é descartado —
+ * dizer "faturamento: (não informado)" gasta token e confunde o agente, que
+ * passa a tratar a ausência como fato apurado.
+ */
+function formatMemoryForPrompt(memory?: Record<string, unknown>): string {
+  if (!memory) return '';
+  const linhas = Object.entries(memory)
+    .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
+    .map(([k, v]) => `- ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+  if (linhas.length === 0) return '';
+  return (
+    'O QUE JÁ SABEMOS SOBRE ESTE LEAD (apurado em conversas anteriores).\n' +
+    'Não pergunte de novo o que já está aqui.\n\n' +
+    linhas.join('\n')
+  );
 }
 
 // ============================================

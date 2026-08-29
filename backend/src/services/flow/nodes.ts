@@ -298,6 +298,9 @@ const aiAgentNode: NodeDefinition = {
       agentId,
       userMessage: texto,
       conversationId: ctx.conversationId,
+      // O que já se sabe do lead entra no contexto do agente — e dos
+      // especialistas que ele consultar.
+      memory: (ctx.vars.memoria ?? {}) as Record<string, unknown>,
       variables: Object.fromEntries(
         Object.entries(ctx.vars)
           .filter(([k, v]) => !k.startsWith('__') && typeof v === 'string')
@@ -316,6 +319,8 @@ const aiAgentNode: NodeDefinition = {
         modelo: r.model,
         tentativas: r.attempts,
         trechosUsados: r.hits.length,
+        consultasAEspecialistas: r.toolCalls.filter((t) => t.name === 'consultar_especialista')
+          .length,
         custoUsd: Number(r.usage.usdEstimate.toFixed(6)),
         tokens: r.usage.inputTokens + r.usage.outputTokens,
         resposta: r.text.slice(0, 1000),
@@ -385,7 +390,9 @@ const crmApplyStage: NodeDefinition = {
 const crmUpdateContact: NodeDefinition = {
   type: 'crm.update_contact',
   label: 'Salvar informações',
-  description: 'Grava variáveis capturadas pela IA nos campos da conversa.',
+  description:
+    'Grava o que a IA apurou nos campos da conversa. É a MEMÓRIA do atendimento: ' +
+    'o que for salvo aqui volta como {{memoria.campo}} nas próximas mensagens.',
   branches: [{ key: 'default', label: '' }],
   mutates: true,
   async execute(node, ctx) {
@@ -406,7 +413,12 @@ const crmUpdateContact: NodeDefinition = {
       valores,
       ctx.actorId
     );
-    return { output: { valores } };
+    // Reflete na memória do run atual também: um nó seguinte que leia
+    // {{memoria.x}} tem que ver o que acabou de ser gravado.
+    return {
+      vars: { memoria: { ...((ctx.vars.memoria ?? {}) as Record<string, unknown>), ...valores } },
+      output: { valores },
+    };
   },
 };
 

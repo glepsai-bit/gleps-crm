@@ -10,6 +10,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const prismaMock = vi.hoisted(() => ({
   flow: { findFirst: vi.fn(), updateMany: vi.fn() },
+  // O motor carrega a memória da conversa antes de executar (T-030).
+  conversation: { findFirst: vi.fn() },
   flowRun: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -65,6 +67,8 @@ beforeEach(() => {
   prismaMock.flowRun.findMany.mockResolvedValue([]);
   prismaMock.flowRun.updateMany.mockResolvedValue({ count: 0 });
   prismaMock.flowRun.create.mockResolvedValue({ id: 'run-1' });
+  prismaMock.flowRun.update.mockResolvedValue({ id: 'run-1' });
+  prismaMock.conversation.findFirst.mockResolvedValue({ customAttributes: {} });
 });
 
 describe('gatilho', () => {
@@ -225,5 +229,43 @@ describe('worker', () => {
     expect(salvo.status).toBe('done');
     expect(salvo.context.agente).toEqual({ etapa: 'agendado' });
     expect(salvo.context.__edges).toBeUndefined();
+  });
+
+  it('a memória da conversa entra no contexto da execução', async () => {
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
+    prismaMock.flowRun.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    prismaMock.flowRun.findUnique.mockResolvedValue({
+      id: 'run-1',
+      accountId: 'acc-1',
+      flowId: 'flow-1',
+      conversationId: 'conv-1',
+      shadow: false,
+      context: { mensagens: [] },
+      flow: FLUXO,
+    });
+    // O que o "Salvar informações" gravou em mensagens anteriores.
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      customAttributes: { faturamento: 'R$ 80 mil', segmento: 'clínica' },
+    });
+    executeRunMock.mockResolvedValue({
+      status: 'done',
+      steps: 3,
+      stopReason: 'fim_do_fluxo',
+      error: null,
+      vars: { memoria: { faturamento: 'R$ 80 mil' } },
+    });
+
+    await flowService.processDueRuns();
+
+    // Chega no motor como {{memoria.*}} — é o que faz o agente lembrar.
+    const vars = executeRunMock.mock.calls[0][0].vars;
+    expect(vars.memoria).toEqual({ faturamento: 'R$ 80 mil', segmento: 'clínica' });
+
+    // E NÃO é duplicada no contexto salvo: a fonte da verdade são os atributos
+    // da conversa, senão as duas cópias divergem.
+    const salvo = prismaMock.flowRun.update.mock.calls.at(-1)![0].data;
+    expect(salvo.context.memoria).toBeUndefined();
   });
 });
