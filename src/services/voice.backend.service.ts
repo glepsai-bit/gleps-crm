@@ -9,7 +9,15 @@ interface DataEnvelope<T> {
 
 export const SENTINEL = '***SET***';
 
+export type VoiceProvider = 'twilio' | 'sip';
+
 export interface VoiceConfig {
+  voiceProvider: VoiceProvider;
+  sipWsServer: string | null;
+  sipDomain: string | null;
+  sipUsername: string | null;
+  sipPassword: string | null;
+  sipCallerId: string | null;
   twilioAccountSid: string | null;
   twilioAuthToken: string | null;
   twilioApiKeySid: string | null;
@@ -24,6 +32,12 @@ export interface VoiceConfig {
 }
 
 export interface VoiceConfigInput {
+  voiceProvider?: VoiceProvider;
+  sipWsServer?: string | null;
+  sipDomain?: string | null;
+  sipUsername?: string | null;
+  sipPassword?: string | null;
+  sipCallerId?: string | null;
   twilioAccountSid?: string | null;
   twilioAuthToken?: string | null;
   twilioApiKeySid?: string | null;
@@ -80,6 +94,37 @@ export const voiceService = {
       '/api/voice/token'
     );
     return r.data;
+  },
+
+  /** Dados de registro SIP para o navegador (só no provedor 'sip'). */
+  async getSipCredentials(): Promise<{
+    wsServer: string;
+    domain: string;
+    username: string;
+    password: string;
+    callerId: string | null;
+  }> {
+    const r = await apiClient.get<
+      DataEnvelope<{
+        wsServer: string;
+        domain: string;
+        username: string;
+        password: string;
+        callerId: string | null;
+      }>
+    >('/api/voice/sip-credentials');
+    return r.data;
+  },
+
+  /**
+   * No SIP direto não há webhook do provedor — quem observa a ligação é o
+   * navegador, então é ele que reporta o andamento.
+   */
+  async reportProgress(
+    callId: string,
+    input: { status?: string; durationSec?: number; error?: string }
+  ): Promise<void> {
+    await apiClient.post(`/api/voice/calls/${callId}/progress`, input);
   },
 
   /** Registra a ligação ANTES de conectar; o callId vai junto pro SDK. */

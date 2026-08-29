@@ -24,7 +24,15 @@ export const SENTINEL = '***SET***' as const;
 /** Token curto: se vazar, expira sozinho. O operador renova ao abrir o discador. */
 const TOKEN_TTL_SECONDS = 3600;
 
+export type VoiceProvider = 'twilio' | 'sip';
+
 export interface VoiceConfigView {
+  voiceProvider: VoiceProvider;
+  sipWsServer: string | null;
+  sipDomain: string | null;
+  sipUsername: string | null;
+  sipPassword: typeof SENTINEL | null;
+  sipCallerId: string | null;
   twilioAccountSid: string | null;
   twilioAuthToken: typeof SENTINEL | null;
   twilioApiKeySid: string | null;
@@ -37,6 +45,12 @@ export interface VoiceConfigView {
 }
 
 export interface UpdateVoiceConfigInput {
+  voiceProvider?: VoiceProvider;
+  sipWsServer?: string | null;
+  sipDomain?: string | null;
+  sipUsername?: string | null;
+  sipPassword?: string | null;
+  sipCallerId?: string | null;
   twilioAccountSid?: string | null;
   twilioAuthToken?: string | null;
   twilioApiKeySid?: string | null;
@@ -93,6 +107,12 @@ class VoiceService {
     const a = await prisma.account.findUnique({
       where: { id: accountId },
       select: {
+        voiceProvider: true,
+        sipWsServer: true,
+        sipDomain: true,
+        sipUsername: true,
+        sipPassword: true,
+        sipCallerId: true,
         twilioAccountSid: true,
         twilioAuthToken: true,
         twilioApiKeySid: true,
@@ -104,7 +124,32 @@ class VoiceService {
     });
     if (!a) throw new NotFoundError('Conta');
 
+    const provider = (a.voiceProvider as VoiceProvider) ?? 'sip';
     const pendencias: string[] = [];
+
+    if (provider === 'sip') {
+      if (!a.sipWsServer) pendencias.push('Servidor WSS');
+      if (!a.sipDomain) pendencias.push('Domínio SIP');
+      if (!a.sipUsername) pendencias.push('Usuário SIP');
+      if (!a.sipPassword) pendencias.push('Senha SIP');
+      return {
+        voiceProvider: provider,
+        sipWsServer: a.sipWsServer,
+        sipDomain: a.sipDomain,
+        sipUsername: a.sipUsername,
+        sipPassword: a.sipPassword ? SENTINEL : null,
+        sipCallerId: a.sipCallerId,
+        twilioAccountSid: a.twilioAccountSid,
+        twilioAuthToken: a.twilioAuthToken ? SENTINEL : null,
+        twilioApiKeySid: a.twilioApiKeySid,
+        twilioApiKeySecret: a.twilioApiKeySecret ? SENTINEL : null,
+        twilioTwimlAppSid: a.twilioTwimlAppSid,
+        twilioCallerId: a.twilioCallerId,
+        voiceRecording: a.voiceRecording,
+        pendencias,
+      };
+    }
+
     if (!a.twilioAccountSid) pendencias.push('Account SID');
     if (!a.twilioAuthToken) pendencias.push('Auth Token');
     if (!a.twilioApiKeySid) pendencias.push('API Key SID');
@@ -113,6 +158,12 @@ class VoiceService {
     if (!a.twilioCallerId) pendencias.push('Número de origem');
 
     return {
+      voiceProvider: provider,
+      sipWsServer: a.sipWsServer,
+      sipDomain: a.sipDomain,
+      sipUsername: a.sipUsername,
+      sipPassword: a.sipPassword ? SENTINEL : null,
+      sipCallerId: a.sipCallerId,
       // SID não é segredo (é identificador público da conta) — mostrar ajuda a
       // conferir se está apontando pra conta certa. Token e Secret são segredo.
       twilioAccountSid: a.twilioAccountSid,
@@ -130,6 +181,11 @@ class VoiceService {
     const data: Record<string, string | boolean | null> = {};
 
     const campos = [
+      'sipWsServer',
+      'sipDomain',
+      'sipUsername',
+      'sipPassword',
+      'sipCallerId',
       'twilioAccountSid',
       'twilioAuthToken',
       'twilioApiKeySid',
@@ -150,6 +206,10 @@ class VoiceService {
     if (input.twilioCallerId !== undefined && typeof data.twilioCallerId === 'string') {
       data.twilioCallerId = toE164(data.twilioCallerId);
     }
+    if (input.voiceProvider !== undefined) data.voiceProvider = input.voiceProvider;
+    if (input.sipCallerId !== undefined && typeof data.sipCallerId === 'string') {
+      data.sipCallerId = toE164(data.sipCallerId);
+    }
     if (input.voiceRecording !== undefined) data.voiceRecording = input.voiceRecording;
 
     if (Object.keys(data).length > 0) {
@@ -162,6 +222,12 @@ class VoiceService {
     const a = await prisma.account.findUnique({
       where: { id: accountId },
       select: {
+        voiceProvider: true,
+        sipWsServer: true,
+        sipDomain: true,
+        sipUsername: true,
+        sipPassword: true,
+        sipCallerId: true,
         twilioAccountSid: true,
         twilioAuthToken: true,
         twilioApiKeySid: true,
@@ -212,6 +278,91 @@ class VoiceService {
   }
 
   // ============================================
+  // Credenciais SIP para o navegador
+  // ============================================
+
+  /**
+   * Credenciais que o navegador usa pra registrar no provedor.
+   *
+   * SIM, a senha SIP chega ao navegador — é assim que todo webphone funciona:
+   * o registro SIP é feito pelo cliente, não pelo servidor. Mitigações:
+   *  - só sai para usuário autenticado E da conta dona da linha;
+   *  - o plano é de 1 chamada simultânea, então uma credencial vazada não vira
+   *    call center clandestino, vira uma linha ocupada (e visível no histórico);
+   *  - a troca da senha invalida o vazamento na hora.
+   * Se o provedor oferecer credencial temporária por ramal, vale migrar.
+   */
+  async getSipCredentials(accountId: string): Promise<{
+    wsServer: string;
+    domain: string;
+    username: string;
+    password: string;
+    callerId: string | null;
+  }> {
+    const c = await this.credenciais(accountId);
+    if (c.voiceProvider !== 'sip') {
+      throw new AppError('A conta não está configurada para usar SIP.', 409);
+    }
+    if (!c.sipWsServer || !c.sipDomain || !c.sipUsername || !c.sipPassword) {
+      throw new AppError(
+        'Discador não configurado. Preencha os dados SIP em Administração → Discador.',
+        503
+      );
+    }
+    return {
+      wsServer: c.sipWsServer,
+      domain: c.sipDomain,
+      username: c.sipUsername,
+      password: c.sipPassword,
+      callerId: c.sipCallerId,
+    };
+  }
+
+  /**
+   * Atualiza a ligação com o que o NAVEGADOR observou.
+   *
+   * No SIP direto não há webhook: quem sabe se tocou, se atendeu e quanto durou
+   * é o próprio cliente. Por isso este caminho existe — e por isso ele só
+   * aceita campos de progresso, nunca preço ou identificadores do provedor,
+   * que o navegador não tem como conhecer e não deve poder inventar.
+   */
+  async reportCallProgress(
+    accountId: string,
+    callId: string,
+    input: { status?: string; durationSec?: number; error?: string }
+  ) {
+    const call = await prisma.call.findFirst({ where: { id: callId, accountId } });
+    if (!call) throw new NotFoundError('Ligação');
+
+    const permitidos = [
+      'initiated',
+      'ringing',
+      'in-progress',
+      'completed',
+      'busy',
+      'no-answer',
+      'failed',
+      'canceled',
+    ];
+    const data: Record<string, unknown> = {};
+
+    if (input.status && permitidos.includes(input.status)) {
+      data.status = input.status;
+      if (input.status === 'in-progress' && !call.startedAt) data.startedAt = new Date();
+      if (['completed', 'busy', 'no-answer', 'failed', 'canceled'].includes(input.status)) {
+        data.endedAt = new Date();
+      }
+    }
+    if (typeof input.durationSec === 'number' && input.durationSec >= 0) {
+      data.durationSec = Math.round(input.durationSec);
+    }
+    if (input.error) data.error = input.error.slice(0, 1000);
+
+    if (Object.keys(data).length === 0) return call;
+    return prisma.call.update({ where: { id: callId }, data });
+  }
+
+  // ============================================
   // Discagem
   // ============================================
 
@@ -230,7 +381,10 @@ class VoiceService {
     contactId?: string | null;
   }): Promise<{ callId: string; to: string }> {
     const c = await this.credenciais(params.accountId);
-    if (!c.twilioCallerId) {
+    // No SIP o número de origem costuma ser definido pelo próprio provedor,
+    // então ele é opcional; na Twilio é obrigatório.
+    const callerId = c.voiceProvider === 'sip' ? c.sipCallerId : c.twilioCallerId;
+    if (c.voiceProvider === 'twilio' && !callerId) {
       throw new AppError('Falta configurar o número de origem em Administração → Discador.', 503);
     }
 
@@ -262,7 +416,7 @@ class VoiceService {
         contactId,
         direction: 'outbound',
         toNumber: to,
-        fromNumber: c.twilioCallerId,
+        fromNumber: callerId,
         status: 'queued',
       },
     });

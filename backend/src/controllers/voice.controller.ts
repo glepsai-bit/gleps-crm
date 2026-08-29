@@ -17,6 +17,12 @@ import { AuthenticatedRequest } from '../types';
  */
 
 const configSchema = z.object({
+  voiceProvider: z.enum(['twilio', 'sip']).optional(),
+  sipWsServer: z.string().max(300).optional().nullable(),
+  sipDomain: z.string().max(200).optional().nullable(),
+  sipUsername: z.string().max(120).optional().nullable(),
+  sipPassword: z.string().max(200).optional().nullable(),
+  sipCallerId: z.string().max(30).optional().nullable(),
   twilioAccountSid: z.string().max(120).optional().nullable(),
   twilioAuthToken: z.string().max(200).optional().nullable(),
   twilioApiKeySid: z.string().max(120).optional().nullable(),
@@ -34,6 +40,23 @@ const startCallSchema = z.object({
 const outcomeSchema = z.object({
   disposition: z.string().max(40).optional(),
   notes: z.string().max(5000).optional(),
+});
+
+const progressSchema = z.object({
+  status: z
+    .enum([
+      'initiated',
+      'ringing',
+      'in-progress',
+      'completed',
+      'busy',
+      'no-answer',
+      'failed',
+      'canceled',
+    ])
+    .optional(),
+  durationSec: z.number().int().min(0).max(86_400).optional(),
+  error: z.string().max(1000).optional(),
 });
 
 const listSchema = z.object({
@@ -108,6 +131,46 @@ export class VoiceController {
         contactId: body.contactId ?? null,
       });
       res.status(201).json({ data: r });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /voice/sip-credentials — dados de registro pro navegador.
+   * Só faz sentido no provedor SIP; na Twilio quem autoriza é o token.
+   */
+  async sipCredentials(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const r = await voiceService.getSipCredentials(req.user!.accountId!);
+      res.json({ data: r });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /voice/calls/:callId/progress — o navegador reporta o andamento.
+   * No SIP direto não existe webhook do provedor: quem observa a ligação é o
+   * cliente.
+   */
+  async reportProgress(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const body = progressSchema.parse(req.body);
+      const call = await voiceService.reportCallProgress(
+        req.user!.accountId!,
+        req.params.callId as string,
+        body
+      );
+      res.json({ data: call });
     } catch (error) {
       next(error);
     }

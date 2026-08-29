@@ -67,9 +67,8 @@ export default function AdminDiscadorPage() {
   const [configAberta, setConfigAberta] = useState(false);
   const [ligacaoParaMarcar, setLigacaoParaMarcar] = useState<string | null>(null);
 
-  const dialer = useDialer();
-
   const { data: config } = useQuery({ queryKey: ['voice-config'], queryFn: voiceService.getConfig });
+  const dialer = useDialer(config?.voiceProvider);
   const { data: ligacoes } = useQuery({
     queryKey: ['voice-calls'],
     queryFn: () => voiceService.listCalls({ limit: 50 }),
@@ -384,11 +383,18 @@ function DialogConfig({
 }) {
   const { toast } = useToast();
   const [form, setForm] = useState<Record<string, string>>({});
+  const [provider, setProvider] = useState<'sip' | 'twilio'>('sip');
   const [gravar, setGravar] = useState(false);
 
   useEffect(() => {
     if (!config) return;
+    setProvider(config.voiceProvider);
     setForm({
+      sipWsServer: config.sipWsServer ?? '',
+      sipDomain: config.sipDomain ?? '',
+      sipUsername: config.sipUsername ?? '',
+      sipPassword: config.sipPassword ?? '',
+      sipCallerId: config.sipCallerId ?? '',
       twilioAccountSid: config.twilioAccountSid ?? '',
       twilioAuthToken: config.twilioAuthToken ?? '',
       twilioApiKeySid: config.twilioApiKeySid ?? '',
@@ -400,7 +406,8 @@ function DialogConfig({
   }, [config]);
 
   const salvar = useMutation({
-    mutationFn: () => voiceService.updateConfig({ ...form, voiceRecording: gravar }),
+    mutationFn: () =>
+      voiceService.updateConfig({ ...form, voiceProvider: provider, voiceRecording: gravar }),
     onSuccess: () => {
       onSalvo();
       onFechar();
@@ -410,7 +417,7 @@ function DialogConfig({
   });
 
   const campo = (chave: string, label: string, dica?: string, senha = false) => (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5" key={chave}>
       <Label className="text-xs">{label}</Label>
       <Input
         type={senha ? 'password' : 'text'}
@@ -429,49 +436,94 @@ function DialogConfig({
         <DialogHeader>
           <DialogTitle>Configurar discador</DialogTitle>
           <DialogDescription>
-            Credenciais da Twilio. Crie a conta em twilio.com, compre um número e gere uma API Key.
+            Escolha a operadora e preencha os dados de acesso.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
-          {campo('twilioAccountSid', 'Account SID', 'Twilio Console → painel inicial (começa com AC).')}
-          {campo('twilioAuthToken', 'Auth Token', 'Fica no mesmo painel. Usado para validar os webhooks.', true)}
-          {campo('twilioApiKeySid', 'API Key SID', 'Console → Account → API keys & tokens (começa com SK).')}
-          {campo('twilioApiKeySecret', 'API Key Secret', 'Só aparece uma vez, na criação da API Key.', true)}
-          {campo('twilioTwimlAppSid', 'TwiML App SID', 'Console → Voice → TwiML Apps (começa com AP).')}
-          {campo('twilioCallerId', 'Número de origem', 'O número Twilio que aparece pro destinatário. Ex: +5511999999999')}
+          <div className="space-y-1.5">
+            <Label className="text-xs">Operadora</Label>
+            <Select value={provider} onValueChange={(v) => setProvider(v as 'sip' | 'twilio')}>
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="sip">Provedor SIP (plano fechado)</SelectItem>
+                <SelectItem value="twilio">Twilio (pago por minuto)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
           <Separator />
 
-          <div className="rounded-md border p-3 space-y-1.5 bg-muted/30">
-            <div className="text-xs font-medium">Cole esta URL no seu TwiML App</div>
-            <div className="flex gap-2 items-center">
-              <code className="text-[11px] break-all flex-1">{config?.twimlVoiceUrl}</code>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  navigator.clipboard.writeText(config?.twimlVoiceUrl ?? '');
-                  toast({ title: 'URL copiada' });
-                }}
-              >
-                <Copy className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Twilio Console → Voice → TwiML Apps → seu app → Voice Configuration → Request URL
-              (método POST). Sem isso a chamada não sai.
-            </p>
-          </div>
+          {provider === 'sip' ? (
+            <>
+              {campo(
+                'sipWsServer',
+                'Servidor WSS',
+                'Endereço WebSocket do provedor. Ex: wss://sip.provedor.com.br:7443'
+              )}
+              {campo('sipDomain', 'Domínio SIP', 'A parte depois do @ no seu ramal.')}
+              {campo('sipUsername', 'Usuário SIP', 'Normalmente o número do ramal.')}
+              {campo('sipPassword', 'Senha SIP', undefined, true)}
+              {campo(
+                'sipCallerId',
+                'Número de origem (opcional)',
+                'Deixe vazio se o provedor já define o número que aparece.'
+              )}
+
+              <div className="rounded-md border p-3 bg-muted/30 text-[11px] text-muted-foreground space-y-1">
+                <div className="font-medium text-foreground">Sobre a senha SIP</div>
+                <p>
+                  Ela chega ao navegador — é assim que todo webphone funciona, o registro é
+                  feito pelo cliente. Só sai para usuário autenticado desta conta, e como o
+                  plano é de 1 chamada por vez, uma credencial vazada vira linha ocupada e
+                  visível no histórico, não call center clandestino. Trocar a senha invalida
+                  na hora.
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              {campo('twilioAccountSid', 'Account SID', 'Console da Twilio (começa com AC).')}
+              {campo('twilioAuthToken', 'Auth Token', 'Valida os webhooks.', true)}
+              {campo('twilioApiKeySid', 'API Key SID', 'Account → API keys (começa com SK).')}
+              {campo('twilioApiKeySecret', 'API Key Secret', 'Só aparece na criação.', true)}
+              {campo('twilioTwimlAppSid', 'TwiML App SID', 'Voice → TwiML Apps (começa com AP).')}
+              {campo('twilioCallerId', 'Número de origem', 'Ex: +5511999999999')}
+
+              <div className="rounded-md border p-3 space-y-1.5 bg-muted/30">
+                <div className="text-xs font-medium">Cole esta URL no seu TwiML App</div>
+                <div className="flex gap-2 items-center">
+                  <code className="text-[11px] break-all flex-1">{config?.twimlVoiceUrl}</code>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      navigator.clipboard.writeText(config?.twimlVoiceUrl ?? '');
+                      toast({ title: 'URL copiada' });
+                    }}
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Voice → TwiML Apps → seu app → Request URL (POST). Sem isso a chamada não sai.
+                </p>
+              </div>
+            </>
+          )}
 
           <div className="flex items-center justify-between rounded-md border p-3">
             <div>
               <div className="text-sm font-medium">Gravar ligações</div>
               <p className="text-[11px] text-muted-foreground">
-                Reproduz um aviso de gravação antes de conectar.
+                {provider === 'sip'
+                  ? 'No SIP a gravação é feita pelo provedor — ative no painel dele.'
+                  : 'Reproduz um aviso de gravação antes de conectar.'}
               </p>
             </div>
-            <Switch checked={gravar} onCheckedChange={setGravar} />
+            <Switch checked={gravar} onCheckedChange={setGravar} disabled={provider === 'sip'} />
           </div>
         </div>
 

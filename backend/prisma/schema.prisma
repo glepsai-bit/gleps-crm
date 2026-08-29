@@ -68,6 +68,18 @@ model Account {
   /// Gravar as ligações. Exige aviso ao destinatário — ver voice.service.ts.
   voiceRecording    Boolean @default(false) @map("voice_recording")
 
+  /// Operadora do discador: 'twilio' (API paga por minuto) ou 'sip' (plano
+  /// fechado de provedor nacional, via SIP sobre WebSocket).
+  voiceProvider     String  @default("sip") @map("voice_provider") @db.VarChar(20)
+  /// Endereço WSS do provedor. Ex: wss://sip.provedor.com.br:7443
+  sipWsServer       String? @map("sip_ws_server") @db.VarChar(300)
+  /// Domínio SIP (a parte depois do @ no seu ramal).
+  sipDomain         String? @map("sip_domain") @db.VarChar(200)
+  sipUsername       String? @map("sip_username") @db.VarChar(120)
+  sipPassword       String? @map("sip_password") @db.VarChar(200)
+  /// Número que aparece pro destinatário quando o provedor não define sozinho.
+  sipCallerId       String? @map("sip_caller_id") @db.VarChar(30)
+
   // Email/AI Integration
   openaiApiKey      String? @map("openai_api_key") @db.VarChar(500)
   anthropicApiKey   String? @map("anthropic_api_key") @db.VarChar(500)

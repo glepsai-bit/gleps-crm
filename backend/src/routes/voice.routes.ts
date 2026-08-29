@@ -32,10 +32,14 @@ router.use(authenticate);
 router.use(requireAccountId);
 
 router.get('/token', (req, res, next) => voiceController.token(req, res, next));
+router.get('/sip-credentials', (req, res, next) => voiceController.sipCredentials(req, res, next));
 router.post('/calls', (req, res, next) => voiceController.startCall(req, res, next));
 router.get('/calls', (req, res, next) => voiceController.listCalls(req, res, next));
 router.post('/calls/:callId/outcome', (req, res, next) =>
   voiceController.setOutcome(req, res, next)
+);
+router.post('/calls/:callId/progress', (req, res, next) =>
+  voiceController.reportProgress(req, res, next)
 );
 
 // Credenciais da operadora: só admin da conta.
