@@ -31,6 +31,14 @@ const MAX_AGENT_DEPTH = 1;
 /** Nome fixo da ferramenta de delegação — o prompt do agente pode citá-la. */
 const FERRAMENTA_CONSULTA = 'consultar_especialista';
 const MAX_HISTORY = 60;
+/**
+ * Quantas mensagens precisam ter caído da janela antes de gastar uma chamada
+ * resumindo. Resumir a cada mensagem custaria uma chamada extra por
+ * atendimento; esperar acumular dilui esse custo.
+ */
+const RESUMO_A_CADA = 10;
+/** Chave reservada nos atributos da conversa. O prefixo `_` some do prompt. */
+const CHAVE_RESUMO = '_resumo_conversa';
 
 export interface UpsertAgentInput {
   name: string;
@@ -60,11 +68,21 @@ export interface RunAgentInput {
   /** Variáveis do fluxo interpoladas no prompt como {{chave}}. */
   variables?: Record<string, string>;
   /**
-   * O que já se sabe sobre este lead, acumulado entre mensagens anteriores.
-   * Sem isso cada agente recomeça do zero a cada mensagem — e nenhuma
-   * arquitetura multi-agente se sustenta.
+   * LONGO PRAZO — fatos sobre a PESSOA, que valem entre conversas diferentes.
+   * Vive no contato, não na conversa: o lead que sumiu e voltou em março
+   * continua sendo o mesmo, com o mesmo faturamento e a mesma dor.
    */
   memory?: Record<string, unknown>;
+  /**
+   * CURTO PRAZO — estado DESTA conversa (onde paramos no roteiro, o que já foi
+   * oferecido). Morre quando a conversa encerra, e é isso que se quer: o
+   * roteiro recomeça, os fatos sobre a pessoa não.
+   */
+  session?: Record<string, unknown>;
+  /** Resumo do que saiu da janela de histórico. Evita perder o início. */
+  historySummary?: string | null;
+  /** Contato dono da memória de longo prazo — necessário pra ferramenta `lembrar`. */
+  contactId?: string | null;
   /** Profundidade da consulta entre agentes. 0 = chamada de origem. */
   depth?: number;
 }
@@ -278,9 +296,28 @@ class AiAgentService {
       }
     }
 
-    const system = this.buildSystemPrompt(agent, hits, input.variables, input.memory);
+    // O histórico vem ANTES do prompt: é ele que produz o resumo do trecho que
+    // saiu da janela, e o resumo entra no prompt.
+    const historico = await this.loadHistory(
+      input.accountId,
+      input.conversationId,
+      agent.historyLimit,
+      agent
+    );
+
+    const system = this.buildSystemPrompt(
+      agent,
+      hits,
+      input.variables,
+      input.memory,
+      input.session,
+      // Resumo passado de fora (delegação) tem precedência; senão o que o
+      // próprio agente calculou ao carregar o histórico.
+      input.historySummary ?? historico.summary
+    );
+
     const messages: ChatMessage[] = [
-      ...(await this.loadHistory(input.accountId, input.conversationId, agent.historyLimit)),
+      ...historico.messages,
       { role: 'user', content: userMessage },
     ];
 
@@ -360,7 +397,14 @@ class AiAgentService {
             input.accountId,
             especialistas,
             call.arguments,
-            { conversationId: input.conversationId, memory: input.memory, depth: depth + 1 }
+            {
+              conversationId: input.conversationId,
+              contactId: input.contactId,
+              memory: input.memory,
+              session: input.session,
+              historySummary: input.historySummary ?? historico.summary,
+              depth: depth + 1,
+            }
           );
           messages.push({ role: 'tool', content: saida, toolCallId: call.id });
           continue;
@@ -372,7 +416,11 @@ class AiAgentService {
           output = `Ferramenta "${call.name}" não está disponível.`;
         } else {
           try {
-            output = await tool.execute(call.arguments, { accountId: input.accountId, agent });
+            output = await tool.execute(call.arguments, {
+              accountId: input.accountId,
+              agent,
+              contactId: input.contactId,
+            });
           } catch (err) {
             output = `Erro ao executar: ${err instanceof Error ? err.message : String(err)}`;
           }
@@ -454,7 +502,14 @@ class AiAgentService {
     accountId: string,
     disponiveis: { id: string; name: string }[],
     args: Record<string, unknown>,
-    ctx: { conversationId?: string; memory?: Record<string, unknown>; depth: number }
+    ctx: {
+      conversationId?: string;
+      contactId?: string | null;
+      memory?: Record<string, unknown>;
+      session?: Record<string, unknown>;
+      historySummary?: string | null;
+      depth: number;
+    }
   ): Promise<string> {
     const nome = typeof args.especialista === 'string' ? args.especialista : '';
     const pergunta = typeof args.pergunta === 'string' ? args.pergunta.trim() : '';
@@ -473,7 +528,12 @@ class AiAgentService {
         agentId: alvo.id,
         userMessage: pergunta,
         conversationId: ctx.conversationId,
+        contactId: ctx.contactId,
         memory: ctx.memory,
+        session: ctx.session,
+        // O resumo já calculado é repassado pra que o especialista não gaste
+        // outra chamada resumindo a mesma conversa.
+        historySummary: ctx.historySummary,
         depth: ctx.depth,
       });
       logger.info('[ai-agent] especialista consultado', {
@@ -495,7 +555,9 @@ class AiAgentService {
     agent: AiAgent,
     hits: SearchHit[],
     variables?: Record<string, string>,
-    memory?: Record<string, unknown>
+    memory?: Record<string, unknown>,
+    session?: Record<string, unknown>,
+    historySummary?: string | null
   ): string {
     let prompt = agent.systemPrompt;
 
@@ -511,11 +573,29 @@ class AiAgentService {
 
     const blocos = [prompt];
 
-    // MEMÓRIA: o que ficou de mensagens anteriores. Vai antes da base de
-    // conhecimento porque é o mais específico — fato apurado sobre ESTE lead
-    // vale mais que material genérico do negócio.
-    const memoriaTexto = formatMemoryForPrompt(memory);
-    if (memoriaTexto) blocos.push(memoriaTexto);
+    // A ordem é do mais específico pro mais genérico, porque é assim que o
+    // modelo pondera: fato sobre ESTA pessoa vale mais que estado da conversa,
+    // que vale mais que material do negócio.
+    const longo = formatMemoryBlock(
+      memory,
+      'O QUE SABEMOS SOBRE ESTA PESSOA (vale entre conversas)',
+      'Não pergunte de novo o que já está aqui.'
+    );
+    if (longo) blocos.push(longo);
+
+    const curto = formatMemoryBlock(
+      session,
+      'ONDE ESTAMOS NESTA CONVERSA',
+      'Continue de onde parou; não recomece o roteiro.'
+    );
+    if (curto) blocos.push(curto);
+
+    if (historySummary && historySummary.trim()) {
+      blocos.push(
+        'RESUMO DO QUE JÁ FOI CONVERSADO ANTES DAS ÚLTIMAS MENSAGENS\n\n' +
+          historySummary.trim()
+      );
+    }
 
     const knowledge = formatHitsForPrompt(hits);
     if (knowledge) blocos.push(knowledge);
@@ -531,55 +611,171 @@ class AiAgentService {
   private async loadHistory(
     accountId: string,
     conversationId: string | undefined,
-    limit: number
-  ): Promise<ChatMessage[]> {
-    if (!conversationId || limit <= 0) return [];
+    limit: number,
+    agent: AiAgent
+  ): Promise<{ messages: ChatMessage[]; summary: string | null }> {
+    if (!conversationId || limit <= 0) return { messages: [], summary: null };
 
     const conversation = await prisma.conversation.findFirst({
       where: { id: conversationId, accountId },
-      select: { id: true },
+      select: { id: true, customAttributes: true },
     });
     if (!conversation) throw new NotFoundError('Conversa');
 
+    const filtro = {
+      conversationId,
+      deletedAt: null,
+      isPrivate: false, // nota interna não vai pro modelo
+      contentType: { not: 'system_note' },
+      content: { not: null },
+    };
+
+    const total = await prisma.message.count({ where: filtro });
+
     const rows = await prisma.message.findMany({
-      where: {
-        conversationId,
-        deletedAt: null,
-        isPrivate: false, // nota interna não vai pro modelo
-        contentType: { not: 'system_note' },
-        content: { not: null },
-      },
+      where: filtro,
       orderBy: { createdAt: 'desc' },
       take: limit,
       select: { senderType: true, content: true },
     });
 
-    return rows
+    const messages = rows
       .reverse()
       .filter((m) => (m.content ?? '').trim().length > 0)
       .map((m) => ({
         role: m.senderType === 'customer' ? ('user' as const) : ('assistant' as const),
         content: m.content as string,
       }));
+
+    // Nada saiu da janela: o histórico completo já está nas mensagens.
+    const forintam = Math.max(total - limit, 0);
+    if (forintam === 0) return { messages, summary: null };
+
+    const attrs = (conversation.customAttributes ?? {}) as Record<string, unknown>;
+    const guardado = (attrs[CHAVE_RESUMO] ?? null) as
+      | { texto?: string; cobertas?: number }
+      | null;
+    const cobertas = Number(guardado?.cobertas ?? 0);
+
+    // O resumo ainda cobre o que saiu da janela — não gasta chamada.
+    if (forintam - cobertas < RESUMO_A_CADA) {
+      return { messages, summary: guardado?.texto ?? null };
+    }
+
+    const texto = await this.refreshSummary({
+      accountId,
+      conversationId,
+      agent,
+      filtro,
+      de: cobertas,
+      ate: forintam,
+      anterior: guardado?.texto ?? null,
+      attrs,
+    });
+    return { messages, summary: texto };
+  }
+
+  /**
+   * Comprime o trecho que saiu da janela num resumo corrido e guarda nos
+   * atributos da conversa.
+   *
+   * Sem isso, uma conversa longa perde o começo — justamente onde costuma estar
+   * a qualificação. O resumo é acumulativo: o anterior entra como base pra que
+   * nada se perca a cada compressão.
+   */
+  private async refreshSummary(p: {
+    accountId: string;
+    conversationId: string;
+    agent: AiAgent;
+    filtro: Record<string, unknown>;
+    de: number;
+    ate: number;
+    anterior: string | null;
+    attrs: Record<string, unknown>;
+  }): Promise<string | null> {
+    try {
+      const antigas = await prisma.message.findMany({
+        where: p.filtro,
+        orderBy: { createdAt: 'asc' },
+        skip: p.de,
+        take: p.ate - p.de,
+        select: { senderType: true, content: true },
+      });
+      if (antigas.length === 0) return p.anterior;
+
+      const transcricao = antigas
+        .map((m) => `${m.senderType === 'customer' ? 'Lead' : 'Nós'}: ${m.content}`)
+        .join('\n');
+
+      const r = await chat({
+        accountId: p.accountId,
+        provider: p.agent.provider as AiProviderName,
+        // Modelo padrão do provider de propósito: resumir é tarefa barata e não
+        // precisa do modelo caro que o agente usa pra atender.
+        system:
+          'Resuma a conversa preservando o que muda decisão: dados apurados do lead, ' +
+          'objeções, combinados e pendências. Descarte cortesia e repetição. ' +
+          'Português, terceira pessoa, no máximo 200 palavras.',
+        messages: [
+          {
+            role: 'user',
+            content: p.anterior
+              ? `Resumo até aqui:\n${p.anterior}\n\nContinuação da conversa:\n${transcricao}\n\nDevolva o resumo atualizado, incorporando os dois.`
+              : `Conversa:\n${transcricao}`,
+          },
+        ],
+        maxTokens: 400,
+      });
+
+      const texto = r.text.trim();
+      if (!texto) return p.anterior;
+
+      await prisma.conversation.update({
+        where: { id: p.conversationId },
+        data: {
+          customAttributes: {
+            ...p.attrs,
+            [CHAVE_RESUMO]: { texto, cobertas: p.ate },
+          } as object,
+        },
+      });
+      logger.info('[ai-agent] resumo do histórico atualizado', {
+        conversationId: p.conversationId,
+        mensagensCobertas: p.ate,
+      });
+      return texto;
+    } catch (err) {
+      // Resumir é melhoria de contexto, não requisito: se falhar, o agente
+      // atende com a janela recente e o motivo fica no log.
+      logger.warn('[ai-agent] não foi possível resumir o histórico', {
+        conversationId: p.conversationId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return p.anterior;
+    }
   }
 }
 
 /**
- * Transforma a memória num bloco legível pro modelo. Valor vazio é descartado —
- * dizer "faturamento: (não informado)" gasta token e confunde o agente, que
- * passa a tratar a ausência como fato apurado.
+ * Transforma um conjunto de fatos num bloco legível pro modelo.
+ *
+ * Valor vazio é descartado: dizer "faturamento: (não informado)" gasta token e
+ * confunde o agente, que passa a tratar a ausência como fato apurado.
+ * Chaves internas (prefixo `_`) ficam de fora — são controle nosso, não fato
+ * sobre o lead.
  */
-function formatMemoryForPrompt(memory?: Record<string, unknown>): string {
-  if (!memory) return '';
-  const linhas = Object.entries(memory)
+function formatMemoryBlock(
+  dados: Record<string, unknown> | undefined,
+  titulo: string,
+  instrucao: string
+): string {
+  if (!dados) return '';
+  const linhas = Object.entries(dados)
+    .filter(([k]) => !k.startsWith('_'))
     .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
     .map(([k, v]) => `- ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
   if (linhas.length === 0) return '';
-  return (
-    'O QUE JÁ SABEMOS SOBRE ESTE LEAD (apurado em conversas anteriores).\n' +
-    'Não pergunte de novo o que já está aqui.\n\n' +
-    linhas.join('\n')
-  );
+  return `${titulo}\n${instrucao}\n\n${linhas.join('\n')}`;
 }
 
 // ============================================
@@ -592,6 +788,8 @@ function formatMemoryForPrompt(memory?: Record<string, unknown>): string {
 interface ToolContext {
   accountId: string;
   agent: AiAgent;
+  /** Dono da memória de longo prazo. Sem ele, `lembrar` não tem onde gravar. */
+  contactId?: string | null;
 }
 
 interface AgentTool {
@@ -600,6 +798,50 @@ interface AgentTool {
 }
 
 export const AVAILABLE_TOOLS: Record<string, AgentTool> = {
+  lembrar: {
+    definition: {
+      name: 'lembrar',
+      description:
+        'Guarda um fato sobre esta PESSOA para as próximas conversas — faturamento, ' +
+        'segmento, quem decide, a dor principal, o que já foi combinado. Use quando o ' +
+        'lead informar algo que você não vai querer perguntar de novo. Não use para ' +
+        'coisa passageira do papo de agora.',
+      parameters: {
+        type: 'object',
+        properties: {
+          campo: {
+            type: 'string',
+            description: 'Nome curto e estável do fato. Ex: faturamento_mensal, decisor, segmento.',
+          },
+          valor: { type: 'string', description: 'O fato, em poucas palavras.' },
+        },
+        required: ['campo', 'valor'],
+      },
+    },
+    async execute(args, ctx) {
+      const campo = typeof args.campo === 'string' ? args.campo.trim() : '';
+      const valor = typeof args.valor === 'string' ? args.valor.trim() : '';
+      if (!campo || !valor) return 'Informe o campo e o valor a lembrar.';
+      if (!ctx.contactId) return 'Esta conversa ainda não tem contato vinculado — nada foi guardado.';
+      // `_` é reservado pra controle interno (resumo, marcadores); não pode ser
+      // sobrescrito por um campo que o modelo inventou.
+      if (campo.startsWith('_')) return 'Nome de campo inválido.';
+
+      const contato = await prisma.contact.findFirst({
+        where: { id: ctx.contactId, accountId: ctx.accountId },
+        select: { customAttributes: true },
+      });
+      if (!contato) return 'Contato não encontrado.';
+
+      const attrs = (contato.customAttributes ?? {}) as Record<string, unknown>;
+      await prisma.contact.update({
+        where: { id: ctx.contactId },
+        data: { customAttributes: { ...attrs, [campo]: valor } as object },
+      });
+      return `Guardado: ${campo} = ${valor}`;
+    },
+  },
+
   buscar_conhecimento: {
     definition: {
       name: 'buscar_conhecimento',

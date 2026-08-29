@@ -624,6 +624,49 @@ function PainelDoNo({
         </div>
       )}
 
+      {tipo === 'crm.update_contact' && (
+        <div className="space-y-2">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Onde guardar</Label>
+            <Select
+              value={String(config.destino ?? 'lead')}
+              onValueChange={(v) => set('destino', v)}
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="lead">No lead — vale para sempre</SelectItem>
+                <SelectItem value="conversa">Nesta conversa — some ao encerrar</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              No lead vira <code>{'{{memoria.campo}}'}</code> e sobrevive quando a conversa
+              encerra. Na conversa vira <code>{'{{sessao.campo}}'}</code> e morre com ela.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs">Campos</Label>
+            <Textarea
+              rows={4}
+              className="text-xs font-mono"
+              value={JSON.stringify(config.campos ?? {}, null, 2)}
+              onChange={(e) => {
+                try {
+                  set('campos', JSON.parse(e.target.value || '{}'));
+                } catch {
+                  /* mantém o último JSON válido enquanto o usuário digita */
+                }
+              }}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Ex.: <code>{'{ "faturamento": "{{agente.faturamento}}" }'}</code>
+            </p>
+          </div>
+        </div>
+      )}
+
       {tipo === 'logic.switch' && (
         <div className="space-y-1.5">
           <Label className="text-xs">Variável</Label>

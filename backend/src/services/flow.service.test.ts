@@ -12,6 +12,8 @@ const prismaMock = vi.hoisted(() => ({
   flow: { findFirst: vi.fn(), updateMany: vi.fn() },
   // O motor carrega a memória da conversa antes de executar (T-030).
   conversation: { findFirst: vi.fn() },
+  // Longo prazo vive no contato (T-030b).
+  contact: { findFirst: vi.fn() },
   flowRun: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -68,7 +70,8 @@ beforeEach(() => {
   prismaMock.flowRun.updateMany.mockResolvedValue({ count: 0 });
   prismaMock.flowRun.create.mockResolvedValue({ id: 'run-1' });
   prismaMock.flowRun.update.mockResolvedValue({ id: 'run-1' });
-  prismaMock.conversation.findFirst.mockResolvedValue({ customAttributes: {} });
+  prismaMock.conversation.findFirst.mockResolvedValue({ customAttributes: {}, contactId: null });
+  prismaMock.contact.findFirst.mockResolvedValue({ customAttributes: {} });
 });
 
 describe('gatilho', () => {
@@ -231,7 +234,7 @@ describe('worker', () => {
     expect(salvo.context.__edges).toBeUndefined();
   });
 
-  it('a memória da conversa entra no contexto da execução', async () => {
+  it('as duas memórias entram no contexto: longo prazo do contato, curto da conversa', async () => {
     prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
     prismaMock.flowRun.updateMany
       .mockResolvedValueOnce({ count: 0 })
@@ -245,8 +248,13 @@ describe('worker', () => {
       context: { mensagens: [] },
       flow: FLUXO,
     });
-    // O que o "Salvar informações" gravou em mensagens anteriores.
+    // Curto prazo: estado desta conversa.
     prismaMock.conversation.findFirst.mockResolvedValue({
+      customAttributes: { etapa_roteiro: 'diagnostico' },
+      contactId: 'contato-1',
+    });
+    // Longo prazo: fatos sobre a pessoa, que sobrevivem à conversa.
+    prismaMock.contact.findFirst.mockResolvedValue({
       customAttributes: { faturamento: 'R$ 80 mil', segmento: 'clínica' },
     });
     executeRunMock.mockResolvedValue({
@@ -254,18 +262,50 @@ describe('worker', () => {
       steps: 3,
       stopReason: 'fim_do_fluxo',
       error: null,
-      vars: { memoria: { faturamento: 'R$ 80 mil' } },
+      vars: { memoria: { faturamento: 'R$ 80 mil' }, sessao: { etapa_roteiro: 'diagnostico' } },
     });
 
     await flowService.processDueRuns();
 
-    // Chega no motor como {{memoria.*}} — é o que faz o agente lembrar.
     const vars = executeRunMock.mock.calls[0][0].vars;
     expect(vars.memoria).toEqual({ faturamento: 'R$ 80 mil', segmento: 'clínica' });
+    expect(vars.sessao).toEqual({ etapa_roteiro: 'diagnostico' });
+    expect(vars.__contactId).toBe('contato-1');
 
-    // E NÃO é duplicada no contexto salvo: a fonte da verdade são os atributos
-    // da conversa, senão as duas cópias divergem.
+    // Nenhuma das duas é duplicada no contexto salvo: cada uma tem dono
+    // (contato e conversa), e uma segunda cópia divergiria.
     const salvo = prismaMock.flowRun.update.mock.calls.at(-1)![0].data;
     expect(salvo.context.memoria).toBeUndefined();
+    expect(salvo.context.sessao).toBeUndefined();
+    expect(salvo.context.__contactId).toBeUndefined();
+  });
+
+  it('conversa sem contato vinculado roda com memória de longo prazo vazia', async () => {
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
+    prismaMock.flowRun.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    prismaMock.flowRun.findUnique.mockResolvedValue({
+      id: 'run-1',
+      accountId: 'acc-1',
+      flowId: 'flow-1',
+      conversationId: 'conv-1',
+      shadow: false,
+      context: {},
+      flow: FLUXO,
+    });
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      customAttributes: {},
+      contactId: null,
+    });
+    executeRunMock.mockResolvedValue({
+      status: 'done', steps: 1, stopReason: null, error: null, vars: {},
+    });
+
+    await flowService.processDueRuns();
+
+    // Não vai atrás do contato quando não há — economiza a consulta.
+    expect(prismaMock.contact.findFirst).not.toHaveBeenCalled();
+    expect(executeRunMock.mock.calls[0][0].vars.memoria).toEqual({});
   });
 });

@@ -1,11 +1,11 @@
 /**
- * T-030 — arquitetura multi-agente.
+ * T-030 — delegação entre agentes.
  *
- * Duas peças novas, e as duas são fáceis de quebrar em silêncio:
- *  - a MEMÓRIA (o que já se sabe do lead) precisa chegar no prompt, senão cada
- *    agente recomeça do zero a cada mensagem;
- *  - a DELEGAÇÃO precisa parar num nível, senão dois agentes que se consultam
- *    entram em laço queimando token.
+ * Um coordenador consulta especialistas no meio do próprio raciocínio. O risco
+ * silencioso é o laço: dois agentes que se consultam mutuamente queimariam
+ * token até o teto de gasto da conta, por isso a profundidade é travada.
+ *
+ * A memória tem arquivo próprio: ai-agent.memoria.test.ts.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const prismaMock = vi.hoisted(() => ({
   aiAgent: { findFirst: vi.fn(), findMany: vi.fn() },
   conversation: { findFirst: vi.fn() },
-  message: { findMany: vi.fn() },
+  message: { findMany: vi.fn(), count: vi.fn() },
 }));
 
 vi.mock('../config/database', () => ({ prisma: prismaMock }));
@@ -70,51 +70,12 @@ beforeEach(() => {
   chatMock.mockResolvedValue(respostaChat());
 });
 
-const systemEnviado = (n = 0) => chatMock.mock.calls[n][0].system as string;
 const toolsEnviadas = (n = 0) =>
   (chatMock.mock.calls[n][0].tools ?? []) as {
     name: string;
     description: string;
     parameters: Record<string, unknown>;
   }[];
-
-describe('memória entre mensagens', () => {
-  it('o que já se sabe do lead entra no prompt', async () => {
-    await aiAgentService.run({
-      accountId: ACC,
-      agentId: 'coord-1',
-      userMessage: 'quanto custa?',
-      memory: { faturamento: 'R$ 80 mil/mês', segmento: 'clínica' },
-    });
-
-    const system = systemEnviado();
-    expect(system).toContain('JÁ SABEMOS');
-    expect(system).toContain('R$ 80 mil/mês');
-    expect(system).toContain('clínica');
-    // A instrução importa tanto quanto o dado: sem ela o agente repergunta.
-    expect(system).toContain('Não pergunte de novo');
-  });
-
-  it('campo vazio não vira "não informado" no prompt', async () => {
-    await aiAgentService.run({
-      accountId: ACC,
-      agentId: 'coord-1',
-      userMessage: 'oi',
-      memory: { faturamento: 'R$ 80 mil', email: '', telefone: null, obs: '   ' },
-    });
-
-    const system = systemEnviado();
-    expect(system).toContain('faturamento');
-    // Dizer "email: (vazio)" faz o agente tratar a ausência como fato apurado.
-    expect(system).not.toContain('email');
-    expect(system).not.toContain('telefone');
-  });
-
-  it('sem memória, o prompt não ganha bloco nenhum', async () => {
-    await aiAgentService.run({ accountId: ACC, agentId: 'coord-1', userMessage: 'oi' });
-    expect(systemEnviado()).not.toContain('JÁ SABEMOS');
-  });
-});
 
 describe('delegação entre agentes', () => {
   it('coordenador com especialistas ganha a ferramenta de consulta', async () => {

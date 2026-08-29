@@ -298,9 +298,11 @@ const aiAgentNode: NodeDefinition = {
       agentId,
       userMessage: texto,
       conversationId: ctx.conversationId,
-      // O que já se sabe do lead entra no contexto do agente — e dos
-      // especialistas que ele consultar.
+      // As duas memórias entram no contexto do agente — e dos especialistas
+      // que ele consultar.
       memory: (ctx.vars.memoria ?? {}) as Record<string, unknown>,
+      session: (ctx.vars.sessao ?? {}) as Record<string, unknown>,
+      contactId: (ctx.vars.__contactId ?? null) as string | null,
       variables: Object.fromEntries(
         Object.entries(ctx.vars)
           .filter(([k, v]) => !k.startsWith('__') && typeof v === 'string')
@@ -391,8 +393,9 @@ const crmUpdateContact: NodeDefinition = {
   type: 'crm.update_contact',
   label: 'Salvar informações',
   description:
-    'Grava o que a IA apurou nos campos da conversa. É a MEMÓRIA do atendimento: ' +
-    'o que for salvo aqui volta como {{memoria.campo}} nas próximas mensagens.',
+    'Grava o que a IA apurou. Em "lead" o dado vale para SEMPRE, entre conversas ' +
+    '({{memoria.campo}}). Em "conversa" vale só até esta conversa encerrar ' +
+    '({{sessao.campo}}).',
   branches: [{ key: 'default', label: '' }],
   mutates: true,
   async execute(node, ctx) {
@@ -405,19 +408,41 @@ const crmUpdateContact: NodeDefinition = {
     }
     if (Object.keys(valores).length === 0) return { output: { pulado: 'nada_a_salvar' } };
 
-    if (ctx.shadow) return { output: { simulado: true, valores } };
+    // 'lead' = longo prazo (fica no contato, sobrevive à conversa).
+    // 'conversa' = curto prazo (morre junto com ela).
+    const destino = str(c.destino, 'lead') === 'conversa' ? 'conversa' : 'lead';
+    const contactId = (ctx.vars.__contactId ?? null) as string | null;
 
-    await conversationService.setCustomAttributes(
-      ctx.conversationId,
-      ctx.accountId,
-      valores,
-      ctx.actorId
-    );
-    // Reflete na memória do run atual também: um nó seguinte que leia
-    // {{memoria.x}} tem que ver o que acabou de ser gravado.
+    if (ctx.shadow) return { output: { simulado: true, destino, valores } };
+
+    if (destino === 'conversa' || !contactId) {
+      await conversationService.setCustomAttributes(
+        ctx.conversationId,
+        ctx.accountId,
+        valores,
+        ctx.actorId
+      );
+      // Reflete no run atual: um nó seguinte que leia {{sessao.x}} tem que ver
+      // o que acabou de ser gravado.
+      return {
+        vars: { sessao: { ...((ctx.vars.sessao ?? {}) as Record<string, unknown>), ...valores } },
+        output: { destino: contactId ? destino : 'conversa (sem contato vinculado)', valores },
+      };
+    }
+
+    const contato = await prisma.contact.findFirst({
+      where: { id: contactId, accountId: ctx.accountId },
+      select: { customAttributes: true },
+    });
+    const atuais = (contato?.customAttributes ?? {}) as Record<string, unknown>;
+    await prisma.contact.update({
+      where: { id: contactId },
+      data: { customAttributes: { ...atuais, ...valores } as object },
+    });
+
     return {
       vars: { memoria: { ...((ctx.vars.memoria ?? {}) as Record<string, unknown>), ...valores } },
-      output: { valores },
+      output: { destino, valores },
     };
   },
 };

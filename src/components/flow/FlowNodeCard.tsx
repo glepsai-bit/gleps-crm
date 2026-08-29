@@ -94,7 +94,8 @@ function resumo(tipo: string, config: Record<string, unknown>, agenteNome?: stri
       return 'sorteia atendente online';
     case 'crm.update_contact': {
       const campos = Object.keys((config.campos ?? {}) as Record<string, unknown>);
-      return campos.length ? `${campos.length} campo(s)` : 'nenhum campo';
+      const destino = texto(config.destino) === 'conversa' ? 'nesta conversa' : 'no lead';
+      return campos.length ? `${campos.length} campo(s) ${destino}` : 'nenhum campo';
     }
     case 'guard.conditions': {
       const ativas: string[] = [];

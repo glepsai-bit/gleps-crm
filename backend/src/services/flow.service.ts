@@ -316,15 +316,28 @@ class FlowService {
       return;
     }
 
-    // MEMÓRIA: cada mensagem abre uma execução nova, então as variáveis morrem
-    // no fim. O que persiste são os atributos da conversa — é neles que o nó
-    // "Salvar informações" grava. Carregá-los aqui é o que faz o agente lembrar
-    // do que apurou ontem em vez de recomeçar do zero a cada mensagem.
+    // DUAS MEMÓRIAS, e a distinção é o que impede o agente de perder contexto:
+    //
+    //   memoria (LONGO PRAZO) — fica no CONTATO. Fatos sobre a pessoa, que
+    //     valem entre conversas. O lead que sumiu e voltou em março continua
+    //     com o mesmo faturamento; se isso morasse na conversa, sumiria junto
+    //     com ela ao ser resolvida.
+    //   sessao (CURTO PRAZO)  — fica na CONVERSA. Onde paramos no roteiro.
+    //     Morre com a conversa, e é isso que se quer.
     const conversa = await prisma.conversation.findFirst({
       where: { id: run.conversationId, accountId: run.accountId },
-      select: { customAttributes: true },
+      select: { customAttributes: true, contactId: true },
     });
-    const memoria = (conversa?.customAttributes ?? {}) as Record<string, unknown>;
+    const sessao = (conversa?.customAttributes ?? {}) as Record<string, unknown>;
+
+    let memoria: Record<string, unknown> = {};
+    if (conversa?.contactId) {
+      const contato = await prisma.contact.findFirst({
+        where: { id: conversa.contactId, accountId: run.accountId },
+        select: { customAttributes: true },
+      });
+      memoria = (contato?.customAttributes ?? {}) as Record<string, unknown>;
+    }
 
     const resultado = await executeRun({
       runId,
@@ -333,12 +346,24 @@ class FlowService {
       conversationId: run.conversationId,
       shadow: run.shadow,
       graph: parseGraph(run.flow.graph),
-      vars: { ...((run.context ?? {}) as Record<string, unknown>), memoria },
+      vars: {
+        ...((run.context ?? {}) as Record<string, unknown>),
+        memoria,
+        sessao,
+        __contactId: conversa?.contactId ?? null,
+      },
     });
 
-    // `__edges` é interno do motor e `memoria` já vive nos atributos da
-    // conversa — nenhum dos dois precisa ser duplicado no contexto do run.
-    const { __edges: _descartado, memoria: _memoria, ...contexto } = resultado.vars;
+    // Nada disso vai pro contexto salvo: `__edges`/`__contactId` são controle
+    // interno do motor, e as duas memórias têm dono próprio (contato e
+    // conversa). Duplicar criaria uma segunda verdade que diverge.
+    const {
+      __edges: _edges,
+      __contactId: _contact,
+      memoria: _memoria,
+      sessao: _sessao,
+      ...contexto
+    } = resultado.vars;
 
     await prisma.flowRun.update({
       where: { id: runId },
