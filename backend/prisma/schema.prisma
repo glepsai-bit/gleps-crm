@@ -2127,6 +2127,9 @@ model FlowRun {
   // Cópia do modo no momento da execução: mudar o Flow depois não pode
   // reescrever a história de um run que já rodou.
   shadow         Boolean   @default(false)
+  // Veio do simulador, não de um lead. Fica fora da tela de Execuções pra não
+  // contaminar a comparação do modo sombra com o atendimento real.
+  simulador      Boolean   @default(false)
   stopReason     String?   @map("stop_reason") @db.VarChar(80)
   error          String?   @db.Text
   startedAt      DateTime? @map("started_at") @db.Timestamptz

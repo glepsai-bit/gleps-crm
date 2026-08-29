@@ -30,7 +30,9 @@ function renderNode(data: FlowNodeData, selected = false) {
       isConnectable
       positionAbsoluteX={0}
       positionAbsoluteY={0}
-      {...({} as Record<string, never>)}
+      draggable
+      selectable
+      deletable
     />
   );
 }

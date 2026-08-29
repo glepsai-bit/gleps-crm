@@ -106,6 +106,23 @@ export interface FlowRunDetail extends Omit<FlowRunSummary, '_count' | 'flow'> {
   steps: FlowRunStep[];
 }
 
+/** Resultado de um turno do simulador. */
+export interface FlowPreview {
+  /** Conversa de teste. Mande de volta no próximo turno pra manter o contexto. */
+  conversationId: string;
+  runId: string;
+  /** O que a IA responderia. Null quando o fluxo parou antes de responder. */
+  resposta: string | null;
+  status: RunStatus;
+  stopReason: string | null;
+  error: string | null;
+  steps: FlowRunStep[];
+  /** Longo prazo — fica no contato, vale entre conversas. */
+  memoria: Record<string, unknown>;
+  /** Curto prazo — fica na conversa. */
+  sessao: Record<string, unknown>;
+}
+
 export const flowsService = {
   async catalog(): Promise<FlowCatalog> {
     const r = await apiClient.get<DataEnvelope<FlowCatalog>>('/api/flows/catalog');
@@ -160,6 +177,30 @@ export const flowsService = {
     const sufixo = qs.toString() ? `?${qs.toString()}` : '';
     const r = await apiClient.get<DataEnvelope<FlowRunSummary[]>>(`/api/flows/runs${sufixo}`);
     return r.data;
+  },
+
+  /**
+   * Simulador: roda o fluxo inteiro e devolve o que a IA responderia.
+   * Nada sai pro WhatsApp e nada muda no funil.
+   */
+  async preview(
+    flowId: string,
+    input: { message: string; conversationId?: string | null }
+  ): Promise<FlowPreview> {
+    // Timeout próprio: o padrão de 30s é curto pra um turno que chama o modelo,
+    // consulta especialista e busca na base — o run terminaria no servidor e a
+    // tela mostraria "timeout", que é a pior coisa pra quem está depurando.
+    const r = await apiClient.post<DataEnvelope<FlowPreview>>(
+      `/api/flows/${flowId}/preview`,
+      input,
+      { timeout: 180_000 }
+    );
+    return r.data;
+  },
+
+  /** Descarta a conversa de teste — o simulador recomeça sem memória nenhuma. */
+  async resetPreview(conversationId: string): Promise<void> {
+    await apiClient.delete(`/api/flows/preview/${conversationId}`);
   },
 
   async getRun(runId: string): Promise<FlowRunDetail> {

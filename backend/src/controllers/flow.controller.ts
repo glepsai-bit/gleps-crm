@@ -45,6 +45,11 @@ const statusSchema = z.object({
   status: z.enum(['draft', 'shadow', 'active']),
 });
 
+const previewSchema = z.object({
+  message: z.string().min(1, 'Escreva a mensagem do lead').max(4000),
+  conversationId: z.string().uuid().optional().nullable(),
+});
+
 const runsQuerySchema = z.object({
   flowId: z.string().uuid().optional(),
   status: z.enum(['buffering', 'running', 'done', 'failed', 'skipped']).optional(),
@@ -139,6 +144,38 @@ export class FlowController {
   async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       await flowService.delete(req.user!.accountId!, (req.params.id as string));
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /flows/:id/preview — simulador.
+   * Roda o fluxo inteiro contra uma conversa de teste e devolve o que a IA
+   * responderia, com os passos. Nada sai pro WhatsApp.
+   */
+  async preview(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const body = previewSchema.parse(req.body);
+      const r = await flowService.preview({
+        accountId: req.user!.accountId!,
+        flowId: req.params.id as string,
+        message: body.message,
+        conversationId: body.conversationId ?? null,
+      });
+      res.json({ data: r });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async resetPreview(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      await flowService.resetPreview(
+        req.user!.accountId!,
+        req.params.conversationId as string
+      );
       res.status(204).send();
     } catch (error) {
       next(error);

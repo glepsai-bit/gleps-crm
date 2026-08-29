@@ -62,6 +62,7 @@ import AdminDiscadorPage from "./pages/admin/AdminDiscadorPage";
 import AdminIaAgentesPage from "./pages/admin/AdminIaAgentesPage";
 import AdminIaFluxosPage from "./pages/admin/AdminIaFluxosPage";
 import AdminIaExecucoesPage from "./pages/admin/AdminIaExecucoesPage";
+import AdminIaSimuladorPage from "./pages/admin/AdminIaSimuladorPage";
 import AdminIaConhecimentoPage from "./pages/admin/AdminIaConhecimentoPage";
 import AdminChatDashboardPage from "./pages/admin/AdminChatDashboardPage";
 import AdminInboxesPage from "./pages/admin/AdminInboxesPage";
@@ -159,6 +160,7 @@ const App = () => (
             <Route path="/admin/ia/conhecimento" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIaConhecimentoPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/ia/fluxos" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIaFluxosPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/ia/execucoes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIaExecucoesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            <Route path="/admin/ia/simulador" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIaSimuladorPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/discador" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminDiscadorPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/inboxes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminInboxesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/teams" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminTeamsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />

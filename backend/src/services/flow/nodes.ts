@@ -617,8 +617,12 @@ const flowWait: NodeDefinition = {
   description: 'Pausa antes do próximo passo.',
   branches: [{ key: 'default', label: '' }],
   mutates: false,
-  async execute(node) {
+  async execute(node, ctx) {
     const segundos = Math.min(num(cfg(node).segundos, 5), 60);
+    // No simulador a espera é pulada: o usuário está olhando pra tela esperando
+    // a resposta, e segurar a requisição por um minuto não ensina nada sobre o
+    // atendimento — só parece travado.
+    if (ctx.vars.__simulador) return { output: { segundos, pulado: 'simulador' } };
     await new Promise((r) => setTimeout(r, segundos * 1000));
     return { output: { segundos } };
   },

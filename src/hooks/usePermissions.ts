@@ -39,6 +39,9 @@ const adminOnlyRoutes = new Set<string>([
   '/admin/ia/conhecimento',
   '/admin/ia/fluxos',
   '/admin/ia/execucoes',
+  // O simulador gasta token de verdade a cada mensagem de teste — mesmo
+  // critério das outras telas de IA.
+  '/admin/ia/simulador',
   '/admin/integracoes',
   '/admin/opt-outs',
   // Atendimento (T-022): o CHAT em si (/admin/chat) NAO e admin-only — e a

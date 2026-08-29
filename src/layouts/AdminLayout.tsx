@@ -55,6 +55,7 @@ import {
   BookOpen,
   PhoneCall,
   Workflow,
+  MessagesSquare,
   ListChecks,
   UserCog,
   Radar,
@@ -139,6 +140,7 @@ const adminNavItems = [
   { title: 'Agentes IA', href: '/admin/ia/agentes', icon: Bot },
   { title: 'Conhecimento', href: '/admin/ia/conhecimento', icon: BookOpen },
   { title: 'Fluxos', href: '/admin/ia/fluxos', icon: Workflow },
+  { title: 'Simulador', href: '/admin/ia/simulador', icon: MessagesSquare },
   { title: 'Discador', href: '/admin/discador', icon: PhoneCall },
   { title: 'Execuções', href: '/admin/ia/execucoes', icon: ListChecks },
   // Config do Chat (uso ocasional)
