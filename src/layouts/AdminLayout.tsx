@@ -53,6 +53,7 @@ import {
   Flame,
   Bot,
   BookOpen,
+  PhoneCall,
   Workflow,
   ListChecks,
   UserCog,
@@ -138,6 +139,7 @@ const adminNavItems = [
   { title: 'Agentes IA', href: '/admin/ia/agentes', icon: Bot },
   { title: 'Conhecimento', href: '/admin/ia/conhecimento', icon: BookOpen },
   { title: 'Fluxos', href: '/admin/ia/fluxos', icon: Workflow },
+  { title: 'Discador', href: '/admin/discador', icon: PhoneCall },
   { title: 'Execuções', href: '/admin/ia/execucoes', icon: ListChecks },
   // Config do Chat (uso ocasional)
   { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox },

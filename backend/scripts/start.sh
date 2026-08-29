@@ -261,7 +261,7 @@ fi
 echo ""
 echo "🛡️  Garantindo schema dos modulos de IA..."
 
-for MIG in 0057_ai_core 0058_flow_engine; do
+for MIG in 0057_ai_core 0058_flow_engine 0059_dialer; do
     ARQ="prisma/migrations/$MIG/migration.sql"
     if [ -f "$ARQ" ]; then
         if npx prisma db execute --file "$ARQ" > /dev/null 2>&1; then

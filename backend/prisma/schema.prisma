@@ -56,6 +56,18 @@ model Account {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
+  // T-029 — Telefonia (discador). Credenciais por conta, mesmo padrão das
+  // chaves de IA: nunca retornadas pela API, só o sentinel '***SET***'.
+  twilioAccountSid  String? @map("twilio_account_sid") @db.VarChar(120)
+  twilioAuthToken   String? @map("twilio_auth_token") @db.VarChar(200)
+  twilioApiKeySid   String? @map("twilio_api_key_sid") @db.VarChar(120)
+  twilioApiKeySecret String? @map("twilio_api_key_secret") @db.VarChar(200)
+  twilioTwimlAppSid String? @map("twiml_app_sid") @db.VarChar(120)
+  /// Número Twilio que aparece pro destinatário (E.164).
+  twilioCallerId    String? @map("twilio_caller_id") @db.VarChar(30)
+  /// Gravar as ligações. Exige aviso ao destinatário — ver voice.service.ts.
+  voiceRecording    Boolean @default(false) @map("voice_recording")
+
   // Email/AI Integration
   openaiApiKey      String? @map("openai_api_key") @db.VarChar(500)
   anthropicApiKey   String? @map("anthropic_api_key") @db.VarChar(500)
@@ -115,6 +127,9 @@ model Account {
   // T-028 — Motor de fluxo de atendimento
   flows    Flow[]
   flowRuns FlowRun[]
+
+  // T-029 — Discador
+  calls Call[]
 
   @@index([status])
   trackingConfig  TrackingConfig?
@@ -280,6 +295,7 @@ model User {
   messageReactions           MessageReaction[]
   readReceipts               ReadReceipt[]
   availability               AgentAvailability?
+  calls                      Call[]
   cyclesResolved             ConversationCycle[]       @relation("CycleResolver")
   cyclesFirstResponded       ConversationCycle[]       @relation("CycleResponder")
 
@@ -379,6 +395,7 @@ model Contact {
   tagHistory            TagHistory[]
   leadNotes             LeadNote[]
   calendarEvents        CalendarEvent[]
+  calls                 Call[]
   emailEnrollments      EmailEnrollment[]
   emailSends            EmailSend[]
   emailInboxMessages    EmailInboxMessage[]
@@ -2130,4 +2147,54 @@ model FlowRunStep {
 
   @@index([runId, ordem])
   @@map("flow_run_steps")
+}
+
+
+// ============================================
+// T-029 — DISCADOR (telefonia ativa)
+// ============================================
+
+// Call: uma ligação. Registrada ANTES de discar (com providerCallSid nulo) pra
+// que uma chamada que nunca conecta ainda apareça no histórico — sem isso, a
+// ligação que falha some e o operador não entende o que aconteceu.
+model Call {
+  id        String  @id @default(uuid()) @db.Uuid
+  accountId String  @map("account_id") @db.Uuid
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  /// Quem discou.
+  userId    String? @map("user_id") @db.Uuid
+  user      User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  contactId String? @map("contact_id") @db.Uuid
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  direction String @default("outbound") @db.VarChar(12) // outbound | inbound
+  /// Número discado, em E.164 (+5511999999999).
+  toNumber   String  @map("to_number") @db.VarChar(30)
+  fromNumber String? @map("from_number") @db.VarChar(30)
+
+  // queued → ringing → in-progress → completed | no-answer | busy | failed | canceled
+  status String @default("queued") @db.VarChar(20)
+  /// Sid da Twilio. Nulo enquanto a chamada não foi aceita pelo provedor.
+  providerCallSid String? @unique @map("provider_call_sid") @db.VarChar(80)
+
+  durationSec Int?    @map("duration_sec")
+  /// Custo informado pelo provedor, em USD. Chega no callback final.
+  priceUsd    Decimal? @map("price_usd") @db.Decimal(10, 5)
+  recordingUrl String? @map("recording_url") @db.Text
+
+  /// Resultado que o operador marca (agendou, sem interesse, retornar...).
+  disposition String? @db.VarChar(40)
+  notes       String? @db.Text
+  error       String? @db.Text
+
+  startedAt DateTime? @map("started_at") @db.Timestamptz
+  endedAt   DateTime? @map("ended_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([accountId, createdAt(sort: Desc)])
+  @@index([accountId, status])
+  @@index([contactId])
+  @@index([userId])
+  @@map("calls")
 }

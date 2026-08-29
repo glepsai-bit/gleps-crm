@@ -52,6 +52,7 @@ import attachmentRoutes from './attachment.routes';
 import warmupRoutes from './warmup.routes';
 import aiRoutes from './ai.routes';
 import flowRoutes from './flow.routes';
+import voiceRoutes, { voicePublicRoutes } from './voice.routes';
 import mentionRoutes from './mention.routes';
 import pushRoutes from './push.routes';
 import { Router as LeadTagRouter } from 'express';
@@ -124,6 +125,10 @@ router.use('/prospecting', prospectingRoutes);
 // requisição que entra em /email/* e devolve 401 antes do handler público
 // rodar (rota POST /email/inbound/webhook estava sempre dando 401).
 router.use('/email/inbound', emailInboundWebhookRouter);
+// T-029: mesmo motivo do webhook acima — `router.use('/', messageJwtRoutes)`
+// mais abaixo aplica JWT a tudo que passa por ele, e a Twilio não tem como
+// mandar nosso token. Estas rotas se defendem pela assinatura HMAC do provedor.
+router.use('/voice', voicePublicRoutes);
 router.use('/email', emailRoutes);
 router.use('/email', emailExtendedRoutes);
 router.use('/email/audiences', audienceRoutes);
@@ -205,6 +210,8 @@ router.use('/warmup', warmupRoutes);
 router.use('/ai', aiRoutes);
 // T-028 — motor de fluxo de atendimento (Fase 2)
 router.use('/flows', flowRoutes);
+// T-029 — discador (rotas da operadora são públicas; ver voice.routes.ts)
+router.use('/voice', voiceRoutes);
 
 // Web Push subscriptions (VAPID) — notifica agente quando msg inbound chega
 // em conversa atribuida a ele mesmo com aba fechada.
