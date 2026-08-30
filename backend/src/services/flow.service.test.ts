@@ -155,7 +155,7 @@ describe('agrupamento (debounce)', () => {
 
 describe('worker', () => {
   it('pula o run quando outra réplica reclamou primeiro', async () => {
-    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1', status: 'buffering' }]);
     prismaMock.flowRun.updateMany
       .mockResolvedValueOnce({ count: 0 }) // resgate de órfãos
       .mockResolvedValueOnce({ count: 0 }); // claim perdido
@@ -167,7 +167,7 @@ describe('worker', () => {
   });
 
   it('claim é condicional a buffering — evita responder o lead duas vezes', async () => {
-    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1', status: 'buffering' }]);
     prismaMock.flowRun.updateMany
       .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValueOnce({ count: 1 });
@@ -175,13 +175,17 @@ describe('worker', () => {
 
     await flowService.processDueRuns();
 
-    const claim = prismaMock.flowRun.updateMany.mock.calls[1][0];
+    // O claim é condicionado ao status que o worker LEU, não a 'buffering'
+    // fixo — é o mesmo mecanismo que agora também reclama follow-up dormindo.
+    const claim = prismaMock.flowRun.updateMany.mock.calls.find(
+      (c) => c[0]?.where?.id === 'run-1'
+    )![0];
     expect(claim.where).toEqual({ id: 'run-1', status: 'buffering' });
     expect(claim.data.status).toBe('running');
   });
 
   it('fluxo despublicado durante a espera não executa', async () => {
-    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1', status: 'buffering' }]);
     prismaMock.flowRun.updateMany
       .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValueOnce({ count: 1 });
@@ -204,7 +208,7 @@ describe('worker', () => {
   });
 
   it('executa e grava o resultado, sem vazar o campo interno __edges', async () => {
-    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1', status: 'buffering' }]);
     prismaMock.flowRun.updateMany
       .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValueOnce({ count: 1 });
@@ -235,7 +239,7 @@ describe('worker', () => {
   });
 
   it('as duas memórias entram no contexto: longo prazo do contato, curto da conversa', async () => {
-    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1', status: 'buffering' }]);
     prismaMock.flowRun.updateMany
       .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValueOnce({ count: 1 });
@@ -281,7 +285,7 @@ describe('worker', () => {
   });
 
   it('conversa sem contato vinculado roda com memória de longo prazo vazia', async () => {
-    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1' }]);
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-1', status: 'buffering' }]);
     prismaMock.flowRun.updateMany
       .mockResolvedValueOnce({ count: 0 })
       .mockResolvedValueOnce({ count: 1 });

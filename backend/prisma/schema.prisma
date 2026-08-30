@@ -2128,7 +2128,7 @@ model FlowRun {
   flowId         String    @map("flow_id") @db.Uuid
   flow           Flow      @relation(fields: [flowId], references: [id], onDelete: Cascade)
   conversationId String    @map("conversation_id") @db.Uuid
-  status         String    @default("buffering") @db.VarChar(20) // buffering | running | done | failed | skipped
+  status         String    @default("buffering") @db.VarChar(20) // buffering | running | sleeping | done | failed | skipped
   runAfter       DateTime? @map("run_after") @db.Timestamptz
   // Variáveis acumuladas entre os nós (mensagem agrupada, saída do agente...).
   context        Json      @default("{}")
@@ -2138,6 +2138,15 @@ model FlowRun {
   // Veio do simulador, não de um lead. Fica fora da tela de Execuções pra não
   // contaminar a comparação do modo sombra com o atendimento real.
   simulador      Boolean   @default(false)
+  // Onde retomar quando o run acordar. O motor sempre começou do gatilho; sem
+  // isto, um follow-up refaria o atendimento inteiro em vez de continuar.
+  resumeNodeId   String?   @map("resume_node_id") @db.VarChar(80)
+  // Quantas vezes este run já acordou = qual toque da cadência é este. Sem
+  // contador a cadência não sabe onde está e insiste pra sempre.
+  wakeCount      Int       @default(0) @map("wake_count")
+  // Idempotência do gatilho externo: sistema que erra reenvia, e dois "feliz
+  // aniversário" é pior que nenhum.
+  dedupeKey      String?   @map("dedupe_key") @db.VarChar(200)
   stopReason     String?   @map("stop_reason") @db.VarChar(80)
   error          String?   @db.Text
   startedAt      DateTime? @map("started_at") @db.Timestamptz

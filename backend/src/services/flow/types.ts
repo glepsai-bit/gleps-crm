@@ -73,6 +73,14 @@ export interface NodeResult {
   stopReason?: string;
   /** O que aparece no log do passo — é a tela de execuções. */
   output?: Record<string, unknown>;
+  /**
+   * Suspende o run até a data indicada, em vez de encerrar.
+   *
+   * Diferente de `stop`: o run não acabou, só não tem nada a fazer agora. O
+   * motor guarda o PRÓXIMO nó e devolve a execução à fila. É o que torna
+   * follow-up possível sem segurar um processo por dias.
+   */
+  sleep?: { until: Date };
 }
 
 export interface NodeDefinition {

@@ -170,6 +170,20 @@ class FlowService {
    * Redis no n8n, mas sobrevive a restart porque o estado está no banco.
    */
   async onInboundMessage(evt: InboundMessageEvent): Promise<void> {
+    // CANCELAMENTO ESTRUTURAL DO FOLLOW-UP — a PRIMEIRA coisa que acontece.
+    //
+    // O lead respondeu: a cadência perdeu o propósito. Fazer disso uma
+    // CONSEQUÊNCIA de a mensagem entrar — e não uma verificação lá na frente,
+    // ao acordar — é o que impede o erro clássico de mandar "e aí, pensou na
+    // proposta?" pra quem acabou de responder. Verificação alguém esquece de
+    // escrever; consequência não tem como pular.
+    //
+    // Antes de QUALQUER saída antecipada desta função: sem fluxo publicado,
+    // fluxo restrito a outro inbox, fluxo despublicado ontem — em todos esses
+    // casos o follow-up velho continua tendo que morrer. Já errei isto uma vez
+    // deixando a chamada depois do filtro de inbox.
+    await this.cancelarFollowupPendente(evt.conversationId, 'lead_respondeu');
+
     const flow = await prisma.flow.findFirst({
       where: { accountId: evt.accountId, status: { in: ['active', 'shadow'] } },
       orderBy: { updatedAt: 'desc' },
@@ -221,6 +235,31 @@ class FlowService {
     }
   }
 
+  /**
+   * Mata o follow-up que dormia nesta conversa.
+   *
+   * `updateMany` condicionado a 'sleeping': se o worker acabou de reclamar o
+   * run (já virou 'running'), o update não pega nada — e aí a guarda de
+   * follow-up é a segunda rede, checando quem falou por último antes de
+   * escrever. Duas barreiras porque a corrida é real: o lead pode responder no
+   * exato segundo em que a cadência acorda.
+   */
+  private async cancelarFollowupPendente(conversationId: string, motivo: string): Promise<void> {
+    const { count } = await prisma.flowRun.updateMany({
+      where: { conversationId, status: 'sleeping' },
+      data: {
+        status: 'skipped',
+        stopReason: motivo,
+        runAfter: null,
+        resumeNodeId: null,
+        finishedAt: new Date(),
+      },
+    });
+    if (count > 0) {
+      logger.info('[flow] follow-up cancelado', { conversationId, motivo, count });
+    }
+  }
+
   private async anexarAoRunAberto(
     conversationId: string,
     mensagem: BufferedMessage,
@@ -268,22 +307,33 @@ class FlowService {
   async processDueRuns(limit = MAX_RUNS_PER_TICK): Promise<{ ok: number; failed: number }> {
     await this.resgatarOrfaos();
 
+    // Dois motivos pra um run estar na fila, e o mesmo índice serve aos dois:
+    //   buffering — a janela de agrupamento venceu (segundos).
+    //   sleeping  — um follow-up marcado pra depois chegou a hora (dias).
     const vencidos = await prisma.flowRun.findMany({
-      where: { status: 'buffering', runAfter: { lte: new Date() } },
+      where: { status: { in: ['buffering', 'sleeping'] }, runAfter: { lte: new Date() } },
       orderBy: { runAfter: 'asc' },
       take: limit,
-      select: { id: true },
+      select: { id: true, status: true },
     });
 
     let ok = 0;
     let failed = 0;
 
-    for (const { id } of vencidos) {
+    for (const { id, status } of vencidos) {
       // Claim atômico: impede duas réplicas de executarem o mesmo atendimento
-      // (que responderia o lead duas vezes).
+      // (que responderia o lead duas vezes). A condição é o status que ACABAMOS
+      // de ler — se mudou nesse meio-tempo (o lead respondeu e cancelou o
+      // follow-up), o claim falha e o run não roda, que é o certo.
       const claimed = await prisma.flowRun.updateMany({
-        where: { id, status: 'buffering' },
-        data: { status: 'running', startedAt: new Date() },
+        where: { id, status },
+        data: {
+          status: 'running',
+          startedAt: new Date(),
+          // Cada retomada é um toque da cadência. É este contador que permite
+          // "pare no terceiro" — sem ele a cadência insiste pra sempre.
+          ...(status === 'sleeping' ? { wakeCount: { increment: 1 } } : {}),
+        },
       });
       if (claimed.count === 0) continue;
 
@@ -361,11 +411,14 @@ class FlowService {
       conversationId: run.conversationId,
       shadow: run.shadow,
       graph: parseGraph(run.flow.graph),
+      resumeNodeId: run.resumeNodeId,
       vars: {
         ...((run.context ?? {}) as Record<string, unknown>),
         memoria,
         sessao,
         __contactId: contactId,
+        // Qual toque da cadência é este. As guardas de follow-up leem daqui.
+        __toque: run.wakeCount,
       },
     });
 
@@ -375,10 +428,27 @@ class FlowService {
     const {
       __edges: _edges,
       __contactId: _contact,
+      __toque: _toque,
       memoria: _memoria,
       sessao: _sessao,
       ...contexto
     } = resultado.vars;
+
+    // Dormindo não é terminado: o run volta pra fila com hora marcada e o
+    // ponto de retomada. `finishedAt` fica nulo — senão a tela de execuções
+    // mostraria como concluído um atendimento que ainda vai continuar.
+    if (resultado.status === 'sleeping') {
+      await prisma.flowRun.update({
+        where: { id: runId },
+        data: {
+          status: 'sleeping',
+          runAfter: resultado.sleepUntil ?? new Date(),
+          resumeNodeId: resultado.resumeNodeId ?? null,
+          context: contexto as unknown as Prisma.InputJsonValue,
+        },
+      });
+      return;
+    }
 
     await prisma.flowRun.update({
       where: { id: runId },
@@ -387,6 +457,9 @@ class FlowService {
         stopReason: resultado.stopReason?.slice(0, 80) ?? null,
         error: resultado.error?.slice(0, 2000) ?? null,
         context: contexto as unknown as Prisma.InputJsonValue,
+        // Acabou de verdade: limpa a retomada pra um run concluído nunca
+        // parecer retomável.
+        resumeNodeId: null,
         finishedAt: new Date(),
       },
     });

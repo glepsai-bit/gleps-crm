@@ -37,6 +37,7 @@ import {
   AlertTriangle,
   Workflow,
   Zap,
+  Clock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -120,6 +121,24 @@ function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
       toast({ title: 'Não foi possível criar', description: e.message, variant: 'destructive' }),
   });
 
+  const criarFollowup = useMutation({
+    mutationFn: () => flowsService.seedFollowup(agentes?.[0]?.id),
+    onSuccess: ({ flow }) => {
+      qc.invalidateQueries({ queryKey: ['flows'] });
+      toast({
+        title: 'Cadência de follow-up criada',
+        // O aviso é a parte útil: sem o trecho no prompt, o agente ignora o
+        // objetivo do toque e escreve como se fosse a primeira mensagem.
+        description:
+          'Três toques prontos. Adicione {{objetivo_do_passo}} ao prompt do agente para ' +
+          'ele escrever cada toque com a intenção certa.',
+      });
+      onAbrir(flow.id);
+    },
+    onError: (e: Error) =>
+      toast({ title: 'Não foi possível criar', description: e.message, variant: 'destructive' }),
+  });
+
   if (isLoading) return <div className="p-6 text-muted-foreground">Carregando…</div>;
 
   return (
@@ -132,10 +151,21 @@ function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
             quando encerrar.
           </p>
         </div>
-        <Button onClick={() => criarPadrao.mutate()} disabled={criarPadrao.isPending}>
-          <Plus className="w-4 h-4 mr-2" />
-          {criarPadrao.isPending ? 'Criando…' : 'Criar fluxo padrão'}
-        </Button>
+        <div className="flex gap-2 shrink-0">
+          <Button
+            variant="outline"
+            onClick={() => criarFollowup.mutate()}
+            disabled={criarFollowup.isPending}
+            title="Três toques com espera crescente, conferindo se ainda cabe falar"
+          >
+            <Clock className="w-4 h-4 mr-2" />
+            {criarFollowup.isPending ? 'Criando…' : 'Cadência de follow-up'}
+          </Button>
+          <Button onClick={() => criarPadrao.mutate()} disabled={criarPadrao.isPending}>
+            <Plus className="w-4 h-4 mr-2" />
+            {criarPadrao.isPending ? 'Criando…' : 'Criar fluxo padrão'}
+          </Button>
+        </div>
       </div>
 
       {!fluxos?.length ? (

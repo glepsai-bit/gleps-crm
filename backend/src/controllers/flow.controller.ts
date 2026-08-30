@@ -4,6 +4,7 @@ import { flowService } from '../services/flow.service';
 import { listNodeTypes } from '../services/flow/nodes';
 import { parseGraph, validateGraph } from '../services/flow/engine';
 import { buildDefaultGraph, SUGGESTED_AGENT_SCHEMA } from '../services/flow/default-graph';
+import { buildFollowupGraph, FOLLOWUP_PROMPT_HINT } from '../services/flow/followup-graph';
 import { AuthenticatedRequest } from '../types';
 
 /**
@@ -116,6 +117,38 @@ export class FlowController {
         graph: buildDefaultGraph(body.agentId ?? null),
       });
       res.status(201).json({ data: flow });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /flows/seed-followup
+   *
+   * Cria a cadência de follow-up pronta: três toques com espera crescente,
+   * cada um com seu objetivo, e a conferência de "ainda cabe falar?" antes de
+   * cada mensagem. Nasce em rascunho.
+   *
+   * Vem semeado e não embutido num nó fechado de propósito: a cadência fica
+   * visível no canvas e editável. Quem quiser cinco toques, ou espaçar
+   * diferente, edita — em vez de depender de um campo que a gente previu.
+   */
+  async seedFollowup(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const body = z
+        .object({ agentId: z.string().uuid().optional(), name: z.string().max(120).optional() })
+        .parse(req.body ?? {});
+
+      const flow = await flowService.create(req.user!.accountId!, {
+        name: body.name?.trim() || 'Follow-up',
+        description:
+          'Três toques com espera crescente. Cada um confere se ainda cabe falar ' +
+          'antes de escrever, e o texto nasce na hora com o objetivo do toque.',
+        graph: buildFollowupGraph(body.agentId ?? null),
+      });
+      // A dica do prompt vai junto: sem ela o agente ignora o objetivo do passo
+      // e escreve como se fosse a primeira mensagem da conversa.
+      res.status(201).json({ data: flow, promptHint: FOLLOWUP_PROMPT_HINT });
     } catch (error) {
       next(error);
     }

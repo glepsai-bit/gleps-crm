@@ -24,6 +24,7 @@ router.delete('/preview/:conversationId', (req, res, next) =>
   flowController.resetPreview(req, res, next)
 );
 router.post('/seed-default', (req, res, next) => flowController.seedDefault(req, res, next));
+router.post('/seed-followup', (req, res, next) => flowController.seedFollowup(req, res, next));
 
 router.get('/', (req, res, next) => flowController.list(req, res, next));
 router.post('/', (req, res, next) => flowController.create(req, res, next));

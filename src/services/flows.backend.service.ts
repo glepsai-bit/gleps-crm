@@ -144,6 +144,18 @@ export const flowsService = {
     return r.data;
   },
 
+  /**
+   * Cria a cadência de follow-up: três toques com espera crescente, cada um
+   * conferindo se ainda cabe falar antes de escrever. Nasce em rascunho.
+   */
+  async seedFollowup(agentId?: string): Promise<{ flow: Flow; promptHint: string }> {
+    const r = await apiClient.post<DataEnvelope<Flow> & { promptHint: string }>(
+      '/api/flows/seed-followup',
+      { ...(agentId ? { agentId } : {}) }
+    );
+    return { flow: r.data, promptHint: r.promptHint };
+  },
+
   /** Cria o fluxo padrão (tradução do workflow do n8n). Nasce em rascunho. */
   async seedDefault(agentId?: string): Promise<Flow> {
     const r = await apiClient.post<DataEnvelope<Flow>>('/api/flows/seed-default', {

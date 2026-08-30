@@ -1,8 +1,10 @@
 import crypto from 'crypto';
-import type { InboundIntegration } from '@prisma/client';
+import { Prisma, type InboundIntegration } from '@prisma/client';
 import { prisma } from '../config/database';
 import { contactService } from './contact.service';
 import { whatsappCampaignService } from './whatsapp-campaign.service';
+import { conversationService } from './conversation.service';
+import { parseGraph } from './flow/engine';
 import { eventService } from './event.service';
 import {
   NotFoundError,
@@ -20,13 +22,15 @@ export type InboundHandler =
   | 'contact_upsert'
   | 'tag_apply'
   | 'campaign_trigger'
-  | 'pacto_sync';
+  | 'pacto_sync'
+  | 'flow_trigger';
 
 const ALLOWED_HANDLERS: InboundHandler[] = [
   'contact_upsert',
   'tag_apply',
   'campaign_trigger',
   'pacto_sync',
+  'flow_trigger',
 ];
 
 const SLUG_REGEX = /^[a-z0-9-]{2,80}$/;
@@ -122,6 +126,26 @@ function normalizeEmail(email?: string): string | undefined {
   if (!email) return undefined;
   const trimmed = email.trim().toLowerCase();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Lê "data.aluno.telefone" de um objeto qualquer.
+ *
+ * O corpo vem de sistema de terceiro — cada um aninha do seu jeito, e exigir
+ * formato plano obrigaria a academia a montar um middleware só pra achatar
+ * JSON.
+ */
+function lerCaminho(obj: unknown, caminho: string): unknown {
+  return caminho
+    .split('.')
+    .filter(Boolean)
+    .reduce<unknown>(
+      (atual, parte) =>
+        atual && typeof atual === 'object'
+          ? (atual as Record<string, unknown>)[parte]
+          : undefined,
+      obj
+    );
 }
 
 function normalizePhone(phone?: string): string | undefined {
@@ -377,6 +401,9 @@ class InboundIntegrationService {
         case 'pacto_sync':
           result = await this.handlePactoSync(accountId, body as PactoSyncPayload);
           break;
+        case 'flow_trigger':
+          result = await this.handleFlowTrigger(accountId, integration, body);
+          break;
         default:
           throw new ValidationError(
             `Handler desconhecido: ${integration.handler}`
@@ -410,6 +437,139 @@ class InboundIntegrationService {
   // ----------------------------------------
   // Handlers
   // ----------------------------------------
+
+  /**
+   * Inicia um fluxo de atendimento a partir de uma chamada externa.
+   *
+   * Por que passa por fluxo e não manda mensagem direto: entrando por aqui, o
+   * disparo herda opt-out, consentimento, limite por telefone e o bloqueio de
+   * IA quando há humano ativo — tudo já embutido no caminho de envio. Um
+   * atalho que chamasse o envio direto teria que reimplementar as quatro
+   * proteções, e é assim que se perde o número da academia.
+   *
+   * `config` da integração:
+   *   flowId        — qual fluxo iniciar (precisa ter gatilho "Chamada externa")
+   *   campoTelefone — caminho do telefone no corpo (ex: "data.telefone")
+   *   campoNome     — opcional, para nomear o contato criado
+   *   campoDedupe   — opcional, caminho de um id do evento (idempotência)
+   */
+  private async handleFlowTrigger(
+    accountId: string,
+    integration: InboundIntegration,
+    body: unknown
+  ): Promise<{ runId: string | null; conversationId?: string; duplicado?: boolean }> {
+    const config = (integration.config ?? {}) as Record<string, unknown>;
+    const flowId = typeof config.flowId === 'string' ? config.flowId : '';
+    if (!flowId) {
+      throw new ValidationError('Integração sem flowId configurado');
+    }
+
+    const flow = await prisma.flow.findFirst({ where: { id: flowId, accountId } });
+    if (!flow) throw new NotFoundError('Fluxo');
+    if (flow.status === 'draft') {
+      // Rascunho não atende ninguém. Falhar alto aqui evita a pergunta "por que
+      // o webhook responde 200 e nada acontece?".
+      throw new ValidationError('O fluxo está em rascunho — publique antes de receber chamadas');
+    }
+
+    const temGatilhoExterno = parseGraph(flow.graph).nodes.some(
+      (n) => n.type === 'trigger.webhook'
+    );
+    if (!temGatilhoExterno) {
+      throw new ValidationError(
+        'O fluxo não começa com o gatilho "Chamada externa" — não pode ser iniciado por webhook'
+      );
+    }
+
+    const telefone = normalizePhone(
+      String(lerCaminho(body, String(config.campoTelefone ?? 'telefone')) ?? '')
+    );
+    if (!telefone) {
+      throw new ValidationError(
+        `Não achei o telefone em "${config.campoTelefone ?? 'telefone'}" no corpo enviado`
+      );
+    }
+
+    // IDEMPOTÊNCIA. Sistema externo que erra reenvia, e dois "feliz
+    // aniversário" é pior que nenhum. A trava real é o índice único: checar
+    // antes de inserir perderia a corrida entre duas entregas simultâneas.
+    const dedupeBruto = config.campoDedupe
+      ? lerCaminho(body, String(config.campoDedupe))
+      : null;
+    const dedupeKey = dedupeBruto ? `${integration.slug}:${String(dedupeBruto)}`.slice(0, 200) : null;
+
+    // Checagem explícita de reentrega, ANTES de tentar inserir.
+    //
+    // Não dá pra confiar só no índice único aqui: quando os dois eventos são do
+    // mesmo contato, o índice parcial do agrupamento (um atendimento pendente
+    // por conversa) dispara ANTES do índice de dedupe, e a reentrega viraria
+    // erro 409 em vez de no-op — justamente o caso que precisa ser silencioso,
+    // porque quem reenvia costuma reenviar de novo ao receber erro.
+    //
+    // O índice continua sendo a trava real: esta consulta perde a corrida entre
+    // duas entregas simultâneas, e é o índice que pega esse caso.
+    if (dedupeKey) {
+      const jaVisto = await prisma.flowRun.findFirst({
+        where: { accountId, dedupeKey },
+        select: { id: true, conversationId: true },
+      });
+      if (jaVisto) {
+        logger.info('[inbound-integration] evento repetido ignorado', { accountId, dedupeKey });
+        return { runId: null, conversationId: jaVisto.conversationId, duplicado: true };
+      }
+    }
+
+    const inbox = await prisma.inbox.findFirst({
+      where: { accountId, channelType: 'whatsapp', active: true },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+    if (!inbox) throw new ValidationError('Nenhum inbox de WhatsApp ativo nesta conta');
+
+    const nome = config.campoNome ? lerCaminho(body, String(config.campoNome)) : null;
+    const conversa = await conversationService.findOrCreateForCustomer(accountId, inbox.id, {
+      externalId: telefone,
+      contactPhone: telefone,
+      contactName: typeof nome === 'string' ? nome : null,
+    });
+
+    try {
+      const run = await prisma.flowRun.create({
+        data: {
+          accountId,
+          flowId: flow.id,
+          conversationId: conversa.id,
+          // Nasce vencido: não há o que agrupar num disparo externo, então o
+          // worker pega no próximo tick.
+          status: 'buffering',
+          runAfter: new Date(),
+          shadow: flow.status === 'shadow',
+          dedupeKey,
+          context: { webhook: body } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      return { runId: run.id, conversationId: conversa.id };
+    } catch (err) {
+      // P2002 pode vir de DOIS índices diferentes, e confundi-los seria pior
+      // que falhar:
+      //
+      //   dedupe   — mesmo evento reentregue. No-op correto: o Pacto reenviou.
+      //   buffering— já existe atendimento pendente para esta conversa (o
+      //              índice parcial do agrupamento). É outro evento, legítimo,
+      //              e tratá-lo como duplicata o faria sumir em silêncio.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const alvo = String(err.meta?.target ?? '');
+        if (alvo.includes('dedupe')) {
+          logger.info('[inbound-integration] evento repetido ignorado', { accountId, dedupeKey });
+          return { runId: null, conversationId: conversa.id, duplicado: true };
+        }
+        throw new ConflictError(
+          'Já existe um atendimento pendente para este contato — este evento não foi disparado'
+        );
+      }
+      throw err;
+    }
+  }
 
   private async handleContactUpsert(
     accountId: string,

@@ -59,6 +59,33 @@ const triggerMessageReceived: NodeDefinition = {
   },
 };
 
+/**
+ * Gatilho externo: um sistema de fora chama e o atendimento começa.
+ *
+ * Existe porque nem todo dado nasce no CRM. Academia usa Pacto, clínica usa
+ * outro — a verdade sobre aniversário, plano vencendo ou falta há 15 dias mora
+ * lá, e ninguém vai migrar de sistema por causa disso. O corpo da chamada fica
+ * em `{{webhook.*}}` e o nó de Condição roteia por qualquer campo dele.
+ */
+const triggerWebhook: NodeDefinition = {
+  type: 'trigger.webhook',
+  label: 'Chamada externa (webhook)',
+  description:
+    'Dispara quando um sistema de fora chama a URL desta integração. Os dados ' +
+    'enviados ficam disponíveis como {{webhook.campo}} nos passos seguintes.',
+  branches: [{ key: 'default', label: '' }],
+  mutates: false,
+  async execute(_node, ctx) {
+    const payload = (ctx.vars.webhook ?? {}) as Record<string, unknown>;
+    return {
+      output: {
+        campos: Object.keys(payload).slice(0, 40),
+        evento: typeof payload.evento === 'string' ? payload.evento : null,
+      },
+    };
+  },
+};
+
 // ============================================
 // Guardas — o que impede a IA de atropelar
 // ============================================
@@ -68,7 +95,8 @@ const guardConditions: NodeDefinition = {
   label: 'Só continuar se',
   description:
     'Interrompe o fluxo quando um humano assumiu, a conversa já foi resolvida, ' +
-    'está fora do horário ou a conversa tem uma etiqueta de bloqueio.',
+    'está fora do horário ou tem etiqueta de bloqueio. No follow-up, também ' +
+    'quando o lead está esperando resposta ou os toques acabaram.',
   branches: [
     { key: 'default', label: 'Pode seguir' },
     { key: 'bloqueado', label: 'Bloqueado' },
@@ -83,6 +111,12 @@ const guardConditions: NodeDefinition = {
         assigneeId: true,
         customAttributes: true,
         labels: { select: { tag: { select: { slug: true, name: true } } } },
+        // Quem falou por último decide se cabe follow-up. Uma mensagem basta.
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { senderType: true },
+        },
       },
     });
     if (!conversation) {
@@ -108,6 +142,31 @@ const guardConditions: NodeDefinition = {
 
     if (bool(c.conversaResolvida, true) && conversation.status === 'resolved') {
       motivos.push('conversa_resolvida');
+    }
+
+    // ---- Condições de follow-up ----
+    // Desligadas por padrão: fluxo de atendimento comum não deve mudar de
+    // comportamento por causa disto.
+
+    // A ÚLTIMA MENSAGEM É DO LEAD.
+    // Ele está esperando RESPOSTA, não cobrança. Mandar "conseguiu ver?" pra
+    // quem acabou de escrever é o erro que faz o lead bloquear o número. Se
+    // ninguém respondeu, o problema é de atendimento, não de cadência.
+    if (bool(c.leadFalouPorUltimo, false)) {
+      const ultimo = conversation.messages[0]?.senderType;
+      if (ultimo === 'customer') motivos.push('lead_aguarda_resposta');
+      // Sem mensagem nenhuma também não cabe follow-up: não há o que retomar.
+      if (!ultimo) motivos.push('conversa_sem_historico');
+    }
+
+    // TETO DE TOQUES.
+    // O quarto toque não converte — só marca o número como incômodo. O
+    // contador vem do run (quantas vezes já acordou), não do grafo: o mesmo
+    // desenho serve pra três ou pra cinco toques.
+    const maxToques = num(c.maxToques, 0);
+    if (maxToques > 0) {
+      const toque = num(ctx.vars.__toque, 0);
+      if (toque >= maxToques) motivos.push(`teto_de_toques:${toque}`);
     }
 
     const bloqueadoras = Array.isArray(c.etiquetasBloqueio)
@@ -149,14 +208,19 @@ function temSaida(node: FlowNode, branch: string, ctx: NodeContext): boolean {
   return edges.some((e) => e.source === node.id && e.branch === branch);
 }
 
-function dentroDoHorario(h: {
-  inicio?: string;
-  fim?: string;
-  dias?: number[];
-  timezone?: string;
-}): boolean {
+function dentroDoHorario(
+  h: {
+    inicio?: string;
+    fim?: string;
+    dias?: number[];
+    timezone?: string;
+  },
+  // Data explícita: a guarda pergunta "é horário agora?", o agendamento
+  // pergunta "e às 9h de quinta?". Mesma regra, momentos diferentes.
+  quando: Date = new Date()
+): boolean {
   const tz = h.timezone || 'America/Sao_Paulo';
-  const agora = new Date();
+  const agora = quando;
   // Intl é o jeito de obter hora local no fuso da conta sem trazer date-fns-tz.
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
@@ -169,7 +233,7 @@ function dentroDoHorario(h: {
   const minutos = Number(partes.hour) * 60 + Number(partes.minute);
 
   const mapaDia: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  const dia = mapaDia[String(partes.weekday)] ?? new Date().getDay();
+  const dia = mapaDia[String(partes.weekday)] ?? agora.getDay();
   const dias = Array.isArray(h.dias) && h.dias.length > 0 ? h.dias : [1, 2, 3, 4, 5];
   if (!dias.includes(dia)) return false;
 
@@ -303,11 +367,20 @@ const aiAgentNode: NodeDefinition = {
       memory: (ctx.vars.memoria ?? {}) as Record<string, unknown>,
       session: (ctx.vars.sessao ?? {}) as Record<string, unknown>,
       contactId: (ctx.vars.__contactId ?? null) as string | null,
-      variables: Object.fromEntries(
-        Object.entries(ctx.vars)
-          .filter(([k, v]) => !k.startsWith('__') && typeof v === 'string')
-          .map(([k, v]) => [k, v as string])
-      ),
+      variables: {
+        ...Object.fromEntries(
+          Object.entries(ctx.vars)
+            .filter(([k, v]) => !k.startsWith('__') && typeof v === 'string')
+            .map(([k, v]) => [k, v as string])
+        ),
+        // O OBJETIVO DESTE PASSO, configurado no nó.
+        //
+        // É o que torna a cadência de follow-up uma sequência de objetivos e
+        // não de textos prontos: o mesmo agente, com o mesmo histórico e a
+        // mesma memória, escrevendo com uma intenção diferente a cada toque.
+        // O prompt referencia com {{objetivo_do_passo}}.
+        objetivo_do_passo: str(c.objetivo),
+      },
     });
 
     // A saída estruturada vira variável de primeira classe: os nós seguintes
@@ -628,6 +701,86 @@ const flowWait: NodeDefinition = {
   },
 };
 
+/**
+ * Espera longa: HORAS OU DIAS, dormindo.
+ *
+ * O `flow.wait` existente trava o processo e é limitado a 60s — serve pra dar
+ * ritmo humano dentro de uma conversa. Este é outra coisa: suspende a execução
+ * e devolve à fila na hora marcada. Segurar um processo por dois dias não é
+ * opção, e o run precisa sobreviver a restart e a deploy.
+ */
+const flowAguardar: NodeDefinition = {
+  type: 'flow.aguardar',
+  label: 'Aguardar (horas ou dias)',
+  description:
+    'Suspende o atendimento e retoma depois, do ponto seguinte. É o que permite ' +
+    'follow-up sem segurar processo nenhum.',
+  branches: [{ key: 'default', label: '' }],
+  mutates: false,
+  async execute(node, ctx) {
+    const c = cfg(node);
+    const valor = Math.max(1, num(c.valor, 1));
+    const unidade = str(c.unidade, 'dias');
+    const ms = valor * (UNIDADES[unidade] ?? UNIDADES.dias);
+
+    // Teto de 60 dias: espera maior que isso não é follow-up, é campanha de
+    // reativação — que tem outra régua de consentimento.
+    let quando = new Date(Date.now() + Math.min(ms, 60 * UNIDADES.dias));
+
+    // No simulador ninguém vai esperar dois dias olhando a tela.
+    if (ctx.vars.__simulador) {
+      return { output: { retomaEm: quando.toISOString(), pulado: 'simulador' } };
+    }
+
+    const horario = c.horarioComercial as JanelaComercial | undefined;
+    if (horario?.inicio && horario?.fim) {
+      quando = proximaJanelaUtil(quando, horario);
+    }
+
+    // Dispersão: sem isto, 200 follow-ups saem às 09:00:00 em ponto — que é
+    // exatamente o padrão que marca o número como robô.
+    const jitterMs = Math.floor(Math.random() * num(c.dispersaoMinutos, 12) * 60_000);
+    quando = new Date(quando.getTime() + jitterMs);
+
+    return {
+      sleep: { until: quando },
+      output: { retomaEm: quando.toISOString(), esperou: `${valor} ${unidade}` },
+    };
+  },
+};
+
+const UNIDADES: Record<string, number> = {
+  minutos: 60_000,
+  horas: 3_600_000,
+  dias: 86_400_000,
+};
+
+interface JanelaComercial {
+  inicio?: string;
+  fim?: string;
+  dias?: number[];
+  timezone?: string;
+}
+
+/**
+ * Empurra a data para dentro do expediente.
+ *
+ * Follow-up às 3h da manhã é pior que follow-up nenhum: acorda o lead, marca a
+ * empresa como robô e é o tipo de coisa que gera bloqueio em vez de resposta.
+ * Anda de meia em meia hora até achar a janela — bruto, mas atravessa fim de
+ * semana e feriado configurado sem virar aritmética de calendário.
+ */
+export function proximaJanelaUtil(quando: Date, h: JanelaComercial): Date {
+  const PASSO_MS = 30 * 60_000;
+  const MAX_TENTATIVAS = 24 * 2 * 10; // dez dias de busca; então desiste e manda
+  let d = new Date(quando);
+  for (let i = 0; i < MAX_TENTATIVAS; i++) {
+    if (dentroDoHorario({ ...h }, d)) return d;
+    d = new Date(d.getTime() + PASSO_MS);
+  }
+  return quando;
+}
+
 // ============================================
 // Registro
 // ============================================
@@ -635,7 +788,9 @@ const flowWait: NodeDefinition = {
 export const NODE_CATALOG: Record<string, NodeDefinition> = Object.fromEntries(
   [
     triggerMessageReceived,
+    triggerWebhook,
     guardConditions,
+    flowAguardar,
     bufferDebounce,
     mediaTranscribe,
     aiAgentNode,
