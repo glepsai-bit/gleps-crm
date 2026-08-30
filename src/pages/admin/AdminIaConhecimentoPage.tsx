@@ -60,6 +60,7 @@ import {
   Clock,
   XCircle,
   Upload,
+  Building2,
 } from 'lucide-react';
 
 const STATUS_META: Record<
@@ -82,6 +83,9 @@ export default function AdminIaConhecimentoPage() {
   const [selectedBaseId, setSelectedBaseId] = useState<string | null>(null);
   const [baseDialogOpen, setBaseDialogOpen] = useState(false);
   const [baseForm, setBaseForm] = useState({ name: '', description: '' });
+  // Rascunho do contexto do negócio. Fica separado da query pra o texto não
+  // ser sobrescrito no meio da digitação quando o refetch chega.
+  const [contexto, setContexto] = useState<string | null>(null);
   const [deletingBase, setDeletingBase] = useState<KnowledgeBase | null>(null);
 
   const [docDialogOpen, setDocDialogOpen] = useState(false);
@@ -117,6 +121,21 @@ export default function AdminIaConhecimentoPage() {
     queryClient.invalidateQueries({ queryKey: ['ai', 'bases'] });
     queryClient.invalidateQueries({ queryKey: ['ai', 'docs', activeBaseId] });
   };
+
+  const salvarContextoMutation = useMutation({
+    mutationFn: () =>
+      aiService.updateBase(activeBaseId!, { businessContext: contexto?.trim() || null }),
+    onSuccess: () => {
+      invalidateAll();
+      setContexto(null);
+      toast({
+        title: 'Contexto salvo',
+        description: 'Ele entra no prompt de todo agente ligado nesta base.',
+      });
+    },
+    onError: (err: Error) =>
+      toast({ title: 'Não foi possível salvar', description: err.message, variant: 'destructive' }),
+  });
 
   const createBaseMutation = useMutation({
     mutationFn: () =>
@@ -287,7 +306,50 @@ export default function AdminIaConhecimentoPage() {
                     </div>
                   </CardHeader>
 
-                  <CardContent className="space-y-2">
+                  <CardContent className="space-y-4">
+                    {/*
+                      SOBRE O NEGÓCIO — vai sempre no prompt, não é recuperado
+                      por busca. Fica aqui, na base, e não no prompt de cada
+                      agente: com três agentes a descrição seria copiada três
+                      vezes e divergiria no primeiro ajuste.
+                    */}
+                    <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Building2 className="w-4 h-4 text-muted-foreground" />
+                        <span className="text-sm font-medium">Sobre o negócio</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-snug">
+                        Quem é a empresa, o que vende, o que nunca faz. Diferente dos documentos,
+                        isto entra em <strong>toda</strong> resposta — o agente não precisa
+                        procurar. Curto: cada palavra aqui é cobrada em cada mensagem.
+                      </p>
+                      <Textarea
+                        value={contexto ?? activeBase.businessContext ?? ''}
+                        onChange={(e) => setContexto(e.target.value)}
+                        placeholder="A Gleps vende CRM com WhatsApp para clínicas de estética. Ticket a partir de R$ 297/mês. Não atendemos pessoa física."
+                        rows={3}
+                        className="text-sm resize-none bg-background"
+                        maxLength={8000}
+                      />
+                      {contexto !== null && (
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => salvarContextoMutation.mutate()}
+                            disabled={salvarContextoMutation.isPending}
+                          >
+                            {salvarContextoMutation.isPending && (
+                              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                            )}
+                            Salvar
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setContexto(null)}>
+                            Cancelar
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+
                     {docsQuery.isLoading ? (
                       <Skeleton className="h-20 w-full" />
                     ) : docsQuery.data?.length === 0 ? (
@@ -323,6 +385,17 @@ export default function AdminIaConhecimentoPage() {
                                   </Badge>
                                 )}
                               </div>
+                              {doc.summary && (
+                                /*
+                                  É esta linha que vai pro índice no prompt do
+                                  agente. Mostrar aqui deixa o usuário conferir
+                                  se o resumo automático descreveu o documento
+                                  direito — quando erra, o agente busca errado.
+                                */
+                                <p className="text-xs text-muted-foreground mt-1 leading-snug">
+                                  <span className="font-medium">Cobre:</span> {doc.summary}
+                                </p>
+                              )}
                               {doc.error && (
                                 <p className="text-xs text-destructive mt-1 break-words">
                                   {doc.error}

@@ -63,6 +63,11 @@ export interface KnowledgeBase {
   id: string;
   name: string;
   description: string | null;
+  /**
+   * Quem é o negócio. Vai SEMPRE no prompt de qualquer agente ligado nesta
+   * base — diferente da descrição, que só serve pra humano escolher a base.
+   */
+  businessContext: string | null;
   docCount: number;
   chunkCount: number;
   createdAt: string;
@@ -72,6 +77,8 @@ export interface KnowledgeBase {
 export interface KnowledgeDoc {
   id: string;
   title: string;
+  /** Uma linha do que o documento cobre, gerada na indexação. Vira o índice. */
+  summary: string | null;
   sourceType: 'text' | 'file' | 'url';
   sourceRef: string | null;
   status: KnowledgeDocStatus;
@@ -151,14 +158,18 @@ export const aiService = {
     return res.data;
   },
 
-  async createBase(input: { name: string; description?: string | null }): Promise<KnowledgeBase> {
+  async createBase(input: {
+    name: string;
+    description?: string | null;
+    businessContext?: string | null;
+  }): Promise<KnowledgeBase> {
     const res = await apiClient.post<DataEnvelope<KnowledgeBase>>('/api/ai/knowledge', input);
     return res.data;
   },
 
   async updateBase(
     id: string,
-    input: { name?: string; description?: string | null }
+    input: { name?: string; description?: string | null; businessContext?: string | null }
   ): Promise<KnowledgeBase> {
     const res = await apiClient.patch<DataEnvelope<KnowledgeBase>>(`/api/ai/knowledge/${id}`, input);
     return res.data;

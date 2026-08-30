@@ -9,6 +9,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const prismaMock = vi.hoisted(() => ({
   knowledgeChunk: { findMany: vi.fn() },
+  knowledgeBase: { findFirst: vi.fn() },
+  knowledgeDoc: { findMany: vi.fn() },
 }));
 
 vi.mock('../../config/database', () => ({ prisma: prismaMock }));
@@ -24,7 +26,15 @@ vi.mock('./embeddings', async (importOriginal) => {
   return { ...actual, embed: embedMock };
 });
 
-import { search, invalidateBase, __clearIndexCache, formatHitsForPrompt } from './knowledge-index';
+import {
+  search,
+  invalidateBase,
+  __clearIndexCache,
+  formatHitsForPrompt,
+  loadOverview,
+  formatBaseIndex,
+  formatBusinessContext,
+} from './knowledge-index';
 
 const ACCOUNT_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const ACCOUNT_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -147,8 +157,31 @@ describe('search', () => {
 });
 
 describe('formatHitsForPrompt', () => {
-  it('sem trechos devolve string vazia — nada é injetado no prompt', () => {
-    expect(formatHitsForPrompt([])).toBe('');
+  /**
+   * T-032 — este bloco ASSERTAVA o defeito. Antes a função devolvia string
+   * vazia sem trechos, e o chamador não empurrava bloco nenhum. Só que a
+   * instrução "se não estiver aqui, diga que vai verificar" morava DENTRO do
+   * bloco: a trava contra invenção sumia exatamente quando era mais necessária,
+   * porque a base não tinha o que responder. O contrato agora é o oposto —
+   * silêncio da busca vira instrução explícita.
+   */
+  it('sem trechos AINDA instrui a não inventar — o silêncio era o furo', () => {
+    const out = formatHitsForPrompt([]);
+    expect(out).toContain('nenhum trecho relevante');
+    expect(out).toContain('nunca invente preço, prazo ou política');
+  });
+
+  it('sem trechos avisa que pode ser a busca, não a ausência do dado', () => {
+    // Sem isto o agente conclui "não existe" e encerra o assunto.
+    expect(formatHitsForPrompt([])).toContain('não quer dizer que a informação não exista');
+  });
+
+  it('busca indisponível diz outra coisa — não chegou a procurar', () => {
+    const out = formatHitsForPrompt([], 'busca_indisponivel');
+    expect(out).toContain('indisponível nesta mensagem');
+    expect(out).toContain('NÃO afirme preço');
+    // Afirmar que não achou seria mentira: a consulta nem aconteceu.
+    expect(out).not.toContain('nenhum trecho relevante');
   });
 
   it('rotula cada trecho com o documento de origem', () => {
@@ -159,5 +192,107 @@ describe('formatHitsForPrompt', () => {
     expect(out).toContain('Plano X: R$ 500');
     // A instrução anti-alucinação tem que ir junto do contexto.
     expect(out.toLowerCase()).toContain('inventar');
+  });
+});
+
+/**
+ * T-032 — o mapa da base.
+ *
+ * Contexto e índice vão em TODA mensagem do agente, então os tetos aqui não são
+ * detalhe: sem eles, uma base grande dobra o custo de cada resposta e ninguém
+ * percebe até a fatura. Teto sem teste é teto que para de valer no primeiro
+ * refactor.
+ */
+describe('mapa da base — contexto e índice', () => {
+  const overviewCru = (over: Record<string, unknown> = {}) => ({
+    businessContext: null,
+    docs: [],
+    ...over,
+  });
+
+  beforeEach(() => {
+    __clearIndexCache();
+    prismaMock.knowledgeBase.findFirst.mockResolvedValue({ businessContext: null });
+    prismaMock.knowledgeDoc.findMany.mockResolvedValue([]);
+  });
+
+  describe('loadOverview', () => {
+    it('só lista documento PRONTO — anunciar o que ainda indexa manda buscar no vazio', async () => {
+      await loadOverview(ACCOUNT_A, BASE);
+      expect(prismaMock.knowledgeDoc.findMany.mock.calls[0][0].where).toMatchObject({
+        baseId: BASE,
+        accountId: ACCOUNT_A,
+        status: 'ready',
+      });
+    });
+
+    it('limita quantos documentos entram no índice — ele vai em toda mensagem', async () => {
+      await loadOverview(ACCOUNT_A, BASE);
+      const take = prismaMock.knowledgeDoc.findMany.mock.calls[0][0].take;
+      expect(take).toBeGreaterThan(0);
+      expect(take).toBeLessThanOrEqual(60);
+    });
+
+    it('filtra a base pela CONTA — mesma regra do search', async () => {
+      await loadOverview(ACCOUNT_A, BASE);
+      expect(prismaMock.knowledgeBase.findFirst.mock.calls[0][0].where).toMatchObject({
+        id: BASE,
+        accountId: ACCOUNT_A,
+      });
+    });
+
+    it('cacheia: a segunda chamada não volta ao banco', async () => {
+      await loadOverview(ACCOUNT_A, BASE);
+      await loadOverview(ACCOUNT_A, BASE);
+      expect(prismaMock.knowledgeDoc.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('invalidateBase derruba o mapa junto dos trechos', async () => {
+      await loadOverview(ACCOUNT_A, BASE);
+      invalidateBase(ACCOUNT_A, BASE);
+      await loadOverview(ACCOUNT_A, BASE);
+      // Sem isto o índice anunciaria documento que acabou de sair da base.
+      expect(prismaMock.knowledgeDoc.findMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('conta diferente tem mapa próprio — não reusa o cache da vizinha', async () => {
+      await loadOverview(ACCOUNT_A, BASE);
+      await loadOverview(ACCOUNT_B, BASE);
+      expect(prismaMock.knowledgeDoc.findMany).toHaveBeenCalledTimes(2);
+      expect(prismaMock.knowledgeDoc.findMany.mock.calls[1][0].where.accountId).toBe(ACCOUNT_B);
+    });
+  });
+
+  describe('formatBaseIndex', () => {
+    it('lista título e o que cada documento cobre', () => {
+      const out = formatBaseIndex(
+        overviewCru({
+          docs: [{ title: 'Preços', summary: 'valores dos 3 planos' }],
+        })
+      );
+      expect(out).toContain('- Preços: valores dos 3 planos');
+      expect(out).toContain('use a ferramenta de busca');
+    });
+
+    it('documento sem resumo entra só pelo título — não some do índice', () => {
+      const out = formatBaseIndex(overviewCru({ docs: [{ title: 'Contrato', summary: null }] }));
+      expect(out).toContain('- Contrato');
+      expect(out).not.toContain('Contrato:');
+    });
+
+    it('base vazia não gera cabeçalho solto', () => {
+      expect(formatBaseIndex(overviewCru({ docs: [] }))).toBe('');
+    });
+  });
+
+  describe('formatBusinessContext', () => {
+    it('sem contexto não gera bloco', () => {
+      expect(formatBusinessContext(overviewCru())).toBe('');
+    });
+
+    it('trunca contexto gigante — o custo é por mensagem, para sempre', () => {
+      const out = formatBusinessContext(overviewCru({ businessContext: 'x'.repeat(20_000) }));
+      expect(out.length).toBeLessThan(5_000);
+    });
   });
 });

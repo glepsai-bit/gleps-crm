@@ -1960,6 +1960,11 @@ model KnowledgeBase {
   account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
   name        String   @db.VarChar(120)
   description String?  @db.Text
+  /// Quem é o negócio, em texto curto. Entra SEMPRE no prompt de qualquer
+  /// agente ligado nesta base — não é recuperado por similaridade. Mora aqui e
+  /// não no systemPrompt do agente porque, com vários agentes, a descrição
+  /// seria copiada em cada um e divergiria no primeiro ajuste.
+  businessContext String? @map("business_context") @db.Text
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1985,6 +1990,9 @@ model KnowledgeDoc {
   sourceType String        @default("text") @map("source_type") @db.VarChar(20) // text | file | url
   sourceRef  String?       @map("source_ref") @db.Text // nome do arquivo ou URL de origem
   content    String        @db.Text
+  /// Uma linha dizendo o que este documento cobre, gerada na indexação. A soma
+  /// dos summaries da base é o índice que orienta o agente a buscar direito.
+  summary    String?       @db.Text
   status     String        @default("pending") @db.VarChar(20) // pending | indexing | ready | failed
   error      String?       @db.Text
   chunkCount Int           @default(0) @map("chunk_count")

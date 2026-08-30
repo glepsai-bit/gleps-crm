@@ -45,6 +45,9 @@ const runSchema = z.object({
 const baseSchema = z.object({
   name: z.string().min(1, 'Nome é obrigatório').max(120),
   description: z.string().max(2000).optional().nullable(),
+  // Teto de 8000: o contexto vai em TODA mensagem do agente. Deixar crescer
+  // sem limite faria cada resposta custar o dobro sem ninguém perceber.
+  businessContext: z.string().max(8000).optional().nullable(),
 });
 
 const docSchema = z.object({

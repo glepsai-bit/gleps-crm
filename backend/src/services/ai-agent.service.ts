@@ -14,7 +14,16 @@ import { NotFoundError, ValidationError, ConflictError, AppError } from '../util
 import { logger } from '../utils/logger';
 import { chat, type ChatMessage, type ChatToolCall, type ChatToolDef, type ChatUsage } from './ai/chat';
 import type { AiProviderName } from './ai/client-factory';
-import { search, formatHitsForPrompt, type SearchHit } from './ai/knowledge-index';
+import {
+  search,
+  loadOverview,
+  formatHitsForPrompt,
+  formatBusinessContext,
+  formatBaseIndex,
+  type SearchHit,
+  type MotivoSemTrechos,
+  type BaseOverview,
+} from './ai/knowledge-index';
 import { validateAgainstSchema, extractJson } from './ai/json-schema-lite';
 
 export type AgentRole = 'classifier' | 'responder' | 'custom';
@@ -285,10 +294,21 @@ class AiAgentService {
     // RAG: busca com a mensagem do lead. Falha na busca não derruba o
     // atendimento — o agente responde sem a base e o motivo fica no log.
     let hits: SearchHit[] = [];
+    // Zero trechos tem DOIS motivos, e o agente precisa dizer coisas diferentes:
+    // "não achei nada sobre isso" ≠ "não consegui consultar agora". Tratar os
+    // dois como silêncio é o que deixava a IA improvisar preço.
+    let motivoSemTrechos: MotivoSemTrechos = 'nada_relevante';
+    let overview: BaseOverview | null = null;
     if (agent.knowledgeBaseId) {
       try {
-        hits = await search(input.accountId, agent.knowledgeBaseId, userMessage);
+        // O mapa da base (contexto + índice) vem junto da busca: os dois saem
+        // do mesmo cache, então isto não é uma ida a mais ao banco.
+        [hits, overview] = await Promise.all([
+          search(input.accountId, agent.knowledgeBaseId, userMessage),
+          loadOverview(input.accountId, agent.knowledgeBaseId),
+        ]);
       } catch (err) {
+        motivoSemTrechos = 'busca_indisponivel';
         logger.warn('[ai-agent] busca na base de conhecimento falhou; seguindo sem RAG', {
           agentId: agent.id,
           error: err instanceof Error ? err.message : String(err),
@@ -305,16 +325,18 @@ class AiAgentService {
       agent
     );
 
-    const system = this.buildSystemPrompt(
+    const system = this.buildSystemPrompt({
       agent,
       hits,
-      input.variables,
-      input.memory,
-      input.session,
+      motivoSemTrechos,
+      overview,
+      variables: input.variables,
+      memory: input.memory,
+      session: input.session,
       // Resumo passado de fora (delegação) tem precedência; senão o que o
       // próprio agente calculou ao carregar o histórico.
-      input.historySummary ?? historico.summary
-    );
+      historySummary: input.historySummary ?? historico.summary,
+    });
 
     const messages: ChatMessage[] = [
       ...historico.messages,
@@ -551,14 +573,24 @@ class AiAgentService {
     }
   }
 
-  private buildSystemPrompt(
-    agent: AiAgent,
-    hits: SearchHit[],
-    variables?: Record<string, string>,
-    memory?: Record<string, unknown>,
-    session?: Record<string, unknown>,
-    historySummary?: string | null
-  ): string {
+  /**
+   * Objeto em vez de posicionais: com o índice e o contexto do negócio seriam
+   * oito argumentos em sequência, e trocar dois de lugar por engano passaria
+   * pelo compilador — todos são string ou objeto.
+   */
+  private buildSystemPrompt(p: {
+    agent: AiAgent;
+    hits: SearchHit[];
+    /** Por que não vieram trechos. Só importa quando `hits` está vazio. */
+    motivoSemTrechos?: MotivoSemTrechos;
+    /** Mapa da base. Null quando o agente não tem base vinculada. */
+    overview?: BaseOverview | null;
+    variables?: Record<string, string>;
+    memory?: Record<string, unknown>;
+    session?: Record<string, unknown>;
+    historySummary?: string | null;
+  }): string {
+    const { agent, hits, variables, memory, session, historySummary } = p;
     let prompt = agent.systemPrompt;
 
     if (variables) {
@@ -597,8 +629,23 @@ class AiAgentService {
       );
     }
 
-    const knowledge = formatHitsForPrompt(hits);
-    if (knowledge) blocos.push(knowledge);
+    // MATERIAL DO NEGÓCIO, do mais estável ao mais volátil: quem somos →
+    // o que sabemos → o que é relevante nesta mensagem. O índice precisa vir
+    // ANTES dos trechos: é ele que diz ao agente que existe assunto além do
+    // que a busca trouxe, e a instrução do bloco seguinte se refere a ele.
+    if (p.overview) {
+      const negocio = formatBusinessContext(p.overview);
+      if (negocio) blocos.push(negocio);
+
+      const indice = formatBaseIndex(p.overview);
+      if (indice) blocos.push(indice);
+    }
+
+    // Sem base vinculada não há bloco nenhum — nem o aviso de vazio, que só faz
+    // sentido quando existe base para consultar.
+    if (agent.knowledgeBaseId) {
+      blocos.push(formatHitsForPrompt(hits, p.motivoSemTrechos ?? 'nada_relevante'));
+    }
 
     return blocos.join('\n\n---\n\n');
   }
