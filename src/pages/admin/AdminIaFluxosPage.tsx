@@ -26,6 +26,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { useTheme } from 'next-themes';
 import { FlowNodeCard, type FlowNodeData } from '@/components/flow/FlowNodeCard';
+import { SimuladorChat, type StatusPorNo } from '@/components/flow/SimuladorChat';
 import {
   ArrowLeft,
   Plus,
@@ -38,6 +39,7 @@ import {
   Workflow,
   Zap,
   Clock,
+  FlaskConical,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -247,16 +249,23 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
    * que carregar a lista de agentes depois não zere edições não salvas do
    * canvas.
    */
+  // Resultado do último teste, por nó. Vazio = nenhum teste ainda.
+  const [execPorNo, setExecPorNo] = useState<StatusPorNo>({});
+  const [testeAberto, setTesteAberto] = useState(false);
+  const houveTeste = Object.keys(execPorNo).length > 0;
+
   const nodesExibidos = useMemo(
     () =>
       nodes.map((n) => {
         const d = n.data as FlowNodeData;
-        if (d.tipo !== 'ai.agent') return n;
+        const exec = execPorNo[n.id];
+        const base = { ...d, exec, execRodou: houveTeste };
+        if (d.tipo !== 'ai.agent') return { ...n, data: base };
         const agentId = (d.config as { agentId?: string } | undefined)?.agentId;
         const nome = agentes?.find((a) => a.id === agentId)?.name ?? null;
-        return { ...n, data: { ...d, agenteNome: nome, temProblema: !agentId } };
+        return { ...n, data: { ...base, agenteNome: nome, temProblema: !agentId } };
       }),
-    [nodes, agentes]
+    [nodes, agentes, execPorNo, houveTeste]
   );
 
   const infoPorTipo = useMemo(() => {
@@ -432,6 +441,15 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
               <Pause className="w-4 h-4 mr-1" /> Pausar
             </Button>
           )}
+
+          <Button
+            size="sm"
+            variant={testeAberto ? 'secondary' : 'outline'}
+            onClick={() => setTesteAberto((v) => !v)}
+            title="Conversar com o fluxo e ver os blocos acenderem"
+          >
+            <FlaskConical className="w-4 h-4 mr-1" /> Testar
+          </Button>
         </div>
       </div>
 
@@ -513,6 +531,35 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
             />
           </ReactFlow>
         </div>
+
+        {/* Simulador embutido — a conversa ao lado do desenho */}
+        {testeAberto && (
+          <div className="w-[22rem] border-l shrink-0 flex flex-col min-h-0 bg-card">
+            <SimuladorChat
+              flowId={flowId}
+              onPassos={setExecPorNo}
+              onTurno={(t) => {
+                // Fluxo que parou antes de responder: o motivo vale um aviso,
+                // porque o bloco aceso sozinho não diz o porquê.
+                if (!t.resposta && t.stopReason) {
+                  toast({
+                    title: 'O fluxo parou antes de responder',
+                    description: t.stopReason,
+                  });
+                }
+              }}
+              compacto
+            />
+            {houveTeste && (
+              <div className="border-t px-3 py-2 text-[10px] text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+                <span className="text-emerald-600 dark:text-emerald-400">■ passou</span>
+                <span className="text-amber-600 dark:text-amber-400">■ parou aqui</span>
+                <span className="text-destructive">■ erro</span>
+                <span className="opacity-50">■ não passou por aqui</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Painel do nó */}
         {noSelecionado && (

@@ -20,6 +20,9 @@ router.use(requireAccountId);
 router.get('/runs', (req, res, next) => flowController.listRuns(req, res, next));
 router.get('/runs/:runId', (req, res, next) => flowController.getRun(req, res, next));
 router.get('/catalog', (req, res, next) => flowController.catalog(req, res, next));
+router.get('/preview/:conversationId/run', (req, res, next) =>
+  flowController.previewRunAtual(req, res, next)
+);
 router.delete('/preview/:conversationId', (req, res, next) =>
   flowController.resetPreview(req, res, next)
 );

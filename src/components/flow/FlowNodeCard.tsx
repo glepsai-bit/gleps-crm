@@ -65,6 +65,16 @@ export interface FlowNodeData extends Record<string, unknown> {
   agenteNome?: string | null;
   /** Problemas do grafo que apontam para este nó. */
   temProblema?: boolean;
+  /** Houve um teste. Sem isto não dá pra distinguir "não rodou" de "não passou aqui". */
+  execRodou?: boolean;
+  /**
+   * Como este passo se saiu no último teste do simulador.
+   *
+   * É o que transforma "o fluxo quebrou" em "quebrou NESTE bloco": em vez de
+   * ler log e procurar o nó, o bloco acende vermelho na tela. Ausente = não foi
+   * alcançado — o que também é informação: o caminho não passou por aqui.
+   */
+  exec?: { status: string; ms: number; error: string | null };
 }
 
 const texto = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -110,6 +120,13 @@ function resumo(tipo: string, config: Record<string, unknown>, agenteNome?: stri
   }
 }
 
+/** Moldura do resultado do teste. Erro ganha o destaque mais forte. */
+const MOLDURA_EXEC: Record<string, string> = {
+  ok: 'border-emerald-500/70 ring-2 ring-emerald-500/25',
+  error: 'border-destructive ring-2 ring-destructive/35',
+  skipped: 'border-amber-500/70 ring-2 ring-amber-500/25',
+};
+
 function FlowNodeCardBase({ data, selected }: NodeProps) {
   const d = (data ?? {}) as FlowNodeData;
   const tipo = d.tipo ?? '';
@@ -118,13 +135,21 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
   const ehGatilho = tipo.startsWith('trigger.');
   const ehAcao = ACOES.has(tipo);
   const detalhe = resumo(tipo, config, d.agenteNome);
+  const exec = d.exec;
 
   return (
     <div
       className={cn(
         'rounded-lg border bg-card text-card-foreground shadow-sm w-[220px] transition-colors',
         selected ? 'border-primary ring-2 ring-primary/30' : 'border-border',
-        d.temProblema && 'border-destructive/60'
+        d.temProblema && 'border-destructive/60',
+        // O resultado do teste vence a borda normal: durante a depuração é a
+        // informação que importa. A seleção continua ganhando de tudo — é a
+        // ação deliberada do usuário.
+        !selected && exec && MOLDURA_EXEC[exec.status],
+        // Não alcançado no teste esmaece: o caminho não passou por aqui, e ver
+        // isso de relance é metade do diagnóstico.
+        !selected && d.execRodou && !exec && 'opacity-45'
       )}
     >
       {/* Gatilho não tem entrada: é onde o fluxo começa. */}
@@ -164,6 +189,30 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
         {detalhe && (
           <p className="text-[11px] text-muted-foreground mt-1 leading-snug line-clamp-2 break-words">
             {detalhe}
+          </p>
+        )}
+
+        {exec && (
+          <div className="mt-1.5 flex items-center gap-1.5 text-[10px]">
+            <span
+              className={cn(
+                'font-medium',
+                exec.status === 'ok' && 'text-emerald-600 dark:text-emerald-400',
+                exec.status === 'error' && 'text-destructive',
+                exec.status === 'skipped' && 'text-amber-600 dark:text-amber-400'
+              )}
+            >
+              {exec.status === 'ok' ? 'passou' : exec.status === 'error' ? 'erro' : 'parou aqui'}
+            </span>
+            <span className="text-muted-foreground">{exec.ms}ms</span>
+          </div>
+        )}
+
+        {exec?.error && (
+          // A mensagem do erro no próprio bloco: sem isso o usuário veria o
+          // vermelho e teria que ir procurar o motivo em outro lugar.
+          <p className="text-[10px] text-destructive mt-1 leading-snug line-clamp-3 break-words">
+            {exec.error}
           </p>
         )}
       </div>

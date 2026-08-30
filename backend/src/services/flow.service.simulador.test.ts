@@ -16,7 +16,7 @@ const prismaMock = vi.hoisted(() => ({
   contact: { findFirst: vi.fn(), create: vi.fn(), delete: vi.fn() },
   inbox: { findFirst: vi.fn(), create: vi.fn() },
   message: { create: vi.fn() },
-  flowRun: { create: vi.fn(), update: vi.fn(), deleteMany: vi.fn() },
+  flowRun: { create: vi.fn(), update: vi.fn(), deleteMany: vi.fn(), findFirst: vi.fn() },
   flowRunStep: { findMany: vi.fn() },
 }));
 
@@ -276,6 +276,46 @@ describe('conversa de teste', () => {
 
     await preview({ conversationId: null });
     expect(prismaMock.inbox.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('acompanhar a execução em andamento', () => {
+  it('devolve os passos já gravados — é o que acende os blocos no canvas', async () => {
+    prismaMock.flowRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      status: 'running',
+      stopReason: null,
+      error: null,
+    });
+    prismaMock.flowRunStep.findMany.mockResolvedValue([passo(), passo({ id: 'st-2' })]);
+
+    const r = await flowService.previewRunAtual(ACC, 'conv-teste');
+
+    expect(r!.id).toBe('run-1');
+    expect(r!.steps).toHaveLength(2);
+    // Só run do simulador: não pode expor atendimento real por esta porta.
+    expect(prismaMock.flowRun.findFirst.mock.calls[0][0].where).toMatchObject({
+      accountId: ACC,
+      conversationId: 'conv-teste',
+      simulador: true,
+    });
+  });
+
+  it('sem run ainda, devolve nulo em vez de estourar', async () => {
+    prismaMock.flowRun.findFirst.mockResolvedValue(null);
+    expect(await flowService.previewRunAtual(ACC, 'conv-teste')).toBeNull();
+  });
+
+  it('RECUSA conversa que não é do simulador', async () => {
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      id: 'conv-real',
+      contactId: 'lead',
+      inbox: { name: 'WhatsApp Comercial' },
+      customAttributes: {},
+    });
+    await expect(flowService.previewRunAtual(ACC, 'conv-real')).rejects.toThrow(
+      /não é do simulador/i
+    );
   });
 });
 

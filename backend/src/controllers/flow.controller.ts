@@ -203,6 +203,26 @@ export class FlowController {
     }
   }
 
+  /**
+   * GET /flows/preview/:conversationId/run — passos do turno em andamento.
+   * O canvas chama isto em intervalos curtos enquanto o preview roda.
+   */
+  async previewRunAtual(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const r = await flowService.previewRunAtual(
+        req.user!.accountId!,
+        req.params.conversationId as string
+      );
+      res.json({ data: r });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async resetPreview(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       await flowService.resetPreview(

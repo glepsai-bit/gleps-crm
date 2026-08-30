@@ -210,6 +210,28 @@ export const flowsService = {
     return r.data;
   },
 
+  /**
+   * Passos do turno em andamento. O canvas chama em intervalos curtos enquanto
+   * o preview roda, pra acender os blocos conforme executam em vez de mostrar
+   * tudo de uma vez no fim.
+   */
+  async previewRunAtual(conversationId: string): Promise<{
+    id: string;
+    status: RunStatus;
+    stopReason: string | null;
+    error: string | null;
+    steps: FlowRunStep[];
+  } | null> {
+    const r = await apiClient.get<DataEnvelope<{
+      id: string;
+      status: RunStatus;
+      stopReason: string | null;
+      error: string | null;
+      steps: FlowRunStep[];
+    } | null>>(`/api/flows/preview/${conversationId}/run`);
+    return r.data;
+  },
+
   /** Descarta a conversa de teste — o simulador recomeça sem memória nenhuma. */
   async resetPreview(conversationId: string): Promise<void> {
     await apiClient.delete(`/api/flows/preview/${conversationId}`);

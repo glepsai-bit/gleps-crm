@@ -670,6 +670,31 @@ class FlowService {
     return conversa;
   }
 
+  /**
+   * Os passos do run em andamento na conversa de teste.
+   *
+   * O motor grava cada FlowRunStep assim que o nó termina, então dá pra
+   * acompanhar a execução acontecendo em vez de esperar o fim. É o que permite
+   * o canvas acender os blocos um a um — e mostrar EM QUAL deles quebrou, que é
+   * a informação que o usuário quer quando algo dá errado.
+   */
+  async previewRunAtual(accountId: string, conversationId: string) {
+    await this.exigirConversaDeTeste(accountId, conversationId);
+
+    const run = await prisma.flowRun.findFirst({
+      where: { accountId, conversationId, simulador: true },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, status: true, stopReason: true, error: true },
+    });
+    if (!run) return null;
+
+    const steps = await prisma.flowRunStep.findMany({
+      where: { runId: run.id },
+      orderBy: { ordem: 'asc' },
+    });
+    return { ...run, steps };
+  }
+
   /** Descarta a conversa de teste — recomeça do zero, sem memória nenhuma. */
   async resetPreview(accountId: string, conversationId: string) {
     const conversa = await this.exigirConversaDeTeste(accountId, conversationId);
