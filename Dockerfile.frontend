@@ -31,6 +31,11 @@ RUN echo "" >> .env && \
     echo "VITE_API_URL=/api" >> .env
 
 # Cache bust to force rebuild
+# Hash do commit, quando o painel de deploy souber passar. Fica DEPOIS do
+# npm install pra não invalidar o cache das dependências a cada commit.
+ARG VITE_COMMIT_SHA=
+ENV VITE_COMMIT_SHA=$VITE_COMMIT_SHA
+
 ARG CACHEBUST=1
 
 # Build the application

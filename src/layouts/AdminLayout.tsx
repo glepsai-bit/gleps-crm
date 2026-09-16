@@ -61,6 +61,7 @@ import {
   Radar,
 } from 'lucide-react';
 import { Logo } from '@/components/branding/Logo';
+import { BUILD_COMMIT, BUILD_LABEL, BUILD_TITLE } from '@/config/build.config';
 import { ThemeToggle } from '@/components/theme-toggle';
 import {
   Breadcrumb,
@@ -458,6 +459,21 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/*
+            Qual versão está no ar. Clique seleciona a string inteira, pra
+            colar numa conversa sem digitar errado; o hover mostra a data
+            completa.
+          */}
+          <p
+            className={cn(
+              'px-2 pt-2 text-[10px] leading-none text-muted-foreground select-all',
+              collapsed && 'px-0 text-center truncate'
+            )}
+            title={BUILD_TITLE}
+          >
+            {collapsed ? BUILD_COMMIT.slice(0, 4) : BUILD_LABEL}
+          </p>
         </div>
       </aside>
 

@@ -58,6 +58,16 @@ server {
         proxy_buffering off;
     }
 
+    # O index.html NUNCA é cacheado.
+    #
+    # Os assets têm hash no nome, então podem ser imutáveis à vontade. O
+    # index.html é quem aponta pra eles — se ele ficar em cache, o navegador
+    # continua pedindo o bundle antigo mesmo com a imagem nova no ar, e o
+    # sintoma é exatamente "deployei e não mudou nada".
+    location = /index.html {
+        add_header Cache-Control "no-store, must-revalidate";
+    }
+
     # Static files caching
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
         expires 1y;

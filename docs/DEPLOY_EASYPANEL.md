@@ -14,7 +14,7 @@
 - Domínio apontado para o IP da VPS (ex.: `gleps.com.br`, `app.gleps.com.br`,
   `api.gleps.com.br`).
 - Acesso SSH à VPS (para debug eventual e backups).
-- Branch `Variação-FitPark` publicada no GitHub
+- Branch `Variação-Principal` publicada no GitHub
   (`https://github.com/glepsai-bit/gleps-crm.git`).
 - (Opcional) Evolution API já no ar — credenciais ficam no banco, por conta,
   não em env. Ex.: `https://autevo.gleps.com.br`.
@@ -133,7 +133,15 @@ Opção B — usar **Postgres gerenciado** do EasyPanel:
 
 ### 2. Deploy do backend
 
-- Source: **GitHub repo**, branch `Variação-FitPark`.
+- Source: **GitHub repo**, branch `Variação-Principal`.
+
+  > **Os DOIS apps têm que apontar pra mesma branch.** O frontend e o backend
+  > são serviços separados com config de Git independente — já aconteceu de o
+  > backend subir com o código novo e o frontend continuar no anterior, sem
+  > erro visível no painel.
+  >
+  > O nome tem acento (`ç`, `ã`). Não redigite: **copie do campo do outro app**.
+  > Bytes diferentes (NFC vs NFD) fazem o checkout falhar em silêncio.
 - Build path: `./backend` (já tem `Dockerfile`).
 - O Dockerfile já roda:
   ```
@@ -367,3 +375,21 @@ Variação-FitPark continua disponível** neste mesmo deploy:
 
 Não há flag para "desligar FitPark e ligar Gleps" — basta sobrescrever as
 strings de branding, logo e tema; o resto da aplicação é compartilhado.
+
+---
+
+## Como saber qual versão está no ar
+
+O rodapé da barra lateral mostra o commit e a hora do build — por exemplo
+`15d2be7 · 16/09, 04:20`. Um clique seleciona a string inteira pra colar numa
+conversa; o hover mostra a data completa.
+
+Sem navegador:
+
+```sh
+curl -s https://SEU-DOMINIO/ | grep app-build
+```
+
+Se o timestamp não mudou depois de um deploy, **o build não subiu** — e aí o
+problema está no painel, não no código. Olhe o log do build do app do frontend:
+ele precisa mostrar o checkout e o SHA esperado.
