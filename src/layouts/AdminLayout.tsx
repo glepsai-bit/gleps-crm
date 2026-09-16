@@ -139,8 +139,11 @@ const adminNavItems = [
   // T-027 — Atendimento IA (agentes + base de conhecimento)
   { title: 'Agentes IA', href: '/admin/ia/agentes', icon: Bot },
   { title: 'Conhecimento', href: '/admin/ia/conhecimento', icon: BookOpen },
+  // A ORDEM É O CAMINHO DE CONSTRUÇÃO: base → agente → fluxo.
+  // O construtor (Fluxos) é a casa — base, agente, teste e execuções moram lá
+  // dentro. As duas telas acima viram gestão: listar, duplicar, excluir. Quem
+  // está montando não precisa passar por elas.
   { title: 'Fluxos', href: '/admin/ia/fluxos', icon: Workflow },
-  { title: 'Simulador', href: '/admin/ia/simulador', icon: MessagesSquare },
   { title: 'Discador', href: '/admin/discador', icon: PhoneCall },
   { title: 'Execuções', href: '/admin/ia/execucoes', icon: ListChecks },
   // Config do Chat (uso ocasional)

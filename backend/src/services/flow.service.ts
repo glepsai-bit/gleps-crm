@@ -212,6 +212,12 @@ class FlowService {
     const anexado = await this.anexarAoRunAberto(evt.conversationId, mensagem, runAfter);
     if (anexado) return;
 
+    // O agente que assumiu a conversa continua dono: o run já nasce apontando
+    // pro bloco dele, em vez de recomeçar pela triagem. Se o bloco sumiu do
+    // grafo (alguém editou o fluxo), volta pro começo — é melhor re-triar do
+    // que parar o atendimento num nó que não existe mais.
+    const blocoAtivo = await this.blocoAtivoValido(evt.conversationId, graph);
+
     try {
       await prisma.flowRun.create({
         data: {
@@ -221,6 +227,7 @@ class FlowService {
           status: 'buffering',
           runAfter,
           shadow: flow.status === 'shadow',
+          resumeNodeId: blocoAtivo,
           context: { mensagens: [mensagem] } as unknown as Prisma.InputJsonValue,
         },
       });
@@ -233,6 +240,77 @@ class FlowService {
       }
       throw err;
     }
+  }
+
+  /**
+   * O bloco dono da conversa, se ainda existir no grafo.
+   *
+   * Editar o fluxo enquanto uma conversa está no meio de um atendimento é
+   * normal. Se o bloco do especialista foi removido, retomar nele travaria o
+   * atendimento em silêncio — recomeçar pela triagem é o degrau seguro.
+   */
+  private async blocoAtivoValido(
+    conversationId: string,
+    graph: ReturnType<typeof parseGraph>
+  ): Promise<string | null> {
+    const conversa = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { customAttributes: true, assigneeId: true, status: true },
+    });
+    const attrs = (conversa?.customAttributes ?? {}) as Record<string, unknown>;
+    const id = typeof attrs.__blocoAtivo === 'string' ? attrs.__blocoAtivo : null;
+    if (!id) return null;
+
+    // Humano assumiu, ou a conversa foi encerrada e reaberta: muita coisa pode
+    // ter mudado fora do fluxo. Recomeçar pela triagem é mais honesto que
+    // devolver a um especialista escolhido antes de tudo isso. A guarda vai
+    // barrar de qualquer forma enquanto o humano estiver ativo — isto trata o
+    // depois, quando ele soltar a conversa.
+    if (conversa?.assigneeId || conversa?.status === 'resolved') return null;
+
+    const existe = graph.nodes.some((n) => n.id === id);
+    if (!existe) {
+      logger.warn('[flow] bloco ativo sumiu do grafo; recomeçando pela triagem', {
+        conversationId,
+        blocoAtivo: id,
+      });
+      return null;
+    }
+    return id;
+  }
+
+  /**
+   * Persiste (ou limpa) o agente dono da conversa.
+   *
+   * `undefined` significa "o fluxo não se pronunciou" — mantém o que estava.
+   * Só `null` limpa. A distinção importa: um fluxo de follow-up não pode
+   * derrubar, de passagem, a posse que uma triagem estabeleceu.
+   *
+   * A chave começa com `__` de propósito: é controle interno e o prompt do
+   * agente já filtra chaves assim.
+   */
+  private async gravarBlocoAtivo(
+    conversationId: string,
+    vars: Record<string, unknown>
+  ): Promise<void> {
+    if (!('__blocoAtivo' in vars)) return;
+    const novo = vars.__blocoAtivo as string | null;
+
+    const conversa = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { customAttributes: true },
+    });
+    const attrs = { ...((conversa?.customAttributes ?? {}) as Record<string, unknown>) };
+
+    if (novo === attrs.__blocoAtivo) return;
+    if (novo) attrs.__blocoAtivo = novo;
+    else delete attrs.__blocoAtivo;
+
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { customAttributes: attrs as unknown as Prisma.InputJsonValue },
+    });
+    logger.info('[flow] posse da conversa', { conversationId, blocoAtivo: novo ?? null });
   }
 
   /**
@@ -429,10 +507,15 @@ class FlowService {
       __edges: _edges,
       __contactId: _contact,
       __toque: _toque,
+      __blocoAtivo: _blocoAtivo,
       memoria: _memoria,
       sessao: _sessao,
       ...contexto
     } = resultado.vars;
+
+    // Quem atende a PRÓXIMA mensagem desta conversa. Vive na conversa e não no
+    // run, porque o run acaba e a posse não.
+    await this.gravarBlocoAtivo(run.conversationId, resultado.vars);
 
     // Dormindo não é terminado: o run volta pra fila com hora marcada e o
     // ponto de retomada. `finishedAt` fica nulo — senão a tela de execuções

@@ -85,10 +85,12 @@ export default function AdminIaSimuladorPage() {
             mesmo agente, mesma base de conhecimento, mesma memória — mas{' '}
             <strong>nada sai pro WhatsApp</strong> e nada muda no funil.
           </p>
-          <p className="text-xs text-muted-foreground mt-1.5">
-            Para ver os blocos acenderem no desenho enquanto rodam, use o botão{' '}
-            <strong>Testar</strong> dentro do fluxo.
-          </p>
+          <div className="mt-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground leading-relaxed max-w-2xl">
+            Esta tela continua existindo para a visão ampla — passos detalhados e as duas
+            memórias lado a lado. Para <strong>construir</strong>, use o botão{' '}
+            <strong>Testar</strong> dentro do fluxo: lá os blocos acendem no desenho
+            enquanto rodam, e dá pra corrigir sem trocar de tela.
+          </div>
         </div>
 
         <Select value={flowId} onValueChange={setFlowId} disabled={carregandoFluxos}>

@@ -112,6 +112,68 @@ describe('as duas memórias chegam separadas no prompt', () => {
   });
 });
 
+describe('as duas formas de memória convivem', () => {
+  it('lê valor antigo (cru) e novo (com autoria) no mesmo prompt', async () => {
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'ag-1',
+      userMessage: 'oi',
+      memory: {
+        // Como estava gravado antes desta mudança.
+        segmento: 'clínica',
+        // Como passa a ser gravado. Migrar dado de cliente em produção seria
+        // risco desnecessário — as duas formas coexistem.
+        faturamento: { v: 'R$ 80 mil', por: 'Marcus', em: '2026-09-15T10:00:00Z' },
+      },
+    });
+
+    const s = systemDe();
+    expect(s).toContain('clínica');
+    expect(s).toContain('R$ 80 mil');
+    // O envelope não vaza pro prompt — o agente vê o fato, não o metadado.
+    expect(s).not.toContain('"por"');
+    expect(s).not.toContain('Marcus\"');
+  });
+});
+
+describe('escopo por agente na memória de conversa', () => {
+  it('o agente vê o que é de todos e o que é dele', async () => {
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'ag-1',
+      userMessage: 'oi',
+      session: {
+        etapa_roteiro: 'diagnostico',
+        '_agente.ag-1.passo_interno': 'confirmando horário',
+      },
+    });
+
+    const s = systemDe();
+    expect(s).toContain('diagnostico');
+    expect(s).toContain('confirmando horário');
+    // O prefixo some: dentro do prompt é só o nome do campo.
+    expect(s).not.toContain('_agente.ag-1');
+  });
+
+  it('NÃO vê o rascunho de trabalho de outro agente', async () => {
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'ag-1',
+      userMessage: 'oi',
+      session: {
+        etapa_roteiro: 'diagnostico',
+        '_agente.ag-2.passo_interno': 'escolhendo horário',
+      },
+    });
+
+    const s = systemDe();
+    expect(s).toContain('diagnostico');
+    // Com quatro agentes, sem isto o prompt de cada um enche do rascunho
+    // dos outros — ruído que custa token e confunde.
+    expect(s).not.toContain('escolhendo horário');
+  });
+});
+
 describe('resumo do histórico', () => {
   const conversaCom = (attrs: Record<string, unknown>) =>
     prismaMock.conversation.findFirst.mockResolvedValue({ id: 'conv-1', customAttributes: attrs });
@@ -232,7 +294,11 @@ describe('ferramenta lembrar — o agente decide o que guardar', () => {
     expect(saida).toContain('Guardado');
     const gravado = prismaMock.contact.update.mock.calls[0][0].data.customAttributes;
     // Preserva o que já existia — não sobrescreve a memória inteira.
-    expect(gravado).toEqual({ segmento: 'clínica', faturamento_mensal: 'R$ 80 mil' });
+    expect(gravado.segmento).toBe('clínica');
+    // E grava COM AUTORIA: com vários agentes escrevendo, um fato errado
+    // contamina todos, e sem isto não há como saber de qual deles veio.
+    expect(gravado.faturamento_mensal).toMatchObject({ v: 'R$ 80 mil', por: 'Marcus' });
+    expect(typeof gravado.faturamento_mensal.em).toBe('string');
   });
 
   it('sem contato vinculado, avisa em vez de gravar em lugar nenhum', async () => {

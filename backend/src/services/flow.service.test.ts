@@ -10,8 +10,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const prismaMock = vi.hoisted(() => ({
   flow: { findFirst: vi.fn(), updateMany: vi.fn() },
-  // O motor carrega a memória da conversa antes de executar (T-030).
-  conversation: { findFirst: vi.fn() },
+  // O motor carrega a memória da conversa antes de executar (T-030), e a
+  // posse (qual agente é dono) é lida e gravada na conversa (T-035).
+  conversation: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
   // Longo prazo vive no contato (T-030b).
   contact: { findFirst: vi.fn() },
   flowRun: {
@@ -72,6 +73,13 @@ beforeEach(() => {
   prismaMock.flowRun.update.mockResolvedValue({ id: 'run-1' });
   prismaMock.conversation.findFirst.mockResolvedValue({ customAttributes: {}, contactId: null });
   prismaMock.contact.findFirst.mockResolvedValue({ customAttributes: {} });
+  // Conversa sem dono: o fluxo começa pela triagem, que é o caso padrão.
+  prismaMock.conversation.findUnique.mockResolvedValue({
+    customAttributes: {},
+    assigneeId: null,
+    status: 'open',
+  });
+  prismaMock.conversation.update.mockResolvedValue({});
 });
 
 describe('gatilho', () => {

@@ -9,7 +9,14 @@ interface DataEnvelope<T> {
 }
 
 export type FlowStatus = 'draft' | 'shadow' | 'active';
-export type RunStatus = 'buffering' | 'running' | 'done' | 'failed' | 'skipped';
+export type RunStatus =
+  | 'buffering'
+  | 'running'
+  /** Follow-up marcado pra depois: o run volta à fila na hora certa. */
+  | 'sleeping'
+  | 'done'
+  | 'failed'
+  | 'skipped';
 
 export interface FlowNode {
   id: string;

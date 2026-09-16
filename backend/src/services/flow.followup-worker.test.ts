@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const prismaMock = vi.hoisted(() => ({
   flow: { findFirst: vi.fn() },
-  conversation: { findFirst: vi.fn() },
+  conversation: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
   contact: { findFirst: vi.fn() },
   flowRun: {
     findFirst: vi.fn(),
@@ -82,6 +82,13 @@ beforeEach(() => {
   prismaMock.flowRun.update.mockResolvedValue({ id: 'run-1' });
   prismaMock.conversation.findFirst.mockResolvedValue({ customAttributes: {}, contactId: null });
   prismaMock.contact.findFirst.mockResolvedValue({ customAttributes: {} });
+  // Conversa sem dono: o fluxo começa pela triagem, que é o caso padrão.
+  prismaMock.conversation.findUnique.mockResolvedValue({
+    customAttributes: {},
+    assigneeId: null,
+    status: 'open',
+  });
+  prismaMock.conversation.update.mockResolvedValue({});
 });
 
 /** A chamada de cancelamento entre as várias que o serviço faz. */

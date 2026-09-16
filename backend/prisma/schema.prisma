@@ -2069,6 +2069,11 @@ model AiAgent {
   // com especialistas, em vez de agentes só se revezando no fluxo.
   // Um nível apenas — quem é consultado não consulta ninguém.
   subAgentIds     Json?          @map("sub_agent_ids")
+  /// Ferramentas HTTP que ESTE agente pode chamar durante o raciocínio.
+  /// Array de { nome, quandoUsar, metodo, url, parametros[], cabecalhos{} }.
+  /// A URL carrega {{parametro}} que o modelo preenche. Execução via
+  /// safeFetch — herda o bloqueio de rede interna.
+  httpTools       Json?          @map("http_tools")
   active          Boolean        @default(true)
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

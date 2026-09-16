@@ -15,7 +15,10 @@ import { FlowNodeCard, type FlowNodeData } from './FlowNodeCard';
 // (texto e resumo) elas são irrelevantes.
 vi.mock('@xyflow/react', () => ({
   Handle: () => null,
-  Position: { Top: 'top', Bottom: 'bottom' },
+  Position: { Top: 'top', Bottom: 'bottom', Right: 'right' },
+  // O card agora descobre quem é sozinho, pra gravar configuração sem receber
+  // callback dentro de `data` — que é serializado pro backend.
+  useNodeId: () => 'n1',
 }));
 
 function renderNode(data: FlowNodeData, selected = false) {

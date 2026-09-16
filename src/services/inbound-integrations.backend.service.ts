@@ -23,7 +23,8 @@ export type InboundHandler =
   | 'contact_upsert'
   | 'tag_apply'
   | 'campaign_trigger'
-  | 'pacto_sync';
+  | 'pacto_sync'
+  | 'flow_trigger';
 
 export const INBOUND_HANDLERS: { value: InboundHandler; label: string; descricao: string }[] = [
   {
@@ -46,6 +47,13 @@ export const INBOUND_HANDLERS: { value: InboundHandler; label: string; descricao
     label: 'Sincronizar com Pacto',
     descricao:
       'Recebe eventos do sistema Pacto (alunos, check-ins, contratos) via n8n e atualiza contatos e tags do CRM automaticamente.',
+  },
+  {
+    value: 'flow_trigger',
+    label: 'Iniciar atendimento',
+    descricao:
+      'Um sistema de fora chama e o fluxo de atendimento começa — aniversário, plano ' +
+      'vencendo, falta há 15 dias. O corpo enviado fica disponível como {{webhook.campo}}.',
   },
 ];
 

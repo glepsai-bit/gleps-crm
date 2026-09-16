@@ -214,3 +214,74 @@ describe('validação do roster', () => {
     ).rejects.toThrow(/a si mesmo/i);
   });
 });
+
+/**
+ * T-036 — o especialista não relê a conversa.
+ *
+ * Ele rodava o caminho completo e buscava conversa, contagem e mensagens que o
+ * coordenador tinha acabado de ler: três consultas jogadas fora por consulta.
+ * Pior que o custo era a janela — uma mensagem nova entrando entre as duas
+ * leituras deixava os dois agentes vendo conversas diferentes.
+ */
+describe('o especialista recebe o histórico pronto', () => {
+  beforeEach(() => {
+    prismaMock.conversation.findFirst.mockResolvedValue({ id: 'conv-1', customAttributes: {} });
+    prismaMock.message.count.mockResolvedValue(4);
+    prismaMock.message.findMany.mockResolvedValue([
+      { senderType: 'customer', content: 'tem imposto?' },
+      { senderType: 'agent', content: 'deixa eu ver' },
+    ]);
+  });
+
+  const comEspecialista = () => {
+    prismaMock.aiAgent.findFirst
+      .mockResolvedValueOnce(agente({ subAgentIds: ['esp-1'], historyLimit: 20 }))
+      .mockResolvedValueOnce(agente({ id: 'esp-1', name: 'Fiscal', historyLimit: 20 }));
+    prismaMock.aiAgent.findMany.mockResolvedValue([
+      { id: 'esp-1', name: 'Fiscal', description: 'tributos' },
+    ]);
+    chatMock
+      .mockResolvedValueOnce(
+        respostaChat({
+          toolCalls: [
+            {
+              id: 'c1',
+              name: 'consultar_especialista',
+              arguments: { especialista: 'Fiscal', pergunta: 'Incide ISS?' },
+            },
+          ],
+        })
+      )
+      .mockResolvedValueOnce(respostaChat({ text: 'Sim, 5%.' }))
+      .mockResolvedValueOnce(respostaChat({ text: 'Tem ISS de 5%.' }));
+  };
+
+  it('a conversa é lida UMA vez, não duas', async () => {
+    comEspecialista();
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'coord-1',
+      userMessage: 'tem imposto?',
+      conversationId: 'conv-1',
+    });
+
+    // Antes: 2 (coordenador + especialista). As três consultas do histórico
+    // andam juntas, então contar uma delas basta.
+    expect(prismaMock.message.count).toHaveBeenCalledTimes(1);
+    expect(prismaMock.conversation.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('e o especialista enxerga o MESMO histórico do coordenador', async () => {
+    comEspecialista();
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'coord-1',
+      userMessage: 'tem imposto?',
+      conversationId: 'conv-1',
+    });
+
+    const msgsEspecialista = chatMock.mock.calls[1][0].messages as { content: string }[];
+    expect(msgsEspecialista.some((m) => m.content === 'tem imposto?')).toBe(true);
+    expect(msgsEspecialista.some((m) => m.content === 'deixa eu ver')).toBe(true);
+  });
+});

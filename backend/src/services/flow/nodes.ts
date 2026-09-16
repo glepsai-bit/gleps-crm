@@ -86,6 +86,32 @@ const triggerWebhook: NodeDefinition = {
   },
 };
 
+/**
+ * T-037 — a base de conhecimento como bloco no canvas.
+ *
+ * Não é um passo: não executa nada. Existe pra que a base apareça no desenho,
+ * ligada ao agente que a usa, em vez de ser um seletor escondido num painel.
+ * É o que tira a terceira aba — dá pra ver de relance qual base cada agente
+ * consulta, e com base própria por agente isso deixa de ser detalhe.
+ *
+ * A aresta dele até um bloco de agente é lida na hora de salvar e vira o
+ * `knowledgeBaseId` do agente. Se o motor topar com ele numa sequência (alguém
+ * ligou errado), ele apenas segue adiante — bloco de fonte não interrompe
+ * atendimento.
+ */
+const knowledgeSource: NodeDefinition = {
+  type: 'source.knowledge',
+  label: 'Base de conhecimento',
+  description:
+    'Mostra no desenho qual base o agente consulta. Ligue a saída dela na entrada ' +
+    'do bloco de atendimento.',
+  branches: [{ key: 'default', label: '' }],
+  mutates: false,
+  async execute(node) {
+    return { output: { baseId: str(cfg(node).baseId) || null, fonte: true } };
+  },
+};
+
 // ============================================
 // Guardas — o que impede a IA de atropelar
 // ============================================
@@ -404,6 +430,183 @@ const aiAgentNode: NodeDefinition = {
     };
   },
 };
+
+/**
+ * T-035 — ATENDER COM IA: o bloco composto.
+ *
+ * Faz num passo o que hoje são seis: roda o agente, aplica a etapa no funil e
+ * responde ao lead. Os seis eram SEMPRE os mesmos seis — o n8n é granular
+ * porque serve qualquer automação; aqui o domínio é um só, e cada bloco a mais
+ * é uma peça a mais pra montar e desalinhar.
+ *
+ * A decisão do agente deixa de ser variável lida por um nó de condição solto e
+ * vira PORTA DE SAÍDA. A decisão já estava lá dentro; só não aparecia.
+ *
+ * Reusa os services existentes — não duplica regra. O envio passa pelo mesmo
+ * caminho de sempre, então opt-out, consentimento, limite por telefone e o
+ * bloqueio de IA quando há humano ativo continuam valendo sozinhos.
+ */
+const aiAtender: NodeDefinition = {
+  type: 'ai.atender',
+  label: 'Atender com IA',
+  description:
+    'Roda o agente, aplica a etapa no funil e responde ao lead. As decisões dele ' +
+    'viram as saídas do bloco.',
+  branches: [
+    { key: 'respondeu', label: 'Respondeu' },
+    { key: 'humano', label: 'Pediu humano' },
+    { key: 'encerrou', label: 'Encerrou' },
+  ],
+  mutates: true,
+  async execute(node, ctx) {
+    const c = cfg(node);
+    const agentId = str(c.agentId);
+    if (!agentId) return { stop: true, stopReason: 'agente_nao_configurado' };
+
+    const texto = bufferedText(ctx.vars);
+    if (!texto.trim()) return { stop: true, stopReason: 'mensagem_vazia' };
+
+    const saidaEm = str(c.salvarEm, 'agente');
+
+    const r = await aiAgentService.run({
+      accountId: ctx.accountId,
+      agentId,
+      userMessage: texto,
+      conversationId: ctx.conversationId,
+      memory: (ctx.vars.memoria ?? {}) as Record<string, unknown>,
+      session: (ctx.vars.sessao ?? {}) as Record<string, unknown>,
+      contactId: (ctx.vars.__contactId ?? null) as string | null,
+      variables: {
+        ...Object.fromEntries(
+          Object.entries(ctx.vars)
+            .filter(([k, v]) => !k.startsWith('__') && typeof v === 'string')
+            .map(([k, v]) => [k, v as string])
+        ),
+        objetivo_do_passo: str(c.objetivo),
+      },
+    });
+
+    const saida = (r.structured ?? { mensagem_de_resposta: r.text }) as Record<string, unknown>;
+    const vars = { [saidaEm]: saida, [`${saidaEm}_texto`]: r.text };
+
+    const rota = typeof saida.rota === 'string' ? saida.rota : null;
+    const resposta = str(saida.mensagem_de_resposta, r.text).trim();
+
+    // ---- TRAVA DE ASSUNTO SEMPRE-HUMANO ----
+    //
+    // Vem ANTES de qualquer envio. Cobrança, jurídico, cancelamento: assuntos
+    // em que mesmo uma resposta correta é a decisão errada. O prompt não serve
+    // aqui — a IA pode julgar que dá conta. Isto é código conferindo a
+    // classificação dela, e o texto que ela escreveu é DESCARTADO: ele foi
+    // escrito para atender, não para transferir.
+    const sempreHumano = Array.isArray(c.rotasSempreHumano)
+      ? (c.rotasSempreHumano as string[]).map((x) => String(x).toLowerCase())
+      : [];
+    if (rota && sempreHumano.includes(rota.toLowerCase())) {
+      const aviso = str(c.mensagemAoTransferir).trim();
+      if (aviso) await enviar(ctx, aviso);
+      return {
+        branch: 'humano',
+        vars,
+        output: {
+          rota,
+          motivo: 'assunto_sempre_humano',
+          respostaDescartada: resposta.slice(0, 200),
+          custoUsd: Number(r.usage.usdEstimate.toFixed(6)),
+        },
+      };
+    }
+
+    // ---- ETAPA NO FUNIL ----
+    const etapaConfig = str(c.etapa);
+    const etapa = interpolate(
+      etapaConfig || (typeof saida.etapa === 'string' ? saida.etapa : ''),
+      ctx.vars
+    ).trim();
+    let etapaAplicada: string | null = null;
+    if (etapa) {
+      if (ctx.shadow) {
+        etapaAplicada = etapa;
+      } else {
+        const tagId = await conversationService.resolveOrCreateTagByLabel(
+          ctx.accountId,
+          etapa,
+          ctx.actorId
+        );
+        await conversationService.addLabel(ctx.conversationId, ctx.accountId, tagId, ctx.actorId);
+        etapaAplicada = etapa;
+      }
+    }
+
+    // ---- RESPOSTA ----
+    const envio = resposta ? await enviar(ctx, resposta) : null;
+    if (envio?.pararPor) {
+      return {
+        branch: 'respondeu',
+        vars,
+        stop: true,
+        stopReason: envio.pararPor,
+        output: { texto: resposta, etapa: etapaAplicada },
+      };
+    }
+
+    // ---- PARA ONDE IR ----
+    //
+    // Rota do agente primeiro: é a decisão mais específica. Depois os dois
+    // sinais clássicos. `respondeu` é o caminho da maioria das mensagens.
+    const pediuHumano = saida.transferir_para_humano === true;
+    const encerrou = saida.resolver_conversa === true;
+    const branch = rota ?? (pediuHumano ? 'humano' : encerrou ? 'encerrou' : 'respondeu');
+
+    return {
+      branch,
+      vars,
+      output: {
+        texto: resposta.slice(0, 1000),
+        etapa: etapaAplicada,
+        rota,
+        saiuPor: branch,
+        simulado: ctx.shadow || undefined,
+        consultasAEspecialistas: r.toolCalls.filter((t) => t.name === 'consultar_especialista')
+          .length,
+        custoUsd: Number(r.usage.usdEstimate.toFixed(6)),
+        tokens: r.usage.inputTokens + r.usage.outputTokens,
+      },
+    };
+  },
+};
+
+/**
+ * Envia, com a mesma revalidação do nó de resposta.
+ *
+ * A janela de agrupamento dura segundos e a conversa pode ter mudado — um
+ * atendente pode ter assumido depois que o fluxo começou. Conferir de novo
+ * imediatamente antes de enviar é o que impede a IA de falar por cima dele.
+ */
+async function enviar(
+  ctx: NodeContext,
+  texto: string
+): Promise<{ pararPor?: string; messageId?: string }> {
+  if (ctx.shadow) return {};
+
+  const atual = await prisma.conversation.findFirst({
+    where: { id: ctx.conversationId, accountId: ctx.accountId },
+    select: { assigneeId: true },
+  });
+  if (atual?.assigneeId) return { pararPor: 'humano_assumiu_durante_o_fluxo' };
+
+  const r = await whatsappSendService.send(ctx.accountId, {
+    conversationId: ctx.conversationId,
+    type: 'text',
+    content: texto,
+    sender_type: 'ai_bot',
+    metadata: { flowId: ctx.flowId, runId: ctx.runId },
+  });
+
+  return r.status === 'failed'
+    ? { pararPor: `envio_falhou:${r.error?.code ?? 'erro'}` }
+    : { messageId: r.messageId };
+}
 
 // ============================================
 // Lógica
@@ -790,6 +993,8 @@ export const NODE_CATALOG: Record<string, NodeDefinition> = Object.fromEntries(
     triggerMessageReceived,
     triggerWebhook,
     guardConditions,
+    aiAtender,
+    knowledgeSource,
     flowAguardar,
     bufferDebounce,
     mediaTranscribe,

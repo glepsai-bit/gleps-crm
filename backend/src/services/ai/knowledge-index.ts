@@ -64,7 +64,21 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
  * memória), então uma base de 2.000 trechos custa ~24MB — sem teto, um tenant
  * grande derrubaria o processo.
  */
-const MAX_CACHED_BASES = 8;
+/**
+ * Teto do cache, medido no que de fato custa: TRECHOS na memória, não número
+ * de bases.
+ *
+ * Contar bases era errado de origem — uma base de 80 trechos ocupava a mesma
+ * prateleira que uma de 4.000. E virou problema ao dar base própria a cada
+ * agente: uma conta com quatro agentes enchia metade do cache sozinha, e a
+ * terceira conta começava a despejar.
+ *
+ * Cada trecho carrega 1536 floats (~12KB em memória), então 24.000 trechos são
+ * ~290MB no pior caso. A parte contraintuitiva: base por agente NÃO aumenta o
+ * total — quatro bases de uma especialidade somam o mesmo que uma base com
+ * tudo, só ficam melhor separadas.
+ */
+const MAX_CHUNKS_IN_CACHE = 24_000;
 /** Acima disso não cacheia: lê do banco a cada busca em vez de estourar a RAM. */
 const MAX_CHUNKS_CACHED_PER_BASE = 4000;
 /**
@@ -105,7 +119,14 @@ async function loadChunks(accountId: string, baseId: string): Promise<CachedChun
   const now = Date.now();
   const key = keyOf(accountId, baseId);
   const hit = cache.get(key);
-  if (hit && hit.expiresAt > now) return hit.chunks;
+  if (hit && hit.expiresAt > now) {
+    // Reinsere pra ir ao fim da fila: é o que transforma a ordem de inserção
+    // do Map num LRU, sem contador nenhum. A base mais usada para de ser
+    // despejada só por ter sido carregada primeiro.
+    cache.delete(key);
+    cache.set(key, hit);
+    return hit.chunks;
+  }
 
   const rows = await prisma.knowledgeChunk.findMany({
     // FILTRO DUPLO: baseId sozinho bastaria pra correção da query, mas accountId
@@ -139,16 +160,35 @@ async function loadChunks(accountId: string, baseId: string): Promise<CachedChun
   }
 
   if (chunks.length <= MAX_CHUNKS_CACHED_PER_BASE) {
-    if (cache.size >= MAX_CACHED_BASES) {
-      // Evicção simples: a entrada mais antiga sai. Com 8 bases, LRU real não
-      // paga o custo de manter contadores de acesso.
-      const oldest = cache.keys().next().value;
-      if (oldest) cache.delete(oldest);
-    }
+    // Abre espaço pelo que a entrada nova vai ocupar, não por contagem de
+    // entradas. `Map` preserva ordem de inserção, e `loadChunks` reinsere a
+    // cada acerto de cache abaixo — o que torna isto um LRU de verdade sem
+    // precisar de contadores.
+    liberarEspacoPara(chunks.length);
     cache.set(key, { chunks, expiresAt: now + CACHE_TTL_MS });
   }
 
   return chunks;
+}
+
+/** Despeja do mais antigo até a entrada nova caber no teto. */
+function liberarEspacoPara(novos: number): void {
+  if (novos > MAX_CHUNKS_IN_CACHE) return; // não cabe de jeito nenhum
+  let total = 0;
+  for (const e of cache.values()) total += e.chunks.length;
+
+  for (const chave of cache.keys()) {
+    if (total + novos <= MAX_CHUNKS_IN_CACHE) break;
+    total -= cache.get(chave)?.chunks.length ?? 0;
+    cache.delete(chave);
+  }
+}
+
+/** Só pra teste: quantos trechos o cache está segurando agora. */
+export function __chunksEmCache(): number {
+  let total = 0;
+  for (const e of cache.values()) total += e.chunks.length;
+  return total;
 }
 
 /**

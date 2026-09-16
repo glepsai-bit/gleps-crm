@@ -8,7 +8,7 @@
  * O grafo desenhado aqui é exatamente o JSON que o motor executa — a tela é um
  * editor dele, não uma camada por cima.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ReactFlow,
@@ -27,6 +27,9 @@ import '@xyflow/react/dist/style.css';
 import { useTheme } from 'next-themes';
 import { FlowNodeCard, type FlowNodeData } from '@/components/flow/FlowNodeCard';
 import { SimuladorChat, type StatusPorNo } from '@/components/flow/SimuladorChat';
+import { CamposDoNo } from '@/components/flow/CamposDoNo';
+import { ExecucoesDoFluxo } from '@/components/flow/ExecucoesDoFluxo';
+import { EditorDeFluxoContext } from '@/components/flow/EditorDeFluxoContext';
 import {
   ArrowLeft,
   Plus,
@@ -98,6 +101,25 @@ export default function AdminIaFluxosPage() {
 // ============================================
 // Lista
 // ============================================
+
+/**
+ * As saídas de um bloco "Atender com IA".
+ *
+ * Fixas: respondeu, humano, encerrou — os três desfechos que todo atendimento
+ * tem. Dinâmicas: cada valor do enum `rota` no schema do agente, que é como
+ * quem monta declara "este agente encaminha para vendas, suporte ou fiscal".
+ */
+function portasDoAgente(outputSchema: unknown): string[] {
+  const base = ['respondeu', 'humano', 'encerrou'];
+  const schema = outputSchema as
+    | { properties?: { rota?: { enum?: unknown[] } } }
+    | null
+    | undefined;
+  const rotas = schema?.properties?.rota?.enum;
+  if (!Array.isArray(rotas)) return base;
+  const extras = rotas.filter((r): r is string => typeof r === 'string' && !base.includes(r));
+  return [...base, ...extras];
+}
 
 function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
   const { toast } = useToast();
@@ -235,6 +257,8 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   });
   const { data: catalogo } = useQuery({ queryKey: ['flow-catalog'], queryFn: flowsService.catalog });
   const { data: agentes } = useQuery({ queryKey: ['ai-agents'], queryFn: aiService.listAgents });
+  // Para o bloco de base: sem a lista, o seletor dele fica vazio.
+  const { data: bases } = useQuery({ queryKey: ['ai-bases'], queryFn: aiService.listBases });
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -249,6 +273,13 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
    * que carregar a lista de agentes depois não zere edições não salvas do
    * canvas.
    */
+  // Blocos com os campos abertos. Bloco novo nasce aberto e fecha sozinho
+  // depois de configurado — ensina o que existe sem deixar o desenho cheio.
+  const [abertos, setAbertos] = useState<Set<string>>(new Set());
+  /** Bloco cujo campo grande (o prompt) está aberto sobre o canvas. */
+  const [ampliado, setAmpliado] = useState<string | null>(null);
+  const [abaPainel, setAbaPainel] = useState<'testar' | 'execucoes'>('testar');
+
   // Resultado do último teste, por nó. Vazio = nenhum teste ainda.
   const [execPorNo, setExecPorNo] = useState<StatusPorNo>({});
   const [testeAberto, setTesteAberto] = useState(false);
@@ -260,10 +291,21 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         const d = n.data as FlowNodeData;
         const exec = execPorNo[n.id];
         const base = { ...d, exec, execRodou: houveTeste };
-        if (d.tipo !== 'ai.agent') return { ...n, data: base };
+        if (d.tipo !== 'ai.agent' && d.tipo !== 'ai.atender') return { ...n, data: base };
         const agentId = (d.config as { agentId?: string } | undefined)?.agentId;
-        const nome = agentes?.find((a) => a.id === agentId)?.name ?? null;
-        return { ...n, data: { ...base, agenteNome: nome, temProblema: !agentId } };
+        const agente = agentes?.find((a) => a.id === agentId);
+        return {
+          ...n,
+          data: {
+            ...base,
+            agenteNome: agente?.name ?? null,
+            temProblema: !agentId,
+            // As portas saem do schema do PRÓPRIO agente: quem monta declara
+            // as rotas dele uma vez, e o bloco passa a ter uma saída por rota.
+            // Nada disso precisou de backend — o motor casa aresta por nome.
+            portas: d.tipo === 'ai.atender' ? portasDoAgente(agente?.outputSchema) : undefined,
+          },
+        };
       }),
     [nodes, agentes, execPorNo, houveTeste]
   );
@@ -275,8 +317,21 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   }, [catalogo]);
 
   // Carrega o grafo salvo para dentro do canvas.
+  //
+  // `sujoRef` e não `sujo`: o efeito não pode depender do estado sujo, senão
+  // recarregaria o grafo no instante em que ele volta a false — mas precisa
+  // LER o valor atual.
+  const sujoRef = useRef(false);
+  sujoRef.current = sujo;
+
   useEffect(() => {
     if (!flow) return;
+    // O React Query revalida ao focar a janela. Sem esta guarda, trocar de
+    // aba e voltar no meio de uma edição jogava fora o que estava digitado e
+    // ainda zerava o aviso de "não salvo" — o usuário perdia o trabalho e não
+    // ficava sabendo. Já era bug latente; com campos no canvas passa a ser
+    // frequente, porque o tempo digitando aumenta muito.
+    if (sujoRef.current) return;
     setNodes(
       flow.graph.nodes.map((n, i) => ({
         id: n.id,
@@ -333,8 +388,46 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
     };
   }, [nodes, edges]);
 
+  /**
+   * A aresta da base até o agente vira o `knowledgeBaseId` dele.
+   *
+   * É o que faz o bloco de base ser configuração de verdade e não desenho:
+   * quem liga a linha está escolhendo a base daquele agente. O campo já existe
+   * no agente desde sempre — só nunca tinha aparecido no canvas.
+   */
+  const ligarBasesAosAgentes = useCallback(async () => {
+    const porNo = new Map(nodes.map((n) => [n.id, n.data as Record<string, unknown>]));
+    const pendentes: Promise<unknown>[] = [];
+
+    for (const e of edges) {
+      const origem = porNo.get(e.source);
+      const destino = porNo.get(e.target);
+      if (origem?.tipo !== 'source.knowledge') continue;
+      if (destino?.tipo !== 'ai.agent' && destino?.tipo !== 'ai.atender') continue;
+
+      const baseId = (origem.config as { baseId?: string } | undefined)?.baseId;
+      const agentId = (destino.config as { agentId?: string } | undefined)?.agentId;
+      if (!baseId || !agentId) continue;
+
+      // Só grava quando mudou — salvar o fluxo não deve escrever em todo
+      // agente do desenho a cada clique.
+      const atual = agentes?.find((a) => a.id === agentId);
+      if (atual?.knowledgeBaseId === baseId) continue;
+      pendentes.push(aiService.updateAgent(agentId, { knowledgeBaseId: baseId }));
+    }
+
+    if (pendentes.length > 0) {
+      await Promise.all(pendentes);
+      qc.invalidateQueries({ queryKey: ['ai-agents'] });
+    }
+  }, [nodes, edges, agentes, qc]);
+
   const salvar = useMutation({
-    mutationFn: () => flowsService.update(flowId, { graph: paraGrafo() }),
+    mutationFn: async () => {
+      const r = await flowsService.update(flowId, { graph: paraGrafo() });
+      await ligarBasesAosAgentes();
+      return r;
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['flow', flowId] });
       qc.invalidateQueries({ queryKey: ['flows'] });
@@ -371,7 +464,9 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         data: { label: info?.label ?? tipo, tipo, config: {} },
       } as Node,
     ]);
-    setSelecionado(id);
+    // Nasce ABERTO: quem soltou o bloco precisa ver o que dá pra ajustar.
+    // Fecha quando o usuário quiser — ou nunca, se ele preferir assim.
+    setAbertos((a) => new Set(a).add(id));
     setSujo(true);
   };
 
@@ -385,6 +480,53 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
     );
     setSujo(true);
   };
+
+  /**
+   * O que o bloco no canvas pode fazer. Estável via useCallback: sem isso o
+   * contexto mudaria de referência a cada render e nenhum bloco memoizado
+   * seguraria nada.
+   */
+  const editorCtx = useMemo(
+    () => ({
+      setConfig: (nodeId: string, chave: string, valor: unknown) => {
+        setNodes((ns) =>
+          ns.map((n) =>
+            n.id === nodeId
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    config: { ...((n.data.config ?? {}) as Record<string, unknown>), [chave]: valor },
+                  },
+                }
+              : n
+          )
+        );
+        setSujo(true);
+      },
+      setLabel: (nodeId: string, label: string) => {
+        setNodes((ns) => ns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, label } } : n)));
+        setSujo(true);
+      },
+      alternarAberto: (nodeId: string) =>
+        setAbertos((a) => {
+          const novo = new Set(a);
+          if (novo.has(nodeId)) novo.delete(nodeId);
+          else novo.add(nodeId);
+          return novo;
+        }),
+      remover: (nodeId: string) => {
+        setNodes((ns) => ns.filter((n) => n.id !== nodeId));
+        setEdges((es) => es.filter((e) => e.source !== nodeId && e.target !== nodeId));
+        setSujo(true);
+      },
+      ampliar: (nodeId: string) => setAmpliado(nodeId),
+      agentes: agentes ?? [],
+      bases: bases ?? [],
+      abertos,
+    }),
+    [setNodes, setEdges, agentes, bases, abertos]
+  );
 
   const removerNo = (nodeId: string) => {
     setNodes((ns) => ns.filter((n) => n.id !== nodeId));
@@ -501,6 +643,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
 
         {/* Canvas */}
         <div className="flex-1 min-w-0">
+          <EditorDeFluxoContext.Provider value={editorCtx}>
           <ReactFlow
             nodes={nodesExibidos}
             edges={edges}
@@ -515,10 +658,17 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
               setSujo(true);
             }}
             onConnect={onConnect}
-            onNodeClick={(_, n) => setSelecionado(n.id)}
             onPaneClick={() => setSelecionado(null)}
             fitView
             proOptions={{ hideAttribution: true }}
+            /*
+              Backspace NÃO apaga bloco.
+              A guarda do React Flow só reconhece input/select/textarea
+              NATIVOS — o Select do shadcn é um <button role="combobox">, e
+              apagar um caractere num campo desses removeria o bloco inteiro,
+              em silêncio. Remover agora é só pelo botão dentro do bloco.
+            */
+            deleteKeyCode={null}
           >
             <Background gap={16} size={1} />
             <Controls showInteractive={false} />
@@ -530,11 +680,43 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
               nodeColor="hsl(var(--muted-foreground))"
             />
           </ReactFlow>
+          </EditorDeFluxoContext.Provider>
         </div>
 
         {/* Simulador embutido — a conversa ao lado do desenho */}
         {testeAberto && (
           <div className="w-[22rem] border-l shrink-0 flex flex-col min-h-0 bg-card">
+            {/* Testar e Execuções no mesmo painel: testar é o que você acabou
+                de fazer, Execuções é o que já aconteceu. Separar em telas
+                obrigava a sair do desenho pra responder a mesma pergunta. */}
+            <div className="flex border-b px-3 gap-4 shrink-0">
+              <button
+                type="button"
+                onClick={() => setAbaPainel('testar')}
+                className={`py-2.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+                  abaPainel === 'testar'
+                    ? 'border-primary text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                Testar
+              </button>
+              <button
+                type="button"
+                onClick={() => setAbaPainel('execucoes')}
+                className={`py-2.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+                  abaPainel === 'execucoes'
+                    ? 'border-primary text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                Execuções
+              </button>
+            </div>
+
+            {abaPainel === 'execucoes' ? (
+              <ExecucoesDoFluxo flowId={flowId} onPassos={setExecPorNo} />
+            ) : (
             <SimuladorChat
               flowId={flowId}
               onPassos={setExecPorNo}
@@ -550,6 +732,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
               }}
               compacto
             />
+            )}
             {houveTeste && (
               <div className="border-t px-3 py-2 text-[10px] text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
                 <span className="text-emerald-600 dark:text-emerald-400">■ passou</span>
@@ -622,171 +805,8 @@ function PainelDoNo({
         <Input value={label} onChange={(e) => onChange(config, e.target.value)} className="h-8" />
       </div>
 
-      {tipo === 'ai.agent' && (
-        <div className="space-y-1.5">
-          <Label className="text-xs">Agente</Label>
-          <Select
-            value={String(config.agentId ?? '')}
-            onValueChange={(v) => set('agentId', v)}
-          >
-            <SelectTrigger className="h-8">
-              <SelectValue placeholder="Escolha o agente" />
-            </SelectTrigger>
-            <SelectContent>
-              {agentes.map((a) => (
-                <SelectItem key={a.id} value={a.id}>
-                  {a.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-[11px] text-muted-foreground">
-            A saída dele fica em <code>{'{{agente.*}}'}</code> para os passos seguintes.
-          </p>
-        </div>
-      )}
-
-      {tipo === 'buffer.debounce' && (
-        <div className="space-y-1.5">
-          <Label className="text-xs">Esperar (segundos)</Label>
-          <Input
-            type="number"
-            min={0}
-            max={300}
-            className="h-8"
-            value={Number(config.segundos ?? 15)}
-            onChange={(e) => set('segundos', Number(e.target.value))}
-          />
-          <p className="text-[11px] text-muted-foreground">
-            Mensagens que chegarem nesta janela entram na mesma resposta.
-          </p>
-        </div>
-      )}
-
-      {tipo === 'guard.conditions' && (
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={config.humanoAssumiu !== false}
-              onChange={(e) => set('humanoAssumiu', e.target.checked)}
-            />
-            Parar se um humano assumiu
-          </label>
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={config.conversaResolvida !== false}
-              onChange={(e) => set('conversaResolvida', e.target.checked)}
-            />
-            Parar se a conversa já foi resolvida
-          </label>
-        </div>
-      )}
-
-      {(tipo === 'chat.reply' || tipo === 'crm.apply_stage') && (
-        <div className="space-y-1.5">
-          <Label className="text-xs">
-            {tipo === 'chat.reply' ? 'Texto da resposta' : 'Etapa'}
-          </Label>
-          <Textarea
-            rows={tipo === 'chat.reply' ? 4 : 2}
-            value={String(config[tipo === 'chat.reply' ? 'texto' : 'etapa'] ?? '')}
-            onChange={(e) => set(tipo === 'chat.reply' ? 'texto' : 'etapa', e.target.value)}
-            className="text-xs font-mono"
-          />
-          <p className="text-[11px] text-muted-foreground">
-            Use <code>{'{{agente.campo}}'}</code> para inserir a saída do agente.
-          </p>
-        </div>
-      )}
-
-      {tipo === 'crm.update_contact' && (
-        <div className="space-y-2">
-          <div className="space-y-1.5">
-            <Label className="text-xs">Onde guardar</Label>
-            <Select
-              value={String(config.destino ?? 'lead')}
-              onValueChange={(v) => set('destino', v)}
-            >
-              <SelectTrigger className="h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="lead">No lead — vale para sempre</SelectItem>
-                <SelectItem value="conversa">Nesta conversa — some ao encerrar</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-[11px] text-muted-foreground">
-              No lead vira <code>{'{{memoria.campo}}'}</code> e sobrevive quando a conversa
-              encerra. Na conversa vira <code>{'{{sessao.campo}}'}</code> e morre com ela.
-            </p>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label className="text-xs">Campos</Label>
-            <Textarea
-              rows={4}
-              className="text-xs font-mono"
-              value={JSON.stringify(config.campos ?? {}, null, 2)}
-              onChange={(e) => {
-                try {
-                  set('campos', JSON.parse(e.target.value || '{}'));
-                } catch {
-                  /* mantém o último JSON válido enquanto o usuário digita */
-                }
-              }}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Ex.: <code>{'{ "faturamento": "{{agente.faturamento}}" }'}</code>
-            </p>
-          </div>
-        </div>
-      )}
-
-      {tipo === 'logic.switch' && (
-        <div className="space-y-1.5">
-          <Label className="text-xs">Variável</Label>
-          <Input
-            className="h-8 font-mono text-xs"
-            value={String(config.variavel ?? '')}
-            onChange={(e) => set('variavel', e.target.value)}
-            placeholder="agente.transferir_para_humano"
-          />
-          <p className="text-[11px] text-muted-foreground">
-            Ligue a saída <code>sim</code> ao caminho desejado; o resto segue pela saída padrão.
-          </p>
-        </div>
-      )}
-
-      {tipo === 'http.request' && (
-        <div className="space-y-2">
-          <div className="space-y-1.5">
-            <Label className="text-xs">URL</Label>
-            <Input
-              className="h-8 text-xs font-mono"
-              value={String(config.url ?? '')}
-              onChange={(e) => set('url', e.target.value)}
-              placeholder="https://…"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs">Método</Label>
-            <Select value={String(config.metodo ?? 'POST')} onValueChange={(v) => set('metodo', v)}>
-              <SelectTrigger className="h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {['GET', 'POST', 'PUT', 'PATCH'].map((m) => (
-                  <SelectItem key={m} value={m}>
-                    {m}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      )}
+      {/* Os campos vivem em CamposDoNo: os mesmos aqui e dentro do bloco. */}
+      <CamposDoNo tipo={tipo} config={config} agentes={agentes} set={set} />
 
       {info && info.branches.length > 1 && (
         <div className="text-[11px] text-muted-foreground border rounded-md p-2">

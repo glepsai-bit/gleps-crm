@@ -30,6 +30,7 @@ import {
   search,
   invalidateBase,
   __clearIndexCache,
+  __chunksEmCache,
   formatHitsForPrompt,
   loadOverview,
   formatBaseIndex,
@@ -294,5 +295,57 @@ describe('mapa da base — contexto e índice', () => {
       const out = formatBusinessContext(overviewCru({ businessContext: 'x'.repeat(20_000) }));
       expect(out.length).toBeLessThan(5_000);
     });
+  });
+});
+
+/**
+ * T-036 — o teto do cache.
+ *
+ * Contar BASES era errado de origem: uma base de 80 trechos ocupava a mesma
+ * prateleira que uma de 4.000. Virou problema de verdade ao dar base própria a
+ * cada agente — uma conta com quatro agentes enchia metade do cache sozinha.
+ */
+describe('cache medido em trechos', () => {
+  const fabricar = (n: number, prefixo: string) =>
+    Array.from({ length: n }, (_, i) => chunk(`${prefixo}-${i}`, `texto ${i}`, [1, 0]));
+
+  beforeEach(() => {
+    __clearIndexCache();
+    vi.clearAllMocks();
+    embedMock.mockResolvedValue({ vectors: [[1, 0]], tokens: 1 });
+  });
+
+  const buscarNaBase = async (baseId: string, quantos: number, prefixo: string) => {
+    prismaMock.knowledgeChunk.findMany.mockResolvedValue(fabricar(quantos, prefixo));
+    await search(ACCOUNT_A, baseId, 'pergunta');
+  };
+
+  it('bases pequenas convivem — quatro por conta não enchem nada', async () => {
+    for (let i = 0; i < 4; i++) await buscarNaBase(`base-${i}`, 100, `b${i}`);
+    expect(__chunksEmCache()).toBe(400);
+  });
+
+  it('a segunda conta NÃO despeja a primeira', async () => {
+    for (let i = 0; i < 4; i++) await buscarNaBase(`a-${i}`, 100, `a${i}`);
+    for (let i = 0; i < 4; i++) await buscarNaBase(`b-${i}`, 100, `b${i}`);
+
+    // Com o teto antigo de 8 bases isto já estaria no limite; com base por
+    // agente, a terceira conta começaria a derrubar as outras.
+    expect(__chunksEmCache()).toBe(800);
+
+    prismaMock.knowledgeChunk.findMany.mockClear();
+    await search(ACCOUNT_A, 'a-0', 'pergunta');
+    // Ainda em cache: não voltou ao banco.
+    expect(prismaMock.knowledgeChunk.findMany).not.toHaveBeenCalled();
+  });
+
+  it('acerto de cache renova a posição — a base mais usada não é a primeira a sair', async () => {
+    await buscarNaBase('velha', 100, 'v');
+    await buscarNaBase('nova', 100, 'n');
+
+    // Usar a velha de novo deve mandá-la pro fim da fila de despejo.
+    prismaMock.knowledgeChunk.findMany.mockClear();
+    await search(ACCOUNT_A, 'velha', 'pergunta');
+    expect(prismaMock.knowledgeChunk.findMany).not.toHaveBeenCalled();
   });
 });

@@ -25,6 +25,12 @@ import {
   type BaseOverview,
 } from './ai/knowledge-index';
 import { validateAgainstSchema, extractJson } from './ai/json-schema-lite';
+import {
+  lerHttpTools,
+  definicaoDaHttpTool,
+  executarHttpTool,
+  type HttpToolConfig,
+} from './ai/http-tool';
 
 export type AgentRole = 'classifier' | 'responder' | 'custom';
 
@@ -56,6 +62,7 @@ export interface UpsertAgentInput {
   systemPrompt: string;
   /** Ids de agentes que este pode consultar. */
   subAgentIds?: string[] | null;
+  httpTools?: unknown;
   provider?: AiProviderName;
   model?: string | null;
   temperature?: number;
@@ -90,6 +97,16 @@ export interface RunAgentInput {
   session?: Record<string, unknown>;
   /** Resumo do que saiu da janela de histórico. Evita perder o início. */
   historySummary?: string | null;
+  /**
+   * Histórico já carregado por quem chamou.
+   *
+   * Existe para a delegação: o especialista rodava o caminho completo e relia
+   * conversa, contagem e mensagens que o coordenador tinha acabado de ler —
+   * três consultas jogadas fora por consulta. Além do custo, havia a janela em
+   * que uma mensagem nova entrava entre as duas leituras e os dois agentes
+   * enxergavam conversas diferentes.
+   */
+  preloadedHistory?: ChatMessage[] | null;
   /** Contato dono da memória de longo prazo — necessário pra ferramenta `lembrar`. */
   contactId?: string | null;
   /** Profundidade da consulta entre agentes. 0 = chamada de origem. */
@@ -266,6 +283,29 @@ class AiAgentService {
       data.subAgentIds = ids;
     }
 
+    if (input.httpTools !== undefined) {
+      const lidas = lerHttpTools(input.httpTools);
+      const bruto = Array.isArray(input.httpTools) ? input.httpTools : [];
+      if (bruto.length !== lidas.length) {
+        throw new ValidationError(
+          'Toda ferramenta precisa de nome (minúsculas, sem espaço), endereço e "quando usar"'
+        );
+      }
+      // Nome colidindo com ferramenta de sistema silenciaria a do agente ou a
+      // do sistema, dependendo da ordem — e qual das duas rodou não apareceria
+      // em lugar nenhum.
+      const reservados = Object.keys(AVAILABLE_TOOLS).concat(FERRAMENTA_CONSULTA);
+      const colisao = lidas.find((t) => reservados.includes(t.nome));
+      if (colisao) {
+        throw new ValidationError(`"${colisao.nome}" é nome de ferramenta do sistema`);
+      }
+      const nomes = lidas.map((t) => t.nome);
+      if (new Set(nomes).size !== nomes.length) {
+        throw new ValidationError('Há duas ferramentas com o mesmo nome');
+      }
+      data.httpTools = lidas as unknown as object;
+    }
+
     if (input.outputSchema !== undefined) {
       if (input.outputSchema && typeof input.outputSchema !== 'object') {
         throw new ValidationError('outputSchema precisa ser um objeto JSON Schema');
@@ -322,7 +362,8 @@ class AiAgentService {
       input.accountId,
       input.conversationId,
       agent.historyLimit,
-      agent
+      agent,
+      input.preloadedHistory
     );
 
     const system = this.buildSystemPrompt({
@@ -332,7 +373,9 @@ class AiAgentService {
       overview,
       variables: input.variables,
       memory: input.memory,
-      session: input.session,
+      // Só o que é de todos, mais o que é privado DESTE agente. O rascunho de
+      // trabalho dos outros não entra — é ruído que custa token e confunde.
+      session: escoparSessao(input.session, agent.id),
       // Resumo passado de fora (delegação) tem precedência; senão o que o
       // próprio agente calculou ao carregar o histórico.
       historySummary: input.historySummary ?? historico.summary,
@@ -382,6 +425,15 @@ class AiAgentService {
       }
     }
 
+    // FERRAMENTAS HTTP DO PRÓPRIO AGENTE.
+    //
+    // É o que fecha a distância pro n8n: em vez de 400 integrações, uma
+    // ferramenta que o admin descreve. Entram junto das de sistema, e o modelo
+    // escolhe entre todas pela descrição — por isso o campo "quando usar" é o
+    // que decide se ela é chamada.
+    const httpTools: HttpToolConfig[] = lerHttpTools(agent.httpTools);
+    for (const t of httpTools) tools.push(definicaoDaHttpTool(t));
+
     const schema = agent.outputSchema as Record<string, unknown> | null;
     const usageTotal: ChatUsage = { inputTokens: 0, outputTokens: 0, usdEstimate: 0, priced: true };
     const allToolCalls: ChatToolCall[] = [];
@@ -425,9 +477,23 @@ class AiAgentService {
               memory: input.memory,
               session: input.session,
               historySummary: input.historySummary ?? historico.summary,
+              // O mesmo histórico que este agente está usando. São 3 consultas
+              // a menos por consulta, e os dois passam a ler exatamente a
+              // mesma conversa — sem a janela entre as duas leituras.
+              history: historico.messages,
               depth: depth + 1,
             }
           );
+          messages.push({ role: 'tool', content: saida, toolCallId: call.id });
+          continue;
+        }
+
+        // Ferramenta do próprio agente vem antes da whitelist de sistema: o
+        // admin nomeia as dele, e um nome que colida com `lembrar` seria
+        // confuso — a validação no create/update impede isso.
+        const propria = httpTools.find((t) => t.nome === call.name);
+        if (propria) {
+          const saida = await executarHttpTool(propria, call.arguments);
           messages.push({ role: 'tool', content: saida, toolCallId: call.id });
           continue;
         }
@@ -530,6 +596,8 @@ class AiAgentService {
       memory?: Record<string, unknown>;
       session?: Record<string, unknown>;
       historySummary?: string | null;
+      /** O histórico que o coordenador já carregou. Evita a releitura. */
+      history?: ChatMessage[];
       depth: number;
     }
   ): Promise<string> {
@@ -556,6 +624,9 @@ class AiAgentService {
         // O resumo já calculado é repassado pra que o especialista não gaste
         // outra chamada resumindo a mesma conversa.
         historySummary: ctx.historySummary,
+        // E o histórico junto: sem isto ele relê do banco a mesma conversa que
+        // o coordenador acabou de ler.
+        preloadedHistory: ctx.history,
         depth: ctx.depth,
       });
       logger.info('[ai-agent] especialista consultado', {
@@ -659,9 +730,14 @@ class AiAgentService {
     accountId: string,
     conversationId: string | undefined,
     limit: number,
-    agent: AiAgent
+    agent: AiAgent,
+    preloaded?: ChatMessage[] | null
   ): Promise<{ messages: ChatMessage[]; summary: string | null }> {
     if (!conversationId || limit <= 0) return { messages: [], summary: null };
+
+    // Já veio pronto de quem chamou: nada a buscar. O resumo vem junto, pela
+    // mesma via (`historySummary`), então não há o que recalcular aqui.
+    if (preloaded) return { messages: preloaded, summary: null };
 
     const conversation = await prisma.conversation.findFirst({
       where: { id: conversationId, accountId },
@@ -811,6 +887,62 @@ class AiAgentService {
  * Chaves internas (prefixo `_`) ficam de fora — são controle nosso, não fato
  * sobre o lead.
  */
+/** Prefixo das chaves privadas de um agente na memória de conversa. */
+const PREFIXO_PRIVADO = '_agente.';
+
+/**
+ * O valor de uma memória, seja ela antiga (valor cru) ou nova (com autoria).
+ *
+ * As duas formas convivem de propósito: gravar autoria é melhoria, não motivo
+ * pra migrar dado de cliente em produção. Contato que já tem `faturamento:
+ * "R$ 80 mil"` continua funcionando.
+ */
+export function valorDaMemoria(v: unknown): unknown {
+  if (v && typeof v === 'object' && !Array.isArray(v) && 'v' in (v as object)) {
+    return (v as { v: unknown }).v;
+  }
+  return v;
+}
+
+/**
+ * Quem gravou e quando, se a informação existir.
+ *
+ * Responde "por que a IA acha isso?" com uma consulta em vez de uma
+ * investigação — e com vários agentes escrevendo na mesma memória, essa
+ * pergunta deixa de ser rara.
+ */
+export function autoriaDaMemoria(v: unknown): { por?: string; em?: string } | null {
+  if (v && typeof v === 'object' && !Array.isArray(v) && 'v' in (v as object)) {
+    const o = v as { por?: string; em?: string };
+    return { por: o.por, em: o.em };
+  }
+  return null;
+}
+
+/**
+ * Separa o que é de todos do que é só deste agente.
+ *
+ * Chaves `_agente.<id>.*` são estado de trabalho privado: a triagem não precisa
+ * saber que o agendamento está no passo "escolhendo horário". Com quatro
+ * agentes, sem esta separação o prompt de cada um enche do rascunho dos outros.
+ */
+function escoparSessao(
+  dados: Record<string, unknown> | undefined,
+  agentId: string
+): Record<string, unknown> {
+  if (!dados) return {};
+  const meuPrefixo = `${PREFIXO_PRIVADO}${agentId}.`;
+  const saida: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(dados)) {
+    if (k.startsWith(meuPrefixo)) {
+      saida[k.slice(meuPrefixo.length)] = v;
+    } else if (!k.startsWith('_')) {
+      saida[k] = v;
+    }
+  }
+  return saida;
+}
+
 function formatMemoryBlock(
   dados: Record<string, unknown> | undefined,
   titulo: string,
@@ -819,6 +951,7 @@ function formatMemoryBlock(
   if (!dados) return '';
   const linhas = Object.entries(dados)
     .filter(([k]) => !k.startsWith('_'))
+    .map(([k, v]) => [k, valorDaMemoria(v)] as const)
     .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
     .map(([k, v]) => `- ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
   if (linhas.length === 0) return '';
@@ -883,7 +1016,15 @@ export const AVAILABLE_TOOLS: Record<string, AgentTool> = {
       const attrs = (contato.customAttributes ?? {}) as Record<string, unknown>;
       await prisma.contact.update({
         where: { id: ctx.contactId },
-        data: { customAttributes: { ...attrs, [campo]: valor } as object },
+        data: {
+          customAttributes: {
+            ...attrs,
+            // Com autoria: quem gravou e quando. Com vários agentes escrevendo
+            // na mesma memória, um fato errado contamina todos — e sem isto
+            // não há como descobrir de qual deles veio.
+            [campo]: { v: valor, por: ctx.agent.name, em: new Date().toISOString() },
+          } as object,
+        },
       });
       return `Guardado: ${campo} = ${valor}`;
     },

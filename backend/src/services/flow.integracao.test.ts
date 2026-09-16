@@ -452,3 +452,92 @@ describe('gatilho externo contra o banco real', () => {
     expect(await prisma.flowRun.count({ where: { accountId: c.account.id } })).toBe(2);
   });
 });
+
+/**
+ * T-035/T-037 — o supervisor com entrega, ponta a ponta contra o banco real.
+ *
+ * É o caso que os testes mockados não conseguem provar: a posse da conversa
+ * mora numa coluna, e a próxima mensagem depende de o gatilho ler aquela
+ * coluna. Se a gravação ou a leitura falhar, todo teste unitário continua
+ * verde e o lead é re-triado a cada mensagem.
+ */
+describe('supervisor com entrega, contra o banco real', () => {
+  const GRAFO_MULTI: FlowGraph = {
+    nodes: [
+      { id: 'gatilho', type: 'trigger.message_received' },
+      { id: 'triagem', type: 'ai.atender', config: { agentId: 'ag-triagem' } },
+      { id: 'agendamento', type: 'ai.atender', config: { agentId: 'ag-agenda' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'gatilho', target: 'triagem' },
+      { id: 'e2', source: 'triagem', target: 'agendamento', branch: 'agendamento' },
+    ],
+  };
+
+  it('a triagem entrega, e a mensagem seguinte vai DIRETO ao especialista', async () => {
+    const c = await montarCenario(GRAFO_MULTI);
+
+    // 1ª mensagem: a triagem decide que é caso de agendamento.
+    runAgentMock.mockResolvedValue({
+      text: 'te passo pro agendamento',
+      structured: { mensagem_de_resposta: 'Vou te passar pro agendamento.', rota: 'agendamento' },
+      toolCalls: [],
+      hits: [],
+      attempts: 1,
+      usage: { inputTokens: 5, outputTokens: 5, usdEstimate: 0, priced: true },
+    });
+    await leadEscreve(c, 'quero agendar uma aula');
+
+    // A posse ficou gravada na conversa — é o que o gatilho vai ler depois.
+    const conversa = await prisma.conversation.findUnique({
+      where: { id: c.conversation.id },
+      select: { customAttributes: true },
+    });
+    expect((conversa!.customAttributes as Record<string, unknown>).__blocoAtivo).toBe(
+      'agendamento'
+    );
+
+    // 2ª mensagem: o especialista responde, sem passar pela triagem.
+    runAgentMock.mockClear();
+    runAgentMock.mockResolvedValue({
+      text: 'temos às 6h',
+      structured: { mensagem_de_resposta: 'Temos turma às 6h. Serve?' },
+      toolCalls: [],
+      hits: [],
+      attempts: 1,
+      usage: { inputTokens: 5, outputTokens: 5, usdEstimate: 0, priced: true },
+    });
+    await leadEscreve(c, 'pode ser quinta');
+
+    // UMA chamada só, e do agente do agendamento. Se a triagem tivesse rodado
+    // de novo seriam duas — e o lead ouviria "em que posso ajudar?" pela
+    // segunda vez, no meio do próprio agendamento.
+    expect(runAgentMock).toHaveBeenCalledTimes(1);
+    expect(runAgentMock.mock.calls[0][0].agentId).toBe('ag-agenda');
+  });
+
+  it('bloco removido do fluxo: recomeça pela triagem em vez de travar', async () => {
+    const c = await montarCenario(GRAFO_MULTI);
+
+    await comRetry(() =>
+      prisma.conversation.update({
+        where: { id: c.conversation.id },
+        data: { customAttributes: { __blocoAtivo: 'bloco-que-alguem-apagou' } },
+      })
+    );
+
+    runAgentMock.mockResolvedValue({
+      text: 'oi',
+      structured: { mensagem_de_resposta: 'Oi! Em que posso ajudar?' },
+      toolCalls: [],
+      hits: [],
+      attempts: 1,
+      usage: { inputTokens: 5, outputTokens: 5, usdEstimate: 0, priced: true },
+    });
+    await leadEscreve(c, 'oi');
+
+    // Atendeu pela triagem. Travar num nó inexistente seria pior — o lead
+    // ficaria sem resposta e nada apareceria como erro.
+    expect(runAgentMock.mock.calls[0][0].agentId).toBe('ag-triagem');
+  });
+});

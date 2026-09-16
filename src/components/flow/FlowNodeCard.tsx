@@ -10,7 +10,7 @@
  * lembrar o que configurou.
  */
 import { memo } from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useNodeId, type NodeProps } from '@xyflow/react';
 import {
   MessageSquare,
   ShieldCheck,
@@ -27,9 +27,15 @@ import {
   Clock,
   Zap,
   CircleHelp,
+  ChevronDown,
+  ChevronUp,
+  Maximize2,
+  Trash2,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { CamposDoNo } from './CamposDoNo';
+import { useEditorDeFluxo } from './EditorDeFluxoContext';
 
 const ICONES: Record<string, LucideIcon> = {
   'trigger.message_received': MessageSquare,
@@ -45,10 +51,16 @@ const ICONES: Record<string, LucideIcon> = {
   'chat.resolve': CheckCircle2,
   'http.request': Globe,
   'flow.wait': Clock,
+  'flow.aguardar': Clock,
+  'ai.atender': Bot,
 };
+
+/** Tipos cujo campo principal é grande demais pro bloco e abre ampliado. */
+const AMPLIA = new Set(['ai.agent', 'ai.atender']);
 
 /** Passos que agem pra fora — o modo sombra simula estes. */
 const ACOES = new Set([
+  'ai.atender',
   'crm.apply_stage',
   'crm.update_contact',
   'chat.reply',
@@ -67,6 +79,8 @@ export interface FlowNodeData extends Record<string, unknown> {
   temProblema?: boolean;
   /** Houve um teste. Sem isto não dá pra distinguir "não rodou" de "não passou aqui". */
   execRodou?: boolean;
+  /** Saídas nomeadas. Vêm do schema do agente quando o bloco roda um. */
+  portas?: string[];
   /**
    * Como este passo se saiu no último teste do simulador.
    *
@@ -137,10 +151,18 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
   const detalhe = resumo(tipo, config, d.agenteNome);
   const exec = d.exec;
 
+  const editor = useEditorDeFluxo();
+  const id = useNodeId();
+  // Sem editor (teste isolado) o bloco é só leitura — que é o certo.
+  const editavel = Boolean(editor && id);
+  const aberto = Boolean(id && editor?.abertos.has(id));
+  const portas = Array.isArray(d.portas) ? (d.portas as string[]) : [];
+
   return (
     <div
       className={cn(
-        'rounded-lg border bg-card text-card-foreground shadow-sm w-[220px] transition-colors',
+        'rounded-lg border bg-card text-card-foreground shadow-sm transition-colors',
+        aberto ? 'w-[300px]' : 'w-[220px]',
         selected ? 'border-primary ring-2 ring-primary/30' : 'border-border',
         d.temProblema && 'border-destructive/60',
         // O resultado do teste vence a borda normal: durante a depuração é a
@@ -178,11 +200,36 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
             {d.label || tipo}
           </span>
 
-          {ehAcao && (
+          {ehAcao && !editavel && (
             <Zap
               className="w-3 h-3 text-amber-500 shrink-0"
               aria-label="Age para fora — simulado no modo sombra"
             />
+          )}
+
+          {editavel && (
+            /* nodrag: sem isto, clicar no botão arrasta o bloco em vez de
+               acionar. O React Flow decide pelo seletor no alvo do ponteiro. */
+            <div className="nodrag flex items-center gap-0.5 shrink-0">
+              {AMPLIA.has(tipo) && (
+                <button
+                  type="button"
+                  onClick={() => editor!.ampliar(id!)}
+                  title="Abrir o prompt"
+                  className="p-1 rounded hover:bg-muted text-muted-foreground"
+                >
+                  <Maximize2 className="w-3 h-3" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => editor!.alternarAberto(id!)}
+                title={aberto ? 'Fechar campos' : 'Abrir campos'}
+                className="p-1 rounded hover:bg-muted text-muted-foreground"
+              >
+                {aberto ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+              </button>
+            </div>
           )}
         </div>
 
@@ -190,6 +237,29 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
           <p className="text-[11px] text-muted-foreground mt-1 leading-snug line-clamp-2 break-words">
             {detalhe}
           </p>
+        )}
+
+        {aberto && editavel && (
+          /* nodrag para o arrasto não roubar o clique no campo; nowheel para o
+             scroll de textarea e lista não virar zoom do canvas. */
+          <div className="nodrag nowheel mt-2.5 pt-2.5 border-t space-y-3 text-xs">
+            <CamposDoNo
+              tipo={tipo}
+              config={config}
+              agentes={editor!.agentes}
+              bases={editor!.bases}
+              set={(chave, valor) => editor!.setConfig(id!, chave, valor)}
+            />
+            {!ehGatilho && (
+              <button
+                type="button"
+                onClick={() => editor!.remover(id!)}
+                className="flex items-center gap-1.5 text-[11px] text-destructive hover:underline"
+              >
+                <Trash2 className="w-3 h-3" /> Remover passo
+              </button>
+            )}
+          </div>
         )}
 
         {exec && (
@@ -217,13 +287,63 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
         )}
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!w-2.5 !h-2.5 !bg-muted-foreground !border-background"
-      />
+      {portas.length > 1 ? (
+        /* Portas nomeadas: a decisão do agente vira saída visível, em vez de
+           variável que um nó de condição lê depois. */
+        <div className="border-t px-3 py-2 space-y-1.5">
+          {portas.map((porta, i) => (
+            <div key={porta} className="relative flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground shrink-0" />
+              <span className="text-[11px] text-muted-foreground truncate">{porta}</span>
+              <Handle
+                id={porta}
+                type="source"
+                position={Position.Right}
+                style={{ top: '50%', right: -6 }}
+                className="!w-2.5 !h-2.5 !bg-muted-foreground !border-background"
+              />
+              {i < 0 && null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          className="!w-2.5 !h-2.5 !bg-muted-foreground !border-background"
+        />
+      )}
     </div>
   );
 }
 
-export const FlowNodeCard = memo(FlowNodeCardBase);
+/**
+ * Comparador próprio — sem ele, digitar num campo re-renderiza o grafo inteiro.
+ *
+ * `nodesExibidos` remonta o objeto `data` de TODOS os nós a cada `setNodes`,
+ * então o comparador raso do `memo` nunca segura nada: o conteúdo é igual, a
+ * referência não. Comparamos os campos que de fato mudam o desenho.
+ *
+ * `config` entra por referência de propósito: só o nó editado recebe objeto
+ * novo, então referência é exatamente o sinal que queremos. Mesmo padrão do
+ * MessageBubble no chat, pelo mesmo motivo.
+ */
+function mesmoDesenho(a: NodeProps, b: NodeProps): boolean {
+  if (a.selected !== b.selected || a.id !== b.id) return false;
+  const x = (a.data ?? {}) as FlowNodeData;
+  const y = (b.data ?? {}) as FlowNodeData;
+  return (
+    x.tipo === y.tipo &&
+    x.label === y.label &&
+    x.config === y.config &&
+    x.agenteNome === y.agenteNome &&
+    x.temProblema === y.temProblema &&
+    x.execRodou === y.execRodou &&
+    x.exec?.status === y.exec?.status &&
+    x.exec?.ms === y.exec?.ms &&
+    x.exec?.error === y.exec?.error &&
+    (x.portas ?? []).join('|') === (y.portas ?? []).join('|')
+  );
+}
+
+export const FlowNodeCard = memo(FlowNodeCardBase, mesmoDesenho);

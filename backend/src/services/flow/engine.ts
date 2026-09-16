@@ -83,7 +83,12 @@ export function validateGraph(graph: FlowGraph): string[] {
 
   for (const n of graph.nodes) {
     if (!NODE_CATALOG[n.type]) erros.push(`Nó desconhecido: "${n.type}".`);
-    if (n.type === 'ai.agent' && !(n.config as { agentId?: string })?.agentId) {
+    // Os dois nós que rodam agente: sem agente escolhido, o fluxo publica e
+    // para no primeiro atendimento sem ninguém entender por quê.
+    if (
+      (n.type === 'ai.agent' || n.type === 'ai.atender') &&
+      !(n.config as { agentId?: string })?.agentId
+    ) {
       erros.push(`O nó "${n.label ?? n.id}" está sem agente selecionado.`);
     }
   }
@@ -98,6 +103,9 @@ export function validateGraph(graph: FlowGraph): string[] {
   // nunca vai rodar.
   const alcancados = new Set(graph.edges.map((e) => e.target));
   for (const n of graph.nodes) {
+    // Gatilho começa o fluxo e bloco de fonte alimenta outro — nenhum dos dois
+    // recebe aresta, e nenhum é engano de montagem.
+    if (n.type.startsWith('source.')) continue;
     if (!n.type.startsWith('trigger.') && !alcancados.has(n.id)) {
       erros.push(`O nó "${n.label ?? n.id}" não está conectado a nada.`);
     }
@@ -229,6 +237,24 @@ export async function executeRun(params: {
       }
 
       const proximo = nextNode(graph, node.id, r.branch);
+
+      // ---- ENTREGA GRUDENTA ENTRE AGENTES ----
+      //
+      // Sem isto, a próxima mensagem do lead recomeçaria pela triagem — que
+      // re-triaria alguém já no meio de um agendamento. Caro, e burro do ponto
+      // de vista de quem está conversando.
+      //
+      // Quem assumiu continua dono até uma das três coisas: entregar a outro
+      // agente, passar para humano, ou encerrar. Fora esses casos a posse não
+      // muda — inclusive quando o especialista só responde e o fluxo termina,
+      // que é o caso comum.
+      if (node.type === 'ai.atender') {
+        if (proximo?.type === 'ai.atender') {
+          ctx.vars.__blocoAtivo = proximo.id;
+        } else if (r.branch === 'humano' || r.branch === 'encerrou') {
+          ctx.vars.__blocoAtivo = null;
+        }
+      }
 
       if (r.sleep) {
         // Guarda o PRÓXIMO nó, não este: ao acordar, a espera já aconteceu.

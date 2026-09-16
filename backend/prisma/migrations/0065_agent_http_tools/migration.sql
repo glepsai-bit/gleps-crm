@@ -1,0 +1,11 @@
+-- T-036 — ferramentas HTTP próprias do agente.
+--
+-- A lacuna real contra o n8n: o agente tinha três ferramentas e não conseguia
+-- consultar a API do cliente (Pacto, ERP) no meio do raciocínio. O fluxo podia
+-- chamar uma API; o agente não podia DECIDIR chamá-la.
+--
+-- Coluna JSON e não tabela nova, pelo mesmo motivo de `tools` e `sub_agent_ids`:
+-- é configuração do agente, sempre lida junto com ele, nunca consultada por si.
+--
+-- Idempotente: o start.sh reaplica as migrations recentes a cada boot.
+ALTER TABLE "ai_agents" ADD COLUMN IF NOT EXISTS "http_tools" JSONB;

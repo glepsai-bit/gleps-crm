@@ -32,6 +32,9 @@ const agentCreateSchema = z.object({
   outputSchema: z.record(z.unknown()).optional().nullable(),
   subAgentIds: z.array(z.string().uuid()).max(8).optional().nullable(),
   active: z.boolean().optional(),
+  // Validado em profundidade no service (`lerHttpTools`), que é quem conhece
+  // as regras — aqui só garantimos que é uma lista.
+  httpTools: z.array(z.record(z.unknown())).max(20).optional().nullable(),
 });
 
 const agentUpdateSchema = agentCreateSchema.partial();
