@@ -1,0 +1,20 @@
+-- T-037 — campos de memória declarados pelo admin.
+--
+-- `lembrar` recebia o nome do campo como texto livre: o mesmo fato virava
+-- `faturamento` numa conversa, `receita_mensal` na outra. Memória com chave
+-- inventada a cada conversa é memória que ninguém lê de volta — nem outro
+-- agente, nem relatório, nem o próprio agente no dia seguinte.
+--
+-- Declarando os campos, `campo` vira enum na ferramenta e cada chave carrega a
+-- descrição que o modelo lê pra decidir o que guardar ali.
+--
+-- Coluna JSON e não tabela nova, pelo mesmo motivo de `tools`, `sub_agent_ids`
+-- e `http_tools`: é configuração do agente, sempre lida junto com ele, nunca
+-- consultada por si.
+--
+-- DEFAULT '[]' e não NULL: lista vazia é o estado de todo agente que já existe,
+-- e vazio significa exatamente o comportamento de hoje (campo livre) — nada
+-- muda pra quem está em produção.
+--
+-- Idempotente: o start.sh reaplica as migrations recentes a cada boot.
+ALTER TABLE "ai_agents" ADD COLUMN IF NOT EXISTS "memory_fields" JSONB DEFAULT '[]';

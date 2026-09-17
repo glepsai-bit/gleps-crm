@@ -2074,6 +2074,12 @@ model AiAgent {
   /// A URL carrega {{parametro}} que o modelo preenche. Execução via
   /// safeFetch — herda o bloqueio de rede interna.
   httpTools       Json?          @map("http_tools")
+  /// T-037 — campos de memória que ESTE agente mantém.
+  /// Array de { chave, descricao, escopo: 'memoria' | 'sessao' }.
+  /// Com campos declarados, `campo` da ferramenta `lembrar` vira enum e cada
+  /// chave leva a descrição que o modelo lê. Vazio = campo livre (comportamento
+  /// de antes desta coluna, que é o de toda a produção existente).
+  memoryFields    Json?          @default("[]") @map("memory_fields")
   active          Boolean        @default(true)
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

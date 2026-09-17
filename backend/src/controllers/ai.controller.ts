@@ -35,6 +35,20 @@ const agentCreateSchema = z.object({
   // Validado em profundidade no service (`lerHttpTools`), que é quem conhece
   // as regras — aqui só garantimos que é uma lista.
   httpTools: z.array(z.record(z.unknown())).max(20).optional().nullable(),
+  // T-037 — campos de memória que o agente mantém. Mesma divisão de trabalho do
+  // httpTools: aqui só a forma, e as regras de chave/escopo no service
+  // (`validarCamposDeMemoria`), que é quem as conhece e quem explica o erro.
+  memoryFields: z
+    .array(
+      z.object({
+        chave: z.string(),
+        descricao: z.string(),
+        escopo: z.enum(['memoria', 'sessao']).optional(),
+      })
+    )
+    .max(40)
+    .optional()
+    .nullable(),
 });
 
 const agentUpdateSchema = agentCreateSchema.partial();
