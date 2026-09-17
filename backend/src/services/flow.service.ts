@@ -15,6 +15,8 @@ import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
 import { NotFoundError, ValidationError, ConflictError } from '../utils/errors';
 import { executeRun, parseGraph, validateGraph } from './flow/engine';
+import { valorDaMemoria } from './ai/memoria';
+import { TIPOS_QUE_ENVIAM } from './flow/nodes';
 import type { BufferedMessage, FlowGraph, FlowStatus } from './flow/types';
 
 /** Janela de agrupamento padrão quando o fluxo não tem nó de debounce. */
@@ -47,6 +49,17 @@ export interface InboundMessageEvent {
   messageId: string;
   content: string | null;
   contentType: string;
+}
+
+/**
+ * Desembrulha `{ v, por, em }` num mapa de memórias, deixando valor cru intacto.
+ */
+function semAutoria(attrs: Record<string, unknown>): Record<string, unknown> {
+  const saida: Record<string, unknown> = {};
+  for (const [chave, valor] of Object.entries(attrs)) {
+    saida[chave] = valorDaMemoria(valor);
+  }
+  return saida;
 }
 
 class FlowService {
@@ -440,12 +453,24 @@ class FlowService {
    * mostraria um atendimento diferente do que roda de verdade, que é
    * exatamente o que ele existe pra evitar.
    */
+  /**
+   * Tira o embrulho de autoria antes da memória virar variável do fluxo.
+   *
+   * `lembrar` grava `{ v, por, em }` pra responder "quem disse isso?". Mas o
+   * interpolador faz `JSON.stringify` em tudo que não é string, então um bloco
+   * com `Olá {{memoria.nome}}` mandava ao CLIENTE o objeto inteiro:
+   * `Olá {"v":"João","por":"Marcus","em":"2026-..."}`.
+   *
+   * Aqui, e não no interpolador, porque é aqui que se sabe que estes valores
+   * são memória — o interpolador serve pra qualquer variável. `valorDaMemoria`
+   * aceita as duas formas, então memória antiga (valor cru) passa intacta.
+   */
   private async carregarMemorias(accountId: string, conversationId: string) {
     const conversa = await prisma.conversation.findFirst({
       where: { id: conversationId, accountId },
       select: { customAttributes: true, contactId: true },
     });
-    const sessao = (conversa?.customAttributes ?? {}) as Record<string, unknown>;
+    const sessao = semAutoria((conversa?.customAttributes ?? {}) as Record<string, unknown>);
 
     let memoria: Record<string, unknown> = {};
     if (conversa?.contactId) {
@@ -453,7 +478,7 @@ class FlowService {
         where: { id: conversa.contactId, accountId },
         select: { customAttributes: true },
       });
-      memoria = (contato?.customAttributes ?? {}) as Record<string, unknown>;
+      memoria = semAutoria((contato?.customAttributes ?? {}) as Record<string, unknown>);
     }
     return { memoria, sessao, contactId: conversa?.contactId ?? null };
   }
@@ -659,20 +684,33 @@ class FlowService {
       orderBy: { ordem: 'asc' },
     });
 
-    // A resposta sai do passo de envio: em sombra ele registra o texto que
-    // teria mandado, em vez de mandar.
-    const envio = steps.find((s) => s.nodeType === 'chat.reply');
-    const resposta = ((envio?.output ?? {}) as { texto?: string }).texto ?? null;
+    // O que o lead ouviu sai dos passos que falam — em sombra cada um registra
+    // o texto que TERIA mandado, em vez de mandar.
+    //
+    // A lista de quem fala vem do catálogo (TIPOS_QUE_ENVIAM), não daqui: este
+    // trecho já procurou `chat.reply` literal, e quando o composto passou a
+    // enviar o simulador ficou mudo pro fluxo novo — dizia "parou antes de
+    // responder" enquanto o lead, em produção, teria recebido a mensagem.
+    //
+    // Todos os envios, não só o primeiro: um fluxo que manda duas mensagens
+    // precisa gravar as duas, senão o turno seguinte lê um histórico que não
+    // aconteceu.
+    const enviados = steps
+      .filter((s) => TIPOS_QUE_ENVIAM.includes(s.nodeType))
+      .map((s) => ((s.output ?? {}) as { texto?: unknown }).texto)
+      .filter((t): t is string => typeof t === 'string' && t.trim() !== '');
 
-    // A resposta é gravada como mensagem da conversa de teste. Sem isso o turno
-    // seguinte veria só as falas do lead e a IA se repetiria — a simulação
-    // deixaria de parecer com o atendimento no exato ponto que importa.
-    if (resposta) {
+    const resposta = enviados.length > 0 ? enviados.join('\n\n') : null;
+
+    // Gravadas como mensagens da conversa de teste. Sem isso o turno seguinte
+    // veria só as falas do lead e a IA se repetiria — a simulação deixaria de
+    // parecer com o atendimento no exato ponto que importa.
+    for (const texto of enviados) {
       await prisma.message.create({
         data: {
           conversationId,
           senderType: 'ai_bot',
-          content: resposta,
+          content: texto,
           contentType: 'text',
           metadata: { simulador: true, runId: run.id },
         },

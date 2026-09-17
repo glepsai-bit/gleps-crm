@@ -9,6 +9,9 @@
  */
 
 import type { AiAgent } from '@prisma/client';
+import { autoriaDaMemoria, valorDaMemoria } from './ai/memoria';
+
+export { autoriaDaMemoria, valorDaMemoria };
 import { prisma } from '../config/database';
 import { NotFoundError, ValidationError, ConflictError, AppError } from '../utils/errors';
 import { logger } from '../utils/logger';
@@ -31,6 +34,16 @@ import {
   executarHttpTool,
   type HttpToolConfig,
 } from './ai/http-tool';
+import {
+  lerCamposDeMemoria,
+  validarCamposDeMemoria,
+  definicaoDoLembrarDeclarado,
+  formatFichaDeMemoria,
+  escopoDaChave,
+  chavesDeclaradas,
+  ehChaveReservada,
+  type CampoDeMemoria,
+} from './ai/memoria-declarada';
 
 export type AgentRole = 'classifier' | 'responder' | 'custom';
 
@@ -63,6 +76,8 @@ export interface UpsertAgentInput {
   /** Ids de agentes que este pode consultar. */
   subAgentIds?: string[] | null;
   httpTools?: unknown;
+  /** Campos de memória que este agente mantém. Vazio = campo livre. */
+  memoryFields?: unknown;
   provider?: AiProviderName;
   model?: string | null;
   temperature?: number;
@@ -306,6 +321,17 @@ class AiAgentService {
       data.httpTools = lidas as unknown as object;
     }
 
+    // CAMPOS DE MEMÓRIA DECLARADOS.
+    //
+    // Validação estrita aqui (e tolerante na leitura do agente gravado): quem
+    // está cadastrando precisa saber POR QUE a chave foi recusada. Um campo
+    // que some sem explicação vira memória que o admin jura ter configurado.
+    if (input.memoryFields !== undefined) {
+      const { campos, erros } = validarCamposDeMemoria(input.memoryFields);
+      if (erros.length > 0) throw new ValidationError(erros.join(' '));
+      data.memoryFields = campos as unknown as object;
+    }
+
     if (input.outputSchema !== undefined) {
       if (input.outputSchema && typeof input.outputSchema !== 'object') {
         throw new ValidationError('outputSchema precisa ser um objeto JSON Schema');
@@ -366,9 +392,21 @@ class AiAgentService {
       input.preloadedHistory
     );
 
+    // Os campos que o admin declarou pra ESTE agente. Lidos uma vez: valem no
+    // prompt (a ficha, com os buracos) e na forma da ferramenta (o enum).
+    const camposDeMemoria = lerCamposDeMemoria(agent.memoryFields);
+
+    // Lido ANTES do prompt: é a lista de ferramentas que decide se a ficha pode
+    // mandar registrar. Declarar campos e tirar `lembrar` são duas telas — o
+    // prompt precisa saber qual das duas configurações venceu.
+    const toolNames = Array.isArray(agent.tools) ? (agent.tools as string[]) : [];
+    const temFerramentaLembrar = toolNames.includes('lembrar') && !!AVAILABLE_TOOLS.lembrar;
+
     const system = this.buildSystemPrompt({
       agent,
       hits,
+      camposDeMemoria,
+      temFerramentaLembrar,
       motivoSemTrechos,
       overview,
       variables: input.variables,
@@ -386,10 +424,17 @@ class AiAgentService {
       { role: 'user', content: userMessage },
     ];
 
-    const toolNames = Array.isArray(agent.tools) ? (agent.tools as string[]) : [];
     const tools: ChatToolDef[] = toolNames
       .filter((n) => AVAILABLE_TOOLS[n])
-      .map((n) => AVAILABLE_TOOLS[n].definition);
+      // `lembrar` deixa de ser definição estática quando o agente declara
+      // campos: aí `campo` é enum e a descrição lista chave por chave. Sem
+      // campos declarados vale a definição do catálogo, campo livre — que é o
+      // que roda em produção hoje.
+      .map((n) =>
+        n === 'lembrar' && camposDeMemoria.length > 0
+          ? definicaoDoLembrarDeclarado(camposDeMemoria)
+          : AVAILABLE_TOOLS[n].definition
+      );
 
     // DELEGAÇÃO: o roster de especialistas vira uma ferramenta cujo enum são os
     // nomes deles. Construída aqui (e não no catálogo estático) porque depende
@@ -508,6 +553,10 @@ class AiAgentService {
               accountId: input.accountId,
               agent,
               contactId: input.contactId,
+              // Campo de escopo `sessao` grava na CONVERSA — sem o id dela a
+              // ferramenta não teria onde pôr.
+              conversationId: input.conversationId,
+              camposDeMemoria,
             });
           } catch (err) {
             output = `Erro ao executar: ${err instanceof Error ? err.message : String(err)}`;
@@ -652,6 +701,14 @@ class AiAgentService {
   private buildSystemPrompt(p: {
     agent: AiAgent;
     hits: SearchHit[];
+    /** Campos declarados deste agente. Vazio = prompt igual ao de antes. */
+    camposDeMemoria?: CampoDeMemoria[];
+    /**
+     * `lembrar` está entre as ferramentas ENVIADAS ao provider nesta execução?
+     * Campos declarados e ferramentas são telas diferentes: declarar campo e
+     * não ter a ferramenta é um estado alcançável, e a ficha precisa saber.
+     */
+    temFerramentaLembrar?: boolean;
     /** Por que não vieram trechos. Só importa quando `hits` está vazio. */
     motivoSemTrechos?: MotivoSemTrechos;
     /** Mapa da base. Null quando o agente não tem base vinculada. */
@@ -662,6 +719,18 @@ class AiAgentService {
     historySummary?: string | null;
   }): string {
     const { agent, hits, variables, memory, session, historySummary } = p;
+    const campos = p.camposDeMemoria ?? [];
+    // O que a ficha já mostra não se repete nos blocos genéricos: o mesmo fato
+    // duas vezes no prompt custa token e sugere ao modelo que são dois fatos.
+    //
+    // POR ESCOPO, e não um Set plano pros dois blocos: a ficha lê cada campo no
+    // escopo em que foi declarado, então só ali ela consegue mostrar o valor.
+    // Omitir `nome` do bloco da memória longa porque `nome` foi declarado como
+    // `sessao` apagava do prompt um "João" que estava gravado no contato — a
+    // ficha marcava "(ainda não sei)" e o agente perguntava o nome de quem já
+    // conhecia.
+    const naFichaPelaMemoria = chavesDeclaradas(campos, 'memoria');
+    const naFichaPelaSessao = chavesDeclaradas(campos, 'sessao');
     let prompt = agent.systemPrompt;
 
     if (variables) {
@@ -682,16 +751,34 @@ class AiAgentService {
     const longo = formatMemoryBlock(
       memory,
       'O QUE SABEMOS SOBRE ESTA PESSOA (vale entre conversas)',
-      'Não pergunte de novo o que já está aqui.'
+      'Não pergunte de novo o que já está aqui.',
+      naFichaPelaMemoria
     );
     if (longo) blocos.push(longo);
 
     const curto = formatMemoryBlock(
       session,
       'ONDE ESTAMOS NESTA CONVERSA',
-      'Continue de onde parou; não recomece o roteiro.'
+      'Continue de onde parou; não recomece o roteiro.',
+      naFichaPelaSessao
     );
     if (curto) blocos.push(curto);
+
+    // A FICHA — os campos declarados, INCLUSIVE os vazios.
+    //
+    // É o vazio que importa: os blocos acima só mostram o que já se sabe, então
+    // o agente nunca enxerga o buraco. Aqui ele vê a lista inteira e sabe o que
+    // ainda falta apurar. Sem campos declarados o bloco não existe, e o prompt
+    // fica idêntico ao de antes.
+    const ficha = formatFichaDeMemoria(
+      campos,
+      { memoria: memory, sessao: session },
+      valorDaMemoria,
+      // Se `lembrar` não foi para o provider, a ficha não pode mandar usá-la.
+      // Ela vira contexto do que já se sabe, sem a instrução de registrar.
+      p.temFerramentaLembrar ?? false
+    );
+    if (ficha) blocos.push(ficha);
 
     if (historySummary && historySummary.trim()) {
       blocos.push(
@@ -890,34 +977,6 @@ class AiAgentService {
 /** Prefixo das chaves privadas de um agente na memória de conversa. */
 const PREFIXO_PRIVADO = '_agente.';
 
-/**
- * O valor de uma memória, seja ela antiga (valor cru) ou nova (com autoria).
- *
- * As duas formas convivem de propósito: gravar autoria é melhoria, não motivo
- * pra migrar dado de cliente em produção. Contato que já tem `faturamento:
- * "R$ 80 mil"` continua funcionando.
- */
-export function valorDaMemoria(v: unknown): unknown {
-  if (v && typeof v === 'object' && !Array.isArray(v) && 'v' in (v as object)) {
-    return (v as { v: unknown }).v;
-  }
-  return v;
-}
-
-/**
- * Quem gravou e quando, se a informação existir.
- *
- * Responde "por que a IA acha isso?" com uma consulta em vez de uma
- * investigação — e com vários agentes escrevendo na mesma memória, essa
- * pergunta deixa de ser rara.
- */
-export function autoriaDaMemoria(v: unknown): { por?: string; em?: string } | null {
-  if (v && typeof v === 'object' && !Array.isArray(v) && 'v' in (v as object)) {
-    const o = v as { por?: string; em?: string };
-    return { por: o.por, em: o.em };
-  }
-  return null;
-}
 
 /**
  * Separa o que é de todos do que é só deste agente.
@@ -946,11 +1005,14 @@ function escoparSessao(
 function formatMemoryBlock(
   dados: Record<string, unknown> | undefined,
   titulo: string,
-  instrucao: string
+  instrucao: string,
+  /** Chaves que a ficha dos campos declarados já vai mostrar. */
+  omitir?: Set<string>
 ): string {
   if (!dados) return '';
   const linhas = Object.entries(dados)
     .filter(([k]) => !k.startsWith('_'))
+    .filter(([k]) => !omitir?.has(k))
     .map(([k, v]) => [k, valorDaMemoria(v)] as const)
     .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
     .map(([k, v]) => `- ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
@@ -970,6 +1032,10 @@ interface ToolContext {
   agent: AiAgent;
   /** Dono da memória de longo prazo. Sem ele, `lembrar` não tem onde gravar. */
   contactId?: string | null;
+  /** Dono da memória de curto prazo — destino dos campos de escopo `sessao`. */
+  conversationId?: string | null;
+  /** Campos declarados do agente. Vazio = campo livre, como antes. */
+  camposDeMemoria?: CampoDeMemoria[];
 }
 
 interface AgentTool {
@@ -1002,10 +1068,63 @@ export const AVAILABLE_TOOLS: Record<string, AgentTool> = {
       const campo = typeof args.campo === 'string' ? args.campo.trim() : '';
       const valor = typeof args.valor === 'string' ? args.valor.trim() : '';
       if (!campo || !valor) return 'Informe o campo e o valor a lembrar.';
-      if (!ctx.contactId) return 'Esta conversa ainda não tem contato vinculado — nada foi guardado.';
       // `_` é reservado pra controle interno (resumo, marcadores); não pode ser
       // sobrescrito por um campo que o modelo inventou.
       if (campo.startsWith('_')) return 'Nome de campo inválido.';
+      // E a reserva que não tem `_`: as bandeiras do atendimento na conversa
+      // (`human_active` e companhia). A validação do cadastro já recusa, e a
+      // leitura tolerante já descarta — esta é a guarda no ponto de ESCRITA,
+      // que é onde o estrago aconteceria. Vale também no campo livre, onde o
+      // nome vem do modelo.
+      if (ehChaveReservada(campo)) {
+        return `"${campo}" é um nome usado pelo atendimento — escolha outro campo.`;
+      }
+
+      const campos = ctx.camposDeMemoria ?? [];
+
+      // COM CAMPOS DECLARADOS: só as chaves declaradas entram, e o escopo diz
+      // onde gravar. O enum já barra no provider; esta checagem existe porque
+      // nem todo modelo respeita enum, e memória com chave inventada é
+      // exatamente o que os campos declarados vieram impedir.
+      //
+      // SEM CAMPOS DECLARADOS: nada muda — campo livre, gravando no contato.
+      // É o caso de toda a produção de hoje.
+      const escopo = campos.length > 0 ? escopoDaChave(campos, campo) : 'memoria';
+      if (!escopo) {
+        return (
+          `"${campo}" não é um campo deste atendimento. ` +
+          `Use um destes: ${campos.map((c) => c.chave).join(', ')}.`
+        );
+      }
+
+      // A autoria acompanha o valor nos dois escopos: com vários agentes
+      // escrevendo na mesma memória, um fato errado contamina todos, e sem
+      // isto não há como descobrir de qual deles veio.
+      const registro = { v: valor, por: ctx.agent.name, em: new Date().toISOString() };
+
+      if (escopo === 'sessao') {
+        if (!ctx.conversationId) {
+          return 'Este campo vale só para a conversa, e não há conversa aqui — nada foi guardado.';
+        }
+        const conversa = await prisma.conversation.findFirst({
+          where: { id: ctx.conversationId, accountId: ctx.accountId },
+          select: { customAttributes: true },
+        });
+        if (!conversa) return 'Conversa não encontrada.';
+
+        const attrsConversa = (conversa.customAttributes ?? {}) as Record<string, unknown>;
+        // Chave CRUA, sem o prefixo `_agente.<id>.` de rascunho privado: campo
+        // declarado é dado do atendimento, tem que ser legível por outro
+        // agente e por relatório. O prefixo é pro que só interessa a um agente
+        // — e `escoparSessao` já deixa passar a chave crua pra todo mundo.
+        await prisma.conversation.update({
+          where: { id: ctx.conversationId },
+          data: { customAttributes: { ...attrsConversa, [campo]: registro } as object },
+        });
+        return `Guardado nesta conversa: ${campo} = ${valor}`;
+      }
+
+      if (!ctx.contactId) return 'Esta conversa ainda não tem contato vinculado — nada foi guardado.';
 
       const contato = await prisma.contact.findFirst({
         where: { id: ctx.contactId, accountId: ctx.accountId },
@@ -1016,15 +1135,7 @@ export const AVAILABLE_TOOLS: Record<string, AgentTool> = {
       const attrs = (contato.customAttributes ?? {}) as Record<string, unknown>;
       await prisma.contact.update({
         where: { id: ctx.contactId },
-        data: {
-          customAttributes: {
-            ...attrs,
-            // Com autoria: quem gravou e quando. Com vários agentes escrevendo
-            // na mesma memória, um fato errado contamina todos — e sem isto
-            // não há como descobrir de qual deles veio.
-            [campo]: { v: valor, por: ctx.agent.name, em: new Date().toISOString() },
-          } as object,
-        },
+        data: { customAttributes: { ...attrs, [campo]: registro } as object },
       });
       return `Guardado: ${campo} = ${valor}`;
     },

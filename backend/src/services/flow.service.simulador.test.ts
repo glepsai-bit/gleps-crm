@@ -144,6 +144,37 @@ describe('fidelidade: o contexto é o mesmo que o worker monta', () => {
     expect(vars.__contactId).toBe('contato-1');
   });
 
+  /*
+    O que `lembrar` grava hoje é `{ v, por, em }` — o valor mais quem disse e
+    quando. Mas o interpolador do fluxo faz JSON.stringify em tudo que não é
+    string, então um bloco com "Olá {{memoria.nome}}" mandava ao CLIENTE o
+    objeto inteiro: Olá {"v":"João","por":"Marcus","em":"..."}.
+
+    O teste acima não pegava porque usa o formato antigo, de valor cru — que
+    continua válido de propósito, e por isso está afirmado aqui também.
+  */
+  it('memória com autoria chega desembrulhada — senão o cliente recebe JSON', async () => {
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      id: 'conv-teste',
+      contactId: 'contato-1',
+      inbox: { name: 'Simulador de atendimento' },
+      customAttributes: {
+        etapa_roteiro: { v: 'diagnostico', por: 'Triagem', em: '2026-09-16T12:00:00.000Z' },
+      },
+    });
+    prismaMock.contact.findFirst.mockResolvedValue({
+      customAttributes: {
+        nome: { v: 'João', por: 'Marcus', em: '2026-09-16T12:00:00.000Z' },
+        faturamento: 'R$ 80 mil', // formato antigo, sem autoria — tem que passar intacto
+      },
+    });
+
+    await preview();
+    const vars = executeRunMock.mock.calls[0][0].vars;
+    expect(vars.memoria).toEqual({ nome: 'João', faturamento: 'R$ 80 mil' });
+    expect(vars.sessao).toEqual({ etapa_roteiro: 'diagnostico' });
+  });
+
   it('a mensagem chega no formato que o motor espera', async () => {
     await preview({ message: 'quanto custa?' });
     const [msg] = executeRunMock.mock.calls[0][0].vars.mensagens;
@@ -183,6 +214,58 @@ describe('o que volta pra tela', () => {
     expect(r.resposta).toBe('Oi! Como posso ajudar?');
     expect(r.conversationId).toBe('conv-teste');
     expect(r.steps).toHaveLength(1);
+  });
+
+  /*
+    Esta é a regressão que a suíte inteira deixou passar.
+
+    O simulador procurava `chat.reply` literal. Quando o bloco composto
+    `ai.atender` passou a enviar sozinho, o fluxo PADRÃO — o novo, o que a
+    ferramenta semeia — virou mudo na tela de teste: dizia "parou antes de
+    responder" enquanto em produção o lead teria recebido a mensagem. O antigo
+    parecia o único que funcionava, e o teste acima seguia verde porque usava
+    justamente `chat.reply`.
+  */
+  it('o bloco composto também responde — o simulador não pode enxergar só o bloco antigo', async () => {
+    prismaMock.flowRunStep.findMany.mockResolvedValue([
+      passo({
+        nodeType: 'ai.atender',
+        output: { simulado: true, texto: 'Claro, posso ajudar com a matrícula.', saiuPor: 'respondeu' },
+      }),
+    ]);
+
+    const r = await preview();
+    expect(r.resposta).toBe('Claro, posso ajudar com a matrícula.');
+  });
+
+  it('o aviso de transferência conta como fala — o lead recebe, então a tela mostra', async () => {
+    prismaMock.flowRunStep.findMany.mockResolvedValue([
+      passo({
+        nodeType: 'ai.atender',
+        output: {
+          simulado: true,
+          motivo: 'assunto_sempre_humano',
+          texto: 'Vou te passar pra um atendente agora.',
+          respostaDescartada: 'Posso verificar sua cobrança...',
+        },
+      }),
+    ]);
+
+    const r = await preview();
+    // O que aparece é o aviso, NÃO o texto que a IA escreveu e foi descartado.
+    expect(r.resposta).toBe('Vou te passar pra um atendente agora.');
+  });
+
+  it('fluxo que fala duas vezes grava as duas — senão o turno seguinte lê um histórico que não houve', async () => {
+    prismaMock.flowRunStep.findMany.mockResolvedValue([
+      passo({ id: 'st-1', ordem: 1, nodeType: 'chat.reply', output: { texto: 'Um instante.' } }),
+      passo({ id: 'st-2', ordem: 2, nodeType: 'ai.atender', output: { texto: 'Achei aqui: sua aula é 19h.' } }),
+    ]);
+
+    const r = await preview();
+    expect(r.resposta).toBe('Um instante.\n\nAchei aqui: sua aula é 19h.');
+    // Uma do lead + as duas da IA.
+    expect(prismaMock.message.create).toHaveBeenCalledTimes(3);
   });
 
   it('fluxo que para antes de responder devolve resposta nula e o motivo', async () => {

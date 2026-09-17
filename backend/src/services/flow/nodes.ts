@@ -511,6 +511,11 @@ const aiAtender: NodeDefinition = {
         output: {
           rota,
           motivo: 'assunto_sempre_humano',
+          // `texto` é o que o lead REALMENTE recebeu — aqui, o aviso de
+          // transferência, não o que a IA escreveu. É por esta chave que o
+          // simulador descobre o que foi dito; sem ela o lead recebia o aviso
+          // e a tela de teste não mostrava nada.
+          texto: aviso || null,
           respostaDescartada: resposta.slice(0, 200),
           custoUsd: Number(r.usage.usdEstimate.toFixed(6)),
         },
@@ -583,6 +588,18 @@ const aiAtender: NodeDefinition = {
  * atendente pode ter assumido depois que o fluxo começou. Conferir de novo
  * imediatamente antes de enviar é o que impede a IA de falar por cima dele.
  */
+/**
+ * Tipos que FALAM com o lead. Cada um grava em `output.texto` o que mandou, e
+ * é por aqui que o simulador descobre o que foi dito.
+ *
+ * Vive exportado, e não como string solta dentro do simulador, porque foi
+ * assim que o bug nasceu: o composto `ai.atender` passou a enviar e o
+ * simulador continuou procurando só `chat.reply` — o fluxo NOVO aparecia mudo
+ * na tela de teste enquanto o antigo parecia o único que funcionava. Quem
+ * criar um bloco que envia precisa entrar nesta lista.
+ */
+export const TIPOS_QUE_ENVIAM: readonly string[] = ['chat.reply', 'ai.atender'];
+
 async function enviar(
   ctx: NodeContext,
   texto: string
