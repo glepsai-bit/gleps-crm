@@ -18,7 +18,8 @@ import { conversationService } from '../conversation.service';
 import { whatsappSendService } from '../whatsapp-send.service';
 import { agentAvailabilityService } from '../agent-availability.service';
 import { attachmentStorageService } from '../attachment-storage.service';
-import { aiAgentService } from '../ai-agent.service';
+import { teamService } from '../team.service';
+import { aiAgentService, type ContatoResumo } from '../ai-agent.service';
 import { transcribe } from '../ai/transcription';
 import {
   type FlowNode,
@@ -393,6 +394,7 @@ const aiAgentNode: NodeDefinition = {
       memory: (ctx.vars.memoria ?? {}) as Record<string, unknown>,
       session: (ctx.vars.sessao ?? {}) as Record<string, unknown>,
       contactId: (ctx.vars.__contactId ?? null) as string | null,
+      contato: (ctx.vars.__contato ?? null) as ContatoResumo | null,
       variables: {
         ...Object.fromEntries(
           Object.entries(ctx.vars)
@@ -476,6 +478,7 @@ const aiAtender: NodeDefinition = {
       memory: (ctx.vars.memoria ?? {}) as Record<string, unknown>,
       session: (ctx.vars.sessao ?? {}) as Record<string, unknown>,
       contactId: (ctx.vars.__contactId ?? null) as string | null,
+      contato: (ctx.vars.__contato ?? null) as ContatoResumo | null,
       variables: {
         ...Object.fromEntries(
           Object.entries(ctx.vars)
@@ -528,20 +531,7 @@ const aiAtender: NodeDefinition = {
       etapaConfig || (typeof saida.etapa === 'string' ? saida.etapa : ''),
       ctx.vars
     ).trim();
-    let etapaAplicada: string | null = null;
-    if (etapa) {
-      if (ctx.shadow) {
-        etapaAplicada = etapa;
-      } else {
-        const tagId = await conversationService.resolveOrCreateTagByLabel(
-          ctx.accountId,
-          etapa,
-          ctx.actorId
-        );
-        await conversationService.addLabel(ctx.conversationId, ctx.accountId, tagId, ctx.actorId);
-        etapaAplicada = etapa;
-      }
-    }
+    const etapaResultado = etapa ? await aplicarEtapaDoFunil(ctx, etapa) : null;
 
     // ---- RESPOSTA ----
     const envio = resposta ? await enviar(ctx, resposta) : null;
@@ -551,24 +541,30 @@ const aiAtender: NodeDefinition = {
         vars,
         stop: true,
         stopReason: envio.pararPor,
-        output: { texto: resposta, etapa: etapaAplicada },
+        output: { texto: resposta, ...etapaResultado },
       };
     }
 
     // ---- PARA ONDE IR ----
     //
-    // Rota do agente primeiro: é a decisão mais específica. Depois os dois
-    // sinais clássicos. `respondeu` é o caminho da maioria das mensagens.
+    // Rota PRÓPRIA do agente primeiro (financeiro, agendamento...): é a decisão
+    // mais específica. Depois os dois sinais clássicos. Uma rota com o nome de
+    // porta fixa ("respondeu") NÃO vence os sinais: o modelo devolvia
+    // `rota: "respondeu"` junto de `transferir_para_humano: true`, a rota
+    // ganhava e o lead que pediu humano ficava com a IA.
     const pediuHumano = saida.transferir_para_humano === true;
     const encerrou = saida.resolver_conversa === true;
-    const branch = rota ?? (pediuHumano ? 'humano' : encerrou ? 'encerrou' : 'respondeu');
+    const fixa = ['respondeu', 'humano', 'encerrou'];
+    const rotaPropria = rota && !fixa.includes(rota) ? rota : null;
+    const branch =
+      rotaPropria ?? (pediuHumano ? 'humano' : encerrou ? 'encerrou' : (rota ?? 'respondeu'));
 
     return {
       branch,
       vars,
       output: {
         texto: resposta.slice(0, 1000),
-        etapa: etapaAplicada,
+        ...etapaResultado,
         rota,
         saiuPor: branch,
         simulado: ctx.shadow || undefined,
@@ -580,6 +576,50 @@ const aiAtender: NodeDefinition = {
     };
   },
 };
+
+/**
+ * Aplica uma etapa do FUNIL REAL à conversa — ou recusa, se ela não existe.
+ *
+ * Estrito de propósito. O caminho antigo (`resolveOrCreateTagByLabel`) criava
+ * a etiqueta quando não achava: o modelo escrevia "agendado", nascia uma
+ * etiqueta "agendado" fora do funil, e o kanban de verdade ficava intocado —
+ * sem erro em lugar nenhum. Agora a etapa precisa existir na conta, por slug
+ * ou por nome; senão nada é criado e o passo diz `etapa_desconhecida`.
+ *
+ * Em sombra a resolução acontece do mesmo jeito (só a escrita é suprimida):
+ * o simulador precisa mostrar a mesma recusa que aconteceria em produção.
+ */
+async function aplicarEtapaDoFunil(
+  ctx: NodeContext,
+  etapa: string
+): Promise<{ etapa: string | null; motivo?: string; tagId?: string; simulado?: true }> {
+  const stage = await prisma.tag.findFirst({
+    where: {
+      accountId: ctx.accountId,
+      type: 'stage',
+      ativo: true,
+      OR: [
+        { slug: { equals: etapa, mode: 'insensitive' } },
+        { name: { equals: etapa, mode: 'insensitive' } },
+      ],
+    },
+    select: { id: true, slug: true },
+  });
+
+  if (!stage) {
+    logger.warn('[flow] etapa desconhecida — nenhuma etiqueta criada', {
+      accountId: ctx.accountId,
+      conversationId: ctx.conversationId,
+      etapa,
+    });
+    return { etapa, motivo: 'etapa_desconhecida' };
+  }
+
+  if (ctx.shadow) return { etapa: stage.slug, tagId: stage.id, simulado: true };
+
+  await conversationService.addLabel(ctx.conversationId, ctx.accountId, stage.id, ctx.actorId);
+  return { etapa: stage.slug, tagId: stage.id };
+}
 
 /**
  * Envia, com a mesma revalidação do nó de resposta.
@@ -670,15 +710,7 @@ const crmApplyStage: NodeDefinition = {
     const etapa = interpolate(str(c.etapa), ctx.vars).trim();
     if (!etapa) return { output: { pulado: 'etapa_vazia' } };
 
-    if (ctx.shadow) return { output: { simulado: true, etapa } };
-
-    const tagId = await conversationService.resolveOrCreateTagByLabel(
-      ctx.accountId,
-      etapa,
-      ctx.actorId
-    );
-    await conversationService.addLabel(ctx.conversationId, ctx.accountId, tagId, ctx.actorId);
-    return { output: { etapa, tagId } };
+    return { output: await aplicarEtapaDoFunil(ctx, etapa) };
   },
 };
 
@@ -784,39 +816,120 @@ const chatReply: NodeDefinition = {
 const chatAssignHuman: NodeDefinition = {
   type: 'chat.assign_human',
   label: 'Transferir para humano',
-  description: 'Atribui a conversa a um atendente disponível e reabre para atendimento.',
+  description:
+    'Atribui a conversa a um atendente disponível e reabre para atendimento. Com um ' +
+    'time escolhido, só atendentes daquele time entram.',
   branches: [
     { key: 'default', label: 'Transferiu' },
     { key: 'sem_atendente', label: 'Ninguém disponível' },
   ],
   mutates: true,
   async execute(node, ctx) {
+    const teamId = str(cfg(node).teamId).trim() || null;
     const disponiveis = await agentAvailabilityService.listOnline(ctx.accountId);
-    if (disponiveis.length === 0) {
+
+    // ---- SEM TIME: o comportamento de sempre ----
+    if (!teamId) {
+      if (disponiveis.length === 0) {
+        return {
+          branch: 'sem_atendente',
+          output: { transferido: false, motivo: 'nenhum_atendente_online' },
+        };
+      }
+
+      // Sorteio simples, como o `Sortear_Agente1` do n8n. Distribuição por
+      // carga fica pra quando houver dado de carga confiável — sorteio é
+      // previsível e não cria fila fantasma.
+      const escolhido = disponiveis[Math.floor(Math.random() * disponiveis.length)];
+
+      if (ctx.shadow) {
+        return { output: { simulado: true, atendente: escolhido.email, assigneeId: escolhido.id } };
+      }
+
+      await conversationService.assign(
+        ctx.conversationId,
+        ctx.accountId,
+        escolhido.id,
+        ctx.actorId
+      );
+      await conversationService.updateStatus(ctx.conversationId, ctx.accountId, 'open', ctx.actorId);
+
       return {
-        branch: 'sem_atendente',
-        output: { transferido: false, motivo: 'nenhum_atendente_online' },
+        output: { atendente: escolhido.email, atendenteId: escolhido.id, assigneeId: escolhido.id },
       };
     }
 
-    // Sorteio simples, como o `Sortear_Agente1` do n8n. Distribuição por carga
-    // fica pra quando houver dado de carga confiável — sorteio é previsível e
-    // não cria fila fantasma.
-    const escolhido = disponiveis[Math.floor(Math.random() * disponiveis.length)];
-
-    if (ctx.shadow) {
-      return { output: { simulado: true, atendente: escolhido.email } };
+    // ---- COM TIME: é o que transforma "rota" em "departamento" ----
+    //
+    // `financeiro → time Financeiro` só é possível se o bloco souber de time.
+    // Time de outra conta (ou apagado) não derruba o atendimento: cai em
+    // "ninguém disponível", que é a porta que o desenho já trata.
+    const time = await prisma.team.findFirst({
+      where: { id: teamId, accountId: ctx.accountId },
+      select: {
+        id: true,
+        name: true,
+        members: { where: { user: { status: 'active' } }, select: { userId: true } },
+      },
+    });
+    if (!time) {
+      logger.warn('[flow] time da transferência não existe nesta conta', {
+        accountId: ctx.accountId,
+        teamId,
+      });
+      return {
+        branch: 'sem_atendente',
+        output: { transferido: false, motivo: 'time_nao_encontrado', teamId },
+      };
     }
 
-    await conversationService.assign(
-      ctx.conversationId,
-      ctx.accountId,
-      escolhido.id,
-      ctx.actorId
-    );
+    // 1º online ∩ membros ativos do time; 2º rodízio do time (quem está
+    // online é preferência, não exigência — o time existe pra receber a
+    // conversa mesmo quando ninguém está com a tela aberta).
+    const membros = new Set(time.members.map((m) => m.userId));
+    const onlineDoTime = disponiveis.filter((u) => membros.has(u.id));
+    let escolhido: { id: string; email: string } | null =
+      onlineDoTime.length > 0
+        ? onlineDoTime[Math.floor(Math.random() * onlineDoTime.length)]
+        : null;
+    let criterio: 'online_do_time' | 'rodizio_do_time' = 'online_do_time';
+
+    if (!escolhido) {
+      const rodizio = await teamService.pickAssignee(time.id, ctx.accountId);
+      if (rodizio) {
+        escolhido = { id: rodizio.id, email: rodizio.email };
+        criterio = 'rodizio_do_time';
+      }
+    }
+
+    if (!escolhido) {
+      return {
+        branch: 'sem_atendente',
+        output: {
+          transferido: false,
+          motivo: 'time_sem_atendente',
+          teamId: time.id,
+          teamNome: time.name,
+        },
+      };
+    }
+
+    const saida = {
+      teamId: time.id,
+      teamNome: time.name,
+      assigneeId: escolhido.id,
+      atendente: escolhido.email,
+      atendenteId: escolhido.id,
+      criterio,
+    };
+
+    if (ctx.shadow) return { output: { simulado: true, ...saida } };
+
+    await conversationService.assignToTeam(ctx.conversationId, ctx.accountId, time.id, ctx.actorId);
+    await conversationService.assign(ctx.conversationId, ctx.accountId, escolhido.id, ctx.actorId);
     await conversationService.updateStatus(ctx.conversationId, ctx.accountId, 'open', ctx.actorId);
 
-    return { output: { atendente: escolhido.email, atendenteId: escolhido.id } };
+    return { output: saida };
   },
 };
 
@@ -832,6 +945,17 @@ const chatResolve: NodeDefinition = {
 
     if (ctx.shadow) return { output: { simulado: true, outcome } };
 
+    // A conversa morre, o que se aprendeu nela não: resumo e etapa final vão
+    // pro contato ANTES do resolve, e é daí que sai o "última conversa" de
+    // quando a pessoa voltar. Falhar aqui não pode impedir o encerramento.
+    const ultima = await guardarUltimaConversaNoContato(ctx).catch((err) => {
+      logger.warn('[flow] não foi possível guardar a última conversa no contato', {
+        conversationId: ctx.conversationId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    });
+
     await conversationService.resolve(ctx.conversationId, ctx.accountId, {
       resolvedBy: 'ai',
       userId: ctx.actorId,
@@ -841,9 +965,53 @@ const chatResolve: NodeDefinition = {
       resolvedByUserId: null,
     } as Parameters<typeof conversationService.resolve>[2]);
 
-    return { stop: true, stopReason: 'conversa_resolvida', output: { outcome } };
+    return {
+      stop: true,
+      stopReason: 'conversa_resolvida',
+      output: { outcome, ultimaConversa: ultima },
+    };
   },
 };
+
+/** Chave de controle no contato: como terminou a última conversa. O `_` a tira da memória editável. */
+const CHAVE_ULTIMA_CONVERSA = '_ultima_conversa';
+
+/**
+ * Copia `_resumo_conversa` (se houver) + etapa atual + data para
+ * `Contact.customAttributes._ultima_conversa`.
+ */
+async function guardarUltimaConversaNoContato(
+  ctx: NodeContext
+): Promise<{ resumo: string | null; etapa: string | null; em: string } | null> {
+  const conversa = await prisma.conversation.findFirst({
+    where: { id: ctx.conversationId, accountId: ctx.accountId },
+    select: {
+      contactId: true,
+      customAttributes: true,
+      labels: { select: { tag: { select: { slug: true, type: true } } } },
+    },
+  });
+  if (!conversa?.contactId) return null;
+
+  const attrs = (conversa.customAttributes ?? {}) as Record<string, unknown>;
+  const guardado = attrs._resumo_conversa as { texto?: unknown } | undefined;
+  const resumo = typeof guardado?.texto === 'string' && guardado.texto.trim() ? guardado.texto.trim() : null;
+  const etapa = conversa.labels.find((l) => l.tag.type === 'stage')?.tag.slug ?? null;
+  const registro = { resumo, etapa, em: new Date().toISOString() };
+
+  const contato = await prisma.contact.findFirst({
+    where: { id: conversa.contactId, accountId: ctx.accountId },
+    select: { customAttributes: true },
+  });
+  if (!contato) return null;
+
+  const atuais = (contato.customAttributes ?? {}) as Record<string, unknown>;
+  await prisma.contact.update({
+    where: { id: conversa.contactId },
+    data: { customAttributes: { ...atuais, [CHAVE_ULTIMA_CONVERSA]: registro } as object },
+  });
+  return registro;
+}
 
 // ============================================
 // Integração externa
@@ -912,10 +1080,12 @@ const flowWait: NodeDefinition = {
   mutates: false,
   async execute(node, ctx) {
     const segundos = Math.min(num(cfg(node).segundos, 5), 60);
-    // No simulador a espera é pulada: o usuário está olhando pra tela esperando
-    // a resposta, e segurar a requisição por um minuto não ensina nada sobre o
-    // atendimento — só parece travado.
-    if (ctx.vars.__simulador) return { output: { segundos, pulado: 'simulador' } };
+    // No simulador a espera curta acontece DE VERDADE: é o ritmo que o lead vai
+    // sentir, e pular aqui era o que fazia a simulação parecer mais rápida que
+    // o atendimento. Só espera longa (acima do teto do simulador) é pulada.
+    if (ctx.vars.__simulador && segundos > MAX_ESPERA_SIMULADOR_S) {
+      return { output: { segundos, pulado: 'simulador', duracao: duracaoLegivel(segundos, 'segundos') } };
+    }
     await new Promise((r) => setTimeout(r, segundos * 1000));
     return { output: { segundos } };
   },
@@ -947,9 +1117,16 @@ const flowAguardar: NodeDefinition = {
     // reativação — que tem outra régua de consentimento.
     let quando = new Date(Date.now() + Math.min(ms, 60 * UNIDADES.dias));
 
-    // No simulador ninguém vai esperar dois dias olhando a tela.
+    // No simulador ninguém vai esperar dois dias olhando a tela. O passo diz
+    // quanto tempo teria passado, pra tela mostrar "pulado (2 dias)".
     if (ctx.vars.__simulador) {
-      return { output: { retomaEm: quando.toISOString(), pulado: 'simulador' } };
+      return {
+        output: {
+          retomaEm: quando.toISOString(),
+          pulado: 'simulador',
+          duracao: duracaoLegivel(valor, unidade),
+        },
+      };
     }
 
     const horario = c.horarioComercial as JanelaComercial | undefined;
@@ -974,6 +1151,23 @@ const UNIDADES: Record<string, number> = {
   horas: 3_600_000,
   dias: 86_400_000,
 };
+
+/** Acima disto o `flow.wait` é pulado no simulador em vez de segurar a tela. */
+const MAX_ESPERA_SIMULADOR_S = 120;
+
+/** "1 dia", "2 dias", "3 horas" — o texto que o card do simulador mostra. */
+export function duracaoLegivel(valor: number, unidade: string): string {
+  const singular: Record<string, string> = {
+    segundos: 'segundo',
+    minutos: 'minuto',
+    horas: 'hora',
+    dias: 'dia',
+  };
+  const conhecida = unidade in UNIDADES || unidade === 'segundos';
+  const plural = conhecida ? unidade : 'dias';
+  const nome = valor === 1 ? (singular[plural] ?? plural) : plural;
+  return `${valor} ${nome}`;
+}
 
 interface JanelaComercial {
   inicio?: string;

@@ -10,6 +10,10 @@
  * `comRotas` não é exportada de propósito (o texto do formato é a única fonte
  * de verdade), então o que se trava aqui é o que de fato importa: o payload que
  * sai para a API depois do usuário mexer na interface.
+ *
+ * Segunda leva: o enum de `etapa` era uma lista fixa que não existia em conta
+ * nenhuma; o "quando usar" de cada rota vai na descrição que o modelo lê; e a
+ * memória virou nativa — `lembrar` deixou de ser um toggle.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -21,6 +25,9 @@ import {
   type AiAgentInput,
   type AiStatus,
 } from '@/services/ai.backend.service';
+import { tagsBackendService } from '@/services/tags.backend.service';
+import { teamsBackendService, type TeamWithMembers } from '@/services/teams.backend.service';
+import type { Tag } from '@/services/tags.cloud.service';
 
 vi.mock('@/services/ai.backend.service', () => ({
   aiService: {
@@ -32,6 +39,19 @@ vi.mock('@/services/ai.backend.service', () => ({
   },
 }));
 
+vi.mock('@/services/tags.backend.service', () => ({
+  tagsBackendService: { listStageTags: vi.fn() },
+}));
+
+vi.mock('@/services/teams.backend.service', () => ({
+  teamsBackendService: { listTeams: vi.fn() },
+}));
+
+// O backend escopa pelo JWT; o hook só precisa de um account_id qualquer.
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { account_id: 'acc1' }, account: null }),
+}));
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
@@ -39,6 +59,8 @@ vi.mock('sonner', () => ({
 import { toast } from 'sonner';
 
 const servico = vi.mocked(aiService);
+const etapasApi = vi.mocked(tagsBackendService);
+const timesApi = vi.mocked(teamsBackendService);
 const avisos = vi.mocked(toast);
 
 const STATUS: AiStatus = {
@@ -48,6 +70,12 @@ const STATUS: AiStatus = {
   tools: [],
 };
 
+const FERRAMENTAS: AiStatus['tools'] = [
+  { name: 'lembrar', description: 'Guarda um fato sobre a pessoa.' },
+  { name: 'buscar_conhecimento', description: 'Consulta a base de conhecimento.' },
+];
+
+/** Os seis slugs que o painel antigo inventava. Agora só valem se o funil os tiver. */
 const ETAPAS = [
   'novo-lead',
   'em-atendimento',
@@ -57,11 +85,48 @@ const ETAPAS = [
   'perdido',
 ];
 
+function etapa(slug: string, name: string, ordem: number): Tag {
+  return {
+    id: `tag-${slug}`,
+    account_id: 'acc1',
+    funnel_id: 'f1',
+    name,
+    slug,
+    type: 'stage',
+    color: '#000',
+    ordem,
+    ativo: true,
+    created_at: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+/** O funil "de sempre": as seis etapas com os slugs que os formatos antigos usam. */
+const FUNIL_PADRAO: Tag[] = ETAPAS.map((slug, i) =>
+  etapa(slug, slug.replace(/-/g, ' '), i)
+);
+
+function time(over: Partial<TeamWithMembers> = {}): TeamWithMembers {
+  return {
+    id: 't1',
+    accountId: 'acc1',
+    name: 'Financeiro',
+    description: null,
+    allowAutoAssign: true,
+    sharedVisibility: true,
+    businessHours: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    members: [],
+    ...over,
+  };
+}
+
 function agente(over: Partial<AiAgent> = {}): AiAgent {
   return {
     id: 'a1',
     name: 'Marcus SDR',
     description: 'Qualifica lead novo de WhatsApp',
+    // O tipo do service ainda tem `role` (compatibilidade); o painel não lê nem envia.
     role: 'responder',
     systemPrompt: 'Você se chama Marcus.',
     provider: 'openai',
@@ -92,6 +157,13 @@ const ESQUEMA_SADIO: Record<string, unknown> = {
   },
   required: ['mensagem_de_resposta', 'etapa', 'transferir_para_humano'],
 };
+
+function esquemaComRota(rota: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...ESQUEMA_SADIO,
+    properties: { ...(ESQUEMA_SADIO.properties as Record<string, unknown>), rota },
+  };
+}
 
 interface EsquemaLido {
   properties: Record<string, Record<string, unknown> | undefined>;
@@ -143,9 +215,19 @@ function esperarFormulario() {
   return screen.findByLabelText('Nome');
 }
 
+/** Espera as etapas do funil chegarem: é delas que sai o enum gravado. */
+function esperarEtapas() {
+  return screen.findByTestId('pa-etapas');
+}
+
 function incluirRota(nome: string) {
   fireEvent.change(screen.getByPlaceholderText('financeiro'), { target: { value: nome } });
   fireEvent.click(screen.getByRole('button', { name: 'Incluir' }));
+}
+
+async function salvar() {
+  fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+  await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
 }
 
 beforeEach(() => {
@@ -158,6 +240,8 @@ beforeEach(() => {
   servico.createAgent.mockImplementation((input) =>
     Promise.resolve(agente({ id: 'novo', ...(input as Partial<AiAgent>) }))
   );
+  etapasApi.listStageTags.mockResolvedValue(FUNIL_PADRAO);
+  timesApi.listTeams.mockResolvedValue([]);
 });
 
 describe('enum de rota — o bug que mandava toda conversa pelo desvio', () => {
@@ -169,8 +253,7 @@ describe('enum de rota — o bug que mandava toda conversa pelo desvio', () => {
     incluirRota('financeiro');
     expect(screen.getByText('financeiro')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-    await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
+    await salvar();
 
     // As fixas NA FRENTE e a nova no fim: é esta lista que o backend lê para
     // decidir a saída do bloco.
@@ -185,21 +268,17 @@ describe('enum de rota — o bug que mandava toda conversa pelo desvio', () => {
   it('remover a última rota tira `rota` do formato em vez de deixar enum vazio', async () => {
     servico.listAgents.mockResolvedValue([
       agente({
-        outputSchema: {
-          ...ESQUEMA_SADIO,
-          properties: {
-            ...(ESQUEMA_SADIO.properties as Record<string, unknown>),
-            rota: { type: 'string', enum: ['respondeu', 'humano', 'encerrou', 'financeiro'] },
-          },
-        },
+        outputSchema: esquemaComRota({
+          type: 'string',
+          enum: ['respondeu', 'humano', 'encerrou', 'financeiro'],
+        }),
       }),
     ]);
     renderPainel();
     await esperarFormulario();
 
     fireEvent.click(screen.getByRole('button', { name: 'Remover financeiro' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-    await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
+    await salvar();
 
     expect(esquemaEnviado(ultimoUpdate()).properties.rota).toBeUndefined();
   });
@@ -212,8 +291,7 @@ describe('enum de rota — o bug que mandava toda conversa pelo desvio', () => {
     incluirRota('financeiro');
     incluirRota('suporte');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-    await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
+    await salvar();
 
     expect(enumDaRota(esquemaEnviado(ultimoUpdate()))).toEqual([
       'respondeu',
@@ -230,11 +308,10 @@ describe('`rota` nunca é obrigatória', () => {
     servico.listAgents.mockResolvedValue([
       agente({
         outputSchema: {
-          ...ESQUEMA_SADIO,
-          properties: {
-            ...(ESQUEMA_SADIO.properties as Record<string, unknown>),
-            rota: { type: 'string', enum: ['respondeu', 'humano', 'encerrou', 'financeiro'] },
-          },
+          ...esquemaComRota({
+            type: 'string',
+            enum: ['respondeu', 'humano', 'encerrou', 'financeiro'],
+          }),
           // Formato legado: exigia a rota em toda mensagem.
           required: ['mensagem_de_resposta', 'rota'],
         },
@@ -244,8 +321,7 @@ describe('`rota` nunca é obrigatória', () => {
     await esperarFormulario();
 
     incluirRota('suporte');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-    await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
+    await salvar();
 
     const esquema = esquemaEnviado(ultimoUpdate());
     expect(esquema.required).not.toContain('rota');
@@ -258,11 +334,11 @@ describe('formato padrão criado pelo painel', () => {
     servico.listAgents.mockResolvedValue([agente({ outputSchema: null })]);
     renderPainel();
     await esperarFormulario();
+    await esperarEtapas();
 
     // Só a rota é criada pela interface; o resto do formato vem do padrão.
     incluirRota('financeiro');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-    await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
+    await salvar();
 
     const esquema = esquemaEnviado(ultimoUpdate());
     // Campo fora do formato = campo que o modelo fica PROIBIDO de emitir, por
@@ -280,13 +356,7 @@ describe('formato padrão criado pelo painel', () => {
 });
 
 describe('formato com enum de rota quebrado', () => {
-  const SO_O_DESVIO: Record<string, unknown> = {
-    ...ESQUEMA_SADIO,
-    properties: {
-      ...(ESQUEMA_SADIO.properties as Record<string, unknown>),
-      rota: { type: 'string', enum: ['financeiro'] },
-    },
-  };
+  const SO_O_DESVIO = esquemaComRota({ type: 'string', enum: ['financeiro'] });
 
   it('avisa, ao abrir, quais saídas fixas o enum não deixa o agente dizer', async () => {
     servico.listAgents.mockResolvedValue([agente({ outputSchema: SO_O_DESVIO })]);
@@ -307,8 +377,7 @@ describe('formato com enum de rota quebrado', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Repor as saídas fixas' }));
     expect(screen.queryByText(/não deixa o agente dizer/i)).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-    await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
+    await salvar();
     expect(enumDaRota(esquemaEnviado(ultimoUpdate()))).toEqual([
       'respondeu',
       'humano',
@@ -333,6 +402,7 @@ describe('formato com enum de rota quebrado', () => {
     ]);
     renderPainel();
     await esperarFormulario();
+    await esperarEtapas();
 
     const aviso = screen.getByText(/O formato não declara/i);
     expect(within(aviso).getByText('etapa')).toBeInTheDocument();
@@ -342,9 +412,255 @@ describe('formato com enum de rota quebrado', () => {
     expect(aviso.textContent).not.toContain('a saída encerrou fica morta');
 
     fireEvent.click(screen.getByRole('button', { name: 'Incluir os campos' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-    await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
+    await salvar();
     expect(esquemaEnviado(ultimoUpdate()).properties.etapa?.enum).toEqual(ETAPAS);
+  });
+});
+
+describe('etapas vêm do funil real, não de uma lista fixa', () => {
+  const FUNIL_DA_CONTA: Tag[] = [
+    etapa('contato-feito', 'Contato feito', 0),
+    etapa('proposta', 'Proposta', 1),
+    etapa('fechado', 'Fechado', 2),
+  ];
+
+  it('mostra as etapas da conta como chips, na ordem do funil, e diz de onde vêm', async () => {
+    etapasApi.listStageTags.mockResolvedValue(FUNIL_DA_CONTA);
+    renderPainel();
+    await esperarFormulario();
+
+    const chips = await esperarEtapas();
+    expect(within(chips).getAllByText(/./).map((c) => c.textContent)).toEqual([
+      'Contato feito',
+      'Proposta',
+      'Fechado',
+    ]);
+    expect(screen.getByText(/Vêm do seu funil do Kanban\. Para mudar, edite o funil\./)).toBeInTheDocument();
+    // Somente leitura: não existe campo pra digitar etapa.
+    expect(screen.queryByRole('button', { name: /Remover Proposta/ })).toBeNull();
+  });
+
+  it('o enum gravado é o do funil — um formato antigo com os seis fixos é corrigido ao salvar', async () => {
+    etapasApi.listStageTags.mockResolvedValue(FUNIL_DA_CONTA);
+    servico.listAgents.mockResolvedValue([agente({ outputSchema: ESQUEMA_SADIO })]);
+    renderPainel();
+    await esperarFormulario();
+    await esperarEtapas();
+
+    // Qualquer mudança serve; o que interessa é o que sai no salvar.
+    fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Marcus' } });
+    await salvar();
+
+    expect(esquemaEnviado(ultimoUpdate()).properties.etapa?.enum).toEqual([
+      'contato-feito',
+      'proposta',
+      'fechado',
+    ]);
+  });
+
+  it('conta sem etapa: avisa em destaque e não grava enum nenhum', async () => {
+    etapasApi.listStageTags.mockResolvedValue([]);
+    servico.listAgents.mockResolvedValue([agente({ outputSchema: ESQUEMA_SADIO })]);
+    renderPainel();
+    await esperarFormulario();
+
+    expect(await screen.findByText(/Seu funil não tem etapa nenhuma/)).toBeInTheDocument();
+
+    await salvar();
+    const etapaGravada = esquemaEnviado(ultimoUpdate()).properties.etapa;
+    // A propriedade fica (o motor decide o que fazer com ela); a lista falsa não.
+    expect(etapaGravada).toBeDefined();
+    expect(etapaGravada?.enum).toBeUndefined();
+  });
+
+  it('se a lista de etapas falhar, o enum salvo não é tocado', async () => {
+    etapasApi.listStageTags.mockRejectedValue(new Error('rede fora'));
+    servico.listAgents.mockResolvedValue([agente({ outputSchema: ESQUEMA_SADIO })]);
+    renderPainel();
+    await esperarFormulario();
+    expect(await screen.findByText(/Não consegui carregar as etapas do funil/)).toBeInTheDocument();
+
+    await salvar();
+    expect(esquemaEnviado(ultimoUpdate()).properties.etapa?.enum).toEqual(ETAPAS);
+  });
+});
+
+describe('"quando usar" de cada rota', () => {
+  const FRASE =
+    'Por onde a conversa segue. Use respondeu, humano ou encerrou quando for um atendimento comum.';
+
+  it('vai na descrição de `rota`, uma linha por rota, depois da frase padrão', async () => {
+    servico.listAgents.mockResolvedValue([agente({ outputSchema: ESQUEMA_SADIO })]);
+    renderPainel();
+    await esperarFormulario();
+
+    incluirRota('financeiro');
+    incluirRota('suporte');
+    fireEvent.change(screen.getByLabelText('Quando usar financeiro'), {
+      target: { value: 'boleto, nota fiscal e cobrança' },
+    });
+    // Rota sem "quando usar" não ganha linha vazia.
+    await salvar();
+
+    expect(esquemaEnviado(ultimoUpdate()).properties.rota?.description).toBe(
+      `${FRASE}\n- financeiro: boleto, nota fiscal e cobrança`
+    );
+  });
+
+  it('volta preenchido ao abrir um formato salvo', async () => {
+    servico.listAgents.mockResolvedValue([
+      agente({
+        outputSchema: esquemaComRota({
+          type: 'string',
+          enum: ['respondeu', 'humano', 'encerrou', 'financeiro', 'suporte'],
+          description: `${FRASE}\n- financeiro: boleto\n- suporte: problema técnico no que já comprou`,
+        }),
+      }),
+    ]);
+    renderPainel();
+    await esperarFormulario();
+
+    expect(screen.getByLabelText('Quando usar financeiro')).toHaveValue('boleto');
+    expect(screen.getByLabelText('Quando usar suporte')).toHaveValue(
+      'problema técnico no que já comprou'
+    );
+  });
+
+  it('o espaço no fim não some enquanto se digita', async () => {
+    servico.listAgents.mockResolvedValue([agente({ outputSchema: ESQUEMA_SADIO })]);
+    renderPainel();
+    await esperarFormulario();
+
+    incluirRota('financeiro');
+    const campo = screen.getByLabelText('Quando usar financeiro');
+    fireEvent.change(campo, { target: { value: 'boleto ' } });
+    // Aparar aqui faria "boleto " virar "boleto" e a próxima letra grudar.
+    expect(campo).toHaveValue('boleto ');
+
+    fireEvent.blur(campo);
+    expect(campo).toHaveValue('boleto');
+  });
+});
+
+describe('times da conta viram sugestão de rota', () => {
+  it('um clique no time cria a rota com o slug do nome', async () => {
+    timesApi.listTeams.mockResolvedValue([
+      time({ id: 't1', name: 'Financeiro' }),
+      time({ id: 't2', name: 'Pós-venda' }),
+    ]);
+    servico.listAgents.mockResolvedValue([agente({ outputSchema: ESQUEMA_SADIO })]);
+    renderPainel();
+    await esperarFormulario();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Pós-venda' }));
+
+    // Virou rota (com o campo de "quando usar") e deixou de ser sugestão.
+    expect(screen.getByLabelText('Quando usar pos_venda')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pós-venda' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Financeiro' })).toBeInTheDocument();
+
+    await salvar();
+    expect(enumDaRota(esquemaEnviado(ultimoUpdate()))).toEqual([
+      'respondeu',
+      'humano',
+      'encerrou',
+      'pos_venda',
+    ]);
+  });
+
+  it('time cujo nome já é rota não aparece como sugestão', async () => {
+    timesApi.listTeams.mockResolvedValue([time({ id: 't1', name: 'Financeiro' })]);
+    servico.listAgents.mockResolvedValue([
+      agente({
+        outputSchema: esquemaComRota({
+          type: 'string',
+          enum: ['respondeu', 'humano', 'encerrou', 'financeiro'],
+        }),
+      }),
+    ]);
+    renderPainel();
+    await esperarFormulario();
+    await waitFor(() => expect(timesApi.listTeams).toHaveBeenCalled());
+
+    expect(screen.queryByText(/Times da conta/)).toBeNull();
+  });
+});
+
+describe('"Papel" saiu — o backend nunca leu', () => {
+  it('não existe o campo e `role` não vai no payload', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    expect(screen.queryByLabelText('Papel')).toBeNull();
+    expect(screen.queryByText('Responde ao lead')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Marcus' } });
+    await salvar();
+
+    const payload = ultimoUpdate();
+    expect(payload).toBeDefined();
+    expect(Object.keys(payload ?? {})).not.toContain('role');
+    expect(payload?.name).toBe('Marcus');
+  });
+});
+
+describe('ferramentas: memória nativa e base', () => {
+  it('`lembrar` não é toggle — memória é sempre ativa e vale 60 dias', async () => {
+    servico.getStatus.mockResolvedValue({ ...STATUS, tools: FERRAMENTAS });
+    renderPainel();
+    await esperarFormulario();
+
+    await screen.findByRole('switch', { name: 'buscar_conhecimento' });
+    expect(screen.queryByRole('switch', { name: 'lembrar' })).toBeNull();
+    expect(screen.getByText('Memória — sempre ativa')).toBeInTheDocument();
+    expect(screen.getByText(/por 60 dias/)).toBeInTheDocument();
+  });
+
+  function alertaDaBase(): HTMLElement | undefined {
+    return screen
+      .queryAllByRole('alert')
+      .find((el) => /buscar_conhecimento/.test(el.textContent ?? ''));
+  }
+
+  it('busca ligada sem base: alerta em destaque com o que fazer', async () => {
+    servico.getStatus.mockResolvedValue({ ...STATUS, tools: FERRAMENTAS });
+    servico.listAgents.mockResolvedValue([
+      agente({ tools: ['buscar_conhecimento'], knowledgeBaseId: null, knowledgeBase: null }),
+    ]);
+    renderPainel();
+    await esperarFormulario();
+
+    const alerta = alertaDaBase();
+    expect(alerta).toBeDefined();
+    expect(alerta?.textContent).toMatch(/está ligada, mas este agente não tem base/);
+    expect(alerta?.textContent).toMatch(
+      /Arraste o bloco Base de conhecimento e ligue na entrada deste passo/
+    );
+  });
+
+  it('com base ligada, não alerta — diz qual base consulta', async () => {
+    servico.getStatus.mockResolvedValue({ ...STATUS, tools: FERRAMENTAS });
+    servico.listAgents.mockResolvedValue([
+      agente({
+        tools: ['buscar_conhecimento'],
+        knowledgeBaseId: 'b1',
+        knowledgeBase: { id: 'b1', name: 'Preços' },
+      }),
+    ]);
+    renderPainel();
+    await esperarFormulario();
+
+    expect(alertaDaBase()).toBeUndefined();
+    expect(screen.getByText('Preços')).toBeInTheDocument();
+  });
+
+  it('busca desligada não alerta, mesmo sem base', async () => {
+    servico.getStatus.mockResolvedValue({ ...STATUS, tools: FERRAMENTAS });
+    servico.listAgents.mockResolvedValue([agente({ tools: [], knowledgeBaseId: null })]);
+    renderPainel();
+    await esperarFormulario();
+
+    expect(alertaDaBase()).toBeUndefined();
   });
 });
 

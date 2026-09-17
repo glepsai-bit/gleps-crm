@@ -478,8 +478,17 @@ describe('o valor gravado no escopo oposto continua visível', () => {
 // A FICHA E A FERRAMENTA — duas telas, um estado possível
 // ============================================
 
-describe('sem a ferramenta `lembrar`, a ficha não manda registrar', () => {
-  it('mantém o que já se sabe e tira a instrução de gravar', async () => {
+/*
+  C4 — MEMÓRIA É NATIVA.
+
+  Antes, `lembrar` só ia ao modelo se estivesse na lista de ferramentas do
+  agente, e a ficha tinha que descobrir isso pra não mandar usar o que não
+  existia. Era um estado silencioso: campos declarados, ferramenta esquecida,
+  nada gravado. Agora `lembrar` vai SEMPRE — anotar o que o lead disse não é
+  opcional num atendimento — e a ficha sempre pode pedir.
+*/
+describe('`lembrar` é nativa: vai ao modelo mesmo fora da lista de ferramentas', () => {
+  it('com tools: [] a ferramenta é enviada e a ficha pede o que falta', async () => {
     prismaMock.aiAgent.findFirst.mockResolvedValue(
       agente({ memoryFields: CAMPOS, tools: [] })
     );
@@ -488,63 +497,36 @@ describe('sem a ferramenta `lembrar`, a ficha não manda registrar', () => {
       accountId: ACC,
       agentId: 'ag-1',
       userMessage: 'oi',
-      memory: { faturamento_mensal: { v: 'R$ 80 mil', por: 'Marcus', em: 'x' } },
+      memory: { faturamento_mensal: { v: 'R$ 80 mil', por: 'Marcus', em: new Date().toISOString() } },
     });
 
-    const s = systemDe();
-    // Nenhuma ferramenta foi enviada ao provider...
-    expect(chatMock.mock.calls[0][0].tools).toBeUndefined();
-    // ...então mandar "use a ferramenta `lembrar`" só produz alucinação de
-    // chamada, ou promessa ao lead de um registro que nunca acontece.
-    expect(s).not.toContain('lembrar');
-    expect(s).not.toContain('FICHA QUE VOCÊ MANTÉM');
-    // Mas o que o agente JÁ SABE continua à vista: isso vale mesmo sem a
-    // ferramenta — é o que evita perguntar de novo.
-    expect(s).toContain('R$ 80 mil');
-  });
-
-  it('sem ferramenta e sem nada preenchido, não sobra bloco nenhum', async () => {
-    prismaMock.aiAgent.findFirst.mockResolvedValue(
-      agente({ memoryFields: CAMPOS, tools: [] })
-    );
-
-    await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
-
-    const s = systemDe();
-    // Sem fato a mostrar e sem ação a pedir, o buraco "(ainda não sei)" é só
-    // um convite a prometer o que não vai acontecer.
-    expect(s).not.toContain('ainda não sei');
-    expect(s).not.toContain('lembrar');
-  });
-
-  it('com outras ferramentas, mas sem `lembrar`, vale a mesma regra', async () => {
-    prismaMock.aiAgent.findFirst.mockResolvedValue(
-      agente({ memoryFields: CAMPOS, tools: ['buscar_conhecimento'] })
-    );
-
-    await aiAgentService.run({
-      accountId: ACC,
-      agentId: 'ag-1',
-      userMessage: 'oi',
-      memory: { decisor: 'o sócio' },
-    });
-
-    const s = systemDe();
-    expect(s).not.toContain('`lembrar`');
-    expect(s).toContain('o sócio');
-  });
-
-  it('com a ferramenta, a ficha segue pedindo o que falta', async () => {
-    prismaMock.aiAgent.findFirst.mockResolvedValue(
-      agente({ memoryFields: CAMPOS, tools: ['lembrar'] })
-    );
-
-    await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
-
+    expect(lembrarEnviado()).toBeDefined();
     const s = systemDe();
     expect(s).toContain('FICHA QUE VOCÊ MANTÉM');
     expect(s).toContain('Use a ferramenta `lembrar`');
+    expect(s).toContain('R$ 80 mil');
     expect(s).toContain('decisor: (ainda não sei)');
+  });
+
+  it('sem campos declarados e com tools: [], vai a definição livre do catálogo', async () => {
+    prismaMock.aiAgent.findFirst.mockResolvedValue(agente({ tools: [] }));
+
+    await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
+
+    const lembrar = lembrarEnviado();
+    expect(lembrar.description).toBe(AVAILABLE_TOOLS.lembrar.definition.description);
+  });
+
+  it('listar `lembrar` nas ferramentas não a duplica', async () => {
+    prismaMock.aiAgent.findFirst.mockResolvedValue(
+      agente({ memoryFields: CAMPOS, tools: ['lembrar', 'buscar_conhecimento'] })
+    );
+
+    await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
+
+    const nomes = (chatMock.mock.calls[0][0].tools as { name: string }[]).map((t) => t.name);
+    expect(nomes.filter((n) => n === 'lembrar')).toHaveLength(1);
+    expect(nomes).toContain('buscar_conhecimento');
   });
 });
 

@@ -6,10 +6,18 @@
  * negócio, os documentos com status de indexação, reindexar/excluir e testar a
  * busca.
  *
+ * A ordem do painel é a ordem das perguntas do usuário: primeiro QUAL base
+ * este bloco usa (escolher, criar, excluir — as três com texto, não só ícone),
+ * depois o que a IA sabe sobre o negócio, depois COMO colocar material dentro
+ * (arquivo, texto colado ou página do site — lado a lado), aí a lista do que
+ * já está lá e, por fim, o teste da busca.
+ *
  * Tudo é INLINE dentro deste diálogo — nada de diálogo sobre diálogo. O painel
  * já é uma camada por cima do canvas; empilhar mais uma tira o usuário do
  * contexto que ele veio evitar. Por isso até a confirmação de exclusão é um
- * bloco que abre no lugar, e não um AlertDialog.
+ * bloco que abre no lugar, e não um AlertDialog. Pelo mesmo motivo o erro de
+ * envio (PDF escaneado, página sem texto, arquivo grande) fica ao lado do
+ * botão que o causou, e não só num toast que some.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -47,8 +55,10 @@ import {
   BookOpen,
   Building2,
   CheckCircle2,
+  ClipboardPaste,
   Clock,
   FileText,
+  Globe,
   Loader2,
   Plus,
   RefreshCw,
@@ -75,17 +85,60 @@ const STATUS_META: Record<
   failed: { label: 'Falhou', icon: XCircle, className: 'text-destructive' },
 };
 
-/** O navegador só consegue ler como texto puro o que já é texto puro. */
+/** Os três jeitos de colocar material na base. */
+type Caminho = 'arquivo' | 'texto' | 'url';
+
+/** Vão inteiros ao servidor (multipart) — é lá que o texto é extraído. */
+const EXTENSOES_UPLOAD = ['pdf', 'docx'];
+/** Planilha: o navegador converte pra CSV antes de enviar. */
+const EXTENSOES_PLANILHA = ['xlsx'];
+/** O navegador lê como texto puro o que já é texto puro. */
 const EXTENSOES_TEXTO = ['txt', 'md', 'csv', 'json'];
-const ACEITA_ARQUIVO = '.txt,.md,.csv,.json,text/plain,text/markdown,text/csv,application/json';
+const ACEITA_ARQUIVO = '.pdf,.docx,.xlsx,.csv,.txt,.md,.json';
+
+/** Mesmo teto do servidor para o que sobe inteiro (PDF e Word). */
+const LIMITE_UPLOAD_MB = 15;
+/**
+ * Teto do que é aberto na aba. `file.text()` e a leitura da planilha carregam
+ * tudo na memória do navegador: um .json de dezenas de MB congela a página
+ * antes de qualquer erro aparecer.
+ */
+const LIMITE_NAVEGADOR_MB = 2;
+const MB = 1024 * 1024;
+
+const extensaoDe = (nome: string) => nome.split('.').pop()?.toLowerCase() ?? '';
+const semExtensao = (nome: string) => nome.replace(/\.[^.]+$/, '');
+const tamanhoLegivel = (bytes: number) =>
+  bytes < MB ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / MB).toFixed(1)} MB`;
 
 /**
- * Teto do arquivo lido no navegador. `file.text()` carrega tudo na memória da
- * aba e o textarea ainda precisa renderizar o resultado: um .json de dezenas de
- * MB congela a página antes de qualquer erro aparecer.
+ * O apiClient rejeita com um objeto { message, status } (não é Error) e o
+ * fetch do upload faz igual; o `throw new Error` local também cai aqui.
+ * Extrai o texto de qualquer um dos três sem cair no "[object Object]".
  */
-const LIMITE_ARQUIVO_MB = 2;
-const LIMITE_ARQUIVO_BYTES = LIMITE_ARQUIVO_MB * 1024 * 1024;
+function mensagemDeErro(e: unknown, fallback: string): string {
+  if (e && typeof e === 'object' && 'message' in e) {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === 'string' && m.trim()) return m;
+  }
+  return fallback;
+}
+
+/**
+ * Cada aba vira um bloco CSV; com mais de uma, cada bloco leva um título —
+ * é a linha de prosa que separa uma tabela da outra no fatiador do servidor.
+ * A lib entra por import dinâmico: é grande e só quem sobe planilha paga por ela.
+ */
+async function planilhaParaCsv(file: File): Promise<string> {
+  const XLSX = await import('xlsx');
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  const blocos = workbook.SheetNames.map((nome) => ({
+    nome,
+    csv: XLSX.utils.sheet_to_csv(workbook.Sheets[nome]).trim(),
+  })).filter((b) => b.csv);
+  if (blocos.length <= 1) return blocos[0]?.csv ?? '';
+  return blocos.map((b) => `# ${b.nome}\n${b.csv}`).join('\n\n');
+}
 
 export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
   const queryClient = useQueryClient();
@@ -96,10 +149,13 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
   // sobrescrever o texto no meio da digitação.
   const [contexto, setContexto] = useState<string | null>(null);
 
-  const [docAberto, setDocAberto] = useState(false);
+  const [caminho, setCaminho] = useState<Caminho | null>(null);
   const [docForm, setDocForm] = useState({ title: '', content: '' });
-  /** Nome do arquivo de onde o conteúdo veio — vira o `sourceRef` do documento. */
-  const [origemArquivo, setOrigemArquivo] = useState<string | null>(null);
+  const [arquivo, setArquivo] = useState<File | null>(null);
+  const [tituloArquivo, setTituloArquivo] = useState('');
+  const [urlForm, setUrlForm] = useState({ url: '', title: '' });
+  /** Erro do caminho aberto — fica ao lado do botão que o causou. */
+  const [erroMaterial, setErroMaterial] = useState<string | null>(null);
   const [confirmandoExclusao, setConfirmandoExclusao] = useState<string | null>(null);
   const [confirmandoBase, setConfirmandoBase] = useState(false);
   const arquivoRef = useRef<HTMLInputElement>(null);
@@ -131,16 +187,29 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
     },
   });
 
+  /** Zera os três caminhos de material de uma vez. */
+  const limparMaterial = () => {
+    setCaminho(null);
+    setDocForm({ title: '', content: '' });
+    setArquivo(null);
+    setTituloArquivo('');
+    setUrlForm({ url: '', title: '' });
+    setErroMaterial(null);
+  };
+
   // Troca de base zera tudo que era da base anterior — resultado de busca e
-  // rascunho de texto pertencem a uma base só. Quem dispara a troca pergunta
+  // rascunho de material pertencem a uma base só. Quem dispara a troca pergunta
   // antes (`trocarBase`); aqui é só a limpeza.
   useEffect(() => {
     setContexto(null);
     setTrechos(null);
     setBusca('');
-    setDocAberto(false);
+    setCaminho(null);
     setDocForm({ title: '', content: '' });
-    setOrigemArquivo(null);
+    setArquivo(null);
+    setTituloArquivo('');
+    setUrlForm({ url: '', title: '' });
+    setErroMaterial(null);
     setConfirmandoExclusao(null);
     setConfirmandoBase(false);
   }, [baseId]);
@@ -159,8 +228,15 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
   };
 
   const contextoAlterado = contexto !== null && contexto !== (base?.businessContext ?? '');
+  const rascunhoMaterial =
+    !!docForm.title.trim() ||
+    !!docForm.content.trim() ||
+    !!arquivo ||
+    !!tituloArquivo.trim() ||
+    !!urlForm.url.trim() ||
+    !!urlForm.title.trim();
   /** O que pertence à base da vez — trocar de base zera os dois. */
-  const rascunhoDaBase = contextoAlterado || !!docForm.title.trim() || !!docForm.content.trim();
+  const rascunhoDaBase = contextoAlterado || rascunhoMaterial;
   // O formulário da base nova sobrevive à troca de base, mas morre junto com o
   // painel: conta para fechar, não para trocar.
   const rascunhoNovaBase =
@@ -209,9 +285,7 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
     onSuccess: () => {
       setConfirmandoBase(false);
       setContexto(null);
-      setDocAberto(false);
-      setDocForm({ title: '', content: '' });
-      setOrigemArquivo(null);
+      limparMaterial();
       setTrechos(null);
       setBusca('');
       invalidarBases();
@@ -244,27 +318,79 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
     onError: (e: Error) => toast.error(e.message || 'Não deu pra salvar'),
   });
 
+  /** O que os três caminhos fazem igual depois que o documento entra. */
+  const documentoEntrou = () => {
+    invalidarBases();
+    invalidarDocs(baseId);
+    setErroMaterial(null);
+    toast.success('Documento enviado', {
+      description: 'A indexação roda em segundo plano — o status atualiza sozinho.',
+    });
+  };
+
+  const enviarArquivoMutation = useMutation({
+    mutationFn: async () => {
+      const file = arquivo!;
+      const ext = extensaoDe(file.name);
+      const titulo = tituloArquivo.trim() || semExtensao(file.name);
+      if (EXTENSOES_UPLOAD.includes(ext)) {
+        return aiService.uploadDoc(baseId!, file, tituloArquivo.trim() || undefined);
+      }
+      const content = EXTENSOES_PLANILHA.includes(ext)
+        ? await planilhaParaCsv(file)
+        : await file.text();
+      if (!content.trim()) {
+        throw new Error(
+          EXTENSOES_PLANILHA.includes(ext)
+            ? 'A planilha está vazia — não há nada pra indexar.'
+            : 'O arquivo está vazio — não há nada pra indexar.'
+        );
+      }
+      // Sem isto todo documento entra como digitado e o nome do arquivo de
+      // origem se perde — é por ele que se descobre de onde veio o material.
+      return aiService.createDoc(baseId!, {
+        title: titulo,
+        content,
+        sourceType: 'file',
+        sourceRef: file.name,
+      });
+    },
+    onSuccess: () => {
+      // O caminho continua aberto: quem sobe um arquivo costuma subir o próximo.
+      setArquivo(null);
+      setTituloArquivo('');
+      documentoEntrou();
+    },
+    onError: (e: unknown) => setErroMaterial(mensagemDeErro(e, 'Não deu pra enviar o arquivo')),
+  });
+
   const criarDocMutation = useMutation({
     mutationFn: () =>
       aiService.createDoc(baseId!, {
         title: docForm.title.trim(),
         content: docForm.content,
-        // Sem isto todo documento entra como digitado e o nome do arquivo de
-        // origem se perde — é por ele que se descobre de onde veio o material.
-        sourceType: origemArquivo ? 'file' : 'text',
-        sourceRef: origemArquivo,
+        sourceType: 'text',
+        sourceRef: null,
       }),
     onSuccess: () => {
-      invalidarBases();
-      invalidarDocs(baseId);
-      setDocAberto(false);
       setDocForm({ title: '', content: '' });
-      setOrigemArquivo(null);
-      toast.success('Documento enviado', {
-        description: 'A indexação roda em segundo plano — o status atualiza sozinho.',
-      });
+      documentoEntrou();
     },
-    onError: (e: Error) => toast.error(e.message || 'Não deu pra enviar o documento'),
+    onError: (e: unknown) => setErroMaterial(mensagemDeErro(e, 'Não deu pra enviar o texto')),
+  });
+
+  const importarUrlMutation = useMutation({
+    mutationFn: () => {
+      const digitada = urlForm.url.trim();
+      // "site.com/precos" é o que a maioria digita; o servidor exige o esquema.
+      const url = /^https?:\/\//i.test(digitada) ? digitada : `https://${digitada}`;
+      return aiService.createDocFromUrl(baseId!, url, urlForm.title.trim() || undefined);
+    },
+    onSuccess: () => {
+      setUrlForm({ url: '', title: '' });
+      documentoEntrou();
+    },
+    onError: (e: unknown) => setErroMaterial(mensagemDeErro(e, 'Não deu pra importar a página')),
   });
 
   const reindexarMutation = useMutation({
@@ -294,40 +420,37 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
     onError: (e: Error) => toast.error(e.message || 'A busca falhou'),
   });
 
-  // Nunca rejeita: é chamada com `void` no onChange do input, e uma promise
-  // solta quebraria em silêncio, sem toast nenhum.
-  const lerArquivo = async (file: File) => {
-    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-    if (!EXTENSOES_TEXTO.includes(ext)) {
-      toast.error('Esse arquivo não serve aqui', {
-        description:
-          'PDF e Word são arquivos binários: o texto chega embaralhado e a IA aprende lixo. Abra o arquivo, copie o texto e cole no campo abaixo.',
-      });
-      return;
-    }
-    if (file.size > LIMITE_ARQUIVO_BYTES) {
-      toast.error(
-        `Arquivo grande demais — ${(file.size / 1024 / 1024).toFixed(1)} MB, o limite é ${LIMITE_ARQUIVO_MB} MB`,
-        {
-          description:
-            'Acima disso a aba trava só para abrir o texto. Quebre o material em documentos menores por assunto — a busca também acerta mais assim.',
-        }
+  /** Barra o que não serve ANTES de sair da máquina: formato e tamanho. */
+  const escolherArquivo = (file: File) => {
+    const ext = extensaoDe(file.name);
+    const sobeInteiro = EXTENSOES_UPLOAD.includes(ext);
+    const aceito =
+      sobeInteiro || EXTENSOES_PLANILHA.includes(ext) || EXTENSOES_TEXTO.includes(ext);
+    if (!aceito) {
+      setArquivo(null);
+      setErroMaterial(
+        `Formato não aceito (.${ext || '?'}). Envie PDF, Word (.docx), planilha (.xlsx), .csv, .txt, .md ou .json.`
       );
       return;
     }
-    try {
-      const content = await file.text();
-      setDocForm((atual) => ({
-        title: atual.title.trim() || file.name.replace(/\.[^.]+$/, ''),
-        content,
-      }));
-      setOrigemArquivo(file.name);
-    } catch {
-      toast.error('Não deu pra ler o arquivo', {
-        description:
-          'Ele pode ter sido movido depois de escolhido, ou não ser texto de verdade. Abra o arquivo, copie o conteúdo e cole no campo abaixo.',
-      });
+    const limiteMb = sobeInteiro ? LIMITE_UPLOAD_MB : LIMITE_NAVEGADOR_MB;
+    if (file.size > limiteMb * MB) {
+      setArquivo(null);
+      setErroMaterial(
+        `Arquivo grande demais — ${tamanhoLegivel(file.size)}, o limite é ${limiteMb} MB. ` +
+          (sobeInteiro
+            ? 'Divida o material em partes por assunto — a busca também acerta mais assim.'
+            : 'Acima disso a aba trava só para abrir o conteúdo. Quebre em arquivos menores por assunto.')
+      );
+      return;
     }
+    setErroMaterial(null);
+    setArquivo(file);
+  };
+
+  const abrirCaminho = (novo: Caminho) => {
+    setErroMaterial(null);
+    setCaminho((atual) => (atual === novo ? null : novo));
   };
 
   const semEmbeddings = statusQuery.data && !statusQuery.data.knowledgeBaseReady;
@@ -336,6 +459,18 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
   // vazia por falha, e acusar sumiço faz o usuário criar uma base duplicada —
   // desligando o bloco da base real, que continua lá.
   const baseSumiu = !!baseId && !base && !basesQuery.isLoading && !listaQuebrou;
+
+  const CAMINHOS: { id: Caminho; label: string; icon: typeof Upload; dica: string }[] = [
+    { id: 'arquivo', label: 'Enviar arquivo', icon: Upload, dica: 'PDF, Word, planilha, texto' },
+    { id: 'texto', label: 'Colar texto', icon: ClipboardPaste, dica: 'Digite ou cole aqui' },
+    { id: 'url', label: 'Página do site', icon: Globe, dica: 'Importa o texto de uma URL' },
+  ];
+
+  const erroInline = erroMaterial && (
+    <p role="alert" className="text-xs text-destructive leading-relaxed break-words">
+      {erroMaterial}
+    </p>
+  );
 
   return (
     <Dialog open onOpenChange={(aberto) => !aberto && fechar()}>
@@ -367,25 +502,33 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
             </div>
           )}
 
-          {/* ---------- Escolher, criar ou excluir a base ---------- */}
+          {/* ---------- 1. Qual base este bloco usa ---------- */}
           <div className="space-y-2">
-            <Label className="text-xs">Base usada por este bloco</Label>
+            <div>
+              <span className="text-sm font-medium">Qual base este bloco usa</span>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Escolha uma base já criada, crie uma nova ou exclua a que está ligada aqui.
+              </p>
+            </div>
             {basesQuery.isLoading ? (
               <Skeleton className="h-9 w-full" />
             ) : (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Select
                   value={base?.id ?? undefined}
                   onValueChange={trocarBase}
                   disabled={listaQuebrou}
                 >
-                  <SelectTrigger className="h-9">
+                  <SelectTrigger
+                    className="h-9 min-w-[200px] flex-1"
+                    aria-label="Escolher base existente"
+                  >
                     <SelectValue
                       placeholder={
                         listaQuebrou
                           ? 'Não consegui carregar as bases'
                           : basesQuery.data?.length
-                            ? 'Escolha a base'
+                            ? 'Escolher existente'
                             : 'Nenhuma base criada ainda'
                       }
                     />
@@ -399,32 +542,32 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                   </SelectContent>
                 </Select>
                 <Button
-                  variant="outline"
+                  variant={criandoBase ? 'secondary' : 'outline'}
                   className="h-9 shrink-0"
                   disabled={listaQuebrou}
+                  aria-pressed={criandoBase}
                   onClick={() => setCriandoBase((v) => !v)}
                 >
                   {criandoBase ? (
-                    <X className="w-4 h-4" />
+                    <>
+                      <X className="w-4 h-4 mr-1.5" /> Cancelar nova base
+                    </>
                   ) : (
                     <>
-                      <Plus className="w-4 h-4 mr-1.5" /> Nova base
+                      <Plus className="w-4 h-4 mr-1.5" /> Criar nova base
                     </>
                   )}
                 </Button>
-                {base && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 shrink-0 text-destructive"
-                    aria-label={`Excluir a base ${base.name}`}
-                    title="Excluir esta base"
-                    onClick={() => setConfirmandoBase(true)}
-                    disabled={excluirBaseMutation.isPending}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                )}
+                <Button
+                  variant="outline"
+                  className="h-9 shrink-0 text-destructive hover:text-destructive"
+                  aria-label={base ? `Excluir a base ${base.name}` : 'Excluir esta base'}
+                  title={base ? 'Excluir esta base' : 'Escolha uma base para poder excluí-la'}
+                  onClick={() => setConfirmandoBase(true)}
+                  disabled={!base || excluirBaseMutation.isPending}
+                >
+                  <Trash2 className="w-4 h-4 mr-1.5" /> Excluir esta
+                </Button>
               </div>
             )}
 
@@ -549,7 +692,7 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
             <>
               <Separator />
 
-              {/* ---------- Sobre o negócio ---------- */}
+              {/* ---------- 2. Sobre o negócio ---------- */}
               <div className="rounded-md border bg-muted/30 p-3 space-y-2">
                 <div className="flex items-center gap-2">
                   <Building2 className="w-4 h-4 text-muted-foreground" />
@@ -587,30 +730,122 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                 )}
               </div>
 
-              {/* ---------- Documentos ---------- */}
+              {/* ---------- 3. Adicionar material ---------- */}
               <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium">
-                    Documentos
-                    <span className="text-muted-foreground font-normal">
-                      {' '}
-                      · {base.chunkCount} trechos indexados
-                    </span>
-                  </span>
-                  <Button size="sm" variant="outline" onClick={() => setDocAberto((v) => !v)}>
-                    {docAberto ? (
-                      <>
-                        <X className="w-4 h-4 mr-1.5" /> Fechar
-                      </>
-                    ) : (
-                      <>
-                        <Plus className="w-4 h-4 mr-1.5" /> Documento
-                      </>
-                    )}
-                  </Button>
+                <div>
+                  <span className="text-sm font-medium">Adicionar material</span>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Três jeitos de colocar conhecimento na base. Tudo vira trechos pesquisáveis —
+                    o agente consulta só o que a pergunta do lead pede.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {CAMINHOS.map((c) => {
+                    const Icone = c.icon;
+                    const ativo = caminho === c.id;
+                    return (
+                      <Button
+                        key={c.id}
+                        type="button"
+                        variant={ativo ? 'secondary' : 'outline'}
+                        aria-pressed={ativo}
+                        className={`h-auto py-2.5 flex-col items-start gap-0.5 text-left ${
+                          ativo ? 'ring-1 ring-primary/40' : ''
+                        }`}
+                        onClick={() => abrirCaminho(c.id)}
+                      >
+                        <span className="flex items-center gap-1.5 text-sm font-medium">
+                          <Icone className="w-4 h-4" /> {c.label}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground font-normal">
+                          {c.dica}
+                        </span>
+                      </Button>
+                    );
+                  })}
                 </div>
 
-                {docAberto && (
+                {caminho === 'arquivo' && (
+                  <div className="rounded-md border bg-muted/30 p-3 space-y-3">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="pb-doc-arquivo" className="text-xs">
+                        Arquivo
+                      </Label>
+                      <Input
+                        id="pb-doc-arquivo"
+                        ref={arquivoRef}
+                        type="file"
+                        accept={ACEITA_ARQUIVO}
+                        className="h-8 bg-background text-xs"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) escolherArquivo(file);
+                          // Zera o input: sem isto, escolher o MESMO arquivo de
+                          // novo (depois de corrigi-lo) não dispara o onChange.
+                          if (arquivoRef.current) arquivoRef.current.value = '';
+                        }}
+                      />
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        <strong>PDF e Word (.docx)</strong> até {LIMITE_UPLOAD_MB} MB — o texto é
+                        extraído no servidor. <strong>Planilha (.xlsx)</strong> vira CSV aqui no
+                        navegador. <strong>.csv, .txt, .md e .json</strong> até {LIMITE_NAVEGADOR_MB}{' '}
+                        MB. PDF escaneado (só imagem) não é lido.
+                      </p>
+                    </div>
+
+                    {arquivo && (
+                      <>
+                        <div className="flex items-center gap-2 text-xs">
+                          <FileText className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                          <span className="font-medium truncate">{arquivo.name}</span>
+                          <span className="text-muted-foreground shrink-0">
+                            · {tamanhoLegivel(arquivo.size)}
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 shrink-0"
+                            aria-label="Remover arquivo escolhido"
+                            onClick={() => {
+                              setArquivo(null);
+                              setErroMaterial(null);
+                            }}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="pb-doc-arquivo-titulo" className="text-xs">
+                            Título (opcional)
+                          </Label>
+                          <Input
+                            id="pb-doc-arquivo-titulo"
+                            className="h-8 bg-background"
+                            value={tituloArquivo}
+                            onChange={(e) => setTituloArquivo(e.target.value)}
+                            placeholder={semExtensao(arquivo.name)}
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    <div className="space-y-2">
+                      <Button
+                        size="sm"
+                        onClick={() => enviarArquivoMutation.mutate()}
+                        disabled={!arquivo || enviarArquivoMutation.isPending}
+                      >
+                        {enviarArquivoMutation.isPending && (
+                          <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                        )}
+                        Enviar para indexação
+                      </Button>
+                      {erroInline}
+                    </div>
+                  </div>
+                )}
+
+                {caminho === 'texto' && (
                   <div className="rounded-md border bg-muted/30 p-3 space-y-3">
                     <div className="space-y-1.5">
                       <Label htmlFor="pb-doc-titulo" className="text-xs">
@@ -624,32 +859,6 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                         placeholder="Tabela de preços 2026"
                       />
                     </div>
-
-                    <div className="space-y-1.5">
-                      <Label htmlFor="pb-doc-arquivo" className="text-xs flex items-center gap-1.5">
-                        <Upload className="w-3.5 h-3.5" /> Arquivo de texto (opcional)
-                      </Label>
-                      <Input
-                        id="pb-doc-arquivo"
-                        ref={arquivoRef}
-                        type="file"
-                        accept={ACEITA_ARQUIVO}
-                        className="h-8 bg-background text-xs"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) void lerArquivo(file);
-                          // Zera o input: sem isto, escolher o MESMO arquivo de
-                          // novo (depois de corrigi-lo) não dispara o onChange.
-                          if (arquivoRef.current) arquivoRef.current.value = '';
-                        }}
-                      />
-                      <p className="text-[11px] text-muted-foreground leading-relaxed">
-                        Aceita <strong>.txt, .md, .csv e .json</strong> de até {LIMITE_ARQUIVO_MB}{' '}
-                        MB. PDF e Word não — são arquivos binários e o texto sai embaralhado; abra,
-                        copie e cole abaixo.
-                      </p>
-                    </div>
-
                     <div className="space-y-1.5">
                       <Label htmlFor="pb-doc-conteudo" className="text-xs">
                         Conteúdo
@@ -657,36 +866,103 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                       <Textarea
                         id="pb-doc-conteudo"
                         value={docForm.content}
-                        onChange={(e) => {
-                          const content = e.target.value;
-                          setDocForm((atual) => ({ ...atual, content }));
-                          // Esvaziou o campo: o que vier depois é texto digitado,
-                          // não mais o arquivo que foi carregado antes.
-                          if (!content.trim()) setOrigemArquivo(null);
-                        }}
+                        onChange={(e) => setDocForm({ ...docForm, content: e.target.value })}
                         className="min-h-[160px] font-mono text-xs bg-background"
                         placeholder="Cole aqui o material do negócio…"
                       />
                       <p className="text-[11px] text-muted-foreground">
                         {docForm.content.length.toLocaleString('pt-BR')} caracteres
-                        {origemArquivo && <> · carregado de {origemArquivo}</>}
                       </p>
                     </div>
-
-                    <Button
-                      size="sm"
-                      onClick={() => criarDocMutation.mutate()}
-                      disabled={
-                        !docForm.title.trim() || !docForm.content.trim() || criarDocMutation.isPending
-                      }
-                    >
-                      {criarDocMutation.isPending && (
-                        <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                      )}
-                      Enviar para indexação
-                    </Button>
+                    <div className="space-y-2">
+                      <Button
+                        size="sm"
+                        onClick={() => criarDocMutation.mutate()}
+                        disabled={
+                          !docForm.title.trim() ||
+                          !docForm.content.trim() ||
+                          criarDocMutation.isPending
+                        }
+                      >
+                        {criarDocMutation.isPending && (
+                          <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                        )}
+                        Enviar para indexação
+                      </Button>
+                      {erroInline}
+                    </div>
                   </div>
                 )}
+
+                {caminho === 'url' && (
+                  <div className="rounded-md border bg-muted/30 p-3 space-y-3">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="pb-doc-url" className="text-xs">
+                        Endereço da página
+                      </Label>
+                      <Input
+                        id="pb-doc-url"
+                        type="url"
+                        inputMode="url"
+                        className="h-8 bg-background"
+                        value={urlForm.url}
+                        onChange={(e) => setUrlForm({ ...urlForm, url: e.target.value })}
+                        placeholder="https://seusite.com.br/planos"
+                        onKeyDown={(e) => {
+                          if (
+                            e.key === 'Enter' &&
+                            urlForm.url.trim() &&
+                            !importarUrlMutation.isPending
+                          ) {
+                            e.preventDefault();
+                            importarUrlMutation.mutate();
+                          }
+                        }}
+                      />
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        O servidor baixa a página e guarda só o texto legível — títulos,
+                        parágrafos, listas e tabelas. Uma página por documento; página que exige
+                        login não é lida.
+                      </p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="pb-doc-url-titulo" className="text-xs">
+                        Título (opcional)
+                      </Label>
+                      <Input
+                        id="pb-doc-url-titulo"
+                        className="h-8 bg-background"
+                        value={urlForm.title}
+                        onChange={(e) => setUrlForm({ ...urlForm, title: e.target.value })}
+                        placeholder="Sem título, usa o da página"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Button
+                        size="sm"
+                        onClick={() => importarUrlMutation.mutate()}
+                        disabled={!urlForm.url.trim() || importarUrlMutation.isPending}
+                      >
+                        {importarUrlMutation.isPending && (
+                          <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                        )}
+                        Importar página
+                      </Button>
+                      {erroInline}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ---------- 4. Documentos ---------- */}
+              <div className="space-y-2">
+                <span className="text-sm font-medium">
+                  Documentos
+                  <span className="text-muted-foreground font-normal">
+                    {' '}
+                    · {base.chunkCount} trechos indexados
+                  </span>
+                </span>
 
                 {docsQuery.isLoading ? (
                   <Skeleton className="h-20 w-full" />
@@ -707,7 +983,7 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                 ) : docsQuery.data?.length === 0 ? (
                   <p className="text-xs text-muted-foreground text-center py-6 leading-relaxed">
                     Nenhum documento nesta base. Sem eles o agente só tem o texto do negócio
-                    acima.
+                    acima — envie um arquivo, cole um texto ou importe uma página do site.
                   </p>
                 ) : (
                   docsQuery.data?.map((doc) => {
@@ -721,7 +997,11 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <FileText className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                            {doc.sourceType === 'url' ? (
+                              <Globe className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <FileText className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                            )}
                             <span className="text-sm font-medium truncate">{doc.title}</span>
                           </div>
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -737,6 +1017,14 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                               <Badge variant="outline" className="text-[10px] px-1.5 py-0">
                                 {doc.chunkCount} trechos
                               </Badge>
+                            )}
+                            {doc.sourceRef && (
+                              <span
+                                className="text-[11px] text-muted-foreground truncate max-w-[220px]"
+                                title={doc.sourceRef}
+                              >
+                                {doc.sourceRef}
+                              </span>
                             )}
                           </div>
                           {doc.summary && (
@@ -807,7 +1095,7 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
 
               <Separator />
 
-              {/* ---------- Testar a busca ---------- */}
+              {/* ---------- 5. Testar a busca ---------- */}
               <div className="space-y-2">
                 <span className="text-sm font-medium flex items-center gap-2">
                   <Search className="w-4 h-4" /> Testar a busca

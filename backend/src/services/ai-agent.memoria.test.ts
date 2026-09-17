@@ -14,6 +14,8 @@ const prismaMock = vi.hoisted(() => ({
   conversation: { findFirst: vi.fn(), update: vi.fn() },
   contact: { findFirst: vi.fn(), update: vi.fn() },
   message: { findMany: vi.fn(), count: vi.fn() },
+  // As etapas reais do funil — lidas quando o schema do agente pede `etapa`.
+  tag: { findMany: vi.fn() },
 }));
 
 vi.mock('../config/database', () => ({ prisma: prismaMock }));
@@ -29,6 +31,7 @@ const chatMock = vi.hoisted(() => vi.fn());
 vi.mock('./ai/chat', () => ({ chat: chatMock }));
 
 import { aiAgentService, AVAILABLE_TOOLS } from './ai-agent.service';
+import { MEMORIA_LONGA_DIAS, memoriaExpirada, semExpiradas } from './ai/memoria';
 
 const ACC = 'acc-1';
 
@@ -70,6 +73,7 @@ beforeEach(() => {
   prismaMock.conversation.findFirst.mockResolvedValue({ id: 'conv-1', customAttributes: {} });
   prismaMock.message.count.mockResolvedValue(0);
   prismaMock.message.findMany.mockResolvedValue([]);
+  prismaMock.tag.findMany.mockResolvedValue([]);
   chatMock.mockResolvedValue(resposta());
 });
 
@@ -324,5 +328,223 @@ describe('ferramenta lembrar — o agente decide o que guardar', () => {
       'Informe'
     );
     expect(prismaMock.contact.update).not.toHaveBeenCalled();
+  });
+});
+
+/*
+  C4 — A MEMÓRIA LONGA TEM VALIDADE.
+
+  O fato sobre a pessoa envelhece. Passado o prazo, a entrada é tratada como
+  ausente NA LEITURA — nada é apagado: `lembrar` gravando o mesmo campo renova.
+  Valor cru (formato antigo) não tem data, então continua valendo: não dá pra
+  saber a idade do que não foi datado.
+*/
+describe('validade da memória longa', () => {
+  const dias = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+
+  it('entrada com mais de 60 dias NÃO entra no prompt', async () => {
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'ag-1',
+      userMessage: 'oi',
+      memory: {
+        faturamento: { v: 'R$ 80 mil', por: 'Marcus', em: dias(MEMORIA_LONGA_DIAS + 1) },
+        segmento: { v: 'clínica', por: 'Marcus', em: dias(3) },
+      },
+    });
+
+    const s = systemDe();
+    expect(s).not.toContain('R$ 80 mil');
+    expect(s).toContain('clínica');
+  });
+
+  it('entrada legada (valor cru, sem data) continua entrando', async () => {
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'ag-1',
+      userMessage: 'oi',
+      memory: { faturamento: 'R$ 80 mil' },
+    });
+    expect(systemDe()).toContain('R$ 80 mil');
+  });
+
+  it('a ficha dos campos declarados também trata a vencida como buraco', async () => {
+    prismaMock.aiAgent.findFirst.mockResolvedValue(
+      agente({
+        memoryFields: [{ chave: 'faturamento', descricao: 'Quanto fatura.', escopo: 'memoria' }],
+      })
+    );
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'ag-1',
+      userMessage: 'oi',
+      memory: { faturamento: { v: 'R$ 80 mil', por: 'Marcus', em: dias(90) } },
+    });
+    const s = systemDe();
+    expect(s).toContain('faturamento: (ainda não sei)');
+    expect(s).not.toContain('R$ 80 mil');
+  });
+
+  it('o helper: só a entrada datada e velha expira; nada é apagado', () => {
+    expect(memoriaExpirada({ v: 'x', por: 'M', em: dias(61) })).toBe(true);
+    expect(memoriaExpirada({ v: 'x', por: 'M', em: dias(59) })).toBe(false);
+    expect(memoriaExpirada('cru')).toBe(false);
+    expect(memoriaExpirada({ v: 'x', por: 'M', em: 'data-ilegível' })).toBe(false);
+    const original = { a: { v: 1, em: dias(100) }, b: 'cru' };
+    expect(semExpiradas(original)).toEqual({ b: 'cru' });
+    expect(original.a).toBeDefined(); // o mapa de origem não é mutado
+  });
+});
+
+/*
+  C4 — QUEM É ESTA PESSOA.
+
+  Cadastro e histórico que o CRM já tem, sem ninguém ter anotado nada. É o que
+  faz o lead que sumiu e voltou ser recebido como quem volta.
+*/
+describe('o bloco "QUEM É ESTA PESSOA"', () => {
+  it('lead que volta: cadastro, conversas anteriores e como terminou a última', async () => {
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'ag-1',
+      userMessage: 'oi de novo',
+      memory: { faturamento: 'R$ 80 mil' },
+      contato: {
+        nome: 'Ana',
+        telefone: '5511999990000',
+        cidade: 'Campinas',
+        estado: 'SP',
+        nicho: 'clínica',
+        origem: 'whatsapp',
+        clienteDesde: new Date('2026-03-12T12:00:00Z'),
+        conversasAnteriores: 2,
+        ultimaConversa: { em: '2026-09-01T12:00:00Z', etapa: 'agendado', resumo: 'Marcou aula experimental.' },
+      },
+    });
+
+    const s = systemDe();
+    expect(s).toContain('QUEM É ESTA PESSOA');
+    expect(s).toContain('nome: Ana');
+    expect(s).toContain('Campinas / SP');
+    expect(s).toContain('conversas anteriores: 2');
+    expect(s).toContain('etapa "agendado"');
+    expect(s).toContain('Marcou aula experimental.');
+    expect(s).toContain('receba como quem volta');
+    // Vem ANTES da memória longa: quem é a pessoa, depois o que anotamos dela.
+    expect(s.indexOf('QUEM É ESTA PESSOA')).toBeLessThan(s.indexOf('SOBRE ESTA PESSOA'));
+  });
+
+  it('só campos preenchidos entram — sem "(não informado)"', async () => {
+    await aiAgentService.run({
+      accountId: ACC,
+      agentId: 'ag-1',
+      userMessage: 'oi',
+      contato: { nome: 'Ana', telefone: null, cidade: '', conversasAnteriores: 0, ultimaConversa: null },
+    });
+    const s = systemDe();
+    expect(s).toContain('nome: Ana');
+    expect(s).not.toContain('telefone');
+    expect(s).not.toContain('cidade');
+    expect(s).not.toContain('conversas anteriores');
+    expect(s).not.toContain('quem volta');
+  });
+
+  it('sem contato, nenhum bloco', async () => {
+    await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
+    expect(systemDe()).not.toContain('QUEM É ESTA PESSOA');
+  });
+});
+
+/*
+  C2 — O ENUM DE ETAPA VEM DO KANBAN REAL.
+
+  O schema gravado no agente trazia seis slugs fixos que não existiam em conta
+  nenhuma. Em runtime o enum é trocado pelas etapas cadastradas; sem etapa
+  cadastrada a propriedade some — o modelo não pode inventar.
+*/
+describe('etapas reais do funil no schema e no prompt', () => {
+  const SCHEMA = {
+    type: 'object',
+    properties: {
+      mensagem_de_resposta: { type: 'string' },
+      etapa: { type: 'string', enum: ['novo-lead', 'agendado', 'perdido'] },
+    },
+    required: ['mensagem_de_resposta', 'etapa'],
+  };
+  const schemaEnviado = () =>
+    chatMock.mock.calls[0][0].jsonSchema.schema as {
+      properties: Record<string, { enum?: string[] }>;
+      required?: string[];
+    };
+
+  it('troca o enum pelos slugs da conta, na ordem do funil, e lista no prompt', async () => {
+    prismaMock.aiAgent.findFirst.mockResolvedValue(agente({ outputSchema: SCHEMA }));
+    prismaMock.tag.findMany.mockResolvedValue([
+      { slug: 'contato-inicial', name: 'Contato inicial' },
+      { slug: 'aula-marcada', name: 'Aula marcada' },
+    ]);
+    chatMock.mockResolvedValue(
+      resposta({ text: '{"mensagem_de_resposta":"oi","etapa":"aula-marcada"}' })
+    );
+
+    const r = await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
+
+    expect(prismaMock.tag.findMany.mock.calls[0][0].where).toMatchObject({
+      accountId: ACC,
+      type: 'stage',
+      ativo: true,
+    });
+    expect(schemaEnviado().properties.etapa.enum).toEqual(['contato-inicial', 'aula-marcada']);
+    const s = systemDe();
+    expect(s).toContain('ETAPAS DO FUNIL (use o nome exato)');
+    expect(s).toContain('- contato-inicial — Contato inicial');
+    expect(s).toContain('- aula-marcada — Aula marcada');
+    expect(r.structured).toMatchObject({ etapa: 'aula-marcada' });
+  });
+
+  it('sem etapa cadastrada, a propriedade SOME do schema — nada de inventar', async () => {
+    prismaMock.aiAgent.findFirst.mockResolvedValue(agente({ outputSchema: SCHEMA }));
+    prismaMock.tag.findMany.mockResolvedValue([]);
+    chatMock.mockResolvedValue(resposta({ text: '{"mensagem_de_resposta":"oi"}' }));
+
+    const r = await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
+
+    expect(schemaEnviado().properties.etapa).toBeUndefined();
+    expect(schemaEnviado().required).toEqual(['mensagem_de_resposta']);
+    expect(systemDe()).not.toContain('ETAPAS DO FUNIL');
+    expect(r.structured).toEqual({ mensagem_de_resposta: 'oi' });
+  });
+
+  it('o schema gravado no agente não é alterado', async () => {
+    const gravado = agente({ outputSchema: SCHEMA });
+    prismaMock.aiAgent.findFirst.mockResolvedValue(gravado);
+    prismaMock.tag.findMany.mockResolvedValue([{ slug: 'x', name: 'X' }]);
+    chatMock.mockResolvedValue(resposta({ text: '{"mensagem_de_resposta":"oi","etapa":"x"}' }));
+
+    await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
+
+    expect((gravado.outputSchema as unknown as typeof SCHEMA).properties.etapa.enum).toEqual([
+      'novo-lead',
+      'agendado',
+      'perdido',
+    ]);
+  });
+
+  it('agente sem `etapa` no schema não vai ao funil', async () => {
+    prismaMock.aiAgent.findFirst.mockResolvedValue(
+      agente({ outputSchema: { type: 'object', properties: { texto: { type: 'string' } } } })
+    );
+    chatMock.mockResolvedValue(resposta({ text: '{"texto":"oi"}' }));
+    await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
+    expect(prismaMock.tag.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('`lembrar` sempre vai ao modelo', () => {
+  it('mesmo com tools: [], a ferramenta é enviada', async () => {
+    prismaMock.aiAgent.findFirst.mockResolvedValue(agente({ tools: [] }));
+    await aiAgentService.run({ accountId: ACC, agentId: 'ag-1', userMessage: 'oi' });
+    const nomes = (chatMock.mock.calls[0][0].tools as { name: string }[]).map((t) => t.name);
+    expect(nomes).toContain('lembrar');
   });
 });

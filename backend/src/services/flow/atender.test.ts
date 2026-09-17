@@ -16,6 +16,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const prismaMock = vi.hoisted(() => ({
   conversation: { findFirst: vi.fn() },
+  contact: { findFirst: vi.fn(), update: vi.fn() },
+  // A etapa é resolvida no FUNIL REAL da conta, e a transferência por time lê
+  // o time com os membros ativos.
+  tag: { findFirst: vi.fn() },
+  team: { findFirst: vi.fn() },
   flowRunStep: { create: vi.fn(), count: vi.fn() },
 }));
 
@@ -35,11 +40,28 @@ vi.mock('../whatsapp-send.service', () => ({ whatsappSendService: { send: sendMo
 
 const addLabelMock = vi.hoisted(() => vi.fn());
 const resolveTagMock = vi.hoisted(() => vi.fn());
+const assignMock = vi.hoisted(() => vi.fn());
+const assignToTeamMock = vi.hoisted(() => vi.fn());
+const updateStatusMock = vi.hoisted(() => vi.fn());
+const resolveMock = vi.hoisted(() => vi.fn());
 vi.mock('../conversation.service', () => ({
-  conversationService: { addLabel: addLabelMock, resolveOrCreateTagByLabel: resolveTagMock },
+  conversationService: {
+    addLabel: addLabelMock,
+    // Continua mockado de propósito: o teste prova que NÃO é mais chamado.
+    resolveOrCreateTagByLabel: resolveTagMock,
+    assign: assignMock,
+    assignToTeam: assignToTeamMock,
+    updateStatus: updateStatusMock,
+    resolve: resolveMock,
+  },
 }));
 
-vi.mock('../agent-availability.service', () => ({ agentAvailabilityService: {} }));
+const listOnlineMock = vi.hoisted(() => vi.fn());
+vi.mock('../agent-availability.service', () => ({
+  agentAvailabilityService: { listOnline: listOnlineMock },
+}));
+const pickAssigneeMock = vi.hoisted(() => vi.fn());
+vi.mock('../team.service', () => ({ teamService: { pickAssignee: pickAssigneeMock } }));
 vi.mock('../attachment-storage.service', () => ({ attachmentStorageService: {} }));
 vi.mock('../ai/transcription', () => ({ transcribe: vi.fn() }));
 
@@ -81,9 +103,16 @@ beforeEach(() => {
   prismaMock.conversation.findFirst.mockResolvedValue({ assigneeId: null });
   prismaMock.flowRunStep.create.mockResolvedValue({});
   prismaMock.flowRunStep.count.mockResolvedValue(0);
+  // A conta tem a etapa que o agente costuma devolver nos testes abaixo.
+  prismaMock.tag.findFirst.mockImplementation(async (q: { where: { OR: { slug?: { equals: string } }[] } }) => {
+    const pedida = q.where.OR[0].slug?.equals;
+    return pedida === 'novo-lead' ? { id: 'tag-1', slug: 'novo-lead' } : null;
+  });
   sendMock.mockResolvedValue({ messageId: 'm1', status: 'sent' });
   resolveTagMock.mockResolvedValue('tag-1');
   addLabelMock.mockResolvedValue(undefined);
+  listOnlineMock.mockResolvedValue([]);
+  pickAssigneeMock.mockResolvedValue(null);
 });
 
 // ============================================
@@ -97,8 +126,10 @@ describe('o caminho normal', () => {
 
     expect(r.branch).toBe('respondeu');
     expect(sendMock.mock.calls[0][1].content).toBe('Oi! Como posso ajudar?');
-    expect(resolveTagMock).toHaveBeenCalledWith('acc-1', 'novo-lead', 'flow:flow-1');
-    expect(addLabelMock).toHaveBeenCalled();
+    // A etiqueta aplicada é a do FUNIL da conta — resolvida, nunca criada.
+    expect(addLabelMock).toHaveBeenCalledWith('conv-1', 'acc-1', 'tag-1', 'flow:flow-1');
+    expect(resolveTagMock).not.toHaveBeenCalled();
+    expect(r.output).toMatchObject({ etapa: 'novo-lead', tagId: 'tag-1' });
   });
 
   it('a saída do agente vira variável pros passos seguintes', async () => {
@@ -160,6 +191,275 @@ describe('o caminho normal', () => {
     const r = await atender.execute({ id: 'a', type: 'ai.atender', config: {} }, ctx());
     expect(r.stopReason).toBe('agente_nao_configurado');
     expect(runAgentMock).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+/*
+  C2 — A ETAPA VEM DO KANBAN REAL.
+
+  O bug era silencioso: o modelo devolvia "agendado", o fluxo não achava a
+  etiqueta e CRIAVA uma com esse nome — fora do funil. O kanban de verdade
+  ficava intocado e ninguém via erro nenhum.
+*/
+describe('etapa no funil real', () => {
+  it('etapa que a conta NÃO tem: nada é criado, e o passo diz por quê', async () => {
+    runAgentMock.mockResolvedValue(
+      respostaAgente({ mensagem_de_resposta: 'oi', etapa: 'agendado' })
+    );
+
+    const r = await atender.execute(no(), ctx());
+
+    expect(resolveTagMock).not.toHaveBeenCalled();
+    expect(addLabelMock).not.toHaveBeenCalled();
+    expect(r.output).toMatchObject({ etapa: 'agendado', motivo: 'etapa_desconhecida' });
+    // A resposta ainda vai: recusar a etapa não é recusar o atendimento.
+    expect(sendMock).toHaveBeenCalled();
+  });
+
+  it('a busca é escopada por conta e só olha etapa ativa do funil', async () => {
+    runAgentMock.mockResolvedValue(
+      respostaAgente({ mensagem_de_resposta: 'oi', etapa: 'novo-lead' })
+    );
+    await atender.execute(no(), ctx());
+
+    const where = prismaMock.tag.findFirst.mock.calls[0][0].where;
+    expect(where).toMatchObject({ accountId: 'acc-1', type: 'stage', ativo: true });
+  });
+
+  it('em sombra a resolução acontece igual — o simulador mostra a mesma recusa', async () => {
+    runAgentMock.mockResolvedValue(
+      respostaAgente({ mensagem_de_resposta: 'oi', etapa: 'inventada' })
+    );
+    const r = await atender.execute(no(), ctx({ shadow: true }));
+    expect(r.output).toMatchObject({ motivo: 'etapa_desconhecida' });
+    expect(addLabelMock).not.toHaveBeenCalled();
+  });
+
+  it('o bloco "Aplicar etapa" segue a mesma regra estrita', async () => {
+    const aplicar = NODE_CATALOG['crm.apply_stage'];
+
+    const r = await aplicar.execute(
+      { id: 's', type: 'crm.apply_stage', config: { etapa: 'agendado' } },
+      ctx()
+    );
+
+    expect(r.output).toMatchObject({ etapa: 'agendado', motivo: 'etapa_desconhecida' });
+    expect(resolveTagMock).not.toHaveBeenCalled();
+    expect(addLabelMock).not.toHaveBeenCalled();
+
+    const ok = await aplicar.execute(
+      { id: 's', type: 'crm.apply_stage', config: { etapa: 'novo-lead' } },
+      ctx()
+    );
+    expect(ok.output).toMatchObject({ etapa: 'novo-lead', tagId: 'tag-1' });
+    expect(addLabelMock).toHaveBeenCalledWith('conv-1', 'acc-1', 'tag-1', 'flow:flow-1');
+  });
+});
+
+// ============================================
+/*
+  C3 — PRECEDÊNCIA DA SAÍDA.
+
+  `rota: "respondeu"` + `transferir_para_humano: true` NÃO transferia: a rota
+  vencia, e o lead que pediu humano ficava com a IA. Rota PRÓPRIA (financeiro,
+  agendamento) continua vencendo — é a decisão mais específica.
+*/
+describe('precedência das portas', () => {
+  it('rota "respondeu" + pediu humano → sai por "humano"', async () => {
+    runAgentMock.mockResolvedValue(
+      respostaAgente({ mensagem_de_resposta: 'um instante', rota: 'respondeu', transferir_para_humano: true })
+    );
+    const r = await atender.execute(no(), ctx());
+    expect(r.branch).toBe('humano');
+  });
+
+  it('rota "respondeu" + encerrou → sai por "encerrou"', async () => {
+    runAgentMock.mockResolvedValue(
+      respostaAgente({ mensagem_de_resposta: 'tchau', rota: 'respondeu', resolver_conversa: true })
+    );
+    const r = await atender.execute(no(), ctx());
+    expect(r.branch).toBe('encerrou');
+  });
+
+  it('rota própria vence os sinais genéricos', async () => {
+    runAgentMock.mockResolvedValue(
+      respostaAgente({ mensagem_de_resposta: 'x', rota: 'financeiro', transferir_para_humano: true })
+    );
+    const r = await atender.execute(no(), ctx());
+    expect(r.branch).toBe('financeiro');
+  });
+
+  it('sem sinal nenhum, "respondeu"', async () => {
+    runAgentMock.mockResolvedValue(respostaAgente({ mensagem_de_resposta: 'x' }));
+    const r = await atender.execute(no(), ctx());
+    expect(r.branch).toBe('respondeu');
+  });
+});
+
+// ============================================
+/*
+  C3 — TRANSFERIR PARA UM TIME.
+
+  É o que transforma "rota" em "departamento": `financeiro → time Financeiro`
+  só é possível se o bloco souber de time. Sem time, o sorteio de sempre.
+*/
+describe('transferir para humano, por time', () => {
+  const transferir = NODE_CATALOG['chat.assign_human'];
+  const noTime = (config: Record<string, unknown> = {}) => ({
+    id: 'tr',
+    type: 'chat.assign_human',
+    config,
+  });
+  const u = (id: string) => ({ id, email: `${id}@x.com` });
+
+  beforeEach(() => {
+    prismaMock.team.findFirst.mockResolvedValue({
+      id: 'time-fin',
+      name: 'Financeiro',
+      members: [{ userId: 'ana' }, { userId: 'bia' }],
+    });
+    assignMock.mockResolvedValue({});
+    assignToTeamMock.mockResolvedValue({});
+    updateStatusMock.mockResolvedValue({});
+  });
+
+  it('sem time configurado, comportamento de hoje: sorteia entre os online', async () => {
+    listOnlineMock.mockResolvedValue([u('carlos')]);
+
+    const r = await transferir.execute(noTime(), ctx());
+
+    expect(prismaMock.team.findFirst).not.toHaveBeenCalled();
+    expect(assignToTeamMock).not.toHaveBeenCalled();
+    expect(assignMock).toHaveBeenCalledWith('conv-1', 'acc-1', 'carlos', 'flow:flow-1');
+    expect(r.output).toMatchObject({ assigneeId: 'carlos' });
+  });
+
+  it('com time: escolhe na interseção online ∩ membros ativos do time', async () => {
+    // carlos está online mas não é do Financeiro; bia é do time e está online.
+    listOnlineMock.mockResolvedValue([u('carlos'), u('bia')]);
+
+    const r = await transferir.execute(noTime({ teamId: 'time-fin' }), ctx());
+
+    expect(pickAssigneeMock).not.toHaveBeenCalled();
+    expect(assignToTeamMock).toHaveBeenCalledWith('conv-1', 'acc-1', 'time-fin', 'flow:flow-1');
+    expect(assignMock).toHaveBeenCalledWith('conv-1', 'acc-1', 'bia', 'flow:flow-1');
+    expect(updateStatusMock).toHaveBeenCalledWith('conv-1', 'acc-1', 'open', 'flow:flow-1');
+    expect(r.branch).toBeUndefined();
+    expect(r.output).toMatchObject({ teamId: 'time-fin', teamNome: 'Financeiro', assigneeId: 'bia' });
+  });
+
+  it('ninguém do time online: cai no rodízio do time', async () => {
+    listOnlineMock.mockResolvedValue([u('carlos')]); // online, mas de outro time
+    pickAssigneeMock.mockResolvedValue({ id: 'ana', email: 'ana@x.com' });
+
+    const r = await transferir.execute(noTime({ teamId: 'time-fin' }), ctx());
+
+    expect(pickAssigneeMock).toHaveBeenCalledWith('time-fin', 'acc-1');
+    expect(assignMock).toHaveBeenCalledWith('conv-1', 'acc-1', 'ana', 'flow:flow-1');
+    expect(r.output).toMatchObject({ assigneeId: 'ana', criterio: 'rodizio_do_time' });
+  });
+
+  it('nem rodízio: "sem_atendente"', async () => {
+    listOnlineMock.mockResolvedValue([]);
+    pickAssigneeMock.mockResolvedValue(null);
+
+    const r = await transferir.execute(noTime({ teamId: 'time-fin' }), ctx());
+
+    expect(r.branch).toBe('sem_atendente');
+    expect(assignMock).not.toHaveBeenCalled();
+    expect(r.output).toMatchObject({ motivo: 'time_sem_atendente', teamId: 'time-fin' });
+  });
+
+  it('time de outra conta não existe: "sem_atendente", sem derrubar o atendimento', async () => {
+    prismaMock.team.findFirst.mockResolvedValue(null);
+    listOnlineMock.mockResolvedValue([u('bia')]);
+
+    const r = await transferir.execute(noTime({ teamId: 'time-alheio' }), ctx());
+
+    expect(prismaMock.team.findFirst.mock.calls[0][0].where).toMatchObject({
+      id: 'time-alheio',
+      accountId: 'acc-1',
+    });
+    expect(r.branch).toBe('sem_atendente');
+    expect(r.output).toMatchObject({ motivo: 'time_nao_encontrado' });
+    expect(assignMock).not.toHaveBeenCalled();
+  });
+
+  it('em sombra decide igual, mas não atribui', async () => {
+    listOnlineMock.mockResolvedValue([u('bia')]);
+
+    const r = await transferir.execute(noTime({ teamId: 'time-fin' }), ctx({ shadow: true }));
+
+    expect(assignMock).not.toHaveBeenCalled();
+    expect(assignToTeamMock).not.toHaveBeenCalled();
+    expect(r.output).toMatchObject({ simulado: true, teamNome: 'Financeiro', assigneeId: 'bia' });
+  });
+});
+
+// ============================================
+/*
+  C4 — AO ENCERRAR, O QUE SE APRENDEU VAI PRO CONTATO.
+
+  A conversa morre e o `_resumo_conversa` morre com ela. Copiar resumo + etapa
+  + data para o contato é de onde sai o "última conversa" quando a pessoa
+  volta — sem gastar um token a mais.
+*/
+describe('resolver conversa guarda a última conversa no contato', () => {
+  const resolver = NODE_CATALOG['chat.resolve'];
+  const noResolve = { id: 'fim', type: 'chat.resolve', config: { outcome: 'resolved' } };
+
+  beforeEach(() => {
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      assigneeId: null,
+      contactId: 'contato-1',
+      customAttributes: { _resumo_conversa: { texto: 'Lead quer plano anual.', cobertas: 20 } },
+      labels: [
+        { tag: { slug: 'vip', type: 'operational' } },
+        { tag: { slug: 'agendado', type: 'stage' } },
+      ],
+    });
+    prismaMock.contact.findFirst.mockResolvedValue({ customAttributes: { nome: 'Ana' } });
+    prismaMock.contact.update.mockResolvedValue({});
+    resolveMock.mockResolvedValue({});
+  });
+
+  it('copia resumo + etapa + data para _ultima_conversa, preservando o resto', async () => {
+    const r = await resolver.execute(noResolve, ctx());
+
+    const gravado = prismaMock.contact.update.mock.calls[0][0].data.customAttributes;
+    expect(gravado.nome).toBe('Ana');
+    expect(gravado._ultima_conversa).toMatchObject({
+      resumo: 'Lead quer plano anual.',
+      etapa: 'agendado', // a etapa do FUNIL, não a etiqueta operacional
+    });
+    expect(typeof gravado._ultima_conversa.em).toBe('string');
+    expect(resolveMock).toHaveBeenCalled();
+    expect(r.stopReason).toBe('conversa_resolvida');
+  });
+
+  it('sem resumo ainda, guarda etapa e data mesmo assim', async () => {
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      contactId: 'contato-1',
+      customAttributes: {},
+      labels: [{ tag: { slug: 'novo-lead', type: 'stage' } }],
+    });
+    await resolver.execute(noResolve, ctx());
+    const gravado = prismaMock.contact.update.mock.calls[0][0].data.customAttributes;
+    expect(gravado._ultima_conversa).toMatchObject({ resumo: null, etapa: 'novo-lead' });
+  });
+
+  it('falha ao guardar não impede o encerramento', async () => {
+    prismaMock.contact.update.mockRejectedValue(new Error('banco caiu'));
+    const r = await resolver.execute(noResolve, ctx());
+    expect(resolveMock).toHaveBeenCalled();
+    expect(r.stopReason).toBe('conversa_resolvida');
+  });
+
+  it('em sombra não toca no contato', async () => {
+    await resolver.execute(noResolve, ctx({ shadow: true }));
+    expect(prismaMock.contact.update).not.toHaveBeenCalled();
+    expect(resolveMock).not.toHaveBeenCalled();
   });
 });
 

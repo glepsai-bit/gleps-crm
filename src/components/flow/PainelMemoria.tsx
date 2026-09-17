@@ -83,11 +83,18 @@ const CHAVE_VALIDA = /^[a-z][a-z0-9_]{1,48}$/;
 const MAX_DESCRICAO = 400;
 const MAX_CAMPOS = 40;
 
+/**
+ * Validade da memória de longo prazo — `MEMORIA_LONGA_DIAS` em
+ * `backend/src/services/ai/memoria.ts`. Passado o prazo o agente lê como se
+ * não existisse; gravar de novo renova.
+ */
+const MEMORIA_LONGA_DIAS = 60;
+
 const ESCOPOS: { valor: EscopoDeMemoria; rotulo: string; ajuda: string }[] = [
   {
     valor: 'memoria',
     rotulo: 'Sobre a pessoa — vale para as próximas conversas',
-    ajuda: 'Fica com o contato. Se ele sumir e voltar em março, o agente ainda sabe.',
+    ajuda: `Fica com o contato por ${MEMORIA_LONGA_DIAS} dias desde a última vez que foi gravado. Se ele sumir e voltar em março, o agente ainda sabe.`,
   },
   {
     valor: 'sessao',
@@ -335,6 +342,16 @@ export function PainelMemoria({ agentId, onFechar }: Props) {
             </div>
           ) : (
             <>
+              {/* Memória é nativa: nada pra ligar. O que precisa ficar dito é a
+                  validade — é ela que explica por que o agente "esqueceu" um
+                  faturamento citado em janeiro. */}
+              <p className="text-[11px] text-muted-foreground rounded-md border bg-muted/40 p-2.5 leading-relaxed">
+                A memória é sempre ativa — não tem ferramenta pra ligar. O que o agente guarda
+                sobre a pessoa vale por <strong>{MEMORIA_LONGA_DIAS} dias</strong> a partir da
+                última gravação; gravar de novo renova o prazo. O que é só desta conversa some
+                quando ela encerra.
+              </p>
+
               {linhas.length === 0 && (
                 <div className="rounded-lg border border-dashed p-6 text-center space-y-3">
                   <Brain className="w-9 h-9 opacity-30 mx-auto" />

@@ -9,7 +9,15 @@
  * É só o miolo: nome do passo, saídas e remover continuam no painel, porque no
  * bloco eles já existem de outra forma — o título é editável no próprio
  * cabeçalho e as saídas são as portas desenhadas.
+ *
+ * Dois blocos buscam dado da conta por conta própria (times e etapas do
+ * funil): o chamador não precisa saber disso, e o cache do React Query faz o
+ * segundo bloco do mesmo tipo não custar outra chamada.
  */
+import { useQuery } from '@tanstack/react-query';
+import { useAuth } from '@/contexts/AuthContext';
+import { tagsBackendService } from '@/services/tags.backend.service';
+import { teamsBackendService } from '@/services/teams.backend.service';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -28,6 +36,168 @@ export interface CamposDoNoProps {
   bases?: { id: string; name: string }[];
   /** Grava uma chave da configuração. O chamador decide como persistir. */
   set: (chave: string, valor: unknown) => void;
+}
+
+/** Uma etapa do funil da conta — o que o Kanban tem, na ordem do Kanban. */
+export interface EtapaDoFunil {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+/**
+ * As etapas REAIS do funil desta conta, ativas e em ordem.
+ *
+ * É a única fonte de verdade para "etapa" em todo o editor: o motor aplica uma
+ * etapa por slug ou nome entre estas e recusa qualquer outra — então uma lista
+ * fixa aqui seria uma promessa que o backend não cumpre.
+ */
+// O backend escopa pelo JWT; o accountId vai só porque a assinatura do
+// service pede. Sem sessão a chave da query muda e nada é reaproveitado.
+// eslint-disable-next-line react-refresh/only-export-components
+export function useEtapasDoFunil() {
+  const { user, account } = useAuth();
+  const accountId = user?.account_id || account?.id || '';
+  return useQuery({
+    queryKey: ['etapas-do-funil', accountId],
+    queryFn: async (): Promise<EtapaDoFunil[]> => {
+      const tags = await tagsBackendService.listStageTags(accountId);
+      return tags
+        .filter((t) => t.ativo !== false)
+        .sort((a, b) => a.ordem - b.ordem)
+        .map((t) => ({ id: t.id, slug: t.slug, name: t.name }));
+    },
+    staleTime: 60_000,
+  });
+}
+
+/** Os times de atendimento da conta. Mesma chave da tela de times: cache compartilhado. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useTimesDaConta() {
+  return useQuery({
+    queryKey: ['teams'],
+    queryFn: () => teamsBackendService.listTeams(),
+    staleTime: 60_000,
+  });
+}
+
+/** Valor do Select que significa "sem time" — o Radix não aceita item vazio. */
+const QUALQUER_ATENDENTE = '__qualquer__';
+
+/** O template que faz o passo usar a etapa que o agente devolveu. */
+export const ETAPA_DO_AGENTE = '{{agente.etapa}}';
+
+/**
+ * Time da transferência. Sem time é o comportamento de sempre (sorteio entre
+ * todos os online); com time, só quem é do time — é o que transforma uma rota
+ * "financeiro" num departamento de verdade.
+ */
+function SeletorDeTime({ teamId, set }: { teamId: string; set: CamposDoNoProps['set'] }) {
+  const times = useTimesDaConta();
+  const lista = times.data ?? [];
+  // O time salvo não está na lista: foi excluído, ou a lista não veio. Nos
+  // dois casos o valor precisa continuar visível — sumir do Select seria
+  // apagá-lo no próximo salvar sem ninguém ter pedido.
+  const salvoForaDaLista = !!teamId && !times.isLoading && !lista.some((t) => t.id === teamId);
+
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs">Time</Label>
+      <Select
+        value={teamId || QUALQUER_ATENDENTE}
+        onValueChange={(v) => set('teamId', v === QUALQUER_ATENDENTE ? undefined : v)}
+      >
+        <SelectTrigger className="h-8" aria-label="Time">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={QUALQUER_ATENDENTE}>Qualquer atendente online</SelectItem>
+          {lista.map((t) => (
+            <SelectItem key={t.id} value={t.id}>
+              {t.name}
+            </SelectItem>
+          ))}
+          {salvoForaDaLista && (
+            <SelectItem value={teamId}>
+              {times.isError ? 'Time salvo (lista indisponível)' : 'Time não encontrado — foi excluído?'}
+            </SelectItem>
+          )}
+        </SelectContent>
+      </Select>
+      {times.isError ? (
+        <p className="text-[11px] text-destructive leading-relaxed">
+          Não consegui carregar os times. O que já estava salvo continua valendo.
+        </p>
+      ) : times.isSuccess && lista.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          A conta não tem time cadastrado — transfere para qualquer atendente online. Times
+          são criados em <strong>Administração → Times</strong>.
+        </p>
+      ) : (
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          Sem time, sorteia entre todos os atendentes online. Com time, só quem é do time — e
+          se ninguém dele estiver online, cai no rodízio do time. Sem ninguém, sai pela porta{' '}
+          <strong>Ninguém disponível</strong>.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Etapa a aplicar — só uma do funil real, ou a que o agente decidiu.
+ *
+ * Era um textarea livre. Escrever "agendado" ali parecia funcionar e não fazia
+ * nada: o motor não acha a etapa, não cria etiqueta e registra
+ * "etapa desconhecida". Lista fechada é o que impede a promessa vazia.
+ */
+function SeletorDeEtapa({ etapa, set }: { etapa: string; set: CamposDoNoProps['set'] }) {
+  const etapas = useEtapasDoFunil();
+  const lista = etapas.data ?? [];
+  const semEtapas = etapas.isSuccess && lista.length === 0;
+  const valorConhecido =
+    etapa === '' || etapa === ETAPA_DO_AGENTE || lista.some((e) => e.slug === etapa);
+
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs">Etapa</Label>
+      <Select value={etapa} onValueChange={(v) => set('etapa', v)}>
+        <SelectTrigger className="h-8" aria-label="Etapa">
+          <SelectValue placeholder="Escolha a etapa" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ETAPA_DO_AGENTE}>Usar a etapa que o agente decidiu</SelectItem>
+          {lista.map((e) => (
+            <SelectItem key={e.id} value={e.slug}>
+              {e.name}
+            </SelectItem>
+          ))}
+          {!valorConhecido && <SelectItem value={etapa}>Valor atual: {etapa}</SelectItem>}
+        </SelectContent>
+      </Select>
+      {etapas.isError ? (
+        <p className="text-[11px] text-destructive leading-relaxed">
+          Não consegui carregar as etapas do funil. O que já estava salvo continua valendo.
+        </p>
+      ) : semEtapas ? (
+        <p className="text-[11px] rounded-md border border-amber-500/60 bg-amber-500/10 p-2 leading-relaxed">
+          Seu funil não tem etapa nenhuma — este passo não tem o que aplicar. Crie as etapas
+          no Kanban primeiro.
+        </p>
+      ) : (
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          As etapas vêm do seu funil do Kanban. Uma etapa que não existe lá não é aplicada — o
+          passo registra "etapa desconhecida".
+        </p>
+      )}
+      {!valorConhecido && !etapas.isLoading && !etapas.isError && (
+        <p className="text-[11px] text-destructive leading-relaxed">
+          O valor salvo (<code>{etapa}</code>) não é uma etapa do funil. Escolha uma da lista —
+          do jeito que está, nada é aplicado.
+        </p>
+      )}
+    </div>
+  );
 }
 
 export function CamposDoNo({ tipo, config, agentes, bases = [], set }: CamposDoNoProps) {
@@ -355,29 +525,34 @@ export function CamposDoNo({ tipo, config, agentes, bases = [], set }: CamposDoN
 
   {/* Sem configuração — mas o painel não pode ficar vazio: o usuário precisa
       saber que não está faltando nada pra ele preencher. */}
-  {(tipo === 'trigger.message_received' || tipo === 'chat.assign_human') && (
+  {tipo === 'trigger.message_received' && (
     <div className="rounded-md border bg-muted/40 p-2.5 text-[11px] text-muted-foreground leading-relaxed">
-      {tipo === 'trigger.message_received'
-        ? 'Não tem o que configurar: dispara sempre que o lead escrever. Para limitar a certas caixas de entrada, use o campo de inboxes do fluxo.'
-        : 'Não tem o que configurar: sorteia entre os atendentes que estiverem online no momento e reabre a conversa para atendimento.'}
+      Não tem o que configurar: dispara sempre que o lead escrever. Para limitar a certas
+      caixas de entrada, use o campo de inboxes do fluxo.
     </div>
   )}
 
-  {(tipo === 'chat.reply' || tipo === 'crm.apply_stage') && (
+  {tipo === 'chat.assign_human' && (
+    <SeletorDeTime teamId={String(config.teamId ?? '')} set={set} />
+  )}
+
+  {tipo === 'chat.reply' && (
     <div className="space-y-1.5">
-      <Label className="text-xs">
-        {tipo === 'chat.reply' ? 'Texto da resposta' : 'Etapa'}
-      </Label>
+      <Label className="text-xs">Texto da resposta</Label>
       <Textarea
-        rows={tipo === 'chat.reply' ? 4 : 2}
-        value={String(config[tipo === 'chat.reply' ? 'texto' : 'etapa'] ?? '')}
-        onChange={(e) => set(tipo === 'chat.reply' ? 'texto' : 'etapa', e.target.value)}
+        rows={4}
+        value={String(config.texto ?? '')}
+        onChange={(e) => set('texto', e.target.value)}
         className="text-xs font-mono"
       />
       <p className="text-[11px] text-muted-foreground">
         Use <code>{'{{agente.campo}}'}</code> para inserir a saída do agente.
       </p>
     </div>
+  )}
+
+  {tipo === 'crm.apply_stage' && (
+    <SeletorDeEtapa etapa={String(config.etapa ?? '')} set={set} />
   )}
 
   {tipo === 'crm.update_contact' && (

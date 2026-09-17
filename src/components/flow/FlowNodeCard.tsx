@@ -89,6 +89,12 @@ export interface FlowNodeData extends Record<string, unknown> {
   config?: Record<string, unknown>;
   /** Nome do agente selecionado, resolvido pela página. */
   agenteNome?: string | null;
+  /**
+   * A base de conhecimento do agente deste bloco, resolvida pela página.
+   * `nome` null = sem base. `aviso` é o que ainda não bate com o salvo:
+   * "(salvar pra aplicar)" quando a linha foi desenhada e não salva.
+   */
+  base?: { nome: string | null; aviso?: string | null };
   /** Problemas do grafo que apontam para este nó. */
   temProblema?: boolean;
   /** Houve um teste. Sem isto não dá pra distinguir "não rodou" de "não passou aqui". */
@@ -101,8 +107,12 @@ export interface FlowNodeData extends Record<string, unknown> {
    * É o que transforma "o fluxo quebrou" em "quebrou NESTE bloco": em vez de
    * ler log e procurar o nó, o bloco acende vermelho na tela. Ausente = não foi
    * alcançado — o que também é informação: o caminho não passou por aqui.
+   *
+   * `waiting` é o run ainda na janela de agrupamento (só o bloco de agrupar
+   * recebe). `puladoNoSimulador` é a espera longa que o simulador não segurou
+   * — o bloco diz isso em vez de fingir que passou.
    */
-  exec?: { status: string; ms: number; error: string | null };
+  exec?: { status: string; ms: number; error: string | null; puladoNoSimulador?: string | null };
 }
 
 const texto = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -119,6 +129,8 @@ function resumo(tipo: string, config: Record<string, unknown>, agenteNome?: stri
       return `espera ${Number(config.segundos ?? 15)}s`;
     case 'flow.wait':
       return `${Number(config.segundos ?? 5)}s`;
+    case 'flow.aguardar':
+      return `${Number(config.valor ?? 1)} ${texto(config.unidade) || 'dias'}`;
     case 'media.transcribe':
       return `idioma ${texto(config.idioma) || 'pt'}`;
     case 'crm.apply_stage':
@@ -132,7 +144,9 @@ function resumo(tipo: string, config: Record<string, unknown>, agenteNome?: stri
     case 'chat.resolve':
       return `encerra como ${texto(config.outcome) || 'resolved'}`;
     case 'chat.assign_human':
-      return 'sorteia atendente online';
+      // Com time escolhido só atendentes dele entram — o nome do time fica
+      // nos campos do bloco; aqui basta dizer que não é sorteio geral.
+      return texto(config.teamId) ? 'transfere para o time escolhido' : 'sorteia atendente online';
     case 'crm.update_contact': {
       const campos = Object.keys((config.campos ?? {}) as Record<string, unknown>);
       const destino = texto(config.destino) === 'conversa' ? 'nesta conversa' : 'no lead';
@@ -161,7 +175,24 @@ const MOLDURA_EXEC: Record<string, string> = {
   ok: 'border-emerald-500/70 ring-2 ring-emerald-500/25',
   error: 'border-destructive ring-2 ring-destructive/35',
   skipped: 'border-amber-500/70 ring-2 ring-amber-500/25',
+  // Na janela de agrupamento: o fluxo está parado AQUI, esperando o lead.
+  waiting: 'border-sky-500/70 ring-2 ring-sky-500/25 animate-pulse',
 };
+/** Espera que o simulador não segurou: passou, mas não como passaria de verdade. */
+const MOLDURA_PULADO = 'border-sky-500/50 border-dashed ring-2 ring-sky-500/15';
+
+/** O que o rodapé do bloco diz sobre o último teste. */
+function rotuloDaExec(exec: NonNullable<FlowNodeData['exec']>): string {
+  if (exec.status === 'waiting') return 'aguardando';
+  if (exec.status === 'error') return 'erro';
+  if (exec.status === 'skipped') return 'parou aqui';
+  if (exec.puladoNoSimulador != null) {
+    return exec.puladoNoSimulador
+      ? `pulado no simulador (${exec.puladoNoSimulador})`
+      : 'pulado no simulador';
+  }
+  return 'passou';
+}
 
 function FlowNodeCardBase({ data, selected }: NodeProps) {
   const d = (data ?? {}) as FlowNodeData;
@@ -172,6 +203,7 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
   const ehAcao = ACOES.has(tipo);
   const detalhe = resumo(tipo, config, d.agenteNome);
   const exec = d.exec;
+  const puladoNoSimulador = exec?.status === 'ok' && exec.puladoNoSimulador != null;
 
   const editor = useEditorDeFluxo();
   const id = useNodeId();
@@ -200,7 +232,7 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
         // O resultado do teste vence a borda normal: durante a depuração é a
         // informação que importa. A seleção continua ganhando de tudo — é a
         // ação deliberada do usuário.
-        !selected && exec && MOLDURA_EXEC[exec.status],
+        !selected && exec && (puladoNoSimulador ? MOLDURA_PULADO : MOLDURA_EXEC[exec.status]),
         // Não alcançado no teste esmaece: o caminho não passou por aqui, e ver
         // isso de relance é metade do diagnóstico.
         !selected && d.execRodou && !exec && 'opacity-45'
@@ -295,6 +327,23 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
           </p>
         )}
 
+        {d.base && (
+          /* A base ao lado do agente: "sem base" é a informação que faltava —
+             a ferramenta de busca ligada num agente sem base não acha nada, e
+             nada na tela dizia isso. */
+          <p
+            className={cn(
+              'text-[11px] mt-0.5 leading-snug line-clamp-2 break-words',
+              d.base.nome ? 'text-muted-foreground' : 'text-muted-foreground/60'
+            )}
+          >
+            {d.base.nome ? `base: ${d.base.nome}` : 'sem base'}
+            {d.base.aviso && (
+              <span className="text-amber-600 dark:text-amber-400"> {d.base.aviso}</span>
+            )}
+          </p>
+        )}
+
         {aberto && editavel && (
           /* nodrag para o arrasto não roubar o clique no campo; nowheel para o
              scroll de textarea e lista não virar zoom do canvas; nopan porque
@@ -326,14 +375,16 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
             <span
               className={cn(
                 'font-medium',
-                exec.status === 'ok' && 'text-emerald-600 dark:text-emerald-400',
+                exec.status === 'ok' && !puladoNoSimulador && 'text-emerald-600 dark:text-emerald-400',
+                puladoNoSimulador && 'text-sky-700 dark:text-sky-400',
+                exec.status === 'waiting' && 'text-sky-700 dark:text-sky-400',
                 exec.status === 'error' && 'text-destructive',
                 exec.status === 'skipped' && 'text-amber-600 dark:text-amber-400'
               )}
             >
-              {exec.status === 'ok' ? 'passou' : exec.status === 'error' ? 'erro' : 'parou aqui'}
+              {rotuloDaExec(exec)}
             </span>
-            <span className="text-muted-foreground">{exec.ms}ms</span>
+            {exec.status !== 'waiting' && <span className="text-muted-foreground">{exec.ms}ms</span>}
           </div>
         )}
 
@@ -423,11 +474,14 @@ function mesmoDesenho(a: NodeProps, b: NodeProps): boolean {
     x.label === y.label &&
     x.config === y.config &&
     x.agenteNome === y.agenteNome &&
+    x.base?.nome === y.base?.nome &&
+    x.base?.aviso === y.base?.aviso &&
     x.temProblema === y.temProblema &&
     x.execRodou === y.execRodou &&
     x.exec?.status === y.exec?.status &&
     x.exec?.ms === y.exec?.ms &&
     x.exec?.error === y.exec?.error &&
+    x.exec?.puladoNoSimulador === y.exec?.puladoNoSimulador &&
     (x.portas ?? []).join('|') === (y.portas ?? []).join('|')
   );
 }

@@ -91,7 +91,10 @@ const STATUS_INFO: Record<FlowStatus, { label: string; classe: string; ajuda: st
   draft: {
     label: 'Rascunho',
     classe: 'bg-muted text-muted-foreground',
-    ajuda: 'Não roda. Monte e teste à vontade.',
+    // "Salvo" não é "ligado": o fluxo salvo em rascunho não atende ninguém.
+    ajuda:
+      'Não atende ninguém — salvar não liga. Monte e teste à vontade; para atender de ' +
+      'verdade, ative em Sombra ou Ativar.',
   },
   shadow: {
     label: 'Sombra',
@@ -260,6 +263,65 @@ function portasDoNo(
   }
   const ramos = info?.branches ?? [];
   return ramos.length > 1 ? ramos.map((b) => b.key) : undefined;
+}
+
+/**
+ * Agente → base, lido das LINHAS do desenho (bloco de base ligado na entrada
+ * do bloco de agente). `null` = tem linha, mas o bloco de base ainda não
+ * escolheu qual. Vale pro grafo salvo e pro canvas: é a mesma pergunta.
+ */
+function basesDesenhadas(
+  nos: { id: string; type: string; config?: Record<string, unknown> }[],
+  arestas: { source: string; target: string }[]
+): Map<string, string | null> {
+  const porId = new Map(nos.map((n) => [n.id, n]));
+  const resultado = new Map<string, string | null>();
+  for (const e of arestas) {
+    const origem = porId.get(e.source);
+    const destino = porId.get(e.target);
+    if (origem?.type !== 'source.knowledge' || !destino || !TIPOS_DE_AGENTE.has(destino.type)) continue;
+    const agentId = textoDaConfig(destino.config ?? {}, 'agentId');
+    if (!agentId) continue;
+    const baseId = textoDaConfig(origem.config ?? {}, 'baseId');
+    // A primeira linha com base escolhida vence; uma sem base não apaga a que tem.
+    if (!resultado.has(agentId) || (baseId && !resultado.get(agentId))) {
+      resultado.set(agentId, baseId);
+    }
+  }
+  return resultado;
+}
+
+/**
+ * O que o bloco de agente mostra sobre a base — e o aviso do que ainda não
+ * bate com o salvo. É o que faltava pra descobrir que a busca estava ligada
+ * num agente sem base: o painel mostrava o estado salvo, e desenhar a linha
+ * não mudava nada até salvar.
+ */
+function baseDoBloco(params: {
+  agentId: string | null;
+  agente: { knowledgeBaseId: string | null; knowledgeBase?: { name: string } | null } | undefined;
+  desenhada: Map<string, string | null>;
+  ligadaNoSalvo: Set<string>;
+  nomeDaBase: (id: string | null) => string | null;
+}): FlowNodeData['base'] {
+  const { agentId, agente, desenhada, ligadaNoSalvo, nomeDaBase } = params;
+  if (!agentId) return undefined;
+
+  const salvaId = agente?.knowledgeBaseId ?? null;
+  const salvaNome = agente?.knowledgeBase?.name ?? nomeDaBase(salvaId);
+
+  if (desenhada.has(agentId)) {
+    const baseId = desenhada.get(agentId) ?? null;
+    if (!baseId) return { nome: null, aviso: '(escolha a base no bloco ligado)' };
+    const nome = nomeDaBase(baseId) ?? 'base';
+    return baseId === salvaId ? { nome } : { nome, aviso: '(salvar pra aplicar)' };
+  }
+  if (salvaId) {
+    return ligadaNoSalvo.has(agentId)
+      ? { nome: salvaNome, aviso: '(salvar pra desligar)' }
+      : { nome: salvaNome, aviso: '(ligada fora deste fluxo)' };
+  }
+  return { nome: null };
 }
 
 /**
@@ -442,7 +504,7 @@ function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
                   <div className="flex items-center justify-between gap-2">
                     <CardTitle className="text-base">{f.name}</CardTitle>
                     <div className="flex shrink-0 items-center gap-1">
-                      <Badge variant="outline" className={info.classe}>
+                      <Badge variant="outline" className={info.classe} title={info.ajuda}>
                         {info.label}
                       </Badge>
                       <button
@@ -595,21 +657,58 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
     return nova;
   }, [nodes, agentes, infoPorTipo]);
 
+  /**
+   * Agentes que ESTE fluxo ligou a uma base, no desenho salvo. É o critério
+   * pra desligar ao salvar sem a linha: só se desfaz o que o próprio fluxo
+   * fez. Um agente usado também na cadência de follow-up perderia a base
+   * toda vez que alguém salvasse a cadência — que nunca teve bloco de base.
+   */
+  const agentesLigadosNoSalvo = useMemo(() => {
+    const ligados = new Set<string>();
+    if (!flow) return ligados;
+    for (const [agentId, baseId] of basesDesenhadas(flow.graph.nodes, flow.graph.edges)) {
+      if (baseId) ligados.add(agentId);
+    }
+    return ligados;
+  }, [flow]);
+
+  /** Agente → base, pelas linhas do canvas como estão AGORA (salvas ou não). */
+  const basesNoCanvas = useMemo(
+    () =>
+      basesDesenhadas(
+        nodes.map((n) => ({
+          id: n.id,
+          type: (n.data as FlowNodeData).tipo ?? '',
+          config: (n.data as FlowNodeData).config,
+        })),
+        edges
+      ),
+    [nodes, edges]
+  );
+
   const cacheNos = useRef(new Map<string, { origem: Node; saida: Node }>());
   const nodesExibidos = useMemo(() => {
     const cache = cacheNos.current;
     const vistos = new Set<string>();
+    const nomeDaBase = (id: string | null) =>
+      id ? (bases?.find((b) => b.id === id)?.name ?? null) : null;
     const saida = nodes.map((n) => {
       vistos.add(n.id);
       const d = n.data as FlowNodeData;
       const exec = execPorNo[n.id];
       const portas = portasPorNo.get(n.id);
-      const rodaAgente = d.tipo === 'ai.agent' || d.tipo === 'ai.atender';
-      const agentId = rodaAgente
-        ? (d.config as { agentId?: string } | undefined)?.agentId
-        : undefined;
-      const agenteNome = rodaAgente
-        ? (agentes?.find((a) => a.id === agentId)?.name ?? null)
+      const rodaAgente = TIPOS_DE_AGENTE.has(d.tipo ?? '');
+      const agentId = rodaAgente ? textoDaConfig(d.config ?? {}, 'agentId') : null;
+      const agente = rodaAgente ? agentes?.find((a) => a.id === agentId) : undefined;
+      const agenteNome = rodaAgente ? (agente?.name ?? null) : undefined;
+      const base = rodaAgente
+        ? baseDoBloco({
+            agentId,
+            agente,
+            desenhada: basesNoCanvas,
+            ligadaNoSalvo: agentesLigadosNoSalvo,
+            nomeDaBase,
+          })
         : undefined;
 
       const anterior = cache.get(n.id);
@@ -619,6 +718,8 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
           antes.exec === exec &&
           antes.execRodou === houveTeste &&
           antes.agenteNome === agenteNome &&
+          antes.base?.nome === base?.nome &&
+          antes.base?.aviso === base?.aviso &&
           antes.portas === portas
         ) {
           return anterior.saida;
@@ -635,7 +736,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
           // PRÓPRIO agente: quem monta declara as rotas dele uma vez e o bloco
           // passa a ter uma saída por rota. O motor casa aresta por nome.
           portas,
-          ...(rodaAgente ? { agenteNome, temProblema: !agentId } : {}),
+          ...(rodaAgente ? { agenteNome, base, temProblema: !agentId } : {}),
         },
       };
       cache.set(n.id, { origem: n, saida: saidaDoNo });
@@ -643,7 +744,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
     });
     for (const id of [...cache.keys()]) if (!vistos.has(id)) cache.delete(id);
     return saida;
-  }, [nodes, agentes, execPorNo, houveTeste, portasPorNo]);
+  }, [nodes, agentes, bases, execPorNo, houveTeste, portasPorNo, basesNoCanvas, agentesLigadosNoSalvo]);
 
   const cacheArestas = useRef(new Map<string, { origem: Edge; saida: Edge }>());
   const edgesExibidas = useMemo(() => {
@@ -830,19 +931,10 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
    * no agente desde sempre — só nunca tinha aparecido no canvas.
    */
   const ligarBasesAosAgentes = useCallback(async () => {
-    const porNo = new Map(nodes.map((n) => [n.id, n.data as Record<string, unknown>]));
     const pendentes: Promise<unknown>[] = [];
 
-    for (const e of edges) {
-      const origem = porNo.get(e.source);
-      const destino = porNo.get(e.target);
-      if (origem?.tipo !== 'source.knowledge') continue;
-      if (destino?.tipo !== 'ai.agent' && destino?.tipo !== 'ai.atender') continue;
-
-      const baseId = (origem.config as { baseId?: string } | undefined)?.baseId;
-      const agentId = (destino.config as { agentId?: string } | undefined)?.agentId;
-      if (!baseId || !agentId) continue;
-
+    for (const [agentId, baseId] of basesNoCanvas) {
+      if (!baseId) continue;
       // Só grava quando mudou — salvar o fluxo não deve escrever em todo
       // agente do desenho a cada clique.
       const atual = agentes?.find((a) => a.id === agentId);
@@ -850,11 +942,22 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
       pendentes.push(aiService.updateAgent(agentId, { knowledgeBaseId: baseId }));
     }
 
+    // Linha removida = base desligada. Antes isto só ligava, nunca zerava: a
+    // base ficava presa no agente depois de apagar a linha, e a tela dizia que
+    // não havia base enquanto a busca continuava consultando uma. Só desliga
+    // o que este fluxo ligou — e só se NENHUM bloco deste agente tem linha.
+    for (const agentId of agentesLigadosNoSalvo) {
+      if (basesNoCanvas.get(agentId)) continue;
+      const atual = agentes?.find((a) => a.id === agentId);
+      if (!atual?.knowledgeBaseId) continue;
+      pendentes.push(aiService.updateAgent(agentId, { knowledgeBaseId: null }));
+    }
+
     if (pendentes.length > 0) {
       await Promise.all(pendentes);
       qc.invalidateQueries({ queryKey: ['ai-agents'] });
     }
-  }, [nodes, edges, agentes, qc]);
+  }, [basesNoCanvas, agentesLigadosNoSalvo, agentes, qc]);
 
   const salvar = useMutation({
     mutationFn: async () => {
@@ -866,7 +969,13 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
       qc.invalidateQueries({ queryKey: ['flow', flowId] });
       qc.invalidateQueries({ queryKey: ['flows'] });
       setSujo(false);
-      toast({ title: 'Fluxo salvo' });
+      // "Salvo" era lido como "ligado": o rascunho salvo não atende ninguém,
+      // e nada dizia isso na hora em que a pessoa achava que tinha terminado.
+      toast(
+        flow?.status === 'draft'
+          ? { title: 'Salvo', description: 'Para atender de verdade, ative em Sombra ou Ativar.' }
+          : { title: 'Fluxo salvo' }
+      );
     },
     onError: (e: Error) =>
       toast({ title: 'Não foi possível salvar', description: e.message, variant: 'destructive' }),
@@ -1002,6 +1111,9 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   const info = STATUS_INFO[flow.status];
   const problemas = flow.problemas ?? [];
   const noSelecionado = nodes.find((n) => n.id === selecionado);
+  // Do desenho SALVO, que é o que o simulador roda: o bloco que acende como
+  // "aguardando" durante a janela tem que ser o mesmo que o motor lê.
+  const noDeAgrupamento = flow.graph.nodes.find((n) => n.type === 'buffer.debounce')?.id ?? null;
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)]">
@@ -1325,6 +1437,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
             <SimuladorChat
               flowId={flowId}
               onPassos={setExecPorNo}
+              noDeAgrupamento={noDeAgrupamento}
               onTurno={(t) => {
                 // Fluxo que parou antes de responder: o motivo vale um aviso,
                 // porque o bloco aceso sozinho não diz o porquê.
@@ -1341,6 +1454,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
             {houveTeste && (
               <div className="border-t px-3 py-2 text-[10px] text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
                 <span className="text-emerald-600 dark:text-emerald-400">■ passou</span>
+                <span className="text-sky-600 dark:text-sky-400">■ aguardando / pulado no simulador</span>
                 <span className="text-amber-600 dark:text-amber-400">■ parou aqui</span>
                 <span className="text-destructive">■ erro</span>
                 <span className="opacity-50">■ não passou por aqui</span>

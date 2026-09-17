@@ -158,6 +158,106 @@ describe('resumo do bloco de atendimento', () => {
   });
 });
 
+describe('a base do agente aparece no bloco', () => {
+  // O bug: a ferramenta de busca ligada num agente SEM base não acha nada, e
+  // nada na tela dizia isso — o painel mostrava o estado salvo e a linha
+  // desenhada não mudava nada até salvar.
+  it('mostra a base ligada, como mostra o agente', () => {
+    renderNode({
+      label: 'Atender com IA',
+      tipo: 'ai.atender',
+      config: { agentId: 'abc' },
+      agenteNome: 'Marcus SDR',
+      base: { nome: 'Catálogo 2026' },
+    });
+    expect(screen.getByText('base: Catálogo 2026')).toBeInTheDocument();
+  });
+
+  it('sem base, diz "sem base" — em vez de não dizer nada', () => {
+    renderNode({
+      label: 'Atender com IA',
+      tipo: 'ai.atender',
+      config: { agentId: 'abc' },
+      agenteNome: 'Marcus SDR',
+      base: { nome: null },
+    });
+    expect(screen.getByText('sem base')).toBeInTheDocument();
+  });
+
+  it('linha desenhada e não salva avisa que precisa salvar', () => {
+    renderNode({
+      label: 'Atender com IA',
+      tipo: 'ai.atender',
+      config: { agentId: 'abc' },
+      agenteNome: 'Marcus SDR',
+      base: { nome: 'Catálogo 2026', aviso: '(salvar pra aplicar)' },
+    });
+    expect(screen.getByText(/base: Catálogo 2026/)).toBeInTheDocument();
+    expect(screen.getByText('(salvar pra aplicar)')).toBeInTheDocument();
+  });
+
+  it('bloco que não roda agente não fala de base', () => {
+    renderNode({ label: 'Responder', tipo: 'chat.reply', config: { texto: 'oi' } });
+    expect(screen.queryByText(/base/)).not.toBeInTheDocument();
+  });
+});
+
+describe('o simulador fiel — o que o bloco diz sobre a espera', () => {
+  it('na janela de agrupamento o bloco diz "aguardando", sem tempo de execução', () => {
+    renderNode({
+      label: 'Agrupar',
+      tipo: 'buffer.debounce',
+      config: { segundos: 15 },
+      execRodou: true,
+      exec: { status: 'waiting', ms: 0, error: null },
+    });
+    expect(screen.getByText('aguardando')).toBeInTheDocument();
+    expect(screen.queryByText(/passou/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0ms/)).not.toBeInTheDocument();
+  });
+
+  it('espera longa pulada diz isso, com a duração — não um "passou" verde mudo', () => {
+    renderNode({
+      label: 'Esperar',
+      tipo: 'flow.aguardar',
+      config: { valor: 2, unidade: 'dias' },
+      execRodou: true,
+      exec: { status: 'ok', ms: 3, error: null, puladoNoSimulador: '2 dias' },
+    });
+    expect(screen.getByText('pulado no simulador (2 dias)')).toBeInTheDocument();
+    expect(screen.queryByText('passou')).not.toBeInTheDocument();
+  });
+
+  it('passo comum continua "passou"', () => {
+    renderNode({
+      label: 'Responder',
+      tipo: 'chat.reply',
+      config: {},
+      execRodou: true,
+      exec: { status: 'ok', ms: 12, error: null, puladoNoSimulador: null },
+    });
+    expect(screen.getByText('passou')).toBeInTheDocument();
+    expect(screen.getByText('12ms')).toBeInTheDocument();
+  });
+
+  it('espera longa mostra quanto tempo está configurado', () => {
+    renderNode({ label: 'Esperar', tipo: 'flow.aguardar', config: { valor: 3, unidade: 'horas' } });
+    expect(screen.getByText('3 horas')).toBeInTheDocument();
+  });
+});
+
+describe('transferir para humano', () => {
+  it('com time escolhido, o resumo deixa de dizer "sorteia"', () => {
+    renderNode({
+      label: 'Transferir',
+      tipo: 'chat.assign_human',
+      config: { teamId: 'time-1' },
+    });
+    expect(screen.getByText(/transfere para o time escolhido/)).toBeInTheDocument();
+    expect(screen.queryByText(/sorteia/)).not.toBeInTheDocument();
+  });
+});
+
 describe('tema', () => {
   it('usa os tokens do design system, não cor fixa', () => {
     const { container } = renderNode({ label: 'Responder', tipo: 'chat.reply', config: {} });

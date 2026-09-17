@@ -21,37 +21,38 @@ import type { FlowGraph } from './types';
  * Schema de saída sugerido para o agente usado neste fluxo. Espelha o
  * `Output_Parser_Resposta1` do n8n — é o que faz `{{agente.*}}` funcionar nos
  * nós seguintes.
+ *
+ * O enum de `etapa` vem de FORA, das etapas cadastradas na conta. Seis slugs
+ * fixos aqui eram uma verdade que não existia em conta nenhuma: o modelo
+ * devolvia "agendado", o fluxo criava uma etiqueta com esse nome e o kanban de
+ * verdade ficava intocado. Sem etapa cadastrada o enum sai vazio — e em
+ * runtime a propriedade nem é enviada ao modelo.
  */
-export const SUGGESTED_AGENT_SCHEMA = {
-  type: 'object',
-  properties: {
-    mensagem_de_resposta: {
-      type: 'string',
-      description: 'O que responder ao lead, pronto para enviar no WhatsApp.',
+export function buildSuggestedAgentSchema(etapas: readonly string[]) {
+  return {
+    type: 'object',
+    properties: {
+      mensagem_de_resposta: {
+        type: 'string',
+        description: 'O que responder ao lead, pronto para enviar no WhatsApp.',
+      },
+      etapa: {
+        type: 'string',
+        enum: [...etapas],
+        description: 'Etapa do funil que melhor descreve a conversa agora (use o nome exato).',
+      },
+      transferir_para_humano: {
+        type: 'boolean',
+        description: 'true quando o lead pede atendente humano ou o caso sai do script.',
+      },
+      resolver_conversa: {
+        type: 'boolean',
+        description: 'true quando o atendimento terminou e nada mais é esperado.',
+      },
     },
-    etapa: {
-      type: 'string',
-      enum: [
-        'novo-lead',
-        'em-atendimento',
-        'aguardando-resposta',
-        'agendado',
-        'convertido',
-        'perdido',
-      ],
-      description: 'Etapa do funil que melhor descreve a conversa agora.',
-    },
-    transferir_para_humano: {
-      type: 'boolean',
-      description: 'true quando o lead pede atendente humano ou o caso sai do script.',
-    },
-    resolver_conversa: {
-      type: 'boolean',
-      description: 'true quando o atendimento terminou e nada mais é esperado.',
-    },
-  },
-  required: ['mensagem_de_resposta', 'etapa', 'transferir_para_humano'],
-} as const;
+    required: ['mensagem_de_resposta', 'etapa', 'transferir_para_humano'],
+  } as const;
+}
 
 export function buildDefaultGraph(agentId: string | null = null): FlowGraph {
   return {

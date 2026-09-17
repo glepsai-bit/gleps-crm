@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { flowService } from '../services/flow.service';
 import { listNodeTypes } from '../services/flow/nodes';
 import { parseGraph, validateGraph } from '../services/flow/engine';
-import { buildDefaultGraph, SUGGESTED_AGENT_SCHEMA } from '../services/flow/default-graph';
+import { buildDefaultGraph } from '../services/flow/default-graph';
 import { buildFollowupGraph, FOLLOWUP_PROMPT_HINT } from '../services/flow/followup-graph';
 import { AuthenticatedRequest } from '../types';
 
@@ -61,11 +61,13 @@ export class FlowController {
   /**
    * GET /flows/catalog
    * Paleta de nós + schema sugerido do agente. A tela usa pra montar o menu
-   * de "adicionar nó" sem duplicar a lista no frontend.
+   * de "adicionar nó" sem duplicar a lista no frontend. O enum de `etapa` do
+   * schema vem das etapas REAIS da conta (vazio se não houver).
    */
-  async catalog(_req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  async catalog(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      res.json({ data: { nodes: listNodeTypes(), agentSchema: SUGGESTED_AGENT_SCHEMA } });
+      const agentSchema = await flowService.agentSchema(req.user!.accountId!);
+      res.json({ data: { nodes: listNodeTypes(), agentSchema } });
     } catch (error) {
       next(error);
     }

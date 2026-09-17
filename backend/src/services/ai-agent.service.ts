@@ -9,7 +9,7 @@
  */
 
 import type { AiAgent } from '@prisma/client';
-import { autoriaDaMemoria, valorDaMemoria } from './ai/memoria';
+import { autoriaDaMemoria, valorDaMemoria, semExpiradas } from './ai/memoria';
 
 export { autoriaDaMemoria, valorDaMemoria };
 import { prisma } from '../config/database';
@@ -89,6 +89,36 @@ export interface UpsertAgentInput {
   active?: boolean;
 }
 
+/**
+ * Quem é a pessoa do outro lado — o que o CRM já sabe dela sem ninguém ter
+ * anotado nada. Vem do cadastro do contato e do histórico de conversas: é o que
+ * faz o agente receber o lead que volta como quem volta, e não como estranho.
+ */
+export interface ContatoResumo {
+  nome?: string | null;
+  telefone?: string | null;
+  cidade?: string | null;
+  estado?: string | null;
+  nicho?: string | null;
+  origem?: string | null;
+  /** Quando o contato entrou no CRM. */
+  clienteDesde?: Date | string | null;
+  /** Conversas anteriores a esta. Zero = primeira vez. */
+  conversasAnteriores?: number | null;
+  /** Como terminou a última conversa encerrada. */
+  ultimaConversa?: {
+    em?: string | null;
+    etapa?: string | null;
+    resumo?: string | null;
+  } | null;
+}
+
+/** Uma etapa do funil da conta, como o agente deve nomeá-la. */
+export interface EtapaDoFunil {
+  slug: string;
+  name: string;
+}
+
 export interface RunAgentInput {
   accountId: string;
   agentId: string;
@@ -124,6 +154,8 @@ export interface RunAgentInput {
   preloadedHistory?: ChatMessage[] | null;
   /** Contato dono da memória de longo prazo — necessário pra ferramenta `lembrar`. */
   contactId?: string | null;
+  /** Ficha do contato (cadastro + histórico). Vira o bloco "QUEM É ESTA PESSOA". */
+  contato?: ContatoResumo | null;
   /** Profundidade da consulta entre agentes. 0 = chamada de origem. */
   depth?: number;
 }
@@ -396,11 +428,26 @@ class AiAgentService {
     // prompt (a ficha, com os buracos) e na forma da ferramenta (o enum).
     const camposDeMemoria = lerCamposDeMemoria(agent.memoryFields);
 
-    // Lido ANTES do prompt: é a lista de ferramentas que decide se a ficha pode
-    // mandar registrar. Declarar campos e tirar `lembrar` são duas telas — o
-    // prompt precisa saber qual das duas configurações venceu.
-    const toolNames = Array.isArray(agent.tools) ? (agent.tools as string[]) : [];
-    const temFerramentaLembrar = toolNames.includes('lembrar') && !!AVAILABLE_TOOLS.lembrar;
+    // MEMÓRIA É NATIVA: `lembrar` vai SEMPRE ao modelo, esteja ou não na lista
+    // de ferramentas do agente. Anotar o que o lead disse não é opcional num
+    // atendimento — e "declarei os campos mas esqueci de ligar a ferramenta"
+    // era um estado silencioso em que nada se gravava.
+    const toolNames = Array.from(
+      new Set(['lembrar', ...(Array.isArray(agent.tools) ? (agent.tools as string[]) : [])])
+    );
+    const temFerramentaLembrar = true;
+
+    // Memória vencida não entra no prompt. Fica no banco: `lembrar` gravando o
+    // mesmo campo renova, e o valor antigo segue auditável.
+    const memory = semExpiradas(input.memory);
+
+    // ETAPAS REAIS DO FUNIL. O schema do agente carregava seis slugs fixos que
+    // não existiam em conta nenhuma: o modelo devolvia "agendado", o fluxo
+    // criava uma etiqueta nova com esse nome, e o kanban de verdade ficava
+    // intocado. A verdade é o cadastro da conta — o enum e o prompt saem dele.
+    const schemaBruto = agent.outputSchema as Record<string, unknown> | null;
+    const etapas = schemaTemEtapa(schemaBruto) ? await carregarEtapasDoFunil(input.accountId) : [];
+    const schema = aplicarEtapasNoSchema(schemaBruto, etapas);
 
     const system = this.buildSystemPrompt({
       agent,
@@ -409,8 +456,10 @@ class AiAgentService {
       temFerramentaLembrar,
       motivoSemTrechos,
       overview,
+      etapas,
+      contato: input.contato,
       variables: input.variables,
-      memory: input.memory,
+      memory,
       // Só o que é de todos, mais o que é privado DESTE agente. O rascunho de
       // trabalho dos outros não entra — é ruído que custa token e confunde.
       session: escoparSessao(input.session, agent.id),
@@ -479,7 +528,6 @@ class AiAgentService {
     const httpTools: HttpToolConfig[] = lerHttpTools(agent.httpTools);
     for (const t of httpTools) tools.push(definicaoDaHttpTool(t));
 
-    const schema = agent.outputSchema as Record<string, unknown> | null;
     const usageTotal: ChatUsage = { inputTokens: 0, outputTokens: 0, usdEstimate: 0, priced: true };
     const allToolCalls: ChatToolCall[] = [];
 
@@ -519,8 +567,9 @@ class AiAgentService {
             {
               conversationId: input.conversationId,
               contactId: input.contactId,
-              memory: input.memory,
+              memory,
               session: input.session,
+              contato: input.contato,
               historySummary: input.historySummary ?? historico.summary,
               // O mesmo histórico que este agente está usando. São 3 consultas
               // a menos por consulta, e os dois passam a ler exatamente a
@@ -644,6 +693,7 @@ class AiAgentService {
       contactId?: string | null;
       memory?: Record<string, unknown>;
       session?: Record<string, unknown>;
+      contato?: ContatoResumo | null;
       historySummary?: string | null;
       /** O histórico que o coordenador já carregou. Evita a releitura. */
       history?: ChatMessage[];
@@ -670,6 +720,7 @@ class AiAgentService {
         contactId: ctx.contactId,
         memory: ctx.memory,
         session: ctx.session,
+        contato: ctx.contato,
         // O resumo já calculado é repassado pra que o especialista não gaste
         // outra chamada resumindo a mesma conversa.
         historySummary: ctx.historySummary,
@@ -713,6 +764,10 @@ class AiAgentService {
     motivoSemTrechos?: MotivoSemTrechos;
     /** Mapa da base. Null quando o agente não tem base vinculada. */
     overview?: BaseOverview | null;
+    /** Etapas reais do funil da conta. Vazio = o schema não pede etapa, ou a conta não tem. */
+    etapas?: EtapaDoFunil[];
+    /** Cadastro e histórico do contato — o bloco "QUEM É ESTA PESSOA". */
+    contato?: ContatoResumo | null;
     variables?: Record<string, string>;
     memory?: Record<string, unknown>;
     session?: Record<string, unknown>;
@@ -745,9 +800,21 @@ class AiAgentService {
 
     const blocos = [prompt];
 
+    // As etapas vêm logo depois do prompt: são instrução de FORMATO da saída
+    // (o nome exato que o kanban reconhece), não contexto sobre o lead.
+    const funil = formatEtapasDoFunil(p.etapas ?? []);
+    if (funil) blocos.push(funil);
+
     // A ordem é do mais específico pro mais genérico, porque é assim que o
     // modelo pondera: fato sobre ESTA pessoa vale mais que estado da conversa,
     // que vale mais que material do negócio.
+    //
+    // Quem é a pessoa vem ANTES do que anotamos sobre ela: cadastro e histórico
+    // são o que o CRM sabe sem ninguém ter pedido — é o que faz o lead que
+    // volta em março ser recebido como quem volta.
+    const quem = formatContatoBlock(p.contato);
+    if (quem) blocos.push(quem);
+
     const longo = formatMemoryBlock(
       memory,
       'O QUE SABEMOS SOBRE ESTA PESSOA (vale entre conversas)',
@@ -774,9 +841,10 @@ class AiAgentService {
       campos,
       { memoria: memory, sessao: session },
       valorDaMemoria,
-      // Se `lembrar` não foi para o provider, a ficha não pode mandar usá-la.
-      // Ela vira contexto do que já se sabe, sem a instrução de registrar.
-      p.temFerramentaLembrar ?? false
+      // `lembrar` é nativa: vai sempre ao provider, então a ficha sempre pode
+      // mandar registrar. O parâmetro segue existindo para quem montar o
+      // prompt fora deste caminho.
+      p.temFerramentaLembrar ?? true
     );
     if (ficha) blocos.push(ficha);
 
@@ -1000,6 +1068,115 @@ function escoparSessao(
     }
   }
   return saida;
+}
+
+/**
+ * O bloco "QUEM É ESTA PESSOA". Só entra o que está preenchido: linha com
+ * "(não informado)" gasta token e vira fato apurado na cabeça do modelo.
+ */
+function formatContatoBlock(c: ContatoResumo | null | undefined): string {
+  if (!c) return '';
+  const txt = (v: unknown): string | null =>
+    typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
+  const data = (v: Date | string | null | undefined): string | null => {
+    if (!v) return null;
+    const d = v instanceof Date ? v : new Date(v);
+    return Number.isFinite(d.getTime()) ? d.toLocaleDateString('pt-BR') : null;
+  };
+
+  const linhas: string[] = [];
+  const nome = txt(c.nome);
+  if (nome) linhas.push(`- nome: ${nome}`);
+  const telefone = txt(c.telefone);
+  if (telefone) linhas.push(`- telefone: ${telefone}`);
+  const cidade = txt(c.cidade);
+  const estado = txt(c.estado);
+  if (cidade || estado) linhas.push(`- cidade: ${[cidade, estado].filter(Boolean).join(' / ')}`);
+  const nicho = txt(c.nicho);
+  if (nicho) linhas.push(`- segmento: ${nicho}`);
+  const origem = txt(c.origem);
+  if (origem) linhas.push(`- origem: ${origem}`);
+  const desde = data(c.clienteDesde);
+  if (desde) linhas.push(`- no CRM desde: ${desde}`);
+
+  const anteriores = typeof c.conversasAnteriores === 'number' ? c.conversasAnteriores : null;
+  if (anteriores !== null && anteriores > 0) {
+    linhas.push(`- conversas anteriores: ${anteriores}`);
+  }
+  if (c.ultimaConversa) {
+    const partes: string[] = [];
+    const em = data(c.ultimaConversa.em ?? null);
+    if (em) partes.push(`em ${em}`);
+    const etapa = txt(c.ultimaConversa.etapa);
+    if (etapa) partes.push(`etapa "${etapa}"`);
+    const resumo = txt(c.ultimaConversa.resumo);
+    const cabecalho = partes.length > 0 ? ` (${partes.join(', ')})` : '';
+    if (resumo) linhas.push(`- última conversa${cabecalho}: ${resumo}`);
+    else if (partes.length > 0) linhas.push(`- última conversa${cabecalho}`);
+  }
+
+  if (linhas.length === 0) return '';
+
+  const instrucao =
+    anteriores !== null && anteriores > 0
+      ? 'Já conversamos antes: receba como quem volta, não como desconhecido, e não peça de novo o que está aqui.'
+      : 'Não pergunte o que já está aqui.';
+  return `QUEM É ESTA PESSOA\n${instrucao}\n\n${linhas.join('\n')}`;
+}
+
+/** As etapas do funil como o modelo deve escrevê-las: pelo slug, na ordem. */
+function formatEtapasDoFunil(etapas: EtapaDoFunil[]): string {
+  if (etapas.length === 0) return '';
+  return (
+    'ETAPAS DO FUNIL (use o nome exato)\n' +
+    'Em `etapa`, responda com um destes nomes, exatamente como escrito à esquerda.\n\n' +
+    etapas.map((e) => `- ${e.slug} — ${e.name}`).join('\n')
+  );
+}
+
+/** O schema pede `etapa`? Só aí vale a pena buscar o funil. */
+function schemaTemEtapa(schema: Record<string, unknown> | null): boolean {
+  const props = schema?.properties as Record<string, unknown> | undefined;
+  return !!props && typeof props === 'object' && 'etapa' in props;
+}
+
+/** Etapas ativas da conta, na ordem do funil — escopo por conta, sempre. */
+async function carregarEtapasDoFunil(accountId: string): Promise<EtapaDoFunil[]> {
+  const rows = await prisma.tag.findMany({
+    where: { accountId, type: 'stage', ativo: true },
+    orderBy: { ordem: 'asc' },
+    select: { slug: true, name: true },
+  });
+  return rows.map((r) => ({ slug: r.slug, name: r.name }));
+}
+
+/**
+ * Troca o enum de `etapa` pelos slugs reais. Sem etapa cadastrada, a
+ * propriedade SAI do schema: o modelo não pode inventar uma etapa que o kanban
+ * não tem. O schema gravado no agente não muda — a substituição é por execução.
+ */
+function aplicarEtapasNoSchema(
+  schema: Record<string, unknown> | null,
+  etapas: EtapaDoFunil[]
+): Record<string, unknown> | null {
+  if (!schema || !schemaTemEtapa(schema)) return schema;
+  const props = { ...(schema.properties as Record<string, unknown>) };
+  const required = Array.isArray(schema.required) ? (schema.required as string[]) : undefined;
+
+  if (etapas.length === 0) {
+    delete props.etapa;
+    return {
+      ...schema,
+      properties: props,
+      ...(required ? { required: required.filter((r) => r !== 'etapa') } : {}),
+    };
+  }
+
+  const etapa = { ...((props.etapa as Record<string, unknown>) ?? {}) };
+  etapa.type = 'string';
+  etapa.enum = etapas.map((e) => e.slug);
+  props.etapa = etapa;
+  return { ...schema, properties: props };
 }
 
 function formatMemoryBlock(

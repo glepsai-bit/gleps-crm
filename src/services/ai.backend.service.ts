@@ -2,7 +2,8 @@
  * T-027 Fase 1 — Atendimento IA: agentes e base de conhecimento.
  * Padrão do módulo tracking: apiClient direto, envelope { data }.
  */
-import { apiClient } from '@/api/client';
+import { apiClient, tokenManager, type ApiError } from '@/api/client';
+import { apiConfig } from '@/config/api.config';
 
 interface DataEnvelope<T> {
   data: T;
@@ -115,6 +116,61 @@ export interface AgentRunResult {
   attempts: number;
 }
 
+/**
+ * Mesma resolução de URL do apiClient (que a mantém privada): respeita o
+ * prefixo de `apiConfig.baseUrl` sem duplicar o `/api` que os endpoints já
+ * carregam.
+ */
+function urlAbsoluta(endpoint: string): string {
+  const baseUrl = apiConfig.baseUrl;
+  if (baseUrl.startsWith('http')) {
+    const prefix = new URL(baseUrl).pathname.replace(/\/+$/, '');
+    const normalizado =
+      prefix && endpoint.startsWith(prefix + '/') ? endpoint.slice(prefix.length) : endpoint;
+    return `${baseUrl.replace(/\/+$/, '')}${normalizado}`;
+  }
+  const prefix = baseUrl.replace(/\/+$/, '');
+  const normalizado =
+    prefix && endpoint.startsWith(prefix + '/') ? endpoint.slice(prefix.length) : endpoint;
+  return `${window.location.origin}${prefix}${normalizado}`;
+}
+
+/**
+ * Upload multipart fora do apiClient — ele força `Content-Type: application/json`
+ * e passa o body por JSON.stringify, o que transformaria o FormData em "{}".
+ * O erro sai no MESMO formato do apiClient ({ message, code, status }) para
+ * quem chama tratar os dois caminhos igual. Não há refresh automático em 401:
+ * reenviar um arquivo de 15 MB sozinho não vale o risco — o usuário tenta de novo.
+ */
+async function postMultipart<T>(endpoint: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = tokenManager.getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(urlAbsoluta(endpoint), { method: 'POST', headers, body: form });
+  if (!res.ok) {
+    let message = res.statusText || 'Erro desconhecido';
+    let code: string | undefined;
+    try {
+      const body = (await res.json()) as {
+        error?: { message?: string; code?: string } | string;
+        message?: string;
+      };
+      if (typeof body?.error === 'object' && body.error) {
+        message = body.error.message || message;
+        code = body.error.code;
+      } else {
+        message = body?.message || (typeof body?.error === 'string' ? body.error : '') || message;
+      }
+    } catch {
+      /* corpo sem JSON: fica o statusText */
+    }
+    const erro: ApiError = { message, code, status: res.status };
+    throw erro;
+  }
+  return (await res.json()) as T;
+}
+
 export const aiService = {
   async getStatus(): Promise<AiStatus> {
     const res = await apiClient.get<DataEnvelope<AiStatus>>('/api/ai/status');
@@ -201,6 +257,37 @@ export const aiService = {
     const res = await apiClient.post<DataEnvelope<KnowledgeDoc>>(
       `/api/ai/knowledge/${baseId}/docs`,
       input
+    );
+    return res.data;
+  },
+
+  /**
+   * POST /api/ai/bases/:baseId/docs/upload — .pdf, .docx, .txt, .md, .csv, .json
+   * (até 15 MB). O servidor extrai o texto de PDF e Word; planilha não passa
+   * por aqui — o navegador converte xlsx pra CSV antes.
+   * 422 = documento ilegível (PDF escaneado, arquivo vazio, acima de 400 mil
+   * caracteres): a mensagem já diz o que fazer, mostre como veio.
+   */
+  async uploadDoc(baseId: string, file: File, title?: string): Promise<KnowledgeDoc> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    if (title?.trim()) form.append('title', title.trim());
+    const res = await postMultipart<DataEnvelope<KnowledgeDoc>>(
+      `/api/ai/bases/${baseId}/docs/upload`,
+      form
+    );
+    return res.data;
+  },
+
+  /**
+   * POST /api/ai/bases/:baseId/docs/url — o servidor baixa a página (rede
+   * interna bloqueada, 2 MB, 15 s) e guarda só o texto legível.
+   * 422 = página sem texto útil / erro HTTP / grande demais.
+   */
+  async createDocFromUrl(baseId: string, url: string, title?: string): Promise<KnowledgeDoc> {
+    const res = await apiClient.post<DataEnvelope<KnowledgeDoc>>(
+      `/api/ai/bases/${baseId}/docs/url`,
+      { url: url.trim(), ...(title?.trim() ? { title: title.trim() } : {}) }
     );
     return res.data;
   },

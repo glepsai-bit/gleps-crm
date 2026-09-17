@@ -76,6 +76,11 @@ export interface NodeTypeInfo {
 
 export interface FlowCatalog {
   nodes: NodeTypeInfo[];
+  /**
+   * Schema de saída sugerido pro agente. O enum de `etapa` vem das etapas REAIS
+   * do kanban da conta (vazio se não houver nenhuma) — não é mais uma lista
+   * fixa no código.
+   */
   agentSchema: Record<string, unknown>;
 }
 
@@ -113,6 +118,23 @@ export interface FlowRunDetail extends Omit<FlowRunSummary, '_count' | 'flow'> {
   steps: FlowRunStep[];
 }
 
+/**
+ * O turno ficou na janela de agrupamento.
+ *
+ * O simulador respeita a MESMA espera do atendimento real: com "Agrupar
+ * mensagens" no desenho, a resposta só vem quando a janela fecha — e cada
+ * mensagem nova empurra `runAfter`. A tela acompanha por `previewRunAtual`.
+ */
+export interface FlowPreviewBuffering {
+  conversationId: string;
+  runId: string;
+  status: 'buffering';
+  /** Quando a janela fecha (ISO, relógio do servidor). */
+  runAfter: string;
+  /** Tamanho da janela, em segundos. */
+  segundos: number;
+}
+
 /** Resultado de um turno do simulador. */
 export interface FlowPreview {
   /** Conversa de teste. Mande de volta no próximo turno pra manter o contexto. */
@@ -128,6 +150,34 @@ export interface FlowPreview {
   memoria: Record<string, unknown>;
   /** Curto prazo — fica na conversa. */
   sessao: Record<string, unknown>;
+}
+
+/** O turno em andamento (ou o último) da conversa de teste. */
+export interface FlowPreviewRunAtual {
+  runId: string;
+  status: RunStatus;
+  /** Quando a janela de agrupamento fecha; null fora do 'buffering'. */
+  runAfter: string | null;
+  steps: FlowRunStep[];
+  /** Derivada dos passos que falam — preenchida quando o run terminou. */
+  resposta: string | null;
+  stopReason: string | null;
+  error: string | null;
+  /** Só quando o run terminou; antes disso vêm vazias. */
+  memoria: Record<string, unknown>;
+  sessao: Record<string, unknown>;
+}
+
+/** Status em que o run não vai mais mudar sozinho. */
+export const RUN_STATUS_TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  'done',
+  'failed',
+  'sleeping',
+  'skipped',
+]);
+
+export function ehTurnoAgrupando(r: FlowPreview | FlowPreviewBuffering): r is FlowPreviewBuffering {
+  return r.status === 'buffering' && 'runAfter' in r && 'segundos' in r;
 }
 
 export const flowsService = {
@@ -199,17 +249,21 @@ export const flowsService = {
   },
 
   /**
-   * Simulador: roda o fluxo inteiro e devolve o que a IA responderia.
+   * Simulador: um turno do lead na conversa de teste.
    * Nada sai pro WhatsApp e nada muda no funil.
+   *
+   * Sem janela de agrupamento no desenho, roda o fluxo inteiro na hora e
+   * devolve o que a IA responderia. COM janela, devolve `status: 'buffering'`
+   * e a hora em que ela fecha — o resultado chega depois por `previewRunAtual`.
    */
   async preview(
     flowId: string,
     input: { message: string; conversationId?: string | null }
-  ): Promise<FlowPreview> {
+  ): Promise<FlowPreview | FlowPreviewBuffering> {
     // Timeout próprio: o padrão de 30s é curto pra um turno que chama o modelo,
     // consulta especialista e busca na base — o run terminaria no servidor e a
     // tela mostraria "timeout", que é a pior coisa pra quem está depurando.
-    const r = await apiClient.post<DataEnvelope<FlowPreview>>(
+    const r = await apiClient.post<DataEnvelope<FlowPreview | FlowPreviewBuffering>>(
       `/api/flows/${flowId}/preview`,
       input,
       { timeout: 180_000 }
@@ -218,24 +272,15 @@ export const flowsService = {
   },
 
   /**
-   * Passos do turno em andamento. O canvas chama em intervalos curtos enquanto
-   * o preview roda, pra acender os blocos conforme executam em vez de mostrar
-   * tudo de uma vez no fim.
+   * O turno em andamento da conversa de teste. O canvas chama em intervalos
+   * curtos enquanto o turno roda, pra acender os blocos conforme executam — e,
+   * com janela de agrupamento, é por aqui que a resposta chega quando o
+   * worker termina o run.
    */
-  async previewRunAtual(conversationId: string): Promise<{
-    id: string;
-    status: RunStatus;
-    stopReason: string | null;
-    error: string | null;
-    steps: FlowRunStep[];
-  } | null> {
-    const r = await apiClient.get<DataEnvelope<{
-      id: string;
-      status: RunStatus;
-      stopReason: string | null;
-      error: string | null;
-      steps: FlowRunStep[];
-    } | null>>(`/api/flows/preview/${conversationId}/run`);
+  async previewRunAtual(conversationId: string): Promise<FlowPreviewRunAtual | null> {
+    const r = await apiClient.get<DataEnvelope<FlowPreviewRunAtual | null>>(
+      `/api/flows/preview/${conversationId}/run`
+    );
     return r.data;
   },
 

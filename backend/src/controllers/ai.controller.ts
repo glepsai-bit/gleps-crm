@@ -5,6 +5,7 @@ import { knowledgeService } from '../services/knowledge.service';
 import { hasProvider } from '../services/ai/client-factory';
 import { search as searchKnowledge } from '../services/ai/knowledge-index';
 import { AuthenticatedRequest } from '../types';
+import { ValidationError } from '../utils/errors';
 
 /**
  * T-027 Fase 1 — Atendimento IA: agentes + base de conhecimento.
@@ -75,6 +76,16 @@ const docSchema = z.object({
 });
 
 const docUpdateSchema = docSchema.partial();
+
+/** Título opcional no multipart do upload — sem ele vale o nome do arquivo. */
+const docUploadSchema = z.object({
+  title: z.string().max(300).optional().nullable(),
+});
+
+const docUrlSchema = z.object({
+  url: z.string().min(1, 'Endereço é obrigatório').max(2000),
+  title: z.string().max(300).optional().nullable(),
+});
 
 const searchSchema = z.object({
   query: z.string().min(1, 'Consulta é obrigatória'),
@@ -265,6 +276,47 @@ export class AiController {
         req.user!.accountId!,
         (req.params.baseId as string),
         body
+      );
+      res.status(201).json({ data: doc });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /ai/bases/:baseId/docs/upload — multipart, campo `file`.
+   * PDF/Word viram texto no servidor; o que não rende texto é 422, nunca doc
+   * vazio. `req.file` vem do multer configurado na rota.
+   */
+  async uploadDoc(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const body = docUploadSchema.parse(req.body ?? {});
+      const file = req.file;
+      if (!file) {
+        throw new ValidationError('Envie o arquivo no campo "file" (multipart/form-data).');
+      }
+      const doc = await knowledgeService.createDocFromFile(
+        req.user!.accountId!,
+        req.params.baseId as string,
+        // Multer lê o nome como latin1; sem isso "Preços.pdf" vira "PreÃ§os.pdf".
+        { originalname: Buffer.from(file.originalname, 'latin1').toString('utf8'), buffer: file.buffer },
+        body.title
+      );
+      res.status(201).json({ data: doc });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** POST /ai/bases/:baseId/docs/url — body { url, title? }. */
+  async importDocFromUrl(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const body = docUrlSchema.parse(req.body);
+      const doc = await knowledgeService.createDocFromUrl(
+        req.user!.accountId!,
+        req.params.baseId as string,
+        body.url,
+        body.title
       );
       res.status(201).json({ data: doc });
     } catch (error) {

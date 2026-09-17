@@ -14,9 +14,11 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
 import { NotFoundError, ValidationError, ConflictError } from '../utils/errors';
-import { executeRun, parseGraph, validateGraph } from './flow/engine';
-import { valorDaMemoria } from './ai/memoria';
+import { executeRun, parseGraph, validateGraph, type RunOutcome } from './flow/engine';
+import { valorDaMemoria, semExpiradas } from './ai/memoria';
 import { TIPOS_QUE_ENVIAM } from './flow/nodes';
+import { buildSuggestedAgentSchema } from './flow/default-graph';
+import type { ContatoResumo } from './ai-agent.service';
 import type { BufferedMessage, FlowGraph, FlowStatus } from './flow/types';
 
 /** Janela de agrupamento padrão quando o fluxo não tem nó de debounce. */
@@ -34,6 +36,37 @@ const INBOX_SIMULADOR = 'Simulador de atendimento';
 /** Tira as chaves de controle interno (`_resumo_conversa`, `_simulador`). */
 const semChavesInternas = (dados: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(dados ?? {}).filter(([k]) => !k.startsWith('_')));
+
+/** Status em que o run não vai mais mudar sozinho. */
+const STATUS_TERMINAL = new Set(['done', 'failed', 'sleeping', 'skipped']);
+
+/**
+ * A janela de agrupamento do grafo, em segundos — lida do nó `buffer.debounce`.
+ * É a MESMA função pro gatilho real e pro simulador: se cada um lesse do seu
+ * jeito, a simulação esperaria um tempo diferente do atendimento.
+ */
+function janelaDeAgrupamento(graph: FlowGraph): number {
+  const debounce = graph.nodes.find((n) => n.type === 'buffer.debounce');
+  const bruto = Number(
+    (debounce?.config as { segundos?: number } | undefined)?.segundos ?? DEFAULT_DEBOUNCE_SECONDS
+  );
+  return Math.min(Math.max(Number.isFinite(bruto) ? bruto : 0, 0), MAX_DEBOUNCE_SECONDS);
+}
+
+/**
+ * O que o lead ouviu, lido dos passos que falam.
+ *
+ * Em sombra cada passo registra em `output.texto` o que TERIA mandado. A lista
+ * de quem fala vem do catálogo (TIPOS_QUE_ENVIAM), não daqui: este trecho já
+ * procurou `chat.reply` literal, e quando o composto passou a enviar o
+ * simulador ficou mudo pro fluxo novo.
+ */
+function falasDaIa(steps: { nodeType: string; output: unknown }[]): string[] {
+  return steps
+    .filter((s) => TIPOS_QUE_ENVIAM.includes(s.nodeType))
+    .map((s) => ((s.output ?? {}) as { texto?: unknown }).texto)
+    .filter((t): t is string => typeof t === 'string' && t.trim() !== '');
+}
 
 export interface UpsertFlowInput {
   name: string;
@@ -208,11 +241,7 @@ class FlowService {
     if (inboxIds && inboxIds.length > 0 && !inboxIds.includes(evt.inboxId)) return;
 
     const graph = parseGraph(flow.graph);
-    const debounce = graph.nodes.find((n) => n.type === 'buffer.debounce');
-    const segundos = Math.min(
-      Math.max(Number((debounce?.config as { segundos?: number })?.segundos ?? DEFAULT_DEBOUNCE_SECONDS), 0),
-      MAX_DEBOUNCE_SECONDS
-    );
+    const segundos = janelaDeAgrupamento(graph);
     const runAfter = new Date(Date.now() + segundos * 1000);
 
     const mensagem: BufferedMessage = {
@@ -351,16 +380,17 @@ class FlowService {
     }
   }
 
+  /** Anexa ao run 'buffering' da conversa, se houver. Devolve o id dele, ou null. */
   private async anexarAoRunAberto(
     conversationId: string,
     mensagem: BufferedMessage,
     runAfter: Date
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     const aberto = await prisma.flowRun.findFirst({
       where: { conversationId, status: 'buffering' },
       select: { id: true, context: true },
     });
-    if (!aberto) return false;
+    if (!aberto) return null;
 
     const ctx = (aberto.context ?? {}) as { mensagens?: BufferedMessage[] };
     const mensagens = [...(ctx.mensagens ?? []), mensagem].slice(-MAX_BUFFERED);
@@ -372,7 +402,7 @@ class FlowService {
         context: { ...ctx, mensagens } as unknown as Prisma.InputJsonValue,
       },
     });
-    return true;
+    return aberto.id;
   }
 
   // ============================================
@@ -465,7 +495,15 @@ class FlowService {
    * são memória — o interpolador serve pra qualquer variável. `valorDaMemoria`
    * aceita as duas formas, então memória antiga (valor cru) passa intacta.
    */
-  private async carregarMemorias(accountId: string, conversationId: string) {
+  private async carregarMemorias(
+    accountId: string,
+    conversationId: string
+  ): Promise<{
+    memoria: Record<string, unknown>;
+    sessao: Record<string, unknown>;
+    contactId: string | null;
+    contato: ContatoResumo | null;
+  }> {
     const conversa = await prisma.conversation.findFirst({
       where: { id: conversationId, accountId },
       select: { customAttributes: true, contactId: true },
@@ -473,36 +511,79 @@ class FlowService {
     const sessao = semAutoria((conversa?.customAttributes ?? {}) as Record<string, unknown>);
 
     let memoria: Record<string, unknown> = {};
+    let contato: ContatoResumo | null = null;
     if (conversa?.contactId) {
-      const contato = await prisma.contact.findFirst({
+      // Cadastro e histórico vêm na MESMA consulta que a memória: é o que
+      // faz o lead que volta ser recebido como quem volta, sem query a mais.
+      const row = await prisma.contact.findFirst({
         where: { id: conversa.contactId, accountId },
-        select: { customAttributes: true },
+        select: {
+          customAttributes: true,
+          nome: true,
+          telefone: true,
+          cidade: true,
+          estado: true,
+          nicho: true,
+          origem: true,
+          createdAt: true,
+          _count: { select: { conversations: { where: { id: { not: conversationId } } } } },
+        },
       });
-      memoria = semAutoria((contato?.customAttributes ?? {}) as Record<string, unknown>);
+      const attrs = (row?.customAttributes ?? {}) as Record<string, unknown>;
+      // Vencida na LEITURA: some do prompt, fica no banco.
+      memoria = semAutoria(semExpiradas(attrs));
+      if (row) {
+        const ultima = attrs._ultima_conversa as ContatoResumo['ultimaConversa'] | undefined;
+        contato = {
+          nome: row.nome,
+          telefone: row.telefone,
+          cidade: row.cidade,
+          estado: row.estado,
+          nicho: row.nicho,
+          origem: row.origem,
+          clienteDesde: row.createdAt,
+          conversasAnteriores: row._count?.conversations ?? 0,
+          ultimaConversa:
+            ultima && typeof ultima === 'object'
+              ? {
+                  em: typeof ultima.em === 'string' ? ultima.em : null,
+                  etapa: typeof ultima.etapa === 'string' ? ultima.etapa : null,
+                  resumo: typeof ultima.resumo === 'string' ? ultima.resumo : null,
+                }
+              : null,
+        };
+      }
     }
-    return { memoria, sessao, contactId: conversa?.contactId ?? null };
+    return { memoria, sessao, contactId: conversa?.contactId ?? null, contato };
   }
 
-  private async runOne(runId: string): Promise<void> {
+  /**
+   * Executa UM run já reclamado ('running'). É o mesmo caminho pro atendimento
+   * real e pro simulador — a diferença toda cabe em três pontos: o simulador
+   * roda fluxo em rascunho, roda sempre em sombra, e ao terminar persiste as
+   * falas da IA na conversa de teste.
+   */
+  private async runOne(runId: string): Promise<RunOutcome | null> {
     const run = await prisma.flowRun.findUnique({
       where: { id: runId },
       include: { flow: true },
     });
-    if (!run) return;
+    if (!run) return null;
 
     // O fluxo pode ter sido despublicado enquanto o run esperava na janela.
-    if (run.flow.status === 'draft') {
+    // O simulador é a exceção: ele existe justamente pra testar rascunho.
+    if (run.flow.status === 'draft' && !run.simulador) {
       await prisma.flowRun.update({
         where: { id: runId },
         data: { status: 'skipped', stopReason: 'fluxo_despublicado', finishedAt: new Date() },
       });
-      return;
+      return null;
     }
 
     // DUAS MEMÓRIAS, e a distinção é o que impede o agente de perder contexto:
     //   memoria (LONGO PRAZO) — no CONTATO, vale entre conversas.
     //   sessao  (CURTO PRAZO) — na CONVERSA, morre com ela.
-    const { memoria, sessao, contactId } = await this.carregarMemorias(
+    const { memoria, sessao, contactId, contato } = await this.carregarMemorias(
       run.accountId,
       run.conversationId
     );
@@ -512,7 +593,8 @@ class FlowService {
       accountId: run.accountId,
       flowId: run.flowId,
       conversationId: run.conversationId,
-      shadow: run.shadow,
+      // Simulador é sombra SEMPRE, mesmo que alguém edite o run no banco.
+      shadow: run.shadow || run.simulador,
       graph: parseGraph(run.flow.graph),
       resumeNodeId: run.resumeNodeId,
       vars: {
@@ -520,8 +602,11 @@ class FlowService {
         memoria,
         sessao,
         __contactId: contactId,
+        __contato: contato,
         // Qual toque da cadência é este. As guardas de follow-up leem daqui.
         __toque: run.wakeCount,
+        // Os nós de espera leem daqui pra decidir o que pular.
+        ...(run.simulador ? { __simulador: true } : {}),
       },
     });
 
@@ -531,8 +616,10 @@ class FlowService {
     const {
       __edges: _edges,
       __contactId: _contact,
+      __contato: _contatoVar,
       __toque: _toque,
       __blocoAtivo: _blocoAtivo,
+      __simulador: _simulador,
       memoria: _memoria,
       sessao: _sessao,
       ...contexto
@@ -555,7 +642,7 @@ class FlowService {
           context: contexto as unknown as Prisma.InputJsonValue,
         },
       });
-      return;
+      return resultado;
     }
 
     await prisma.flowRun.update({
@@ -571,6 +658,13 @@ class FlowService {
         finishedAt: new Date(),
       },
     });
+
+    // Passo compartilhado entre o caminho imediato e o worker: quem executou
+    // o run do simulador é quem grava as falas — e cada run é executado por
+    // um só dos dois, então cada fala entra uma vez.
+    if (run.simulador) await this.finalizarRunDoSimulador(runId, run.conversationId);
+
+    return resultado;
   }
 
   // ============================================
@@ -578,17 +672,22 @@ class FlowService {
   // ============================================
 
   /**
-   * Roda o fluxo INTEIRO contra uma conversa de teste, na hora, e devolve o que
-   * a IA responderia.
+   * Um turno do simulador: o lead "escreve" numa conversa de teste e o fluxo
+   * roda contra ela — com a MESMA janela de agrupamento do atendimento real.
    *
    * Por que existe: o playground testa um agente isolado, e o modo sombra exige
    * mensagem real de WhatsApp e só mostra o resultado depois. Nenhum dos dois
    * serve pra iterar no atendimento — trocar uma frase do prompt e ver o efeito
    * na mesma hora.
    *
+   * Com `buffer.debounce` no grafo, o run nasce em 'buffering' e é o worker
+   * que executa quando a janela vence — igual ao lead de verdade. Pular a
+   * janela aqui era o que fazia a simulação responder mensagem por mensagem
+   * enquanto o cliente, em produção, recebia uma resposta só pras três que
+   * mandou seguidas. Sem debounce, executa na hora.
+   *
    * Roda com `shadow: true` de propósito: o fluxo executa todos os passos, mas
-   * nada sai pro WhatsApp e nada muda no funil. A resposta é lida do passo de
-   * envio, que em sombra já registra o texto que teria mandado.
+   * nada sai pro WhatsApp e nada muda no funil.
    */
   async preview(params: {
     accountId: string;
@@ -630,92 +729,94 @@ class FlowService {
 
     // Mesmo formato que o gatilho monta no atendimento real — o motor lê
     // `mensagens` esperando esta forma.
-    const mensagens = [
-      {
-        id: msg.id,
-        content: texto,
-        contentType: 'text',
-        createdAt: msg.createdAt.toISOString(),
-      },
-    ];
+    const mensagem: BufferedMessage = {
+      id: msg.id,
+      content: texto,
+      contentType: 'text',
+      createdAt: msg.createdAt.toISOString(),
+    };
 
+    const segundos = janelaDeAgrupamento(graph);
+
+    // ---- COM JANELA: nasce em 'buffering' e o worker executa ----
+    if (segundos > 0) {
+      const runAfter = new Date(Date.now() + segundos * 1000);
+      const resposta = (runId: string) => ({
+        conversationId,
+        runId,
+        status: 'buffering' as const,
+        runAfter: runAfter.toISOString(),
+        segundos,
+      });
+
+      // Mesma regra do atendimento real: mensagem nova empurra a janela.
+      const anexado = await this.anexarAoRunAberto(conversationId, mensagem, runAfter);
+      if (anexado) return resposta(anexado);
+
+      const blocoAtivo = await this.blocoAtivoValido(conversationId, graph);
+      try {
+        const run = await prisma.flowRun.create({
+          data: {
+            accountId: params.accountId,
+            flowId: flow.id,
+            conversationId,
+            status: 'buffering',
+            runAfter,
+            shadow: true,
+            simulador: true,
+            resumeNodeId: blocoAtivo,
+            context: { mensagens: [mensagem] } as unknown as Prisma.InputJsonValue,
+          },
+        });
+        return resposta(run.id);
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          const outro = await this.anexarAoRunAberto(conversationId, mensagem, runAfter);
+          if (outro) return resposta(outro);
+        }
+        throw err;
+      }
+    }
+
+    // ---- SEM JANELA: executa na hora ----
+    // O agente que assumiu a conversa continua dono também aqui — o simulador
+    // precisa mostrar a entrega entre agentes como ela acontece.
+    const blocoAtivo = await this.blocoAtivoValido(conversationId, graph);
     const run = await prisma.flowRun.create({
       data: {
         accountId: params.accountId,
         flowId: flow.id,
         conversationId,
-        // Já nasce 'running': o simulador executa na hora, sem passar pelo
-        // worker — senão o usuário esperaria o próximo tick.
+        // Já nasce 'running': executa na hora, sem passar pelo worker — senão
+        // o usuário esperaria o próximo tick.
         status: 'running',
         shadow: true,
         simulador: true,
+        resumeNodeId: blocoAtivo,
         startedAt: new Date(),
-        context: { mensagens } as unknown as Prisma.InputJsonValue,
+        context: { mensagens: [mensagem] } as unknown as Prisma.InputJsonValue,
       },
     });
 
-    const { memoria, sessao, contactId } = await this.carregarMemorias(
-      params.accountId,
-      conversationId
-    );
-
-    const resultado = await executeRun({
-      runId: run.id,
-      accountId: params.accountId,
-      flowId: flow.id,
-      conversationId,
-      shadow: true,
-      graph,
-      vars: { mensagens, memoria, sessao, __contactId: contactId, __simulador: true },
-    });
-
-    await prisma.flowRun.update({
-      where: { id: run.id },
-      data: {
-        status: resultado.status,
-        stopReason: resultado.stopReason?.slice(0, 80) ?? null,
-        error: resultado.error?.slice(0, 2000) ?? null,
-        finishedAt: new Date(),
-      },
-    });
+    let resultado: RunOutcome | null;
+    try {
+      resultado = await this.runOne(run.id);
+    } catch (err) {
+      const mensagemErro = err instanceof Error ? err.message : String(err);
+      await prisma.flowRun
+        .update({
+          where: { id: run.id },
+          data: { status: 'failed', error: mensagemErro.slice(0, 2000), finishedAt: new Date() },
+        })
+        .catch(() => undefined);
+      resultado = { status: 'failed', steps: 0, stopReason: null, error: mensagemErro, vars: {} };
+    }
 
     const steps = await prisma.flowRunStep.findMany({
       where: { runId: run.id },
       orderBy: { ordem: 'asc' },
     });
-
-    // O que o lead ouviu sai dos passos que falam — em sombra cada um registra
-    // o texto que TERIA mandado, em vez de mandar.
-    //
-    // A lista de quem fala vem do catálogo (TIPOS_QUE_ENVIAM), não daqui: este
-    // trecho já procurou `chat.reply` literal, e quando o composto passou a
-    // enviar o simulador ficou mudo pro fluxo novo — dizia "parou antes de
-    // responder" enquanto o lead, em produção, teria recebido a mensagem.
-    //
-    // Todos os envios, não só o primeiro: um fluxo que manda duas mensagens
-    // precisa gravar as duas, senão o turno seguinte lê um histórico que não
-    // aconteceu.
-    const enviados = steps
-      .filter((s) => TIPOS_QUE_ENVIAM.includes(s.nodeType))
-      .map((s) => ((s.output ?? {}) as { texto?: unknown }).texto)
-      .filter((t): t is string => typeof t === 'string' && t.trim() !== '');
-
-    const resposta = enviados.length > 0 ? enviados.join('\n\n') : null;
-
-    // Gravadas como mensagens da conversa de teste. Sem isso o turno seguinte
-    // veria só as falas do lead e a IA se repetiria — a simulação deixaria de
-    // parecer com o atendimento no exato ponto que importa.
-    for (const texto of enviados) {
-      await prisma.message.create({
-        data: {
-          conversationId,
-          senderType: 'ai_bot',
-          content: texto,
-          contentType: 'text',
-          metadata: { simulador: true, runId: run.id },
-        },
-      });
-    }
+    const enviados = falasDaIa(steps);
 
     // Estado depois da execução — é o que deixa ver a memória sendo construída.
     const depois = await this.carregarMemorias(params.accountId, conversationId);
@@ -723,16 +824,44 @@ class FlowService {
     return {
       conversationId,
       runId: run.id,
-      resposta,
-      status: resultado.status,
-      stopReason: resultado.stopReason,
-      error: resultado.error,
+      resposta: enviados.length > 0 ? enviados.join('\n\n') : null,
+      status: resultado?.status ?? 'failed',
+      stopReason: resultado?.stopReason ?? null,
+      error: resultado?.error ?? null,
       steps,
       // As chaves com `_` são controle interno (resumo do histórico, marcação do
       // simulador) — mostrar na tela só confundiria quem está lendo a memória.
       memoria: semChavesInternas(depois.memoria),
       sessao: semChavesInternas(depois.sessao),
     };
+  }
+
+  /**
+   * Fecha um run do simulador: grava as falas da IA como mensagens da conversa
+   * de teste. Sem isso o turno seguinte veria só as falas do lead e a IA se
+   * repetiria — a simulação deixaria de parecer com o atendimento no exato
+   * ponto que importa.
+   *
+   * Todos os envios, não só o primeiro: um fluxo que manda duas mensagens
+   * precisa gravar as duas, senão o turno seguinte lê um histórico que não
+   * aconteceu.
+   */
+  private async finalizarRunDoSimulador(runId: string, conversationId: string): Promise<void> {
+    const steps = await prisma.flowRunStep.findMany({
+      where: { runId },
+      orderBy: { ordem: 'asc' },
+    });
+    for (const texto of falasDaIa(steps)) {
+      await prisma.message.create({
+        data: {
+          conversationId,
+          senderType: 'ai_bot',
+          content: texto,
+          contentType: 'text',
+          metadata: { simulador: true, runId },
+        },
+      });
+    }
   }
 
   /**
@@ -805,7 +934,7 @@ class FlowService {
     const run = await prisma.flowRun.findFirst({
       where: { accountId, conversationId, simulador: true },
       orderBy: { createdAt: 'desc' },
-      select: { id: true, status: true, stopReason: true, error: true },
+      select: { id: true, status: true, runAfter: true, stopReason: true, error: true },
     });
     if (!run) return null;
 
@@ -813,7 +942,25 @@ class FlowService {
       where: { runId: run.id },
       orderBy: { ordem: 'asc' },
     });
-    return { ...run, steps };
+
+    // A resposta é DERIVADA dos passos, em toda chamada — idempotente. É o que
+    // permite ao run que rodou no worker (janela de agrupamento) entregar a
+    // resposta à tela pela mesma porta que o canvas já consulta.
+    const enviados = falasDaIa(steps);
+    const terminou = STATUS_TERMINAL.has(run.status);
+    const depois = terminou ? await this.carregarMemorias(accountId, conversationId) : null;
+
+    return {
+      runId: run.id,
+      status: run.status,
+      runAfter: run.runAfter ? run.runAfter.toISOString() : null,
+      steps,
+      resposta: enviados.length > 0 ? enviados.join('\n\n') : null,
+      stopReason: run.stopReason,
+      error: run.error,
+      memoria: depois ? semChavesInternas(depois.memoria) : {},
+      sessao: depois ? semChavesInternas(depois.sessao) : {},
+    };
   }
 
   /** Descarta a conversa de teste — recomeça do zero, sem memória nenhuma. */
@@ -826,6 +973,24 @@ class FlowService {
     if (conversa.contactId) {
       await prisma.contact.delete({ where: { id: conversa.contactId } }).catch(() => undefined);
     }
+  }
+
+  // ============================================
+  // Schema sugerido do agente
+  // ============================================
+
+  /**
+   * O schema de saída sugerido, com o enum de `etapa` vindo das etapas REAIS
+   * da conta. Seis slugs fixos no código não existiam em conta nenhuma — o
+   * modelo devolvia "agendado" e o kanban de verdade ficava intocado.
+   */
+  async agentSchema(accountId: string) {
+    const etapas = await prisma.tag.findMany({
+      where: { accountId, type: 'stage', ativo: true },
+      orderBy: { ordem: 'asc' },
+      select: { slug: true },
+    });
+    return buildSuggestedAgentSchema(etapas.map((e) => e.slug));
   }
 
   // ============================================

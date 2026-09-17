@@ -1,6 +1,9 @@
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import multer from 'multer';
 import { aiController } from '../controllers/ai.controller';
 import { authenticate, requireAdmin, requireAccountId } from '../middlewares/auth.middleware';
+import { EXTENSOES_ACEITAS, extensaoDe } from '../services/knowledge.service';
+import { ValidationError } from '../utils/errors';
 
 /**
  * T-027 Fase 1 — Atendimento IA (agentes + base de conhecimento).
@@ -42,5 +45,44 @@ router.delete('/knowledge/docs/:docId', (req, res, next) => aiController.deleteD
 router.post('/knowledge/docs/:docId/reindex', (req, res, next) =>
   aiController.reindexDoc(req, res, next)
 );
+
+// Upload de arquivo e importação por URL. memoryStorage porque o buffer vai
+// direto pro extrator e nunca toca disco; 15 MB cobre qualquer PDF de texto —
+// acima disso é imagem escaneada, que não seria lida mesmo.
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (extensaoDe(file.originalname)) return cb(null, true);
+    cb(
+      new ValidationError(
+        `Formato não aceito. Envie ${EXTENSOES_ACEITAS.join(', ')} (planilha: exporte como CSV).`
+      )
+    );
+  },
+});
+
+/** Erro do multer vira 400 legível; sem isso "arquivo grande" cai como 500. */
+function uploadDeDoc(req: Request, res: Response, next: NextFunction): void {
+  upload.single('file')(req, res, (err: unknown) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      return next(new ValidationError('Arquivo maior que 15 MB. Divida o material ou cole o texto.'));
+    }
+    next(err);
+  });
+}
+
+// Caminho canônico (/bases) e alias no prefixo antigo (/knowledge), pra quem
+// já consome a listagem em /knowledge/:baseId/docs não precisar trocar de base.
+for (const prefixo of ['/bases', '/knowledge']) {
+  router.post(`${prefixo}/:baseId/docs/upload`, uploadDeDoc, (req, res, next) =>
+    aiController.uploadDoc(req, res, next)
+  );
+  router.post(`${prefixo}/:baseId/docs/url`, (req, res, next) =>
+    aiController.importDocFromUrl(req, res, next)
+  );
+}
 
 export default router;

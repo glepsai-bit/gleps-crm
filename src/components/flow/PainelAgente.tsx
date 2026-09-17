@@ -17,6 +17,8 @@ import { toast } from 'sonner';
 import {
   AlertTriangle,
   Bot,
+  Brain,
+  Columns3,
   GitBranch,
   Loader2,
   Plus,
@@ -30,9 +32,9 @@ import {
 import {
   aiService,
   type AiAgentInput,
-  type AiAgentRole,
   type AiProviderName,
 } from '@/services/ai.backend.service';
+import { useEtapasDoFunil, useTimesDaConta } from './CamposDoNo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -82,6 +84,17 @@ const CONSEQUENCIA_SEM_SINAL: Record<string, string> = {
   resolver_conversa: 'a saída encerrou fica morta',
 };
 
+/**
+ * Memória de longo prazo vale por 60 dias — `MEMORIA_LONGA_DIAS` em
+ * `backend/src/services/ai/memoria.ts`. Repetido aqui porque a frase do painel
+ * precisa do número, e o número é uma decisão de produto, não de rede.
+ */
+const MEMORIA_LONGA_DIAS = 60;
+
+/** Memória é nativa: `lembrar` vai sempre ao modelo, então não é um toggle. */
+const FERRAMENTA_DE_MEMORIA = 'lembrar';
+const FERRAMENTA_DE_BASE = 'buscar_conhecimento';
+
 /** "a, b e c" — enumeração em frase, sem lista solta no meio do texto. */
 function emFrase(itens: string[]): string {
   if (itens.length < 2) return itens[0] ?? '';
@@ -111,25 +124,6 @@ const MODELOS: Record<AiProviderName, { value: string; label: string }[]> = {
   ],
 };
 
-const PAPEIS: { value: AiAgentRole; label: string; ajuda: string }[] = [
-  {
-    value: 'responder',
-    label: 'Responde ao lead',
-    ajuda: 'Escreve a mensagem que o bloco envia. É o papel que "Atender com IA" espera.',
-  },
-  {
-    value: 'classifier',
-    label: 'Classifica (não responde)',
-    ajuda:
-      'Devolve campos, não conversa. Neste passo só faz sentido se outro bloco escrever a resposta — ou se ele for consultado como especialista.',
-  },
-  {
-    value: 'custom',
-    label: 'Personalizado',
-    ajuda: 'Quem manda é o formato da resposta, logo abaixo.',
-  },
-];
-
 type CampoNumerico = 'temperature' | 'maxTokens' | 'historyLimit';
 
 /**
@@ -142,10 +136,13 @@ const FAIXAS: Record<CampoNumerico, { rotulo: string; min: number; max: number; 
   historyLimit: { rotulo: 'Histórico', min: 0, max: 60, inteiro: true, padrao: '20' },
 };
 
+/**
+ * Sem `role` de propósito: o backend nunca leu o papel — quem manda é o prompt
+ * e o formato da resposta. O campo existia só na tela, e confundia.
+ */
 interface Rascunho {
   name: string;
   description: string;
-  role: AiAgentRole;
   systemPrompt: string;
   provider: AiProviderName;
   model: string;
@@ -165,7 +162,6 @@ interface Rascunho {
 const RASCUNHO_VAZIO: Rascunho = {
   name: '',
   description: '',
-  role: 'responder',
   systemPrompt: '',
   provider: 'openai',
   model: '',
@@ -205,8 +201,8 @@ function dentroDaFaixa(campo: CampoNumerico, texto: string): string {
  *
  * Fica como TEXTO no estado, e não como objeto: o texto é a única forma que
  * sobrevive ao usuário digitando um JSON pela metade no modo avançado. As
- * rotas são uma LEITURA desse texto — nunca um segundo estado, senão os dois
- * divergem na primeira edição manual.
+ * rotas (e o "quando usar" de cada uma) são uma LEITURA desse texto — nunca um
+ * segundo estado, senão os dois divergem na primeira edição manual.
  */
 interface EsquemaSaida {
   properties?: Record<string, unknown>;
@@ -214,24 +210,26 @@ interface EsquemaSaida {
   [chave: string]: unknown;
 }
 
-/** Espelha o SUGGESTED_AGENT_SCHEMA de `backend/src/services/flow/default-graph.ts`. */
-function esquemaPadrao(): EsquemaSaida {
+/**
+ * A propriedade `etapa` com as etapas REAIS do funil. Sem etapa cadastrada não
+ * há enum — e em runtime o backend nem envia a propriedade ao modelo, pra ele
+ * não inventar uma etapa que o Kanban não tem.
+ */
+function propriedadeEtapa(etapas: string[]): Record<string, unknown> {
+  return {
+    type: 'string',
+    ...(etapas.length > 0 ? { enum: etapas } : {}),
+    description: 'Etapa do funil que melhor descreve a conversa agora (use o nome exato).',
+  };
+}
+
+/** Espelha `buildSuggestedAgentSchema` de `backend/src/services/flow/default-graph.ts`. */
+function esquemaPadrao(etapas: string[]): EsquemaSaida {
   return {
     type: 'object',
     properties: {
       mensagem_de_resposta: { type: 'string', description: 'O que enviar ao lead.' },
-      etapa: {
-        type: 'string',
-        enum: [
-          'novo-lead',
-          'em-atendimento',
-          'aguardando-resposta',
-          'agendado',
-          'convertido',
-          'perdido',
-        ],
-        description: 'Etapa do funil que melhor descreve a conversa agora.',
-      },
+      etapa: propriedadeEtapa(etapas),
       transferir_para_humano: {
         type: 'boolean',
         description: 'true quando o lead pede atendente humano ou o caso sai do script.',
@@ -243,6 +241,25 @@ function esquemaPadrao(): EsquemaSaida {
     },
     required: ['mensagem_de_resposta', 'etapa', 'transferir_para_humano'],
   };
+}
+
+/**
+ * Reescreve o enum de `etapa` com as etapas reais da conta.
+ *
+ * Um formato gravado antes trazia seis slugs fixos que não existiam em conta
+ * nenhuma. O backend já substitui em toda execução; aqui é pra que o que fica
+ * SALVO seja o que o funil tem — e o modo avançado não mostre uma lista falsa.
+ * `etapas === null` significa "ainda não sei quais são": não mexe.
+ */
+function comEtapasReais(esquema: EsquemaSaida | null, etapas: string[] | null): EsquemaSaida | null {
+  if (!esquema || !etapas) return esquema;
+  const props = esquema.properties;
+  const etapa = props?.etapa;
+  if (!props || !etapa || typeof etapa !== 'object') return esquema;
+  const nova: Record<string, unknown> = { ...(etapa as Record<string, unknown>), type: 'string' };
+  delete nova.enum;
+  if (etapas.length > 0) nova.enum = etapas;
+  return { ...esquema, properties: { ...props, etapa: nova } };
 }
 
 function lerEsquema(texto: string): { esquema: EsquemaSaida | null; erro: string | null } {
@@ -262,13 +279,50 @@ function lerEsquema(texto: string): { esquema: EsquemaSaida | null; erro: string
   }
 }
 
+function propriedadeRota(esquema: EsquemaSaida | null): Record<string, unknown> | null {
+  const rota = esquema?.properties?.rota;
+  return rota && typeof rota === 'object' ? (rota as Record<string, unknown>) : null;
+}
+
 /** Só as rotas do usuário: as fixas viram chip próprio e não se removem. */
 function rotasDo(esquema: EsquemaSaida | null): string[] {
-  const rota = esquema?.properties?.rota;
-  if (!rota || typeof rota !== 'object') return [];
-  const lista = (rota as { enum?: unknown }).enum;
+  const lista = propriedadeRota(esquema)?.enum;
   if (!Array.isArray(lista)) return [];
   return lista.filter((r): r is string => typeof r === 'string' && !ROTAS_FIXAS.includes(r));
+}
+
+/**
+ * O "quando usar" de cada rota mora na DESCRIÇÃO de `rota` — é o texto que o
+ * modelo lê pra decidir, então é lá que a instrução precisa estar. Formato
+ * estável, uma rota por linha, depois da frase padrão:
+ *
+ *   Por onde a conversa segue. Use respondeu, humano ou encerrou quando for um atendimento comum.
+ *   - financeiro: boleto, nota fiscal, cobrança
+ *   - suporte: problema técnico no que já comprou
+ */
+const FRASE_DA_ROTA =
+  'Por onde a conversa segue. Use respondeu, humano ou encerrou quando for um atendimento comum.';
+
+// O texto depois de ": " NÃO é aparado na leitura: o campo é editado tecla a
+// tecla, e aparar aqui comeria o espaço que o usuário acabou de digitar.
+const LINHA_QUANDO_USAR = /^-\s*([^:\s]+):\s?(.*)$/;
+
+function quandoUsarDo(esquema: EsquemaSaida | null): Record<string, string> {
+  const descricao = propriedadeRota(esquema)?.description;
+  if (typeof descricao !== 'string') return {};
+  const mapa: Record<string, string> = {};
+  for (const linha of descricao.split('\n')) {
+    const m = LINHA_QUANDO_USAR.exec(linha);
+    if (m && m[2].trim()) mapa[m[1]] = m[2];
+  }
+  return mapa;
+}
+
+function descricaoDaRota(rotas: string[], quando: Record<string, string>): string {
+  const linhas = rotas
+    .filter((r) => (quando[r] ?? '').trim() !== '')
+    .map((r) => `- ${r}: ${quando[r]}`);
+  return linhas.length > 0 ? `${FRASE_DA_ROTA}\n${linhas.join('\n')}` : FRASE_DA_ROTA;
 }
 
 /**
@@ -281,9 +335,7 @@ function rotasDo(esquema: EsquemaSaida | null): string[] {
  * sair pelo desvio. Como as fixas não viram chip, isso não aparece na lista.
  */
 function rotasFixasFaltando(esquema: EsquemaSaida | null): string[] {
-  const rota = esquema?.properties?.rota;
-  if (!rota || typeof rota !== 'object') return [];
-  const lista = (rota as { enum?: unknown }).enum;
+  const lista = propriedadeRota(esquema)?.enum;
   if (!Array.isArray(lista)) return [];
   return ROTAS_FIXAS.filter((fixa) => !lista.includes(fixa));
 }
@@ -295,9 +347,14 @@ function sinaisFaltando(esquema: EsquemaSaida | null): string[] {
   return SINAIS_DE_SAIDA.filter((sinal) => !(sinal in props));
 }
 
-function comRotas(esquema: EsquemaSaida | null, rotas: string[]): EsquemaSaida | null {
+function comRotas(
+  esquema: EsquemaSaida | null,
+  rotas: string[],
+  quando: Record<string, string>,
+  etapas: string[]
+): EsquemaSaida | null {
   if (!esquema && rotas.length === 0) return null;
-  const base: EsquemaSaida = esquema ? { ...esquema } : esquemaPadrao();
+  const base: EsquemaSaida = esquema ? { ...esquema } : esquemaPadrao(etapas);
   const props: Record<string, unknown> = { ...(base.properties ?? {}) };
   const obrigatorios = (Array.isArray(base.required) ? base.required : []).filter(
     (campo): campo is string => typeof campo === 'string'
@@ -318,8 +375,7 @@ function comRotas(esquema: EsquemaSaida | null, rotas: string[]): EsquemaSaida |
       // resolver_conversa; com enum só das novas, toda conversa sairia por
       // elas e as três portas de sempre morreriam.
       enum: [...ROTAS_FIXAS, ...rotas],
-      description:
-        'Por onde a conversa segue. Use respondeu, humano ou encerrou quando for um atendimento comum.',
+      description: descricaoDaRota(rotas, quando),
     };
   }
 
@@ -348,6 +404,8 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
   // painel abre, e o bloco enxerga o agente salvo sem um segundo request.
   const agentesQuery = useQuery({ queryKey: ['ai-agents'], queryFn: aiService.listAgents });
   const statusQuery = useQuery({ queryKey: ['ai', 'status'], queryFn: aiService.getStatus });
+  const etapasQuery = useEtapasDoFunil();
+  const timesQuery = useTimesDaConta();
 
   const [rascunho, setRascunho] = useState<Rascunho>(RASCUNHO_VAZIO);
   const [esquemaTexto, setEsquemaTexto] = useState('');
@@ -360,6 +418,12 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
   const agentes = agentesQuery.data ?? [];
   const agente = agentes.find((a) => a.id === agentId) ?? null;
   const status = statusQuery.data;
+  const etapas = useMemo(() => etapasQuery.data ?? [], [etapasQuery.data]);
+  // `null` enquanto não se sabe: o enum gravado só é reescrito com certeza.
+  const slugsDasEtapas = useMemo(
+    () => (etapasQuery.data ? etapasQuery.data.map((e) => e.slug) : null),
+    [etapasQuery.data]
+  );
 
   // Hidrata uma vez por agente. Depender do objeto inteiro faria o refetch da
   // lista (a cada foco na janela) pisar no prompt no meio da digitação.
@@ -370,7 +434,6 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
     setRascunho({
       name: agente.name,
       description: agente.description ?? '',
-      role: agente.role,
       systemPrompt: agente.systemPrompt,
       provider: agente.provider,
       model: agente.model ?? '',
@@ -390,6 +453,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
 
   const { esquema, erro: erroEsquema } = useMemo(() => lerEsquema(esquemaTexto), [esquemaTexto]);
   const rotas = useMemo(() => rotasDo(esquema), [esquema]);
+  const quandoUsar = useMemo(() => quandoUsarDo(esquema), [esquema]);
   const faltamSinais = useMemo(() => sinaisFaltando(esquema), [esquema]);
   const faltamFixas = useMemo(() => rotasFixasFaltando(esquema), [esquema]);
 
@@ -408,21 +472,29 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
     setSujo(true);
   };
 
-  const aplicarRotas = (lista: string[]) => {
-    const novo = comRotas(esquema, lista);
+  const aplicarRotas = (lista: string[], quando: Record<string, string> = quandoUsar) => {
+    const novo = comRotas(esquema, lista, quando, slugsDasEtapas ?? []);
     editarEsquema(novo ? JSON.stringify(novo, null, 2) : '');
   };
 
-  const adicionarRota = () => {
-    const nome = normalizarRota(novaRota);
-    if (!nome) return;
+  /** Uma rota nova, venha do campo de texto ou de um chip de time. */
+  const incluirRota = (bruto: string) => {
+    const nome = normalizarRota(bruto);
+    if (!nome) return false;
     if (ROTAS_FIXAS.includes(nome)) {
       toast.error(`"${nome}" já é uma saída fixa do bloco.`);
-      return;
+      return false;
     }
     if (!rotas.includes(nome)) aplicarRotas([...rotas, nome]);
-    setNovaRota('');
+    return true;
   };
+
+  const adicionarRotaDigitada = () => {
+    if (incluirRota(novaRota)) setNovaRota('');
+  };
+
+  const editarQuandoUsar = (rota: string, texto: string) =>
+    aplicarRotas(rotas, { ...quandoUsar, [rota]: texto });
 
   /**
    * Devolve as saídas fixas ao enum passando pelo mesmo `aplicarRotas` dos chips
@@ -434,7 +506,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
 
   const incluirSinaisQueFaltam = () => {
     if (!esquema) return;
-    const padrao = esquemaPadrao().properties ?? {};
+    const padrao = esquemaPadrao(slugsDasEtapas ?? []).properties ?? {};
     const props: Record<string, unknown> = { ...(esquema.properties ?? {}) };
     for (const sinal of faltamSinais) props[sinal] = padrao[sinal];
     editarEsquema(JSON.stringify({ ...esquema, properties: props }, null, 2));
@@ -478,10 +550,13 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
 
   const salvar = useMutation({
     mutationFn: (numeros: Record<CampoNumerico, number>) => {
+      // O `etapa.enum` que vai pro banco é o do funil real — nunca uma lista
+      // que o painel inventou. Sem `role`: o backend ignora, e a tela parou de
+      // fingir que o campo decidia algo.
+      const formato = comEtapasReais(esquema, slugsDasEtapas);
       const payload: AiAgentInput = {
         name: rascunho.name.trim(),
         description: rascunho.description.trim() || null,
-        role: rascunho.role,
         systemPrompt: rascunho.systemPrompt,
         provider: rascunho.provider,
         model: rascunho.model.trim() || null,
@@ -490,7 +565,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
         historyLimit: numeros.historyLimit,
         tools: rascunho.tools,
         subAgentIds: rascunho.subAgentIds,
-        outputSchema: (esquema as Record<string, unknown> | null) ?? null,
+        outputSchema: (formato as Record<string, unknown> | null) ?? null,
         active: rascunho.active,
       };
       return criando || !agentId
@@ -580,7 +655,20 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
   // O passo aponta pra um agente que a lista (já carregada, sem erro) não tem:
   // foi excluído. Não é a mesma coisa que "nenhum agente configurado".
   const agenteSumiu = !!agentId && !agente && !criando && !agentesQuery.isLoading && !listaQuebrou;
-  const papel = PAPEIS.find((p) => p.value === rascunho.role) ?? PAPEIS[0];
+
+  // `lembrar` sai da lista: é nativa, não se liga nem desliga.
+  const ferramentas = (status?.tools ?? []).filter((t) => t.name !== FERRAMENTA_DE_MEMORIA);
+  // Base vem da linha do canvas, não deste painel — por isso lê o agente salvo.
+  // Em "criando", `agente` ainda é o do passo (o antigo), então não conta.
+  const baseLigada = criando ? null : (agente?.knowledgeBase ?? null);
+  const temBase = criando ? false : !!(agente?.knowledgeBaseId || baseLigada);
+  const buscaSemBase = rascunho.tools.includes(FERRAMENTA_DE_BASE) && !temBase;
+
+  // Times viram sugestão de rota: um clique cria "financeiro" a partir do
+  // time Financeiro. Os que já são rota (ou colidem com fixa) não aparecem.
+  const sugestoesDeTime = (timesQuery.data ?? [])
+    .map((t) => ({ id: t.id, nome: t.name, rota: normalizarRota(t.name) }))
+    .filter((t) => t.rota && !rotas.includes(t.rota) && !ROTAS_FIXAS.includes(t.rota));
 
   return (
     <Dialog open onOpenChange={(aberto) => !aberto && fechar()}>
@@ -699,6 +787,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
             <div className="lg:w-[340px] shrink-0 space-y-3">
               <Skeleton className="h-9 w-full" />
               <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-9 w-full" />
               <Skeleton className="h-24 w-full" />
             </div>
           </div>
@@ -753,9 +842,9 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                 className="flex-1 min-h-[260px] lg:min-h-0 resize-none font-mono text-xs leading-relaxed"
               />
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Use <code>{'{{variavel}}'}</code> para valores que o fluxo injeta. Explique aqui,
-                em palavras, quando ele deve usar cada rota — a lista ao lado só cria a saída,
-                quem ensina a escolher é o prompt.
+                Use <code>{'{{variavel}}'}</code> para valores que o fluxo injeta. A lista de
+                rotas ao lado cria a saída e diz em uma linha quando usá-la; o detalhe de como
+                conduzir cada assunto é aqui, no prompt.
               </p>
             </div>
 
@@ -772,28 +861,6 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                   onChange={(e) => editar({ name: e.target.value })}
                   placeholder="Marcus — SDR"
                 />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="pa-papel" className="text-xs">
-                  Papel
-                </Label>
-                <Select
-                  value={rascunho.role}
-                  onValueChange={(v) => editar({ role: v as AiAgentRole })}
-                >
-                  <SelectTrigger id="pa-papel" className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PAPEIS.map((p) => (
-                      <SelectItem key={p.value} value={p.value}>
-                        {p.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-[11px] text-muted-foreground leading-relaxed">{papel.ajuda}</p>
               </div>
 
               <div className="space-y-1.5">
@@ -926,6 +993,21 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                 <Label className="text-xs flex items-center gap-1.5">
                   <Wrench className="w-3.5 h-3.5" /> Ferramentas
                 </Label>
+
+                {/* Memória não é ferramenta que se liga: é o atendimento
+                    lembrando de quem fala com ele. O toggle de `lembrar` era
+                    um jeito silencioso de gravar nada. */}
+                <div className="flex items-start gap-3 rounded-md border bg-muted/40 p-2.5">
+                  <Brain className="w-4 h-4 mt-0.5 shrink-0" />
+                  <span className="text-[11px] min-w-0">
+                    <span className="font-medium block">Memória — sempre ativa</span>
+                    <span className="block text-muted-foreground leading-relaxed">
+                      O agente guarda o que aprende sobre a pessoa por {MEMORIA_LONGA_DIAS} dias;
+                      o que ele deve guardar você declara no ícone de cérebro do bloco.
+                    </span>
+                  </span>
+                </div>
+
                 {statusQuery.isLoading ? (
                   <Skeleton className="h-16 w-full" />
                 ) : statusQuery.isError ? (
@@ -933,17 +1015,18 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                     Não consegui carregar as ferramentas. As que já estavam ligadas continuam
                     salvas — só não dá pra mexer nelas agora.
                   </p>
-                ) : (status?.tools.length ?? 0) === 0 ? (
+                ) : ferramentas.length === 0 ? (
                   <p className="text-[11px] text-muted-foreground rounded-md border p-2.5">
-                    Nenhuma ferramenta disponível nesta conta.
+                    Nenhuma outra ferramenta disponível nesta conta.
                   </p>
                 ) : (
-                  status?.tools.map((t) => (
+                  ferramentas.map((t) => (
                     <label
                       key={t.name}
                       className="flex items-start gap-3 rounded-md border p-2.5 cursor-pointer"
                     >
                       <Switch
+                        aria-label={t.name}
                         checked={rascunho.tools.includes(t.name)}
                         onCheckedChange={(ligado) =>
                           editar({
@@ -962,21 +1045,41 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                     </label>
                   ))
                 )}
+
                 {/* Base NÃO tem seletor aqui de propósito: quem escolhe é a linha
                     ligada no canvas, e um seletor seria sobrescrito ao salvar o fluxo. */}
-                <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  {agente?.knowledgeBase ? (
-                    <>
-                      Consulta a base <strong>{agente.knowledgeBase.name}</strong>. Para trocar,
-                      ligue outro bloco de base na entrada deste passo.
-                    </>
-                  ) : (
-                    <>
-                      Sem base ligada — <code>buscar_conhecimento</code> não acha nada. Arraste um
-                      bloco de base e ligue na entrada deste passo.
-                    </>
-                  )}
-                </p>
+                {buscaSemBase ? (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-md border border-amber-500/60 bg-amber-500/10 p-2.5 text-[11px] leading-relaxed"
+                  >
+                    <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <span>
+                      <strong>
+                        <code>buscar_conhecimento</code> está ligada, mas este agente não tem
+                        base
+                      </strong>{' '}
+                      — a busca não acha nada. Arraste o bloco{' '}
+                      <strong>Base de conhecimento</strong> e ligue na entrada deste passo.
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    {baseLigada ? (
+                      <>
+                        Consulta a base <strong>{baseLigada.name}</strong>. Para trocar, ligue
+                        outro bloco de base na entrada deste passo.
+                      </>
+                    ) : temBase ? (
+                      <>Consulta a base ligada na entrada deste passo.</>
+                    ) : (
+                      <>
+                        Sem base ligada. Para o agente consultar documentos, arraste um bloco de
+                        base e ligue na entrada deste passo.
+                      </>
+                    )}
+                  </p>
+                )}
               </div>
 
               <Separator />
@@ -1026,6 +1129,51 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
 
               <Separator />
 
+              {/* Etapas: SOMENTE LEITURA. A verdade é o funil do Kanban — o
+                  motor recusa qualquer etapa que não esteja nele. */}
+              <div className="space-y-2">
+                <Label className="text-xs flex items-center gap-1.5">
+                  <Columns3 className="w-3.5 h-3.5" /> Etapas que o agente pode aplicar
+                </Label>
+                {etapasQuery.isLoading ? (
+                  <Skeleton className="h-8 w-full" />
+                ) : etapasQuery.isError ? (
+                  <p className="text-[11px] text-destructive rounded-md border border-destructive/40 p-2.5 leading-relaxed">
+                    Não consegui carregar as etapas do funil. Em cada atendimento o agente usa
+                    as do funil de qualquer jeito — só não dá pra mostrá-las agora.
+                  </p>
+                ) : etapas.length === 0 ? (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-md border border-amber-500/60 bg-amber-500/10 p-2.5 text-[11px] leading-relaxed"
+                  >
+                    <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <span>
+                      <strong>Seu funil não tem etapa nenhuma</strong> — o agente não vai mover
+                      ninguém no Kanban. Crie as etapas no Kanban primeiro.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5" data-testid="pa-etapas">
+                    {etapas.map((e) => (
+                      <Badge
+                        key={e.id}
+                        variant="secondary"
+                        className="text-[10px] font-normal"
+                        title={e.slug}
+                      >
+                        {e.name}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Vêm do seu funil do Kanban. Para mudar, edite o funil.
+                </p>
+              </div>
+
+              <Separator />
+
               <div className="space-y-2">
                 <Label className="text-xs flex items-center gap-1.5">
                   <GitBranch className="w-3.5 h-3.5" /> Para onde ele encaminha
@@ -1041,48 +1189,100 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                       {r}
                     </Badge>
                   ))}
-                  {rotas.map((r) => (
-                    <Badge key={r} variant="outline" className="font-mono text-[10px] gap-1 pr-1">
-                      {r}
-                      <button
-                        type="button"
-                        aria-label={`Remover ${r}`}
-                        className="rounded-sm p-0.5 hover:bg-muted"
-                        onClick={() => aplicarRotas(rotas.filter((x) => x !== r))}
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </Badge>
-                  ))}
                 </div>
+
+                {rotas.length > 0 && (
+                  <div className="space-y-1.5">
+                    {rotas.map((r) => (
+                      <div key={r} className="flex items-center gap-1.5">
+                        <Badge variant="outline" className="font-mono text-[10px] shrink-0">
+                          {r}
+                        </Badge>
+                        <Input
+                          aria-label={`Quando usar ${r}`}
+                          className="h-7 text-[11px] flex-1 min-w-0"
+                          placeholder="quando usar — ex.: boleto, nota fiscal, cobrança"
+                          value={quandoUsar[r] ?? ''}
+                          onChange={(e) => editarQuandoUsar(r, e.target.value)}
+                          onBlur={() => {
+                            const aparado = (quandoUsar[r] ?? '').trim();
+                            if (aparado !== (quandoUsar[r] ?? '')) editarQuandoUsar(r, aparado);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          aria-label={`Remover ${r}`}
+                          className="rounded-sm p-1 hover:bg-muted text-muted-foreground shrink-0"
+                          onClick={() => aplicarRotas(rotas.filter((x) => x !== r))}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      O "quando usar" vai junto no formato da resposta — é o que o agente lê pra
+                      escolher a rota.
+                    </p>
+                  </div>
+                )}
 
                 {erroEsquema ? (
                   <p className="text-[11px] text-destructive leading-relaxed">{erroEsquema}</p>
                 ) : (
-                  <div className="flex gap-1.5">
-                    <Input
-                      className="h-8 text-xs font-mono"
-                      placeholder="financeiro"
-                      value={novaRota}
-                      onChange={(e) => setNovaRota(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          adicionarRota();
-                        }
-                      }}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-8 shrink-0"
-                      disabled={!novaRota.trim()}
-                      onClick={adicionarRota}
-                    >
-                      Incluir
-                    </Button>
-                  </div>
+                  <>
+                    <div className="flex gap-1.5">
+                      <Input
+                        className="h-8 text-xs font-mono"
+                        placeholder="financeiro"
+                        value={novaRota}
+                        onChange={(e) => setNovaRota(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            adicionarRotaDigitada();
+                          }
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0"
+                        disabled={!novaRota.trim()}
+                        onClick={adicionarRotaDigitada}
+                      >
+                        Incluir
+                      </Button>
+                    </div>
+
+                    {sugestoesDeTime.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[11px] text-muted-foreground">
+                          Times da conta — um clique cria a rota:
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {sugestoesDeTime.map((t) => (
+                            <Button
+                              key={t.id}
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-[11px]"
+                              title={`Cria a rota "${t.rota}"`}
+                              onClick={() => incluirRota(t.nome)}
+                            >
+                              <Plus className="w-3 h-3 mr-1" />
+                              {t.nome}
+                            </Button>
+                          ))}
+                        </div>
+                        <p className="text-[11px] text-muted-foreground leading-relaxed">
+                          Depois, no bloco <strong>Transferir para humano</strong> ligado nessa
+                          saída, escolha o mesmo time.
+                        </p>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {faltamFixas.length > 0 && (
@@ -1145,7 +1345,8 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                     <p className="text-[11px] text-muted-foreground leading-relaxed">
                       É o contrato da resposta: os campos que o agente é obrigado a devolver. Mexa
                       só se precisar de algo além de <code>mensagem_de_resposta</code> e{' '}
-                      <code>rota</code>.
+                      <code>rota</code>. A lista de <code>etapa</code> é trocada pelas etapas do
+                      funil ao salvar e em toda execução — não adianta editar aqui.
                     </p>
                   </div>
                 )}

@@ -14,12 +14,54 @@ import { chunkText, estimateTokens } from './ai/knowledge-chunker';
 import { embed } from './ai/embeddings';
 import { invalidateBase } from './ai/knowledge-index';
 import { chat } from './ai/chat';
+import {
+  DocumentoIlegivelError,
+  extrairDocx,
+  extrairHtml,
+  extrairPdf,
+  limparTexto,
+} from './ai/extrair-texto';
+import { safeFetch } from '../utils/ssrf-guard';
 
 export type DocStatus = 'pending' | 'indexing' | 'ready' | 'failed';
 export type DocSourceType = 'text' | 'file' | 'url';
 
 const MAX_CONTENT_CHARS = 400_000;
 const MAX_DOCS_PER_TICK = 3;
+/** Página importada por URL: acima disso é dump de dados, não conteúdo de atendimento. */
+const MAX_URL_BYTES = 2 * 1024 * 1024;
+const URL_TIMEOUT_MS = 15_000;
+
+/**
+ * Formatos aceitos no upload. Planilha (.xlsx) não entra: o navegador converte
+ * pra CSV antes de enviar, e CSV já é texto. PDF escaneado é recusado na
+ * extração — não há OCR, e um doc vazio na base só engana.
+ */
+export const EXTENSOES_ACEITAS = ['.pdf', '.docx', '.txt', '.md', '.csv', '.json'] as const;
+export type ExtensaoAceita = (typeof EXTENSOES_ACEITAS)[number];
+
+export interface ArquivoEnviado {
+  /** Nome original, com extensão — decide o extrator e vira sourceRef. */
+  originalname: string;
+  buffer: Buffer;
+}
+
+export function extensaoDe(nome: string): ExtensaoAceita | null {
+  const m = /\.([a-z0-9]+)$/i.exec(nome.trim());
+  const ext = m ? `.${m[1].toLowerCase()}` : '';
+  return (EXTENSOES_ACEITAS as readonly string[]).includes(ext) ? (ext as ExtensaoAceita) : null;
+}
+
+function tituloDoArquivo(nome: string): string {
+  return nome.replace(/\.[a-z0-9]+$/i, '').trim() || nome;
+}
+
+function excedeLimite(content: string): never {
+  throw new DocumentoIlegivelError(
+    `O conteúdo tem ${content.length.toLocaleString('pt-BR')} caracteres; o limite por documento é ` +
+      `${MAX_CONTENT_CHARS.toLocaleString('pt-BR')}. Divida em partes menores.`
+  );
+}
 /** Acima disso, um doc em 'indexing' é considerado órfão de restart, não trabalho em curso. */
 const STALE_INDEXING_MS = 15 * 60 * 1000;
 
@@ -180,6 +222,168 @@ class KnowledgeService {
         status: 'pending',
       },
     });
+  }
+
+  /**
+   * Upload de arquivo → texto → doc. A extração mora em ai/extrair-texto; aqui
+   * só se escolhe o extrator pela extensão e se aplica o limite de tamanho
+   * ANTES de gravar, pra nunca nascer doc vazio ou truncado.
+   */
+  async createDocFromFile(
+    accountId: string,
+    baseId: string,
+    arquivo: ArquivoEnviado,
+    title?: string | null
+  ) {
+    await this.getBaseOrThrow(accountId, baseId);
+
+    const ext = extensaoDe(arquivo.originalname);
+    if (!ext) {
+      throw new ValidationError(
+        `Formato não aceito. Envie ${EXTENSOES_ACEITAS.join(', ')} (planilha: exporte como CSV).`
+      );
+    }
+
+    let content: string;
+    if (ext === '.pdf') {
+      content = await extrairPdf(arquivo.buffer);
+    } else if (ext === '.docx') {
+      content = await extrairDocx(arquivo.buffer);
+    } else {
+      content = limparTexto(arquivo.buffer.toString('utf8').replace(/^\uFEFF/, ''));
+      if (!content) {
+        throw new DocumentoIlegivelError('O arquivo está vazio. Envie um arquivo com texto.');
+      }
+    }
+    if (content.length > MAX_CONTENT_CHARS) excedeLimite(content);
+
+    return this.createDoc(accountId, baseId, {
+      title: title?.trim() || tituloDoArquivo(arquivo.originalname),
+      content,
+      sourceType: 'file',
+      sourceRef: arquivo.originalname,
+    });
+  }
+
+  /**
+   * Importa uma página pública. `safeFetch` é a proteção contra rede interna
+   * (loopback, RFC1918, metadata da nuvem) — inclusive em redirect; sem ele um
+   * tenant leria o que o servidor enxerga. Tamanho e tempo têm teto porque a
+   * requisição segura a tela do usuário enquanto baixa.
+   */
+  async createDocFromUrl(accountId: string, baseId: string, url: string, title?: string | null) {
+    await this.getBaseOrThrow(accountId, baseId);
+
+    const urlLimpa = url.trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(urlLimpa);
+    } catch {
+      throw new ValidationError('Endereço inválido. Use o link completo, começando com https://');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new ValidationError('Endereço inválido. Use o link completo, começando com https://');
+    }
+
+    const { corpo, contentType } = await this.baixarPagina(urlLimpa);
+
+    let content: string;
+    if (contentType.includes('pdf')) {
+      content = await extrairPdf(corpo);
+    } else if (contentType.includes('html') || /^\s*<(!doctype|html)/i.test(corpo.toString('utf8', 0, 512))) {
+      content = extrairHtml(corpo.toString('utf8'));
+    } else if (contentType.startsWith('text/') || contentType.includes('json')) {
+      content = limparTexto(corpo.toString('utf8'));
+    } else {
+      throw new DocumentoIlegivelError(
+        `A página devolveu "${contentType || 'tipo desconhecido'}", que não é texto. Envie o arquivo pelo upload ou cole o conteúdo.`
+      );
+    }
+
+    if (!content) {
+      throw new DocumentoIlegivelError(
+        'A página não tem texto legível (conteúdo carregado por script ou vazio). Cole o conteúdo ou use outra página.'
+      );
+    }
+    if (content.length > MAX_CONTENT_CHARS) excedeLimite(content);
+
+    return this.createDoc(accountId, baseId, {
+      title: title?.trim() || this.tituloDaPagina(corpo, contentType) || parsed.hostname,
+      content,
+      sourceType: 'url',
+      sourceRef: urlLimpa,
+    });
+  }
+
+  private tituloDaPagina(corpo: Buffer, contentType: string): string | null {
+    if (!contentType.includes('html')) return null;
+    const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(corpo.toString('utf8', 0, 64 * 1024));
+    const t = m ? limparTexto(m[1]).replace(/\s+/g, ' ') : '';
+    return t ? t.slice(0, 300) : null;
+  }
+
+  private async baixarPagina(url: string): Promise<{ corpo: Buffer; contentType: string }> {
+    let res: Response;
+    try {
+      res = await safeFetch(url, {
+        signal: AbortSignal.timeout(URL_TIMEOUT_MS),
+        headers: {
+          Accept: 'text/html, text/plain, application/pdf;q=0.9, */*;q=0.5',
+          'User-Agent': 'GLEPS-CRM/1.0 (importador de base de conhecimento)',
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.startsWith('SSRF guard')) {
+        throw new ValidationError('Endereço não permitido: aponta para a rede interna do servidor.');
+      }
+      if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        throw new DocumentoIlegivelError(
+          `A página demorou mais de ${URL_TIMEOUT_MS / 1000}s para responder. Tente de novo ou cole o conteúdo.`
+        );
+      }
+      logger.warn('[knowledge] falha ao baixar URL', { url, error: msg });
+      throw new DocumentoIlegivelError(
+        'Não consegui acessar a página (endereço fora do ar ou inexistente). Confira o link ou cole o conteúdo.'
+      );
+    }
+
+    if (!res.ok) {
+      throw new DocumentoIlegivelError(
+        `A página respondeu com erro HTTP ${res.status}. Confira se o link é público ou cole o conteúdo.`
+      );
+    }
+
+    const declarado = Number(res.headers.get('content-length') ?? 0);
+    if (declarado > MAX_URL_BYTES) {
+      throw new DocumentoIlegivelError(
+        `A página tem ${(declarado / 1024 / 1024).toFixed(1)} MB; o limite é 2 MB. Cole só a parte que interessa.`
+      );
+    }
+
+    // Lê em pedaços e para no teto: content-length pode faltar ou mentir.
+    const partes: Buffer[] = [];
+    let total = 0;
+    if (res.body) {
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_URL_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          throw new DocumentoIlegivelError(
+            'A página passa de 2 MB. Cole só a parte que interessa ou envie como arquivo.'
+          );
+        }
+        partes.push(Buffer.from(value));
+      }
+    }
+
+    return {
+      corpo: Buffer.concat(partes),
+      contentType: (res.headers.get('content-type') ?? '').toLowerCase(),
+    };
   }
 
   async updateDoc(accountId: string, docId: string, input: Partial<CreateDocInput>) {

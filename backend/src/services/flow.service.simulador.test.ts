@@ -12,11 +12,27 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const prismaMock = vi.hoisted(() => ({
   flow: { findFirst: vi.fn() },
-  conversation: { findFirst: vi.fn(), create: vi.fn(), delete: vi.fn() },
+  // findUnique: a posse da conversa (qual agente é dono) é lida daí, e o
+  // caminho de execução é o MESMO do worker — que relê o run pelo id.
+  conversation: {
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    update: vi.fn(),
+    create: vi.fn(),
+    delete: vi.fn(),
+  },
   contact: { findFirst: vi.fn(), create: vi.fn(), delete: vi.fn() },
   inbox: { findFirst: vi.fn(), create: vi.fn() },
   message: { create: vi.fn() },
-  flowRun: { create: vi.fn(), update: vi.fn(), deleteMany: vi.fn(), findFirst: vi.fn() },
+  flowRun: {
+    create: vi.fn(),
+    update: vi.fn(),
+    updateMany: vi.fn(),
+    deleteMany: vi.fn(),
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+  },
   flowRunStep: { findMany: vi.fn() },
 }));
 
@@ -31,9 +47,15 @@ vi.mock('./flow/engine', async () => {
   return { ...real, executeRun: executeRunMock };
 });
 
+import { Prisma } from '@prisma/client';
 import { flowService } from './flow.service';
 
 const ACC = 'acc-1';
+
+/** Turno que executou na hora (fluxo sem janela de agrupamento). */
+type PreviewExecutado = Extract<Awaited<ReturnType<typeof flowService.preview>>, { resposta: unknown }>;
+/** Turno que ficou esperando a janela — quem executa é o worker. */
+type PreviewAgendado = Extract<Awaited<ReturnType<typeof flowService.preview>>, { segundos: unknown }>;
 
 /** Grafo mínimo que passa na validação: gatilho + resposta. */
 const FLUXO = {
@@ -66,6 +88,26 @@ const passo = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.flow.findFirst.mockResolvedValue(FLUXO);
+  // O run é relido do banco pelo executor — devolve o que o create gravou,
+  // como o banco faria.
+  prismaMock.flowRun.findUnique.mockImplementation(async () => ({
+    id: 'run-1',
+    wakeCount: 0,
+    resumeNodeId: null,
+    ...(prismaMock.flowRun.create.mock.calls[0]?.[0]?.data ?? {}),
+    flow: prismaMock.flow.findFirst.mock.results[0]?.value
+      ? await prismaMock.flow.findFirst.mock.results[0].value
+      : FLUXO,
+  }));
+  prismaMock.flowRun.findMany.mockResolvedValue([]);
+  prismaMock.flowRun.updateMany.mockResolvedValue({ count: 0 });
+  // Conversa de teste sem dono: começa pela triagem.
+  prismaMock.conversation.findUnique.mockResolvedValue({
+    customAttributes: {},
+    assigneeId: null,
+    status: 'open',
+  });
+  prismaMock.conversation.update.mockResolvedValue({});
   // O preview valida o inbox antes de gravar, depois carrega as memórias — as
   // duas leituras usam o mesmo findFirst.
   prismaMock.conversation.findFirst.mockResolvedValue({
@@ -100,7 +142,7 @@ const preview = (over: Record<string, unknown> = {}) =>
     message: 'oi, quero saber do serviço',
     conversationId: 'conv-teste',
     ...over,
-  });
+  }) as Promise<PreviewExecutado>;
 
 describe('o simulador não toca no mundo real', () => {
   it('roda SEMPRE em modo sombra — é o que segura o envio no WhatsApp', async () => {
@@ -374,7 +416,7 @@ describe('acompanhar a execução em andamento', () => {
 
     const r = await flowService.previewRunAtual(ACC, 'conv-teste');
 
-    expect(r!.id).toBe('run-1');
+    expect(r!.runId).toBe('run-1');
     expect(r!.steps).toHaveLength(2);
     // Só run do simulador: não pode expor atendimento real por esta porta.
     expect(prismaMock.flowRun.findFirst.mock.calls[0][0].where).toMatchObject({
@@ -399,6 +441,267 @@ describe('acompanhar a execução em andamento', () => {
     await expect(flowService.previewRunAtual(ACC, 'conv-real')).rejects.toThrow(
       /não é do simulador/i
     );
+  });
+});
+
+/*
+  C1 — A JANELA DE AGRUPAMENTO É REAL NO SIMULADOR.
+
+  Antes, o simulador pulava o `buffer.debounce`: cada mensagem virava um turno
+  na hora. O cliente, em produção, manda "oi", "quero saber do plano", "quanto
+  custa?" em sequência e recebe UMA resposta pras três — e o simulador mostrava
+  três respostas. Quem ajustava o prompt olhando pra tela estava ajustando
+  para um atendimento que não existe.
+*/
+describe('a janela de agrupamento no simulador', () => {
+  const FLUXO_COM_JANELA = {
+    ...FLUXO,
+    graph: {
+      nodes: [
+        { id: 't', type: 'trigger.message_received' },
+        { id: 'b', type: 'buffer.debounce', config: { segundos: 15 } },
+        { id: 'r', type: 'chat.reply', config: { texto: 'oi' } },
+      ],
+      edges: [
+        { id: 'e1', source: 't', target: 'b' },
+        { id: 'e2', source: 'b', target: 'r' },
+      ],
+    },
+  };
+
+  const agendar = (over: Record<string, unknown> = {}) =>
+    flowService.preview({
+      accountId: ACC,
+      flowId: 'flow-1',
+      message: 'oi',
+      conversationId: 'conv-teste',
+      ...over,
+    }) as Promise<PreviewAgendado>;
+
+  beforeEach(() => {
+    prismaMock.flow.findFirst.mockResolvedValue(FLUXO_COM_JANELA);
+    prismaMock.flowRun.findFirst.mockResolvedValue(null); // nenhum run aberto
+  });
+
+  it('com debounce, NÃO executa na hora: cria run em buffering com a hora marcada', async () => {
+    const antes = Date.now();
+    const r = await agendar();
+
+    expect(executeRunMock).not.toHaveBeenCalled();
+    expect(r.status).toBe('buffering');
+    expect(r.segundos).toBe(15);
+    expect(r.runId).toBe('run-1');
+    const marcado = new Date(r.runAfter).getTime() - antes;
+    expect(marcado).toBeGreaterThan(13_000);
+    expect(marcado).toBeLessThan(17_000);
+
+    const data = prismaMock.flowRun.create.mock.calls[0][0].data;
+    expect(data).toMatchObject({ status: 'buffering', shadow: true, simulador: true });
+    expect(data.context.mensagens).toHaveLength(1);
+    // A fala do lead já está no histórico — o run vai lê-la quando rodar.
+    expect(prismaMock.message.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('segunda mensagem dentro da janela ANEXA ao run e empurra a hora — igual ao real', async () => {
+    prismaMock.flowRun.findFirst.mockResolvedValue({
+      id: 'run-aberto',
+      context: { mensagens: [{ id: 'msg-0', content: 'oi', contentType: 'text', createdAt: 'x' }] },
+    });
+
+    const antes = Date.now();
+    const r = await agendar({ message: 'quanto custa?' });
+
+    // Nenhum run novo: a mensagem entrou no que já esperava.
+    expect(prismaMock.flowRun.create).not.toHaveBeenCalled();
+    expect(r.runId).toBe('run-aberto');
+    expect(r.status).toBe('buffering');
+
+    const upd = prismaMock.flowRun.update.mock.calls[0][0];
+    expect(upd.where).toEqual({ id: 'run-aberto' });
+    expect(upd.data.context.mensagens).toHaveLength(2);
+    expect(upd.data.context.mensagens[1].content).toBe('quanto custa?');
+    expect(upd.data.runAfter.getTime()).toBeGreaterThan(antes + 13_000);
+  });
+
+  it('corrida com o próprio worker (P2002): anexa em vez de duplicar', async () => {
+    const p2002 = new Prisma.PrismaClientKnownRequestError('unique', {
+      code: 'P2002',
+      clientVersion: '5.22.0',
+    });
+    prismaMock.flowRun.create.mockRejectedValueOnce(p2002);
+    prismaMock.flowRun.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'run-do-outro', context: { mensagens: [] } });
+
+    const r = await agendar();
+    expect(r.runId).toBe('run-do-outro');
+  });
+
+  it('sem debounce (ou segundos = 0) continua executando na hora', async () => {
+    prismaMock.flow.findFirst.mockResolvedValue({
+      ...FLUXO_COM_JANELA,
+      graph: {
+        ...FLUXO_COM_JANELA.graph,
+        nodes: FLUXO_COM_JANELA.graph.nodes.map((n) =>
+          n.id === 'b' ? { ...n, config: { segundos: 0 } } : n
+        ),
+      },
+    });
+
+    const r = await preview();
+    expect(executeRunMock).toHaveBeenCalledTimes(1);
+    expect(r.resposta).toBe('Oi! Como posso ajudar?');
+  });
+});
+
+/*
+  O worker executa o run do simulador quando a janela vence — e executa em
+  SOMBRA, com a marca do simulador, exatamente como executaria um real. É o
+  mesmo `runOne`; a diferença está nos três pontos abaixo.
+*/
+describe('o worker executa o run do simulador', () => {
+  const runDoSimulador = (over: Record<string, unknown> = {}) => ({
+    id: 'run-sim',
+    accountId: ACC,
+    flowId: 'flow-1',
+    conversationId: 'conv-teste',
+    status: 'running',
+    shadow: true,
+    simulador: true,
+    resumeNodeId: null,
+    wakeCount: 0,
+    context: { mensagens: [{ id: 'm', content: 'oi', contentType: 'text', createdAt: 'x' }] },
+    flow: FLUXO, // rascunho, de propósito
+    ...over,
+  });
+
+  beforeEach(() => {
+    prismaMock.flowRun.findMany.mockResolvedValue([{ id: 'run-sim', status: 'buffering' }]);
+    prismaMock.flowRun.updateMany
+      .mockResolvedValueOnce({ count: 0 }) // resgate de órfãos
+      .mockResolvedValueOnce({ count: 1 }); // claim
+    prismaMock.flowRun.findUnique.mockResolvedValue(runDoSimulador());
+  });
+
+  it('roda em sombra e com __simulador — nada sai pro WhatsApp', async () => {
+    const r = await flowService.processDueRuns();
+
+    expect(r).toEqual({ ok: 1, failed: 0 });
+    const chamada = executeRunMock.mock.calls[0][0];
+    expect(chamada.shadow).toBe(true);
+    expect(chamada.vars.__simulador).toBe(true);
+    expect(chamada.vars.memoria).toEqual({ faturamento: 'R$ 80 mil' });
+  });
+
+  it('fluxo em RASCUNHO roda mesmo assim — o simulador existe pra testar rascunho', async () => {
+    await flowService.processDueRuns();
+
+    expect(executeRunMock).toHaveBeenCalledTimes(1);
+    const salvo = prismaMock.flowRun.update.mock.calls.at(-1)![0].data;
+    expect(salvo.status).toBe('done');
+    expect(salvo.stopReason).not.toBe('fluxo_despublicado');
+  });
+
+  it('run REAL de fluxo em rascunho continua sendo pulado', async () => {
+    prismaMock.flowRun.findUnique.mockResolvedValue(runDoSimulador({ simulador: false, shadow: false }));
+
+    await flowService.processDueRuns();
+
+    expect(executeRunMock).not.toHaveBeenCalled();
+    const salvo = prismaMock.flowRun.update.mock.calls.at(-1)![0].data;
+    expect(salvo.stopReason).toBe('fluxo_despublicado');
+  });
+
+  it('ao terminar, persiste as falas da IA na conversa de teste (uma vez)', async () => {
+    prismaMock.flowRunStep.findMany.mockResolvedValue([
+      passo({ output: { simulado: true, texto: 'Oi! Como posso ajudar?' } }),
+    ]);
+
+    await flowService.processDueRuns();
+
+    const gravadas = prismaMock.message.create.mock.calls.map((c) => c[0].data);
+    expect(gravadas).toHaveLength(1);
+    expect(gravadas[0]).toMatchObject({
+      conversationId: 'conv-teste',
+      senderType: 'ai_bot',
+      content: 'Oi! Como posso ajudar?',
+      metadata: { simulador: true, runId: 'run-sim' },
+    });
+  });
+
+  it('a marca __simulador não vaza pro contexto salvo', async () => {
+    executeRunMock.mockResolvedValue({
+      status: 'done',
+      steps: 1,
+      stopReason: null,
+      error: null,
+      vars: { __simulador: true, __contato: { nome: 'x' }, agente: { etapa: 'x' } },
+    });
+
+    await flowService.processDueRuns();
+
+    const salvo = prismaMock.flowRun.update.mock.calls.at(-1)![0].data;
+    expect(salvo.context.__simulador).toBeUndefined();
+    expect(salvo.context.__contato).toBeUndefined();
+    expect(salvo.context.agente).toEqual({ etapa: 'x' });
+  });
+});
+
+describe('acompanhar o run que rodou no worker', () => {
+  it('enquanto espera a janela, devolve a hora marcada e nada de resposta', async () => {
+    const runAfter = new Date(Date.now() + 10_000);
+    prismaMock.flowRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      status: 'buffering',
+      runAfter,
+      stopReason: null,
+      error: null,
+    });
+    prismaMock.flowRunStep.findMany.mockResolvedValue([]);
+
+    const r = await flowService.previewRunAtual(ACC, 'conv-teste');
+
+    expect(r).toMatchObject({ runId: 'run-1', status: 'buffering', runAfter: runAfter.toISOString() });
+    expect(r!.resposta).toBeNull();
+    expect(r!.memoria).toEqual({});
+  });
+
+  it('ao terminar, a resposta vem derivada dos passos — e a memória de depois', async () => {
+    prismaMock.flowRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      status: 'done',
+      runAfter: null,
+      stopReason: 'fim_do_fluxo',
+      error: null,
+    });
+    prismaMock.flowRunStep.findMany.mockResolvedValue([
+      passo({ id: 'st-1', ordem: 1, nodeType: 'chat.reply', output: { texto: 'Um instante.' } }),
+      passo({ id: 'st-2', ordem: 2, nodeType: 'ai.atender', output: { texto: 'Sua aula é 19h.' } }),
+      passo({ id: 'st-3', ordem: 3, nodeType: 'guard.conditions', output: { texto: 'não fala' } }),
+    ]);
+
+    const r = await flowService.previewRunAtual(ACC, 'conv-teste');
+
+    // Só quem FALA entra — pelo catálogo, não por tipo fixo.
+    expect(r!.resposta).toBe('Um instante.\n\nSua aula é 19h.');
+    expect(r!.status).toBe('done');
+    expect(r!.runAfter).toBeNull();
+    expect(r!.memoria).toEqual({ faturamento: 'R$ 80 mil' });
+    expect(r!.sessao).toEqual({ etapa_roteiro: 'diagnostico' });
+  });
+
+  it('é idempotente: chamar duas vezes não grava nada', async () => {
+    prismaMock.flowRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      status: 'done',
+      runAfter: null,
+      stopReason: null,
+      error: null,
+    });
+    await flowService.previewRunAtual(ACC, 'conv-teste');
+    await flowService.previewRunAtual(ACC, 'conv-teste');
+    expect(prismaMock.message.create).not.toHaveBeenCalled();
+    expect(prismaMock.flowRun.update).not.toHaveBeenCalled();
   });
 });
 

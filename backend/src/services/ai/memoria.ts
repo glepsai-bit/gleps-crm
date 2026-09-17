@@ -36,3 +36,39 @@ export function autoriaDaMemoria(v: unknown): { por?: string; em?: string } | nu
   }
   return null;
 }
+
+/**
+ * Validade da memória de longo prazo, em dias.
+ *
+ * O fato sobre a pessoa envelhece: faturamento, dor principal e "quem decide"
+ * mudam, e um agente que cita como certo o que o lead disse há um ano parece
+ * desatento — pior que perguntar de novo. Passado o prazo a entrada é tratada
+ * como AUSENTE na leitura; nada é apagado do banco, então `lembrar` gravando o
+ * mesmo campo renova o prazo e o histórico do valor antigo segue auditável.
+ */
+export const MEMORIA_LONGA_DIAS = 60;
+
+/**
+ * Esta memória passou da validade?
+ *
+ * Só entrada com autoria carrega `em`; valor cru (formato antigo) não tem data,
+ * e sem data não há como saber a idade — continua valendo. Data ilegível também
+ * conta como sem data, pelo mesmo motivo.
+ */
+export function memoriaExpirada(v: unknown, agora: number = Date.now()): boolean {
+  if (!v || typeof v !== 'object' || Array.isArray(v) || !('v' in (v as object))) return false;
+  const em = (v as { em?: unknown }).em;
+  if (typeof em !== 'string') return false;
+  const gravadaEm = new Date(em).getTime();
+  if (!Number.isFinite(gravadaEm)) return false;
+  return agora - gravadaEm > MEMORIA_LONGA_DIAS * 86_400_000;
+}
+
+/** O mapa sem as entradas vencidas — para LEITURA; o banco não muda. */
+export function semExpiradas(
+  attrs: Record<string, unknown> | undefined,
+  agora: number = Date.now()
+): Record<string, unknown> {
+  if (!attrs) return {};
+  return Object.fromEntries(Object.entries(attrs).filter(([, v]) => !memoriaExpirada(v, agora)));
+}
