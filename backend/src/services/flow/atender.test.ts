@@ -307,3 +307,62 @@ describe('posse da conversa (entrega grudenta)', () => {
     expect(runAgentMock.mock.calls[0][0].agentId).toBe('ag-2');
   });
 });
+
+/**
+ * T-038 — o fluxo padrão passa a nascer com o bloco composto.
+ *
+ * Sem isto a redução de 11 para 6 não acontecia para ninguém: o botão "Criar
+ * fluxo padrão" continuava montando a versão antiga, e a peça nova ficava só
+ * na paleta esperando alguém descobrir.
+ */
+describe('o fluxo semeado', () => {
+  it('monta 6 blocos, não 11', async () => {
+    const { buildDefaultGraph } = await import('./default-graph');
+    const g = buildDefaultGraph('ag-1');
+    expect(g.nodes).toHaveLength(6);
+  });
+
+  it('usa o bloco composto e não as seis peças soltas', async () => {
+    const { buildDefaultGraph } = await import('./default-graph');
+    const tipos = buildDefaultGraph('ag-1').nodes.map((n) => n.type);
+
+    expect(tipos).toContain('ai.atender');
+    // As peças que ele absorveu não aparecem mais no padrão.
+    expect(tipos).not.toContain('ai.agent');
+    expect(tipos).not.toContain('logic.switch');
+    expect(tipos).not.toContain('crm.apply_stage');
+    expect(tipos).not.toContain('chat.reply');
+  });
+
+  it('as decisões viram arestas por porta nomeada', async () => {
+    const { buildDefaultGraph } = await import('./default-graph');
+    const g = buildDefaultGraph('ag-1');
+    const doAtende = g.edges.filter((e) => e.source === 'atende');
+
+    expect(doAtende.map((e) => e.branch).sort()).toEqual(['encerrou', 'humano']);
+    // "respondeu" de propósito sem aresta: a maioria das mensagens acaba aí, e
+    // o fluxo termina esperando a próxima.
+    expect(doAtende.some((e) => e.branch === 'respondeu')).toBe(false);
+  });
+
+  it('o grafo semeado passa na validação', async () => {
+    const { buildDefaultGraph } = await import('./default-graph');
+    const { validateGraph } = await import('./engine');
+    expect(validateGraph(buildDefaultGraph('ag-1'))).toEqual([]);
+  });
+
+  it('sem agente escolhido, a validação avisa antes de publicar', async () => {
+    const { buildDefaultGraph } = await import('./default-graph');
+    const { validateGraph } = await import('./engine');
+    const problemas = validateGraph(buildDefaultGraph(null));
+    expect(problemas.join(' ')).toMatch(/sem agente/i);
+  });
+
+  it('a lista de assunto sempre-humano nasce VAZIA', async () => {
+    const { buildDefaultGraph } = await import('./default-graph');
+    const atende = buildDefaultGraph('ag-1').nodes.find((n) => n.type === 'ai.atender');
+    // É decisão de negócio de cada cliente. Um padrão nosso seria palpite
+    // sobre o negócio dele — e palpite que bloqueia atendimento.
+    expect((atende!.config as { rotasSempreHumano: string[] }).rotasSempreHumano).toEqual([]);
+  });
+});

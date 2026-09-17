@@ -33,6 +33,28 @@ export interface CamposDoNoProps {
 export function CamposDoNo({ tipo, config, agentes, bases = [], set }: CamposDoNoProps) {
   return (
     <>
+      {tipo.startsWith('trigger.') && (
+        <div className="space-y-1.5">
+          <Label className="text-xs">Começa quando</Label>
+          <Select
+            value={tipo}
+            onValueChange={(v) => set('__trocarTipo', v)}
+          >
+            <SelectTrigger className="h-8">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="trigger.message_received">O lead escrever</SelectItem>
+              <SelectItem value="trigger.webhook">Um sistema de fora chamar</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            Um fluxo começa de um jeito só — por isso aqui se TROCA o gatilho, em vez de
+            adicionar outro.
+          </p>
+        </div>
+      )}
+
       {tipo === 'trigger.webhook' && (
         <div className="space-y-2">
           <div className="rounded-md border bg-muted/40 p-2.5 text-[11px] text-muted-foreground leading-relaxed">

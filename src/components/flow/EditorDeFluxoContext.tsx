@@ -21,6 +21,13 @@ export interface EditorDeFluxo {
   remover: (nodeId: string) => void;
   /** Abre o editor ampliado (o prompt, que não cabe no bloco). */
   ampliar: (nodeId: string) => void;
+  /**
+   * Abre a memória do agente deste bloco — o que ele guarda sobre a pessoa.
+   *
+   * Porta própria, e não uma aba dentro do ampliado, porque memória é a
+   * pergunta "o que ele lembra?", feita em outro momento de quem monta.
+   */
+  abrirMemoria: (nodeId: string) => void;
   agentes: { id: string; name: string }[];
   bases: { id: string; name: string }[];
   /** Blocos com os campos abertos. */

@@ -30,19 +30,23 @@ import { SimuladorChat, type StatusPorNo } from '@/components/flow/SimuladorChat
 import { CamposDoNo } from '@/components/flow/CamposDoNo';
 import { ExecucoesDoFluxo } from '@/components/flow/ExecucoesDoFluxo';
 import { EditorDeFluxoContext } from '@/components/flow/EditorDeFluxoContext';
+import { PainelAgente } from '@/components/flow/PainelAgente';
+import { PainelBase } from '@/components/flow/PainelBase';
+import { PainelMemoria } from '@/components/flow/PainelMemoria';
 import {
+  AlertTriangle,
   ArrowLeft,
+  ChevronRight,
+  Clock,
+  Eye,
+  FlaskConical,
+  Pause,
+  Play,
   Plus,
   Save,
-  Play,
-  Eye,
-  Pause,
   Trash2,
-  AlertTriangle,
   Workflow,
   Zap,
-  Clock,
-  FlaskConical,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -109,6 +113,62 @@ export default function AdminIaFluxosPage() {
  * tem. Dinâmicas: cada valor do enum `rota` no schema do agente, que é como
  * quem monta declara "este agente encaminha para vendas, suporte ou fiscal".
  */
+/**
+ * A paleta agrupada por intenção, e não uma lista plana.
+ *
+ * Lista plana é armadilha: "Atender com IA" ficava lado a lado com as seis
+ * peças que ele substitui, sem dizer isso. Quem não conhece escolhe "Agente de
+ * IA" — soa mais básico — e monta na mão o fluxo de onze blocos que a gente
+ * acabou de eliminar.
+ *
+ * As peças continuam disponíveis, em "Em partes": fluxo antigo depende delas, e
+ * há casos legítimos (aplicar etapa sem responder, responder texto fixo sem
+ * agente). Mas ficam claramente subordinadas.
+ */
+/** Blocos que rodam um agente — ampliar neles abre o editor do agente. */
+const TIPOS_DE_AGENTE = new Set(['ai.atender', 'ai.agent']);
+
+/** Lê uma chave de texto da config do bloco; vazio vira null, que é o que os painéis esperam. */
+function textoDaConfig(config: Record<string, unknown>, chave: string): string | null {
+  const v = config[chave];
+  return typeof v === 'string' && v ? v : null;
+}
+
+const GRUPOS: { titulo: string; tipos: string[]; nota?: string; recolhido?: boolean }[] = [
+  {
+    titulo: 'Atender',
+    tipos: ['ai.atender', 'guard.conditions', 'buffer.debounce', 'media.transcribe'],
+  },
+  {
+    titulo: 'Fontes',
+    tipos: ['source.knowledge'],
+    nota: 'Ligue na entrada do bloco de atendimento.',
+  },
+  {
+    titulo: 'Agir',
+    tipos: [
+      'chat.assign_human',
+      'chat.resolve',
+      'crm.apply_stage',
+      'crm.update_contact',
+      'chat.reply',
+      'http.request',
+    ],
+  },
+  { titulo: 'Tempo', tipos: ['flow.aguardar', 'flow.wait'] },
+  {
+    titulo: 'Em partes',
+    tipos: ['ai.agent', 'logic.switch'],
+    nota: 'O que "Atender com IA" já faz junto. Use quando precisar separar.',
+    // Fechado por padrão. Estes blocos NÃO podem sair do catálogo — a cadência
+    // de follow-up roda com `ai.agent`, e ramificar por variável que não é a
+    // rota do agente (`{{memoria.plano}}`) só o `logic.switch` faz. Mas quem
+    // está montando um atendimento não deveria tropeçar neles: a montagem
+    // normal é o bloco composto.
+    recolhido: true,
+  },
+];
+
 function portasDoAgente(outputSchema: unknown): string[] {
   const base = ['respondeu', 'humano', 'encerrou'];
   const schema = outputSchema as
@@ -278,6 +338,29 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   const [abertos, setAbertos] = useState<Set<string>>(new Set());
   /** Bloco cujo campo grande (o prompt) está aberto sobre o canvas. */
   const [ampliado, setAmpliado] = useState<string | null>(null);
+  const [memoriaDe, setMemoriaDe] = useState<string | null>(null);
+
+  /*
+    Quem está ampliado, e quem é o agente da memória aberta.
+
+    Lê de `nodes` a cada render em vez de guardar o nó no estado: guardar
+    congelaria a configuração no instante do clique, e escolher um agente
+    dentro do painel precisa se refletir no bloco na hora.
+  */
+  const noAmpliado = useMemo(() => {
+    const n = nodes.find((x) => x.id === ampliado);
+    if (!n) return null;
+    return {
+      id: n.id,
+      tipo: String(n.data.tipo ?? ''),
+      config: (n.data.config ?? {}) as Record<string, unknown>,
+    };
+  }, [nodes, ampliado]);
+
+  const agenteDaMemoria = useMemo(() => {
+    const n = nodes.find((x) => x.id === memoriaDe);
+    return textoDaConfig((n?.data.config ?? {}) as Record<string, unknown>, 'agentId');
+  }, [nodes, memoriaDe]);
   const [abaPainel, setAbaPainel] = useState<'testar' | 'execucoes'>('testar');
 
   // Resultado do último teste, por nó. Vazio = nenhum teste ainda.
@@ -489,6 +572,29 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   const editorCtx = useMemo(
     () => ({
       setConfig: (nodeId: string, chave: string, valor: unknown) => {
+        // Trocar o TIPO do gatilho não é configuração — é outro nó. Vem por
+        // aqui porque é o mesmo gesto pro usuário (um seletor no bloco), e
+        // separar em outro canal só espalharia a mesma coisa.
+        if (chave === '__trocarTipo') {
+          setNodes((ns) =>
+            ns.map((n) =>
+              n.id === nodeId
+                ? {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      tipo: valor,
+                      label:
+                        valor === 'trigger.webhook' ? 'Chamada externa' : 'Mensagem recebida',
+                      config: {},
+                    },
+                  }
+                : n
+            )
+          );
+          setSujo(true);
+          return;
+        }
         setNodes((ns) =>
           ns.map((n) =>
             n.id === nodeId
@@ -521,6 +627,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         setSujo(true);
       },
       ampliar: (nodeId: string) => setAmpliado(nodeId),
+      abrirMemoria: (nodeId: string) => setMemoriaDe(nodeId),
       agentes: agentes ?? [],
       bases: bases ?? [],
       abertos,
@@ -618,14 +725,19 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         {/* Paleta */}
         <div className="w-56 border-r p-3 overflow-y-auto shrink-0">
           <div className="text-xs font-medium text-muted-foreground mb-2">Adicionar passo</div>
-          <div className="space-y-1">
-            {catalogo?.nodes
-              .filter((n) => !n.type.startsWith('trigger.'))
-              .map((n) => (
+          <div className="space-y-3">
+            {GRUPOS.map((grupo) => {
+              const doGrupo = (catalogo?.nodes ?? []).filter((n) => grupo.tipos.includes(n.type));
+              if (doGrupo.length === 0) return null;
+              const passos = doGrupo.map((n) => (
                 <button
                   key={n.type}
                   onClick={() => adicionarNo(n.type)}
-                  className="w-full text-left text-xs rounded-md border px-2 py-1.5 hover:border-primary/40 hover:bg-muted/40 transition-colors"
+                  className={`w-full text-left text-xs rounded-md border px-2 py-1.5 transition-colors ${
+                    n.type === 'ai.atender'
+                      ? 'border-primary/60 bg-primary/10 hover:bg-primary/15'
+                      : 'hover:border-primary/40 hover:bg-muted/40'
+                  }`}
                   title={n.description}
                 >
                   <div className="flex items-center gap-1.5 font-medium">
@@ -633,7 +745,40 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
                     {n.label}
                   </div>
                 </button>
-              ))}
+              ));
+
+              const corpo = (
+                <>
+                  {passos}
+                  {grupo.nota && (
+                    <p className="text-[10px] text-muted-foreground/70 leading-snug pt-0.5">
+                      {grupo.nota}
+                    </p>
+                  )}
+                </>
+              );
+
+              if (grupo.recolhido) {
+                return (
+                  <details key={grupo.titulo} className="space-y-1 group">
+                    <summary className="text-[10px] uppercase tracking-wider text-muted-foreground/70 px-0.5 cursor-pointer select-none list-none flex items-center gap-1 hover:text-muted-foreground">
+                      <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
+                      {grupo.titulo}
+                    </summary>
+                    <div className="space-y-1 pt-1">{corpo}</div>
+                  </details>
+                );
+              }
+
+              return (
+                <div key={grupo.titulo} className="space-y-1">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70 px-0.5">
+                    {grupo.titulo}
+                  </div>
+                  {corpo}
+                </div>
+              );
+            })}
           </div>
           <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
             <Zap className="w-3 h-3 inline text-amber-500" /> age para fora (envia, altera a
@@ -681,6 +826,35 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
             />
           </ReactFlow>
           </EditorDeFluxoContext.Provider>
+
+          {/*
+            Os painéis que aposentaram as abas "Agentes IA" e "Conhecimento".
+            Abrem SOBRE o canvas: o desenho continua atrás, e fechar devolve
+            você exatamente onde estava. Montar um agente inteiro — prompt,
+            memória e base — deixou de exigir sair da página.
+
+            Ficam fora do Provider de propósito: são Dialog em portal, não
+            precisam do contexto do bloco, e gravam direto na API.
+          */}
+          {noAmpliado && TIPOS_DE_AGENTE.has(noAmpliado.tipo) && (
+            <PainelAgente
+              agentId={textoDaConfig(noAmpliado.config, 'agentId')}
+              onEscolher={(id) => editorCtx.setConfig(noAmpliado.id, 'agentId', id)}
+              onFechar={() => setAmpliado(null)}
+            />
+          )}
+
+          {noAmpliado && noAmpliado.tipo === 'source.knowledge' && (
+            <PainelBase
+              baseId={textoDaConfig(noAmpliado.config, 'baseId')}
+              onEscolher={(id) => editorCtx.setConfig(noAmpliado.id, 'baseId', id)}
+              onFechar={() => setAmpliado(null)}
+            />
+          )}
+
+          {agenteDaMemoria && (
+            <PainelMemoria agentId={agenteDaMemoria} onFechar={() => setMemoriaDe(null)} />
+          )}
         </div>
 
         {/* Simulador embutido — a conversa ao lado do desenho */}

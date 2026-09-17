@@ -52,9 +52,7 @@ import {
   Settings2,
   Flame,
   Bot,
-  BookOpen,
   PhoneCall,
-  Workflow,
   MessagesSquare,
   ListChecks,
   UserCog,
@@ -137,14 +135,12 @@ const adminNavItems = [
   { title: 'E-mails', href: '/admin/emails', icon: Mail },
   { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },
   { title: 'Aquecimento', href: '/admin/warmup', icon: Flame },
-  // T-027 — Atendimento IA (agentes + base de conhecimento)
-  { title: 'Agentes IA', href: '/admin/ia/agentes', icon: Bot },
-  { title: 'Conhecimento', href: '/admin/ia/conhecimento', icon: BookOpen },
-  // A ORDEM É O CAMINHO DE CONSTRUÇÃO: base → agente → fluxo.
-  // O construtor (Fluxos) é a casa — base, agente, teste e execuções moram lá
-  // dentro. As duas telas acima viram gestão: listar, duplicar, excluir. Quem
-  // está montando não precisa passar por elas.
-  { title: 'Fluxos', href: '/admin/ia/fluxos', icon: Workflow },
+  // T-027 — Atendimento IA.
+  // UMA porta só: base, agente, fluxo e teste se montam dentro do construtor.
+  // /admin/ia/agentes e /admin/ia/conhecimento continuam existindo como rota
+  // (link antigo não quebra), mas saíram do menu: montar passando por três
+  // telas era o que cansava.
+  { title: 'Atendimento IA', href: '/admin/ia/fluxos', icon: Bot },
   { title: 'Discador', href: '/admin/discador', icon: PhoneCall },
   { title: 'Execuções', href: '/admin/ia/execucoes', icon: ListChecks },
   // Config do Chat (uso ocasional)

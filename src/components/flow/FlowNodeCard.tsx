@@ -12,25 +12,26 @@
 import { memo } from 'react';
 import { Handle, Position, useNodeId, type NodeProps } from '@xyflow/react';
 import {
-  MessageSquare,
-  ShieldCheck,
-  Timer,
-  Mic,
   Bot,
-  GitBranch,
-  Tag,
-  Save,
-  Send,
-  UserPlus,
+  Brain,
   CheckCircle2,
-  Globe,
-  Clock,
-  Zap,
-  CircleHelp,
   ChevronDown,
   ChevronUp,
+  CircleHelp,
+  Clock,
+  GitBranch,
+  Globe,
   Maximize2,
+  MessageSquare,
+  Mic,
+  Save,
+  Send,
+  ShieldCheck,
+  Tag,
+  Timer,
   Trash2,
+  UserPlus,
+  Zap,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -55,8 +56,20 @@ const ICONES: Record<string, LucideIcon> = {
   'ai.atender': Bot,
 };
 
-/** Tipos cujo campo principal é grande demais pro bloco e abre ampliado. */
-const AMPLIA = new Set(['ai.agent', 'ai.atender']);
+/**
+ * Tipos cujo conteúdo é grande demais pro bloco e abre ampliado — e o que o
+ * botão promete em cada um. O texto muda porque o que abre muda: no bloco de
+ * atendimento abre o agente inteiro (prompt, memória, conhecimento), na fonte
+ * abre a base.
+ */
+/** Blocos que rodam um agente — e portanto têm memória própria pra declarar. */
+const TEM_MEMORIA = new Set(['ai.atender', 'ai.agent']);
+
+const AMPLIA: Record<string, string> = {
+  'ai.atender': 'Abrir o agente',
+  'source.knowledge': 'Abrir a base',
+  'ai.agent': 'Abrir o prompt',
+};
 
 /** Passos que agem pra fora — o modo sombra simula estes. */
 const ACOES = new Set([
@@ -211,14 +224,27 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
             /* nodrag: sem isto, clicar no botão arrasta o bloco em vez de
                acionar. O React Flow decide pelo seletor no alvo do ponteiro. */
             <div className="nodrag flex items-center gap-0.5 shrink-0">
-              {AMPLIA.has(tipo) && (
+              {AMPLIA[tipo] && (
                 <button
                   type="button"
                   onClick={() => editor!.ampliar(id!)}
-                  title="Abrir o prompt"
+                  title={AMPLIA[tipo]}
+                  aria-label={AMPLIA[tipo]}
                   className="p-1 rounded hover:bg-muted text-muted-foreground"
                 >
                   <Maximize2 className="w-3 h-3" />
+                </button>
+              )}
+              {/* Memória só faz sentido com agente escolhido: é a memória DELE. */}
+              {TEM_MEMORIA.has(tipo) && typeof config.agentId === 'string' && config.agentId && (
+                <button
+                  type="button"
+                  onClick={() => editor!.abrirMemoria(id!)}
+                  title="O que este agente lembra"
+                  aria-label="O que este agente lembra"
+                  className="p-1 rounded hover:bg-muted text-muted-foreground"
+                >
+                  <Brain className="w-3 h-3" />
                 </button>
               )}
               <button

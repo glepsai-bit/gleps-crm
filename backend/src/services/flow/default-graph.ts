@@ -73,96 +73,57 @@ export function buildDefaultGraph(agentId: string | null = null): FlowGraph {
           janelaHumanoMinutos: 30,
           etiquetasBloqueio: [],
         },
-        position: { x: 380, y: 130 },
+        position: { x: 380, y: 140 },
       },
       {
         id: 'agrupar',
         type: 'buffer.debounce',
         label: 'Agrupar mensagens',
-        // 15s: o lead costuma mandar 2-3 mensagens seguidas. Sem isso a IA
-        // responde a primeira e atropela o resto do raciocínio dele.
         config: { segundos: 15 },
-        position: { x: 380, y: 260 },
+        position: { x: 380, y: 280 },
       },
       {
-        id: 'transcrever',
-        type: 'media.transcribe',
-        label: 'Transcrever áudio',
-        config: { idioma: 'pt' },
-        position: { x: 380, y: 390 },
-      },
-      {
-        id: 'agente',
-        type: 'ai.agent',
-        label: 'Agente de atendimento',
-        config: { agentId: agentId ?? '', salvarEm: 'agente' },
-        position: { x: 380, y: 520 },
-      },
-      {
-        id: 'etapa',
-        type: 'crm.apply_stage',
-        label: 'Aplicar etapa no kanban',
-        config: { etapa: '{{agente.etapa}}' },
-        position: { x: 380, y: 650 },
-      },
-      {
-        id: 'quer_humano',
-        type: 'logic.switch',
-        label: 'Pediu humano?',
+        // O BLOCO COMPOSTO. Antes eram seis passos aqui — agente, etapa,
+        // condição, resposta, condição, e as duas decisões lidas de variável.
+        // Eram SEMPRE os mesmos seis: o n8n é granular porque serve qualquer
+        // automação, e aqui o domínio é um só.
+        id: 'atende',
+        type: 'ai.atender',
+        label: 'Atender com IA',
         config: {
-          variavel: 'agente.transferir_para_humano',
-          casos: [{ valor: 'true', branch: 'sim' }],
+          agentId,
+          salvarEm: 'agente',
+          // Assuntos que nunca são atendidos pela IA. Fica vazio de propósito:
+          // é decisão de negócio de cada cliente, e um padrão nosso aqui seria
+          // palpite sobre o negócio dele.
+          rotasSempreHumano: [],
         },
-        position: { x: 380, y: 780 },
+        position: { x: 380, y: 420 },
       },
       {
         id: 'transferir',
         type: 'chat.assign_human',
         label: 'Transferir para atendente',
         config: {},
-        position: { x: 700, y: 910 },
-      },
-      {
-        id: 'responder',
-        type: 'chat.reply',
-        label: 'Responder no WhatsApp',
-        config: { texto: '{{agente.mensagem_de_resposta}}' },
-        position: { x: 100, y: 910 },
-      },
-      {
-        id: 'quer_resolver',
-        type: 'logic.switch',
-        label: 'Encerrar conversa?',
-        config: {
-          variavel: 'agente.resolver_conversa',
-          casos: [{ valor: 'true', branch: 'sim' }],
-        },
-        position: { x: 100, y: 1040 },
+        position: { x: 660, y: 600 },
       },
       {
         id: 'resolver',
         type: 'chat.resolve',
         label: 'Resolver conversa',
-        config: { outcome: 'resolved', pedirCsat: false },
-        position: { x: 100, y: 1170 },
+        config: { outcome: 'resolved' },
+        position: { x: 100, y: 600 },
       },
     ],
     edges: [
       { id: 'e1', source: 'gatilho', target: 'guardas' },
       { id: 'e2', source: 'guardas', target: 'agrupar' },
-      { id: 'e3', source: 'agrupar', target: 'transcrever' },
-      { id: 'e4', source: 'transcrever', target: 'agente' },
-      { id: 'e5', source: 'agente', target: 'etapa' },
-      { id: 'e6', source: 'etapa', target: 'quer_humano' },
-      // Pediu humano → transfere e encerra o fluxo (o atendente assume daqui).
-      { id: 'e7', source: 'quer_humano', target: 'transferir', branch: 'sim' },
-      // Caminho normal → responde.
-      { id: 'e8', source: 'quer_humano', target: 'responder' },
-      // Ninguém online pra receber → responde assim mesmo, pra não deixar o
-      // lead no vácuo enquanto espera atendimento.
-      { id: 'e9', source: 'transferir', target: 'responder', branch: 'sem_atendente' },
-      { id: 'e10', source: 'responder', target: 'quer_resolver' },
-      { id: 'e11', source: 'quer_resolver', target: 'resolver', branch: 'sim' },
+      { id: 'e3', source: 'agrupar', target: 'atende' },
+      // As decisões do agente são PORTAS do bloco, não nós de condição soltos.
+      // "respondeu" não tem aresta: a maioria das mensagens acaba aqui, e o
+      // fluxo simplesmente termina esperando a próxima.
+      { id: 'e4', source: 'atende', target: 'transferir', branch: 'humano' },
+      { id: 'e5', source: 'atende', target: 'resolver', branch: 'encerrou' },
     ],
   };
 }
