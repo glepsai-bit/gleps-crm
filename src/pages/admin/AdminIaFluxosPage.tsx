@@ -16,11 +16,15 @@ import {
   Controls,
   MiniMap,
   addEdge,
+  reconnectEdge,
   useNodesState,
   useEdgesState,
+  ConnectionLineType,
   type Node,
   type Edge,
   type Connection,
+  type EdgeTypes,
+  type FinalConnectionState,
   MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -30,6 +34,7 @@ import { SimuladorChat, type StatusPorNo } from '@/components/flow/SimuladorChat
 import { CamposDoNo } from '@/components/flow/CamposDoNo';
 import { ExecucoesDoFluxo } from '@/components/flow/ExecucoesDoFluxo';
 import { EditorDeFluxoContext } from '@/components/flow/EditorDeFluxoContext';
+import { ArestaDoFluxo } from '@/components/flow/ArestaDoFluxo';
 import { PainelAgente } from '@/components/flow/PainelAgente';
 import { PainelBase } from '@/components/flow/PainelBase';
 import { PainelMemoria } from '@/components/flow/PainelMemoria';
@@ -62,6 +67,16 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import {
   flowsService,
@@ -169,6 +184,43 @@ const GRUPOS: { titulo: string; tipos: string[]; nota?: string; recolhido?: bool
   },
 ];
 
+/**
+ * Como toda ligação é desenhada e gravada.
+ *
+ * Um lugar só: antes o estilo vivia no carregamento e a aresta criada no
+ * `onConnect` saía sem ele — ligação nova ficava visualmente diferente das
+ * salvas até recarregar a página.
+ */
+const ESTILO_ARESTA = {
+  type: 'fluxo',
+  markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--muted-foreground))' },
+  style: { stroke: 'hsl(var(--muted-foreground))', strokeWidth: 2 },
+} as const;
+
+/** O ramo gravado numa aresta do canvas. */
+function ramoDaAresta(e: Edge): string | null {
+  const b = (e.data as Record<string, unknown> | undefined)?.branch;
+  return typeof b === 'string' && b ? b : null;
+}
+
+/**
+ * Qual porta do bloco de origem a aresta sai.
+ *
+ * Sem isto o React Flow cai em `handles[0]` e TODOS os cabos de um bloco saem
+ * da primeira bolinha — o desenho mostrava três linhas nascendo em "respondeu"
+ * com os rótulos "humano" e "encerrou" flutuando ao lado. O desenho mentia
+ * sobre o fluxo que o motor roda.
+ *
+ * Quando o ramo salvo não existe mais entre as portas (o agente perdeu uma rota
+ * do enum, por exemplo) volta a ser `undefined`: melhor a aresta grudar na
+ * primeira porta do que sumir da tela sem explicação.
+ */
+function portaDaAresta(branch: string | null, portas: string[] | undefined): string | undefined {
+  if (!portas || portas.length === 0) return undefined;
+  const alvo = branch ?? 'default';
+  return portas.includes(alvo) ? alvo : undefined;
+}
+
 function portasDoAgente(outputSchema: unknown): string[] {
   const base = ['respondeu', 'humano', 'encerrou'];
   const schema = outputSchema as
@@ -181,9 +233,117 @@ function portasDoAgente(outputSchema: unknown): string[] {
   return [...base, ...extras];
 }
 
+/**
+ * As saídas nomeadas de um bloco — ou `undefined` quando ele tem saída única.
+ *
+ * Vinha fixo só para `ai.atender`. Com isso `guard.conditions` (bloqueado),
+ * `http.request` (erro), `chat.assign_human` (sem_atendente) e os casos do
+ * `logic.switch` tinham ramo no motor e NENHUMA porta na tela: era impossível
+ * desenhar o caminho de erro de uma chamada de API.
+ */
+function portasDoNo(
+  tipo: string,
+  config: Record<string, unknown>,
+  info: NodeTypeInfo | undefined,
+  agentes: { id: string; outputSchema?: unknown }[] | undefined
+): string[] | undefined {
+  if (tipo === 'ai.atender') {
+    const agentId = (config as { agentId?: string }).agentId;
+    return portasDoAgente(agentes?.find((a) => a.id === agentId)?.outputSchema);
+  }
+  if (tipo === 'logic.switch') {
+    const casos = Array.isArray(config.casos) ? (config.casos as { branch?: unknown }[]) : [];
+    const ramos = casos
+      .map((c) => (typeof c.branch === 'string' ? c.branch : ''))
+      .filter((b): b is string => Boolean(b));
+    return ramos.length ? ['default', ...ramos] : undefined;
+  }
+  const ramos = info?.branches ?? [];
+  return ramos.length > 1 ? ramos.map((b) => b.key) : undefined;
+}
+
+/**
+ * Excluir um fluxo.
+ *
+ * Confirma sempre — leva as execuções gravadas junto — e o aviso muda de peso
+ * conforme o modo: apagar um rascunho é uma coisa, apagar o fluxo que está
+ * atendendo os leads neste minuto é outra.
+ */
+function DialogoExcluirFluxo({
+  fluxo,
+  onFechar,
+  onExcluido,
+}: {
+  fluxo: { id: string; name: string; status: FlowStatus } | null;
+  onFechar: () => void;
+  onExcluido: () => void;
+}) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+
+  const excluir = useMutation({
+    mutationFn: (id: string) => flowsService.remove(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['flows'] });
+      toast({ title: 'Fluxo excluído' });
+      onExcluido();
+    },
+    onError: (e: Error) =>
+      toast({ title: 'Não foi possível excluir', description: e.message, variant: 'destructive' }),
+  });
+
+  // O diálogo anima a saída DEPOIS de `fluxo` virar null. Sem guardar o
+  // último, o título piscava `Excluir “”?` durante a animação.
+  const ultimo = useRef(fluxo);
+  if (fluxo) ultimo.current = fluxo;
+  const mostrado = fluxo ?? ultimo.current;
+
+  const emUso = mostrado ? mostrado.status !== 'draft' : false;
+
+  return (
+    <AlertDialog open={Boolean(fluxo)} onOpenChange={(v) => !v && onFechar()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Excluir “{mostrado?.name}”?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {emUso && (
+              <span className="mb-2 block font-medium text-destructive">
+                {mostrado?.status === 'active'
+                  ? 'Este fluxo está ATIVO — está atendendo os leads agora. Excluir interrompe o atendimento automático na hora.'
+                  : 'Este fluxo está em SOMBRA — está rodando e gravando cada passo para você comparar. Excluir encerra a comparação.'}
+              </span>
+            )}
+            O desenho e todas as execuções gravadas dele vão junto. Não dá para desfazer.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={excluir.isPending}>Manter</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            disabled={excluir.isPending}
+            onClick={(e) => {
+              // O AlertDialog fecha no clique da ação; segurar até a API
+              // responder evita a lista piscar como se já tivesse apagado.
+              e.preventDefault();
+              if (fluxo) excluir.mutate(fluxo.id);
+            }}
+          >
+            {excluir.isPending ? 'Excluindo…' : 'Excluir'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const [paraExcluir, setParaExcluir] = useState<{
+    id: string;
+    name: string;
+    status: FlowStatus;
+  } | null>(null);
 
   const { data: fluxos, isLoading } = useQuery({
     queryKey: ['flows'],
@@ -281,9 +441,25 @@ function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between gap-2">
                     <CardTitle className="text-base">{f.name}</CardTitle>
-                    <Badge variant="outline" className={info.classe}>
-                      {info.label}
-                    </Badge>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Badge variant="outline" className={info.classe}>
+                        {info.label}
+                      </Badge>
+                      <button
+                        type="button"
+                        title="Excluir fluxo"
+                        aria-label={`Excluir ${f.name}`}
+                        // O card inteiro abre o fluxo: sem parar a propagação o
+                        // clique na lixeira abriria o editor por baixo do aviso.
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setParaExcluir({ id: f.id, name: f.name, status: f.status });
+                        }}
+                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                   {f.description && (
                     <CardDescription className="line-clamp-2">{f.description}</CardDescription>
@@ -299,6 +475,12 @@ function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
           })}
         </div>
       )}
+
+      <DialogoExcluirFluxo
+        fluxo={paraExcluir}
+        onFechar={() => setParaExcluir(null)}
+        onExcluido={() => setParaExcluir(null)}
+      />
     </div>
   );
 }
@@ -324,9 +506,11 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selecionado, setSelecionado] = useState<string | null>(null);
   const [sujo, setSujo] = useState(false);
+  const [excluindo, setExcluindo] = useState(false);
 
   const { resolvedTheme } = useTheme();
   const nodeTypes = useMemo(() => ({ passo: FlowNodeCard }), []);
+  const edgeTypes = useMemo<EdgeTypes>(() => ({ fluxo: ArestaDoFluxo }), []);
 
   /**
    * Injeta o NOME do agente no cartão. Fica em useMemo (e não no estado) pra
@@ -368,36 +552,124 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   const [testeAberto, setTesteAberto] = useState(false);
   const houveTeste = Object.keys(execPorNo).length > 0;
 
-  const nodesExibidos = useMemo(
-    () =>
-      nodes.map((n) => {
-        const d = n.data as FlowNodeData;
-        const exec = execPorNo[n.id];
-        const base = { ...d, exec, execRodou: houveTeste };
-        if (d.tipo !== 'ai.agent' && d.tipo !== 'ai.atender') return { ...n, data: base };
-        const agentId = (d.config as { agentId?: string } | undefined)?.agentId;
-        const agente = agentes?.find((a) => a.id === agentId);
-        return {
-          ...n,
-          data: {
-            ...base,
-            agenteNome: agente?.name ?? null,
-            temProblema: !agentId,
-            // As portas saem do schema do PRÓPRIO agente: quem monta declara
-            // as rotas dele uma vez, e o bloco passa a ter uma saída por rota.
-            // Nada disso precisou de backend — o motor casa aresta por nome.
-            portas: d.tipo === 'ai.atender' ? portasDoAgente(agente?.outputSchema) : undefined,
-          },
-        };
-      }),
-    [nodes, agentes, execPorNo, houveTeste]
-  );
-
   const infoPorTipo = useMemo(() => {
     const m = new Map<string, NodeTypeInfo>();
     catalogo?.nodes.forEach((n) => m.set(n.type, n));
     return m;
   }, [catalogo]);
+
+  /*
+    As três derivações abaixo têm cache por referência de propósito.
+
+    Arrastar um bloco dispara `onNodesChange` a 60-120 Hz. `applyNodeChanges`
+    preserva a referência dos nós que não se mexeram, e o React Flow usa
+    exatamente essa referência (`checkEquality` em `adoptUserNodes`) para pular
+    a reconstrução do nó interno e o re-render do wrapper. Recriar o objeto de
+    todo nó a cada frame — que é o que um `nodes.map(n => ({...n}))` faz —
+    desmonta essa otimização inteira: quinze blocos re-renderizavam para um
+    único ser arrastado. Devolver o MESMO objeto quando nada derivado mudou
+    devolve o fast-path.
+  */
+  const portasRef = useRef(new Map<string, string[]>());
+  const portasPorNo = useMemo(() => {
+    const anterior = portasRef.current;
+    const nova = new Map<string, string[]>();
+    for (const n of nodes) {
+      const d = n.data as FlowNodeData;
+      const p = portasDoNo(d.tipo ?? '', d.config ?? {}, infoPorTipo.get(d.tipo ?? ''), agentes);
+      if (p) nova.set(n.id, p);
+    }
+    if (nova.size === anterior.size) {
+      let igual = true;
+      for (const [id, portas] of nova) {
+        const antes = anterior.get(id);
+        if (!antes || antes.join('|') !== portas.join('|')) {
+          igual = false;
+          break;
+        }
+      }
+      // Mapa estável = as arestas exibidas não recalculam a cada frame de arraste.
+      if (igual) return anterior;
+    }
+    portasRef.current = nova;
+    return nova;
+  }, [nodes, agentes, infoPorTipo]);
+
+  const cacheNos = useRef(new Map<string, { origem: Node; saida: Node }>());
+  const nodesExibidos = useMemo(() => {
+    const cache = cacheNos.current;
+    const vistos = new Set<string>();
+    const saida = nodes.map((n) => {
+      vistos.add(n.id);
+      const d = n.data as FlowNodeData;
+      const exec = execPorNo[n.id];
+      const portas = portasPorNo.get(n.id);
+      const rodaAgente = d.tipo === 'ai.agent' || d.tipo === 'ai.atender';
+      const agentId = rodaAgente
+        ? (d.config as { agentId?: string } | undefined)?.agentId
+        : undefined;
+      const agenteNome = rodaAgente
+        ? (agentes?.find((a) => a.id === agentId)?.name ?? null)
+        : undefined;
+
+      const anterior = cache.get(n.id);
+      if (anterior && anterior.origem === n) {
+        const antes = anterior.saida.data as FlowNodeData;
+        if (
+          antes.exec === exec &&
+          antes.execRodou === houveTeste &&
+          antes.agenteNome === agenteNome &&
+          antes.portas === portas
+        ) {
+          return anterior.saida;
+        }
+      }
+
+      const saidaDoNo: Node = {
+        ...n,
+        data: {
+          ...d,
+          exec,
+          execRodou: houveTeste,
+          // As portas saem do catálogo e — para "Atender com IA" — do schema do
+          // PRÓPRIO agente: quem monta declara as rotas dele uma vez e o bloco
+          // passa a ter uma saída por rota. O motor casa aresta por nome.
+          portas,
+          ...(rodaAgente ? { agenteNome, temProblema: !agentId } : {}),
+        },
+      };
+      cache.set(n.id, { origem: n, saida: saidaDoNo });
+      return saidaDoNo;
+    });
+    for (const id of [...cache.keys()]) if (!vistos.has(id)) cache.delete(id);
+    return saida;
+  }, [nodes, agentes, execPorNo, houveTeste, portasPorNo]);
+
+  const cacheArestas = useRef(new Map<string, { origem: Edge; saida: Edge }>());
+  const edgesExibidas = useMemo(() => {
+    const cache = cacheArestas.current;
+    const vistas = new Set<string>();
+    const saida = edges.map((e) => {
+      vistas.add(e.id);
+      const porta = portaDaAresta(ramoDaAresta(e), portasPorNo.get(e.source));
+      const anterior = cache.get(e.id);
+      if (anterior && anterior.origem === e && anterior.saida.sourceHandle === porta) {
+        return anterior.saida;
+      }
+      const nova = e.sourceHandle === porta ? e : { ...e, sourceHandle: porta };
+      cache.set(e.id, { origem: e, saida: nova });
+      return nova;
+    });
+    for (const id of [...cache.keys()]) if (!vistas.has(id)) cache.delete(id);
+    return saida;
+  }, [edges, portasPorNo]);
+
+  /** O tipo de cada bloco — usado para recusar ligação que o motor não executaria. */
+  const tiposPorNo = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const n of nodes) m.set(n.id, (n.data as FlowNodeData).tipo ?? '');
+    return m;
+  }, [nodes]);
 
   // Carrega o grafo salvo para dentro do canvas.
   //
@@ -425,29 +697,108 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
     );
     setEdges(
       flow.graph.edges.map((e) => ({
+        ...ESTILO_ARESTA,
         id: e.id,
         source: e.source,
         target: e.target,
-        label: e.branch && e.branch !== 'default' ? e.branch : undefined,
+        // `branch` é a verdade; a porta de saída é derivada dele em
+        // `edgesExibidas`, que espera o catálogo chegar em vez de congelar a
+        // ligação numa porta que ainda não existia.
         data: { branch: e.branch ?? null },
-        markerEnd: { type: MarkerType.ArrowClosed },
-        // Rótulo do ramo legível nos dois temas — o padrão do React Flow é
-        // fundo branco com texto escuro, que some no modo escuro.
-        labelBgPadding: [6, 3] as [number, number],
-        labelBgBorderRadius: 4,
-        labelBgStyle: { fill: 'hsl(var(--muted))', fillOpacity: 1 },
-        labelStyle: { fill: 'hsl(var(--foreground))', fontSize: 11, fontWeight: 500 },
-        style: { stroke: 'hsl(var(--muted-foreground))', strokeWidth: 1.5 },
       })) as Edge[]
     );
     setSujo(false);
   }, [flow, setNodes, setEdges]);
 
+  /**
+   * A porta de onde o cabo saiu É o ramo.
+   *
+   * Isto era um bug de dados, não de estética: o `sourceHandle` era ignorado e
+   * toda ligação nascia com `branch: null`. O motor trata ramo nulo como a
+   * saída padrão — então puxar o cabo da porta "humano" gravava "saída padrão",
+   * e a rota desenhada não era a rota que rodava.
+   */
   const onConnect = useCallback(
     (c: Connection) => {
-      setEdges((eds) =>
-        addEdge({ ...c, markerEnd: { type: MarkerType.ArrowClosed }, data: { branch: null } }, eds)
+      const branch = c.sourceHandle && c.sourceHandle !== 'default' ? c.sourceHandle : null;
+      setEdges((eds) => addEdge({ ...ESTILO_ARESTA, ...c, data: { branch } }, eds));
+      setSujo(true);
+    },
+    [setEdges]
+  );
+
+  /**
+   * Recusa a ligação que o motor não executaria, ANTES de soltar.
+   *
+   * Sem isto o React Flow aceita tudo — inclusive um bloco ligado em si mesmo,
+   * que o modo "strict" não checa — e o erro só aparece na validação do backend
+   * na hora de ativar.
+   */
+  const conexaoValida = useCallback(
+    (c: Connection | Edge): boolean => {
+      if (!c.source || !c.target || c.source === c.target) return false;
+      // Ligação que JÁ EXISTE não entra de novo. O `addEdge` do React Flow até
+      // deduplica, mas compara `targetHandle` com `===` — e a aresta carregada
+      // do grafo salvo vem `undefined` enquanto a criada ao soltar em cima do
+      // bloco vem `null`. A duplicata passava, ficava empilhada exatamente
+      // sobre a original e a faixa de clique dela cobria a lixeira de baixo.
+      // Aqui a comparação é pelo que importa pro motor: origem, porta e
+      // destino. E como `isValidConnection` roda com o cabo no ar, o alvo já
+      // acende como inválido antes de soltar — como no n8n.
+      const porta = (h: string | null | undefined) => (h && h !== 'default' ? h : 'default');
+      const jaExiste = edges.some(
+        (e) => e.source === c.source && e.target === c.target && porta(e.sourceHandle) === porta(c.sourceHandle)
       );
+      if (jaExiste) return false;
+      const origem = tiposPorNo.get(c.source) ?? '';
+      const destino = tiposPorNo.get(c.target) ?? '';
+      // Gatilho é onde o fluxo começa, e base é fonte: nenhum dos dois recebe.
+      if (destino.startsWith('trigger.') || destino.startsWith('source.')) return false;
+      // A base de conhecimento só alimenta quem roda um agente — a aresta vira
+      // o `knowledgeBaseId` dele em `ligarBasesAosAgentes`.
+      if (origem.startsWith('source.')) return destino === 'ai.agent' || destino === 'ai.atender';
+      return true;
+    },
+    [tiposPorNo, edges]
+  );
+
+  /**
+   * Soltar o cabo EM CIMA do bloco liga — não só na bolinha de entrada.
+   *
+   * O React Flow só considera portas dentro do raio de captura. Num card de
+   * 300px de altura o único alvo era o topo-centro: soltar no meio do bloco não
+   * fazia nada, em silêncio. No n8n você solta em qualquer lugar do nó.
+   */
+  const onConnectEnd = useCallback(
+    (evento: MouseEvent | TouchEvent, estado: FinalConnectionState) => {
+      if (estado.isValid || !estado.fromNode || estado.fromHandle?.type !== 'source') return;
+      const alvo = (evento.target as Element | null)
+        ?.closest?.('.react-flow__node')
+        ?.getAttribute('data-id');
+      if (!alvo) return;
+      const c: Connection = {
+        source: estado.fromNode.id,
+        target: alvo,
+        sourceHandle: estado.fromHandle.id ?? null,
+        targetHandle: null,
+      };
+      if (!conexaoValida(c)) return;
+      onConnect(c);
+    },
+    [conexaoValida, onConnect]
+  );
+
+  /**
+   * Arrastar a ponta de um cabo para outro destino.
+   *
+   * Sem `onReconnect` definido o React Flow nem desenha as âncoras de religar —
+   * o recurso fica inerte. Somado à ausência de tecla de apagar, corrigir a
+   * topologia exigia apagar um dos blocos e montar de novo.
+   */
+  const onReconnect = useCallback(
+    (antiga: Edge, nova: Connection) => {
+      const branch = nova.sourceHandle && nova.sourceHandle !== 'default' ? nova.sourceHandle : null;
+      setEdges((es) => reconnectEdge({ ...antiga, data: { branch } }, nova, es));
       setSujo(true);
     },
     [setEdges]
@@ -626,6 +977,10 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         setEdges((es) => es.filter((e) => e.source !== nodeId && e.target !== nodeId));
         setSujo(true);
       },
+      removerAresta: (edgeId: string) => {
+        setEdges((es) => es.filter((e) => e.id !== edgeId));
+        setSujo(true);
+      },
       ampliar: (nodeId: string) => setAmpliado(nodeId),
       abrirMemoria: (nodeId: string) => setMemoriaDe(nodeId),
       agentes: agentes ?? [],
@@ -699,8 +1054,29 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
           >
             <FlaskConical className="w-4 h-4 mr-1" /> Testar
           </Button>
+
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground hover:text-destructive"
+            onClick={() => setExcluindo(true)}
+            title="Excluir este fluxo"
+          >
+            <Trash2 className="w-4 h-4" />
+          </Button>
         </div>
       </div>
+
+      <DialogoExcluirFluxo
+        fluxo={excluindo ? { id: flow.id, name: flow.name, status: flow.status } : null}
+        onFechar={() => setExcluindo(false)}
+        // O fluxo aberto deixou de existir: voltar para a lista é o único
+        // estado honesto — ficar no editor mostraria um desenho fantasma.
+        onExcluido={() => {
+          setExcluindo(false);
+          onVoltar();
+        }}
+      />
 
       {/* Aviso do modo */}
       <div className="px-4 py-2 text-xs bg-muted/40 border-b text-muted-foreground">
@@ -791,8 +1167,9 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
           <EditorDeFluxoContext.Provider value={editorCtx}>
           <ReactFlow
             nodes={nodesExibidos}
-            edges={edges}
+            edges={edgesExibidas}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             colorMode={resolvedTheme === 'dark' ? 'dark' : 'light'}
             onNodesChange={(c) => {
               onNodesChange(c);
@@ -800,24 +1177,78 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
             }}
             onEdgesChange={(c) => {
               onEdgesChange(c);
-              setSujo(true);
+              // Só selecionar uma ligação não é edição. Sujar o fluxo aqui
+              // acendia "Salvar" a cada clique no desenho, e um aviso de
+              // não-salvo que acende sozinho deixa de significar alguma coisa.
+              if (c.some((x) => x.type !== 'select')) setSujo(true);
             }}
             onConnect={onConnect}
+            onConnectEnd={onConnectEnd}
+            onReconnect={onReconnect}
+            isValidConnection={conexaoValida}
             onPaneClick={() => setSelecionado(null)}
+            onNodeDoubleClick={(ev, n) => {
+              // Duplo clique dentro de um campo é seleção de palavra, não
+              // "abrir o bloco" — sem esta guarda selecionar uma palavra no
+              // prompt fechava os campos por baixo do cursor.
+              if ((ev.target as Element | null)?.closest?.('.nodrag')) return;
+              editorCtx.alternarAberto(n.id);
+            }}
             fitView
+            fitViewOptions={{ padding: 0.2 }}
             proOptions={{ hideAttribution: true }}
+            /*
+              A mira. O raio de captura padrão são 20 unidades de fluxo — com o
+              canvas afastado isso vira menos pixels de tela do que a própria
+              bolinha, e a porta some justo quando está mais difícil de acertar.
+              O n8n usa 60, o Langflow 30.
+            */
+            connectionRadius={40}
+            connectionLineType={ConnectionLineType.SmoothStep}
+            connectionLineStyle={{ stroke: 'hsl(var(--primary))', strokeWidth: 2.5 }}
+            reconnectRadius={16}
+            /*
+              Tolerância de gesto. Com o padrão (1px) um tremor de mouse já
+              contava como arraste — e acendia "Salvar" sem ninguém ter movido
+              nada. O clique no canvas e no bloco ganham a mesma folga, que é o
+              que faz o trackpad parar de perder cliques.
+            */
+            nodeDragThreshold={3}
+            connectionDragThreshold={2}
+            paneClickDistance={4}
+            nodeClickDistance={4}
+            snapToGrid
+            snapGrid={[16, 16]}
+            /* Duplo clique abre o bloco (acima) em vez de dar zoom no canvas. */
+            zoomOnDoubleClick={false}
+            /* Dois dedos no trackpad passam a mover o canvas; o zoom fica no
+               pinça e no Ctrl/Cmd + rolagem, como no n8n e no Figma. */
+            panOnScroll
+            zoomActivationKeyCode={['Meta', 'Control']}
+            autoPanSpeed={20}
+            /* Explícito de propósito, embora seja o default: já foi ligado uma vez
+               "pra destacar", e com o bloco selecionado as arestas dele subiam
+               pra uma camada ACIMA dos rótulos — tapando a lixeira das outras
+               onde cruzam. Aresta nunca fica acima de bloco; elevar só custa. */
+            elevateEdgesOnSelect={false}
             /*
               Backspace NÃO apaga bloco.
               A guarda do React Flow só reconhece input/select/textarea
               NATIVOS — o Select do shadcn é um <button role="combobox">, e
               apagar um caractere num campo desses removeria o bloco inteiro,
-              em silêncio. Remover agora é só pelo botão dentro do bloco.
+              em silêncio. Remover é pelo botão dentro do bloco; remover
+              ligação é pelo "x" que aparece sobre ela.
             */
             deleteKeyCode={null}
           >
             <Background gap={16} size={1} />
             <Controls showInteractive={false} />
+            {/* Canto SUPERIOR direito de propósito. Embaixo à direita ele cobria
+                a porta de saída do último bloco de um fluxo que cresce pra baixo
+                — soltar cabo ali ainda funcionava (é geométrico), mas COMEÇAR um
+                cabo daquela porta, não. Medido no navegador: alvo efetivo 0px. */}
             <MiniMap
+              position="top-right"
               pannable
               zoomable
               className="!bg-card !border !border-border rounded-md"

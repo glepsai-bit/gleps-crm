@@ -110,6 +110,54 @@ describe('resumo da configuração — evita ter que clicar em cada bloco', () =
   });
 });
 
+describe('saídas nomeadas — o que o motor ramifica precisa existir na tela', () => {
+  it('cada rota do agente vira uma linha com nome', () => {
+    renderNode({
+      label: 'Atender com IA',
+      tipo: 'ai.atender',
+      config: {},
+      portas: ['respondeu', 'humano', 'encerrou'],
+    });
+    expect(screen.getByText('respondeu')).toBeInTheDocument();
+    expect(screen.getByText('humano')).toBeInTheDocument();
+    expect(screen.getByText('encerrou')).toBeInTheDocument();
+  });
+
+  it('a saída padrão NÃO vira linha — ela é a bolinha de baixo', () => {
+    // Senão um fluxo linear desenharia uma volta pela direita a cada passo.
+    renderNode({
+      label: 'Chamar API',
+      tipo: 'http.request',
+      config: {},
+      portas: ['default', 'erro'],
+    });
+    expect(screen.getByText('erro')).toBeInTheDocument();
+    expect(screen.queryByText('default')).not.toBeInTheDocument();
+  });
+
+  it('nome de rota com underscore fica legível', () => {
+    renderNode({
+      label: 'Transferir',
+      tipo: 'chat.assign_human',
+      config: {},
+      portas: ['default', 'sem_atendente'],
+    });
+    expect(screen.getByText('sem atendente')).toBeInTheDocument();
+  });
+});
+
+describe('resumo do bloco de atendimento', () => {
+  it('"Atender com IA" mostra o agente — caía no default e não mostrava nada', () => {
+    renderNode({
+      label: 'Atender com IA',
+      tipo: 'ai.atender',
+      config: { agentId: 'abc' },
+      agenteNome: 'Marcus SDR',
+    });
+    expect(screen.getByText('Marcus SDR')).toBeInTheDocument();
+  });
+});
+
 describe('tema', () => {
   it('usa os tokens do design system, não cor fixa', () => {
     const { container } = renderNode({ label: 'Responder', tipo: 'chat.reply', config: {} });

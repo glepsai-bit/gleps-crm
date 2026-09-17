@@ -21,6 +21,7 @@ import {
   Clock,
   GitBranch,
   Globe,
+  GripVertical,
   Maximize2,
   MessageSquare,
   Mic,
@@ -109,7 +110,10 @@ const texto = (v: unknown): string => (typeof v === 'string' ? v : '');
 /** Uma linha curta dizendo o que este passo está configurado para fazer. */
 function resumo(tipo: string, config: Record<string, unknown>, agenteNome?: string | null): string {
   switch (tipo) {
+    // `ai.atender` faltava aqui: o bloco principal do canvas caía no `default`
+    // e nunca dizia qual agente estava rodando dentro dele.
     case 'ai.agent':
+    case 'ai.atender':
       return agenteNome ? agenteNome : 'sem agente selecionado';
     case 'buffer.debounce':
       return `espera ${Number(config.segundos ?? 15)}s`;
@@ -147,6 +151,11 @@ function resumo(tipo: string, config: Record<string, unknown>, agenteNome?: stri
   }
 }
 
+/** O nome da saída como o usuário lê: `sem_atendente` vira "sem atendente". */
+function rotuloDaPorta(porta: string): string {
+  return porta.replace(/_/g, ' ');
+}
+
 /** Moldura do resultado do teste. Erro ganha o destaque mais forte. */
 const MOLDURA_EXEC: Record<string, string> = {
   ok: 'border-emerald-500/70 ring-2 ring-emerald-500/25',
@@ -170,6 +179,16 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
   const editavel = Boolean(editor && id);
   const aberto = Boolean(id && editor?.abertos.has(id));
   const portas = Array.isArray(d.portas) ? (d.portas as string[]) : [];
+  /*
+    A saída `default` continua embaixo; as outras saem pela direita.
+
+    Um bloco com dois ramos ("seguiu" / "deu erro") é a maioria dos casos. Se
+    TODAS as saídas fossem para a direita, um fluxo linear passaria a desenhar
+    uma volta a cada passo. Assim a linha principal continua descendo e só o
+    desvio sai de lado — que é como o olho já lê um fluxograma.
+  */
+  const temPadrao = portas.includes('default');
+  const nomeadas = portas.filter((p) => p !== 'default');
 
   return (
     <div
@@ -192,12 +211,23 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
         <Handle
           type="target"
           position={Position.Top}
-          className="!w-2.5 !h-2.5 !bg-muted-foreground !border-background"
+          className="!w-3 !h-3 !bg-primary !border-2 !border-background"
         />
       )}
 
-      <div className="px-3 py-2.5">
-        <div className="flex items-center gap-2">
+      <div className="px-3 pb-2.5">
+        {/*
+          A faixa de arraste.
+
+          O card inteiro é arrastável MENOS o que está marcado `nodrag` — e com
+          os campos abertos isso é ~85% da altura. Sem uma faixa visível o
+          usuário mira no meio do bloco (onde o cursor de "arraste" aparecia por
+          herança), nada acontece, e a conclusão é "não dá pra arrastar". Aqui a
+          faixa tem fundo próprio, a alça acende no hover e o cursor muda — e é
+          a MESMA barra esteja o bloco aberto ou fechado.
+        */}
+        <div className="group/alca -mx-3 mb-0.5 flex cursor-grab select-none items-center gap-2 rounded-t-lg border-b bg-muted/40 px-3 py-2 active:cursor-grabbing">
+          <GripVertical className="-ml-1.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-colors group-hover/alca:text-muted-foreground" />
           <span
             className={cn(
               'flex items-center justify-center w-6 h-6 rounded-md shrink-0',
@@ -260,15 +290,18 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
         </div>
 
         {detalhe && (
-          <p className="text-[11px] text-muted-foreground mt-1 leading-snug line-clamp-2 break-words">
+          <p className="text-[11px] text-muted-foreground mt-2 leading-snug line-clamp-2 break-words">
             {detalhe}
           </p>
         )}
 
         {aberto && editavel && (
           /* nodrag para o arrasto não roubar o clique no campo; nowheel para o
-             scroll de textarea e lista não virar zoom do canvas. */
-          <div className="nodrag nowheel mt-2.5 pt-2.5 border-t space-y-3 text-xs">
+             scroll de textarea e lista não virar zoom do canvas; nopan porque
+             arrastar o mouse pra SELECIONAR texto num campo panava o canvas —
+             o d3-zoom só desiste em `.nopan`, e `nodrag` não impede o evento
+             de subir até ele. */
+          <div className="nodrag nopan nowheel mt-2.5 pt-2.5 border-t space-y-3 text-xs">
             <CamposDoNo
               tipo={tipo}
               config={config}
@@ -313,30 +346,57 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
         )}
       </div>
 
-      {portas.length > 1 ? (
+      {portas.length > 0 ? (
         /* Portas nomeadas: a decisão do agente vira saída visível, em vez de
            variável que um nó de condição lê depois. */
-        <div className="border-t px-3 py-2 space-y-1.5">
-          {portas.map((porta, i) => (
-            <div key={porta} className="relative flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground shrink-0" />
-              <span className="text-[11px] text-muted-foreground truncate">{porta}</span>
-              <Handle
-                id={porta}
-                type="source"
-                position={Position.Right}
-                style={{ top: '50%', right: -6 }}
-                className="!w-2.5 !h-2.5 !bg-muted-foreground !border-background"
-              />
-              {i < 0 && null}
+        <>
+          {nomeadas.length > 0 && (
+            <div className="border-t px-3 py-2.5 space-y-2">
+              {nomeadas.map((porta) => (
+                /*
+                  Uma bolinha por linha, e ela fica pra FORA do card.
+
+                  Antes havia duas bolinhas cinzas iguais por linha: uma
+                  decorativa ao lado do nome (onde o olho mirava) e a de verdade
+                  encostada na borda, meio escondida DENTRO do card. Quem
+                  clicava na primeira não conseguia puxar cabo nenhum.
+
+                  A altura mínima da linha separa os alvos: o hit-box real de
+                  cada porta tem 28px (ver .react-flow__handle::after no
+                  index.css) e linhas mais juntas fariam os alvos se sobrepor.
+                */
+                <div
+                  key={porta}
+                  className="relative flex min-h-[20px] items-center justify-end gap-1.5"
+                >
+                  <span className="truncate text-[11px] font-medium text-muted-foreground">
+                    {rotuloDaPorta(porta)}
+                  </span>
+                  <Handle
+                    id={porta}
+                    type="source"
+                    position={Position.Right}
+                    style={{ top: '50%', right: -16 }}
+                    className="!w-3 !h-3 !bg-primary !border-2 !border-background"
+                  />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+          {temPadrao && (
+            <Handle
+              id="default"
+              type="source"
+              position={Position.Bottom}
+              className="!w-3 !h-3 !bg-primary !border-2 !border-background"
+            />
+          )}
+        </>
       ) : (
         <Handle
           type="source"
           position={Position.Bottom}
-          className="!w-2.5 !h-2.5 !bg-muted-foreground !border-background"
+          className="!w-3 !h-3 !bg-primary !border-2 !border-background"
         />
       )}
     </div>

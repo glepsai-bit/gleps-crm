@@ -19,6 +19,15 @@ export interface EditorDeFluxo {
   alternarAberto: (nodeId: string) => void;
   /** Remove o bloco. Com `deleteKeyCode` desligado, é o único caminho. */
   remover: (nodeId: string) => void;
+  /**
+   * Remove uma ligação.
+   *
+   * Mesmo motivo do `remover`: com `deleteKeyCode` desligado (o Select do
+   * shadcn é um <button role="combobox"> e o Backspace nele apagaria o bloco),
+   * a tecla Delete não existe aqui. Sem este canal, uma aresta desenhada errado
+   * só sumia apagando um dos dois blocos que ela liga.
+   */
+  removerAresta: (edgeId: string) => void;
   /** Abre o editor ampliado (o prompt, que não cabe no bloco). */
   ampliar: (nodeId: string) => void;
   /**

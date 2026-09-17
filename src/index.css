@@ -797,3 +797,83 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================
+   Canvas de fluxos (React Flow) — o tato de arrastar e ligar
+   ============================================================ */
+
+/*
+  O cursor precisa dizer a verdade.
+
+  `.react-flow__node.draggable { cursor: grab }` vem da lib e o cursor é
+  herdado, então a mãozinha de "pode arrastar" aparecia sobre 100% do bloco —
+  inclusive sobre os campos, que é exatamente onde arrastar NÃO funciona. Aqui a
+  regra se inverte: tudo que está marcado `nodrag` mostra o cursor do que
+  realmente é (texto, ponteiro), e a promessa de arraste sobra só onde vale.
+*/
+.react-flow__node .nodrag {
+  cursor: auto;
+}
+.react-flow__node .nodrag button,
+.react-flow__node .nodrag [role='combobox'],
+.react-flow__node .nodrag [role='checkbox'],
+.react-flow__node .nodrag label {
+  cursor: pointer;
+}
+.react-flow__node .nodrag input:not([type='checkbox']),
+.react-flow__node .nodrag textarea {
+  cursor: text;
+}
+
+/*
+  A porta: 12px de desenho, 28px de alvo.
+
+  O pseudo-elemento NÃO entra na border-box (o ponto onde o cabo ancora não se
+  move um pixel). O que ele muda é o hit-test do DOM: é ele que decide se o
+  mousedown AGARRA a porta pra começar um cabo. SOLTAR o cabo é outra conta —
+  geométrica, distância ao centro da porta contra `connectionRadius` — e este
+  pseudo não participa dela. Mesmo truque do n8n (`padding:4px; margin:-4px`)
+  e do Langflow (handle de 32px transparente com a bolinha de 10px dentro).
+  Referência: WCAG 2.2 pede 24px mínimo; a bolinha sozinha tinha 10.
+*/
+.react-flow__handle::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: 9999px;
+}
+
+/*
+  Em cima e embaixo o alvo cresce mais na horizontal do que na vertical. E a
+  porta de ENTRADA (topo) cresce pra fora do bloco, quase nada pra dentro: ela
+  fica encostada na faixa de arraste, e um alvo que entrasse 12px no cabeçalho
+  fazia mousedown no centro da faixa começar um cabo em vez de arrastar.
+*/
+.react-flow__handle-bottom::after {
+  inset: -6px -10px;
+  border-radius: 9999px;
+}
+.react-flow__handle-top::after {
+  inset: -10px -10px -2px;
+  border-radius: 9999px;
+}
+
+.react-flow__handle {
+  transition: box-shadow 0.12s ease, background-color 0.12s ease;
+}
+
+/*
+  Feedback durante a ligação. A lib marca as classes e não pinta nada: sem isto
+  o usuário arrasta um fio de 1px cinza e só descobre se valeu depois de soltar.
+  Não mexemos em `transform` de propósito — é ele que posiciona a bolinha.
+*/
+.react-flow__handle.connectingfrom,
+.react-flow__handle.clickconnecting {
+  box-shadow: 0 0 0 5px hsl(var(--primary) / 0.3);
+}
+.react-flow__handle.connectingto.valid {
+  box-shadow: 0 0 0 7px hsl(var(--primary) / 0.35);
+}
+.react-flow__handle.connectionindicator:hover {
+  box-shadow: 0 0 0 5px hsl(var(--primary) / 0.22);
+}
