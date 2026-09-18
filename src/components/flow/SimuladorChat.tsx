@@ -326,13 +326,21 @@ export function SimuladorChat({
     onError: (e: Error) => toast.error(e.message || 'Não deu pra zerar'),
   });
 
+  const restante = janela ? Math.max(0, Math.ceil((janela.fechaEm - agora) / 1000)) : 0;
+
   /*
     Durante a JANELA o campo continua aberto: mandar outra mensagem é
     exatamente o que o lead faz, e o servidor junta tudo na mesma resposta.
-    Trava só enquanto o pedido está no ar ou o fluxo está executando.
+
+    Depois que o relógio ZERA, não. Aí o run está de bolo pro worker, que passa
+    a cada 5s — e uma mensagem nessa fresta cai num run NOVO enquanto o anterior
+    ainda está executando. O servidor lida bem com isso (é o que acontece no
+    atendimento real), mas a tela só acompanha um run por vez: a resposta do
+    primeiro ficaria só gravada na conversa, sem aparecer. Travar a fresta é
+    mais honesto do que mostrar uma conversa pela metade.
   */
-  const ocupado = enviar.isPending || executando;
-  const restante = janela ? Math.max(0, Math.ceil((janela.fechaEm - agora) / 1000)) : 0;
+  const janelaVencida = Boolean(janela) && restante <= 0;
+  const ocupado = enviar.isPending || executando || janelaVencida;
 
   function mandar() {
     const texto = rascunho.trim();
