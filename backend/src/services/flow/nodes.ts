@@ -105,7 +105,7 @@ const knowledgeSource: NodeDefinition = {
   label: 'Base de conhecimento',
   description:
     'Mostra no desenho qual base o agente consulta. Ligue a saída dela na entrada ' +
-    'do bloco de atendimento.',
+    'tracejada, na lateral esquerda do bloco de atendimento.',
   branches: [{ key: 'default', label: '' }],
   mutates: false,
   async execute(node) {

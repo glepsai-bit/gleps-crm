@@ -38,6 +38,13 @@ import {
 import { cn } from '@/lib/utils';
 import { CamposDoNo } from './CamposDoNo';
 import { useEditorDeFluxo } from './EditorDeFluxoContext';
+import {
+  ENTRADA_DE_CONHECIMENTO,
+  ENTRADA_DE_FLUXO,
+  recebeConhecimento,
+  recebeFluxo,
+  rotuloDaPorta,
+} from './portas';
 
 const ICONES: Record<string, LucideIcon> = {
   'trigger.message_received': MessageSquare,
@@ -165,11 +172,6 @@ function resumo(tipo: string, config: Record<string, unknown>, agenteNome?: stri
   }
 }
 
-/** O nome da saída como o usuário lê: `sem_atendente` vira "sem atendente". */
-function rotuloDaPorta(porta: string): string {
-  return porta.replace(/_/g, ' ');
-}
-
 /** Moldura do resultado do teste. Erro ganha o destaque mais forte. */
 const MOLDURA_EXEC: Record<string, string> = {
   ok: 'border-emerald-500/70 ring-2 ring-emerald-500/25',
@@ -200,6 +202,8 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
   const config = d.config ?? {};
   const Icone = ICONES[tipo] ?? CircleHelp;
   const ehGatilho = tipo.startsWith('trigger.');
+  const temEntradaDeFluxo = recebeFluxo(tipo);
+  const temEntradaDeConhecimento = recebeConhecimento(tipo);
   const ehAcao = ACOES.has(tipo);
   const detalhe = resumo(tipo, config, d.agenteNome);
   const exec = d.exec;
@@ -238,12 +242,35 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
         !selected && d.execRodou && !exec && 'opacity-45'
       )}
     >
-      {/* Gatilho não tem entrada: é onde o fluxo começa. */}
-      {!ehGatilho && (
+      {/* Gatilho não tem entrada (é onde o fluxo começa) e fonte também não
+          (ela alimenta um bloco, não é um passo que a conversa percorre). */}
+      {temEntradaDeFluxo && (
         <Handle
+          id={ENTRADA_DE_FLUXO}
           type="target"
           position={Position.Top}
+          title="Entrada — a conversa chega por aqui"
+          aria-label="Entrada — a conversa chega por aqui"
           className="!w-3 !h-3 !bg-primary !border-2 !border-background"
+        />
+      )}
+
+      {/*
+        A segunda entrada, só pra fontes.
+
+        A base entrava pela MESMA porta da conversa, e isso desenhava uma
+        mentira: a base não é um passo antes do atendimento, é um material que
+        o agente consulta. Separada e de lado, com contorno tracejado, ela
+        para de disputar a linha principal do fluxograma.
+      */}
+      {temEntradaDeConhecimento && (
+        <Handle
+          id={ENTRADA_DE_CONHECIMENTO}
+          type="target"
+          position={Position.Left}
+          title="Conhecimento — ligue a base aqui"
+          aria-label="Conhecimento — ligue a base aqui"
+          className="!w-3 !h-3 !bg-background !border-2 !border-dashed !border-sky-500 dark:!border-sky-400"
         />
       )}
 

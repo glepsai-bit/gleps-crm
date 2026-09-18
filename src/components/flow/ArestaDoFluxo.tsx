@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from '@xyflow/react';
 import { X } from 'lucide-react';
 import { useEditorDeFluxo } from './EditorDeFluxoContext';
+import { rotuloDaPorta } from './portas';
 
 /** Quanto tempo o botão sobrevive depois que o ponteiro sai. */
 const MS_HISTERESE = 500;
@@ -61,8 +62,9 @@ export function ArestaDoFluxo({
     offset: 24,
   });
 
-  // `sem_atendente` vira "sem atendente", igual ao rótulo da porta no bloco.
-  const ramo = typeof data?.branch === 'string' ? data.branch.replace(/_/g, ' ') : null;
+  // O MESMO rótulo da porta no bloco — `respondeu` vira "Depois de responder",
+  // `sem_atendente` vira "sem atendente". O valor gravado não muda.
+  const ramo = typeof data?.branch === 'string' ? rotuloDaPorta(data.branch) : null;
   const mostrar = sobre || Boolean(selected);
 
   return (

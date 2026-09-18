@@ -11,15 +11,25 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { FlowNodeCard, type FlowNodeData } from './FlowNodeCard';
 
-// As alças do React Flow exigem o contexto do canvas; para o que testamos aqui
-// (texto e resumo) elas são irrelevantes.
+// As alças do React Flow exigem o contexto do canvas. O dublê desenha um <i>
+// com o tipo, o id e a posição da alça — é o suficiente pra afirmar QUAIS
+// portas o bloco oferece, que é metade do que estes testes garantem.
 vi.mock('@xyflow/react', () => ({
-  Handle: () => null,
-  Position: { Top: 'top', Bottom: 'bottom', Right: 'right' },
+  Handle: ({ type, id, position }: { type: string; id?: string; position: string }) => (
+    <i data-alca={type} data-alca-id={id ?? ''} data-alca-pos={position} />
+  ),
+  Position: { Top: 'top', Bottom: 'bottom', Right: 'right', Left: 'left' },
   // O card agora descobre quem é sozinho, pra gravar configuração sem receber
   // callback dentro de `data` — que é serializado pro backend.
   useNodeId: () => 'n1',
 }));
+
+/** As alças de entrada desenhadas, na ordem em que aparecem. */
+function entradas(container: HTMLElement): string[] {
+  return [...container.querySelectorAll('[data-alca="target"]')].map(
+    (e) => e.getAttribute('data-alca-id') ?? ''
+  );
+}
 
 function renderNode(data: FlowNodeData, selected = false) {
   return render(
@@ -118,9 +128,37 @@ describe('saídas nomeadas — o que o motor ramifica precisa existir na tela', 
       config: {},
       portas: ['respondeu', 'humano', 'encerrou'],
     });
-    expect(screen.getByText('respondeu')).toBeInTheDocument();
-    expect(screen.getByText('humano')).toBeInTheDocument();
-    expect(screen.getByText('encerrou')).toBeInTheDocument();
+    // O VALOR continua `respondeu` (é o que o motor compara e o que vai em
+    // `edge.branch`); só o texto na tela mudou.
+    expect(screen.getByText('Depois de responder')).toBeInTheDocument();
+    expect(screen.getByText('Se pedir humano')).toBeInTheDocument();
+    expect(screen.getByText('Se encerrar')).toBeInTheDocument();
+    expect(screen.queryByText('respondeu')).not.toBeInTheDocument();
+  });
+
+  it('o rótulo muda, mas a porta continua se chamando `respondeu`', () => {
+    // A aresta grava o id do handle em `edge.branch`: se o id virasse o rótulo,
+    // todo fluxo salvo perderia o ramo.
+    const { container } = renderNode({
+      label: 'Atender com IA',
+      tipo: 'ai.atender',
+      config: {},
+      portas: ['respondeu', 'humano', 'encerrou'],
+    });
+    const saidas = [...container.querySelectorAll('[data-alca="source"]')].map((e) =>
+      e.getAttribute('data-alca-id')
+    );
+    expect(saidas).toEqual(['respondeu', 'humano', 'encerrou']);
+  });
+
+  it('rota criada por quem monta mantém o nome que ele deu', () => {
+    renderNode({
+      label: 'Atender com IA',
+      tipo: 'ai.atender',
+      config: {},
+      portas: ['respondeu', 'financeiro'],
+    });
+    expect(screen.getByText('financeiro')).toBeInTheDocument();
   });
 
   it('a saída padrão NÃO vira linha — ela é a bolinha de baixo', () => {
@@ -278,5 +316,50 @@ describe('tipo desconhecido não quebra a tela', () => {
   it('renderiza com ícone genérico', () => {
     renderNode({ label: 'Passo novo', tipo: 'tipo.que.nao.existe', config: {} });
     expect(screen.getByText('Passo novo')).toBeInTheDocument();
+  });
+});
+
+describe('as entradas do bloco — a queixa era ligar a base', () => {
+  it('fonte NÃO desenha entrada: ela alimenta um bloco, não recebe o fluxo', () => {
+    // Era o bug: a base desenhava uma bolinha de entrada no topo que a
+    // validação SEMPRE recusou. O usuário mirou nela e nada acontecia.
+    const { container } = renderNode({
+      label: 'Base de conhecimento',
+      tipo: 'source.knowledge',
+      config: {},
+    });
+    expect(entradas(container)).toEqual([]);
+  });
+
+  it('gatilho continua sem entrada — é onde o fluxo começa', () => {
+    const { container } = renderNode({
+      label: 'Nova mensagem',
+      tipo: 'trigger.message_received',
+      config: {},
+    });
+    expect(entradas(container)).toEqual([]);
+  });
+
+  it('quem roda agente tem DUAS entradas, com ids distintos', () => {
+    const { container } = renderNode({
+      label: 'Atender com IA',
+      tipo: 'ai.atender',
+      config: {},
+    });
+    expect(entradas(container)).toEqual(['entrada', 'conhecimento']);
+  });
+
+  it('a entrada de conhecimento fica de lado, não no topo com a do fluxo', () => {
+    const { container } = renderNode({ label: 'Agente', tipo: 'ai.agent', config: {} });
+    const conhecimento = container.querySelector('[data-alca-id="conhecimento"]');
+    expect(conhecimento?.getAttribute('data-alca-pos')).toBe('left');
+    expect(container.querySelector('[data-alca-id="entrada"]')?.getAttribute('data-alca-pos')).toBe(
+      'top'
+    );
+  });
+
+  it('passo comum tem só a entrada do fluxo — base não se liga nele', () => {
+    const { container } = renderNode({ label: 'Responder', tipo: 'chat.reply', config: {} });
+    expect(entradas(container)).toEqual(['entrada']);
   });
 });

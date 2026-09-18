@@ -858,6 +858,15 @@
   border-radius: 9999px;
 }
 
+/*
+  A entrada de conhecimento (esquerda) cresce pra FORA do bloco: pra dentro ela
+  encostaria no conteúdo do card e roubaria o clique dos campos.
+*/
+.react-flow__handle-left::after {
+  inset: -10px -2px -10px -10px;
+  border-radius: 9999px;
+}
+
 .react-flow__handle {
   transition: box-shadow 0.12s ease, background-color 0.12s ease;
 }

@@ -634,7 +634,7 @@ describe('ferramentas: memória nativa e base', () => {
     expect(alerta).toBeDefined();
     expect(alerta?.textContent).toMatch(/está ligada, mas este agente não tem base/);
     expect(alerta?.textContent).toMatch(
-      /Arraste o bloco Base de conhecimento e ligue na entrada deste passo/
+      /Arraste o bloco Base de conhecimento e ligue na entrada tracejada, na lateral esquerda deste passo/
     );
   });
 

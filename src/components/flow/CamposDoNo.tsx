@@ -261,8 +261,11 @@ export function CamposDoNo({ tipo, config, agentes, bases = [], set }: CamposDoN
             </SelectContent>
           </Select>
           <p className="text-[11px] text-muted-foreground">
-            Ligue a saída deste bloco na entrada do agente que vai consultá-la. Cada agente
-            com a sua base responde melhor e custa menos que um com tudo.
+            Puxe a bolinha de baixo deste bloco até a <strong>entrada tracejada da
+            esquerda</strong> do bloco de atendimento — ou solte em cima do bloco, que ela
+            mira sozinha. A base não é um passo do fluxo: é o material que o agente
+            consulta. Cada agente com a sua base responde melhor e custa menos que um com
+            tudo.
           </p>
         </div>
       )}

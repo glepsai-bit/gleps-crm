@@ -58,6 +58,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { rotuloDaPorta } from './portas';
 
 interface Props {
   agentId: string | null;
@@ -1060,7 +1061,8 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                         base
                       </strong>{' '}
                       — a busca não acha nada. Arraste o bloco{' '}
-                      <strong>Base de conhecimento</strong> e ligue na entrada deste passo.
+                      <strong>Base de conhecimento</strong> e ligue na entrada tracejada, na
+                      lateral esquerda deste passo.
                     </span>
                   </div>
                 ) : (
@@ -1068,14 +1070,14 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                     {baseLigada ? (
                       <>
                         Consulta a base <strong>{baseLigada.name}</strong>. Para trocar, ligue
-                        outro bloco de base na entrada deste passo.
+                        outro bloco de base na entrada tracejada da esquerda.
                       </>
                     ) : temBase ? (
-                      <>Consulta a base ligada na entrada deste passo.</>
+                      <>Consulta a base ligada na entrada tracejada da esquerda.</>
                     ) : (
                       <>
                         Sem base ligada. Para o agente consultar documentos, arraste um bloco de
-                        base e ligue na entrada deste passo.
+                        base e ligue na entrada tracejada, na lateral esquerda deste passo.
                       </>
                     )}
                   </p>
@@ -1185,11 +1187,19 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {ROTAS_FIXAS.map((r) => (
-                    <Badge key={r} variant="secondary" className="font-mono text-[10px]">
-                      {r}
+                    /* O rótulo é o que se lê na tela; `title` guarda o valor que
+                       vai no formato de resposta e na aresta. */
+                    <Badge key={r} variant="secondary" className="text-[10px]" title={r}>
+                      {rotuloDaPorta(r)}
                     </Badge>
                   ))}
                 </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Atenção: a resposta ao lead <strong>já saiu</strong> quando o bloco chega
+                  nessas saídas — elas dizem o que acontece <strong>depois</strong>. Por isso
+                  "Depois de responder" costuma ficar sem cabo nenhum: o atendimento acabou ali
+                  e o fluxo fica esperando a próxima mensagem.
+                </p>
 
                 {rotas.length > 0 && (
                   <div className="space-y-1.5">

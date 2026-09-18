@@ -39,6 +39,14 @@ import { PainelAgente } from '@/components/flow/PainelAgente';
 import { PainelBase } from '@/components/flow/PainelBase';
 import { PainelMemoria } from '@/components/flow/PainelMemoria';
 import {
+  TIPOS_DE_AGENTE,
+  basesDesenhadas,
+  ehFonte,
+  entradaDaAresta,
+  ligacaoPermitida,
+  textoDaConfig,
+} from '@/components/flow/portas';
+import {
   AlertTriangle,
   ArrowLeft,
   ChevronRight,
@@ -143,15 +151,6 @@ export default function AdminIaFluxosPage() {
  * há casos legítimos (aplicar etapa sem responder, responder texto fixo sem
  * agente). Mas ficam claramente subordinadas.
  */
-/** Blocos que rodam um agente — ampliar neles abre o editor do agente. */
-const TIPOS_DE_AGENTE = new Set(['ai.atender', 'ai.agent']);
-
-/** Lê uma chave de texto da config do bloco; vazio vira null, que é o que os painéis esperam. */
-function textoDaConfig(config: Record<string, unknown>, chave: string): string | null {
-  const v = config[chave];
-  return typeof v === 'string' && v ? v : null;
-}
-
 const GRUPOS: { titulo: string; tipos: string[]; nota?: string; recolhido?: boolean }[] = [
   {
     titulo: 'Atender',
@@ -160,7 +159,7 @@ const GRUPOS: { titulo: string; tipos: string[]; nota?: string; recolhido?: bool
   {
     titulo: 'Fontes',
     tipos: ['source.knowledge'],
-    nota: 'Ligue na entrada do bloco de atendimento.',
+    nota: 'Ligue na entrada tracejada, na lateral esquerda do bloco de atendimento.',
   },
   {
     titulo: 'Agir',
@@ -198,6 +197,18 @@ const ESTILO_ARESTA = {
   type: 'fluxo',
   markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--muted-foreground))' },
   style: { stroke: 'hsl(var(--muted-foreground))', strokeWidth: 2 },
+} as const;
+
+/**
+ * A ligação de uma FONTE até o agente.
+ *
+ * Tracejada de propósito: ela não é um passo do fluxo, é o material que o
+ * agente consulta. Com o mesmo traço da aresta de fluxo, o desenho sugeria que
+ * a conversa passava pela base antes de chegar no atendimento.
+ */
+const ESTILO_ARESTA_FONTE = {
+  ...ESTILO_ARESTA,
+  style: { ...ESTILO_ARESTA.style, strokeDasharray: '6 5' },
 } as const;
 
 /** O ramo gravado numa aresta do canvas. */
@@ -263,32 +274,6 @@ function portasDoNo(
   }
   const ramos = info?.branches ?? [];
   return ramos.length > 1 ? ramos.map((b) => b.key) : undefined;
-}
-
-/**
- * Agente → base, lido das LINHAS do desenho (bloco de base ligado na entrada
- * do bloco de agente). `null` = tem linha, mas o bloco de base ainda não
- * escolheu qual. Vale pro grafo salvo e pro canvas: é a mesma pergunta.
- */
-function basesDesenhadas(
-  nos: { id: string; type: string; config?: Record<string, unknown> }[],
-  arestas: { source: string; target: string }[]
-): Map<string, string | null> {
-  const porId = new Map(nos.map((n) => [n.id, n]));
-  const resultado = new Map<string, string | null>();
-  for (const e of arestas) {
-    const origem = porId.get(e.source);
-    const destino = porId.get(e.target);
-    if (origem?.type !== 'source.knowledge' || !destino || !TIPOS_DE_AGENTE.has(destino.type)) continue;
-    const agentId = textoDaConfig(destino.config ?? {}, 'agentId');
-    if (!agentId) continue;
-    const baseId = textoDaConfig(origem.config ?? {}, 'baseId');
-    // A primeira linha com base escolhida vence; uma sem base não apaga a que tem.
-    if (!resultado.has(agentId) || (baseId && !resultado.get(agentId))) {
-      resultado.set(agentId, baseId);
-    }
-  }
-  return resultado;
 }
 
 /**
@@ -796,17 +781,25 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         data: { label: n.label ?? n.type, tipo: n.type, config: n.config ?? {} },
       })) as Node[]
     );
+    const tipoPorId = new Map(flow.graph.nodes.map((n) => [n.id, n.type]));
     setEdges(
-      flow.graph.edges.map((e) => ({
-        ...ESTILO_ARESTA,
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        // `branch` é a verdade; a porta de saída é derivada dele em
-        // `edgesExibidas`, que espera o catálogo chegar em vez de congelar a
-        // ligação numa porta que ainda não existia.
-        data: { branch: e.branch ?? null },
-      })) as Edge[]
+      flow.graph.edges.map((e) => {
+        const tipoDaOrigem = tipoPorId.get(e.source) ?? '';
+        const deFonte = ehFonte(tipoDaOrigem);
+        return {
+          ...(deFonte ? ESTILO_ARESTA_FONTE : ESTILO_ARESTA),
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          // A entrada é derivada do tipo da origem: é o que traz a aresta
+          // antiga (salva sem handle) pra entrada de conhecimento.
+          targetHandle: entradaDaAresta(tipoDaOrigem),
+          // `branch` é a verdade; a porta de saída é derivada dele em
+          // `edgesExibidas`, que espera o catálogo chegar em vez de congelar a
+          // ligação numa porta que ainda não existia.
+          data: { branch: e.branch ?? null },
+        };
+      }) as Edge[]
     );
     setSujo(false);
   }, [flow, setNodes, setEdges]);
@@ -822,10 +815,11 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
   const onConnect = useCallback(
     (c: Connection) => {
       const branch = c.sourceHandle && c.sourceHandle !== 'default' ? c.sourceHandle : null;
-      setEdges((eds) => addEdge({ ...ESTILO_ARESTA, ...c, data: { branch } }, eds));
+      const estilo = ehFonte(tiposPorNo.get(c.source) ?? '') ? ESTILO_ARESTA_FONTE : ESTILO_ARESTA;
+      setEdges((eds) => addEdge({ ...estilo, ...c, data: { branch } }, eds));
       setSujo(true);
     },
-    [setEdges]
+    [setEdges, tiposPorNo]
   );
 
   /**
@@ -851,14 +845,12 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         (e) => e.source === c.source && e.target === c.target && porta(e.sourceHandle) === porta(c.sourceHandle)
       );
       if (jaExiste) return false;
-      const origem = tiposPorNo.get(c.source) ?? '';
-      const destino = tiposPorNo.get(c.target) ?? '';
-      // Gatilho é onde o fluxo começa, e base é fonte: nenhum dos dois recebe.
-      if (destino.startsWith('trigger.') || destino.startsWith('source.')) return false;
-      // A base de conhecimento só alimenta quem roda um agente — a aresta vira
-      // o `knowledgeBaseId` dele em `ligarBasesAosAgentes`.
-      if (origem.startsWith('source.')) return destino === 'ai.agent' || destino === 'ai.atender';
-      return true;
+      // Quem pode ligar em quem, e por qual entrada: regra pura em `portas.ts`.
+      return ligacaoPermitida(
+        tiposPorNo.get(c.source) ?? '',
+        tiposPorNo.get(c.target) ?? '',
+        c.targetHandle
+      );
     },
     [tiposPorNo, edges]
   );
@@ -881,12 +873,15 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         source: estado.fromNode.id,
         target: alvo,
         sourceHandle: estado.fromHandle.id ?? null,
-        targetHandle: null,
+        // Soltar a base em cima do agente precisa mirar a entrada de
+        // conhecimento: com a entrada do fluxo, `conexaoValida` recusaria — e
+        // soltar em cima do bloco é como se liga a base hoje.
+        targetHandle: entradaDaAresta(tiposPorNo.get(estado.fromNode.id) ?? ''),
       };
       if (!conexaoValida(c)) return;
       onConnect(c);
     },
-    [conexaoValida, onConnect]
+    [conexaoValida, onConnect, tiposPorNo]
   );
 
   /**
