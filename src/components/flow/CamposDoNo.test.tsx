@@ -201,9 +201,28 @@ describe('o que não mudou', () => {
     expect(screen.getByRole('textbox')).toHaveValue('Olá {{agente.nome}}');
   });
 
-  it('o gatilho de mensagem continua sem configuração', () => {
+  /*
+    O gatilho deixou de ser "não tem o que configurar": agrupar e transcrever
+    saíram do canvas e vieram pra cá, que é onde a espera e a transcrição
+    realmente acontecem — antes do fluxo começar.
+  */
+  it('o gatilho carrega a janela de agrupamento e o áudio', () => {
     renderCampos({ tipo: 'trigger.message_received' });
-    expect(screen.getByText(/dispara sempre que o lead escrever/)).toBeInTheDocument();
-    expect(screen.queryByRole('combobox', { name: 'Time' })).toBeNull();
+    expect(screen.getByLabelText(/juntar mensagens seguidas/i)).toHaveValue(15);
+    expect(screen.getByLabelText(/entender áudio do lead/i)).toBeChecked();
+    expect(screen.getByText(/dispara sempre que o lead escrever/i)).toBeInTheDocument();
+  });
+
+  it('desligar o áudio avisa que o atendimento fica mudo', () => {
+    renderCampos({ tipo: 'trigger.message_received', config: { transcreverAudio: false } });
+    expect(screen.getByText(/para sem responder/i)).toBeInTheDocument();
+  });
+
+  it('a janela digitada vai pra configuração do gatilho', () => {
+    const { set } = renderCampos({ tipo: 'trigger.message_received' });
+    fireEvent.change(screen.getByLabelText(/juntar mensagens seguidas/i), {
+      target: { value: '6' },
+    });
+    expect(set).toHaveBeenCalledWith('agruparSegundos', 6);
   });
 });

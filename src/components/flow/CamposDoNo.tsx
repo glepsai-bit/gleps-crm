@@ -526,12 +526,78 @@ export function CamposDoNo({ tipo, config, agentes, bases = [], set }: CamposDoN
     </div>
   )}
 
-  {/* Sem configuração — mas o painel não pode ficar vazio: o usuário precisa
-      saber que não está faltando nada pra ele preencher. */}
+  {/*
+      O gatilho carrega o que acontece com a mensagem ANTES do fluxo começar:
+      agrupar e transcrever. Os dois eram blocos no canvas, e nenhum dos dois
+      era um passo de verdade — o agrupamento funcionava até desconectado, e a
+      transcrição só podia ficar num lugar. Aqui é onde a pessoa procura.
+  */}
   {tipo === 'trigger.message_received' && (
-    <div className="rounded-md border bg-muted/40 p-2.5 text-[11px] text-muted-foreground leading-relaxed">
-      Não tem o que configurar: dispara sempre que o lead escrever. Para limitar a certas
-      caixas de entrada, use o campo de inboxes do fluxo.
+    <div className="space-y-3">
+      <div className="space-y-1.5">
+        <Label htmlFor="gatilho-agrupar" className="text-xs">
+          Juntar mensagens seguidas (segundos)
+        </Label>
+        <Input
+          id="gatilho-agrupar"
+          type="number"
+          min={0}
+          max={300}
+          className="h-8"
+          value={String(config.agruparSegundos ?? 15)}
+          onChange={(e) => set('agruparSegundos', Math.max(0, Number(e.target.value)))}
+        />
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          Cada mensagem nova reinicia a contagem, e todas viram uma só pro agente. O tempo
+          varia com o público: quem manda áudio e escreve em partes pede mais; pergunta
+          curta de loja pede menos.
+        </p>
+      </div>
+
+      <div className="space-y-1.5 border-t pt-2.5">
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={config.transcreverAudio !== false}
+            onChange={(e) => set('transcreverAudio', e.target.checked)}
+          />
+          Entender áudio do lead
+        </label>
+        {config.transcreverAudio === false ? (
+          <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-relaxed">
+            Desligado, áudio chega sem texto e o atendimento para sem responder. Só desligue
+            se o seu público não manda áudio.
+          </p>
+        ) : (
+          <>
+            <Label htmlFor="gatilho-idioma" className="text-xs">
+              Idioma do áudio
+            </Label>
+            <Select
+              value={String(config.idiomaDoAudio ?? 'pt')}
+              onValueChange={(v) => set('idiomaDoAudio', v)}
+            >
+              <SelectTrigger id="gatilho-idioma" className="h-8" aria-label="Idioma do áudio">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pt">Português</SelectItem>
+                <SelectItem value="es">Espanhol</SelectItem>
+                <SelectItem value="en">Inglês</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              A transcrição roda enquanto a janela espera, então não soma no tempo de
+              resposta. Cobra por áudio.
+            </p>
+          </>
+        )}
+      </div>
+
+      <p className="text-[11px] text-muted-foreground leading-relaxed border-t pt-2.5">
+        Dispara sempre que o lead escrever. Para limitar a certas caixas de entrada, use o
+        campo de inboxes do fluxo.
+      </p>
     </div>
   )}
 

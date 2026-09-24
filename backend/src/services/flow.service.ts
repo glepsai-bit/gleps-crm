@@ -19,12 +19,27 @@ import { valorDaMemoria, semExpiradas } from './ai/memoria';
 import { TIPOS_QUE_ENVIAM } from './flow/nodes';
 import { buildSuggestedAgentSchema } from './flow/default-graph';
 import type { ContatoResumo } from './ai-agent.service';
+import { attachmentStorageService } from './attachment-storage.service';
+import { transcribe } from './ai/transcription';
+import fs from 'fs/promises';
 import type { BufferedMessage, FlowGraph, FlowStatus } from './flow/types';
 
 /** Janela de agrupamento padrão quando o fluxo não tem nó de debounce. */
 const DEFAULT_DEBOUNCE_SECONDS = 0;
 /** Teto da janela — protege contra alguém configurar 1h sem querer. */
 const MAX_DEBOUNCE_SECONDS = 300;
+
+/**
+ * Piso da janela quando chega áudio.
+ *
+ * A resposta DEPENDE da transcrição: sem esse piso, um fluxo sem agrupamento
+ * (janela 0) executaria antes de o áudio virar texto, e o lead receberia a
+ * resposta de uma mensagem que o agente não ouviu.
+ */
+const PISO_AUDIO_SEGUNDOS = 10;
+
+/** Fica no lugar do áudio que não deu pra transcrever. */
+const AUDIO_SEM_TEXTO = '[áudio não transcrito]';
 const MAX_RUNS_PER_TICK = 5;
 /** Acima disso, um run em 'running' é órfão de restart, não trabalho em curso. */
 const STALE_RUNNING_MS = 10 * 60 * 1000;
@@ -45,12 +60,33 @@ const STATUS_TERMINAL = new Set(['done', 'failed', 'sleeping', 'skipped']);
  * É a MESMA função pro gatilho real e pro simulador: se cada um lesse do seu
  * jeito, a simulação esperaria um tempo diferente do atendimento.
  */
-function janelaDeAgrupamento(graph: FlowGraph): number {
-  const debounce = graph.nodes.find((n) => n.type === 'buffer.debounce');
-  const bruto = Number(
-    (debounce?.config as { segundos?: number } | undefined)?.segundos ?? DEFAULT_DEBOUNCE_SECONDS
-  );
-  return Math.min(Math.max(Number.isFinite(bruto) ? bruto : 0, 0), MAX_DEBOUNCE_SECONDS);
+function configDeEntrada(graph: FlowGraph): {
+  segundos: number;
+  transcrever: boolean;
+  idioma: string;
+} {
+  const gatilho = graph.nodes.find((n) => n.type.startsWith('trigger.'));
+  const g = (gatilho?.config ?? {}) as {
+    agruparSegundos?: number;
+    transcreverAudio?: boolean;
+    idiomaDoAudio?: string;
+  };
+  // Cai no bloco antigo quando o fluxo é anterior à mudança. O valor sempre
+  // morou no grafo, então migrar é escolher de onde LER — nenhum fluxo salvo
+  // precisa ser aberto e reeditado pra continuar agrupando igual.
+  const doBloco = (graph.nodes.find((n) => n.type === 'buffer.debounce')?.config ?? {}) as {
+    segundos?: number;
+  };
+  const bruto = Number(g.agruparSegundos ?? doBloco.segundos ?? DEFAULT_DEBOUNCE_SECONDS);
+
+  return {
+    segundos: Math.min(Math.max(Number.isFinite(bruto) ? bruto : 0, 0), MAX_DEBOUNCE_SECONDS),
+    // Ligada por padrão: sem transcrição o áudio chega vazio, `bufferedText`
+    // descarta a mensagem e o atendimento PARA com "mensagem_vazia" — o lead
+    // manda áudio e não recebe nada. Silêncio é pior que o custo do Whisper.
+    transcrever: g.transcreverAudio !== false,
+    idioma: typeof g.idiomaDoAudio === 'string' && g.idiomaDoAudio ? g.idiomaDoAudio : 'pt',
+  };
 }
 
 /**
@@ -241,7 +277,14 @@ class FlowService {
     if (inboxIds && inboxIds.length > 0 && !inboxIds.includes(evt.inboxId)) return;
 
     const graph = parseGraph(flow.graph);
-    const segundos = janelaDeAgrupamento(graph);
+    const entrada = configDeEntrada(graph);
+    const ehAudio = evt.contentType === 'audio';
+    const vaiTranscrever = ehAudio && entrada.transcrever;
+    // Áudio segura a janela pelo menos até dar tempo de transcrever — responder
+    // antes de ouvir é pior do que responder alguns segundos depois.
+    const segundos = vaiTranscrever
+      ? Math.max(entrada.segundos, PISO_AUDIO_SEGUNDOS)
+      : entrada.segundos;
     const runAfter = new Date(Date.now() + segundos * 1000);
 
     const mensagem: BufferedMessage = {
@@ -252,7 +295,10 @@ class FlowService {
     };
 
     const anexado = await this.anexarAoRunAberto(evt.conversationId, mensagem, runAfter);
-    if (anexado) return;
+    if (anexado) {
+      if (vaiTranscrever) await this.transcreverNoBuffer(evt, entrada.idioma);
+      return;
+    }
 
     // O agente que assumiu a conversa continua dono: o run já nasce apontando
     // pro bloco dele, em vez de recomeçar pela triagem. Se o bloco sumiu do
@@ -278,10 +324,74 @@ class FlowService {
       // nosso findFirst e o insert. Agrupa nele em vez de duplicar.
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         await this.anexarAoRunAberto(evt.conversationId, mensagem, runAfter);
+        if (vaiTranscrever) await this.transcreverNoBuffer(evt, entrada.idioma);
         return;
       }
       throw err;
     }
+
+    if (vaiTranscrever) await this.transcreverNoBuffer(evt, entrada.idioma);
+  }
+
+  /**
+   * Transcreve o áudio e grava o texto na mensagem que já está no buffer.
+   *
+   * Roda DEPOIS de o run existir, de propósito. Transcrever antes levaria
+   * segundos com a conversa sem run nenhum — e uma segunda mensagem chegando
+   * nessa brecha criaria um run separado em vez de agrupar com a primeira.
+   * Assim a transcrição acontece DURANTE a janela, em paralelo com a espera,
+   * em vez de somar ao tempo de resposta.
+   *
+   * Nunca deixa a mensagem muda: falhou, entra `[áudio não transcrito]`. O
+   * agente pede pra escrever — antes, o áudio virava conteúdo vazio,
+   * `bufferedText` descartava e o atendimento parava sem responder nada.
+   */
+  private async transcreverNoBuffer(evt: InboundMessageEvent, idioma: string): Promise<void> {
+    let texto = AUDIO_SEM_TEXTO;
+    try {
+      const att = await prisma.attachment.findFirst({
+        where: { messageId: evt.messageId },
+        select: { id: true },
+      });
+      if (att) {
+        const material = await attachmentStorageService.materialize(att.id);
+        if (material) {
+          const buffer = await fs.readFile(material.absolutePath);
+          const r = await transcribe(
+            evt.accountId,
+            buffer,
+            material.mimeType ?? 'audio/ogg',
+            idioma
+          );
+          if (r.text?.trim()) texto = r.text.trim();
+        }
+      }
+    } catch (err) {
+      logger.warn('[flow] falha ao transcrever áudio na entrada', {
+        conversationId: evt.conversationId,
+        messageId: evt.messageId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Relê o run: entre o começo da transcrição e agora, outras mensagens podem
+    // ter entrado no mesmo buffer. Escrever o array inteiro de memória
+    // apagaria o que chegou nesse meio.
+    const aberto = await prisma.flowRun.findFirst({
+      where: { conversationId: evt.conversationId, status: 'buffering' },
+      select: { id: true, context: true },
+    });
+    if (!aberto) return; // a janela fechou antes; nada a corrigir
+
+    const ctx = (aberto.context ?? {}) as { mensagens?: BufferedMessage[] };
+    const mensagens = (ctx.mensagens ?? []).map((m) =>
+      m.id === evt.messageId ? { ...m, content: texto } : m
+    );
+
+    await prisma.flowRun.update({
+      where: { id: aberto.id },
+      data: { context: { ...ctx, mensagens } as unknown as Prisma.InputJsonValue },
+    });
   }
 
   /**
@@ -736,7 +846,9 @@ class FlowService {
       createdAt: msg.createdAt.toISOString(),
     };
 
-    const segundos = janelaDeAgrupamento(graph);
+    // O simulador manda texto, então não há piso de áudio: a janela é a mesma
+    // que o atendimento real usaria pra uma mensagem escrita.
+    const segundos = configDeEntrada(graph).segundos;
 
     // ---- COM JANELA: nasce em 'buffering' e o worker executa ----
     if (segundos > 0) {

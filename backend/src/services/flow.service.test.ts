@@ -15,6 +15,8 @@ const prismaMock = vi.hoisted(() => ({
   conversation: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
   // Longo prazo vive no contato (T-030b).
   contact: { findFirst: vi.fn() },
+  // A transcrição na entrada busca o anexo do áudio (T-038).
+  attachment: { findFirst: vi.fn() },
   flowRun: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -29,6 +31,16 @@ vi.mock('../config/database', () => ({ prisma: prismaMock }));
 vi.mock('../utils/logger', () => ({
   logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+
+const transcribeMock = vi.hoisted(() => vi.fn());
+vi.mock('./ai/transcription', () => ({ transcribe: transcribeMock }));
+
+const materializeMock = vi.hoisted(() => vi.fn());
+vi.mock('./attachment-storage.service', () => ({
+  attachmentStorageService: { materialize: materializeMock },
+}));
+
+vi.mock('fs/promises', () => ({ default: { readFile: vi.fn().mockResolvedValue(Buffer.from('ogg')) } }));
 
 const executeRunMock = vi.hoisted(() => vi.fn());
 vi.mock('./flow/engine', async () => {
@@ -80,6 +92,122 @@ beforeEach(() => {
     status: 'open',
   });
   prismaMock.conversation.update.mockResolvedValue({});
+  prismaMock.attachment.findFirst.mockResolvedValue({ id: 'att-1' });
+  materializeMock.mockResolvedValue({ absolutePath: '/tmp/a.ogg', mimeType: 'audio/ogg' });
+  transcribeMock.mockResolvedValue({ text: 'quero marcar pra terça' });
+});
+
+describe('áudio na entrada', () => {
+  const audio = () => evento({ messageId: 'msg-audio', content: null, contentType: 'audio' });
+  /** O run que o código relê depois de transcrever, pra corrigir a mensagem. */
+  const bufferComAudio = () =>
+    prismaMock.flowRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      context: { mensagens: [{ id: 'msg-audio', content: null, contentType: 'audio' }] },
+    });
+
+  /*
+    A REGRESSÃO QUE ESTAVA NO AR: áudio chegava com conteúdo vazio,
+    `bufferedText` descartava a mensagem vazia e o atendimento parava com
+    "mensagem_vazia" — o lead mandava áudio e não recebia NADA. E o fluxo
+    padrão semeado não tinha o bloco de transcrever, então era o caso comum.
+  */
+  it('transcreve e grava o texto na mensagem que está no buffer', async () => {
+    bufferComAudio();
+    await flowService.onInboundMessage(audio());
+
+    expect(transcribeMock).toHaveBeenCalledTimes(1);
+    const ctx = prismaMock.flowRun.update.mock.calls.at(-1)![0].data.context;
+    expect(ctx.mensagens[0].content).toBe('quero marcar pra terça');
+  });
+
+  it('falha na transcrição NÃO deixa a mensagem muda', async () => {
+    bufferComAudio();
+    transcribeMock.mockRejectedValue(new Error('sem chave OpenAI'));
+
+    await flowService.onInboundMessage(audio());
+
+    // O agente precisa ter o que responder ("não consegui ouvir, pode
+    // escrever?") em vez de o fluxo parar por mensagem vazia.
+    const ctx = prismaMock.flowRun.update.mock.calls.at(-1)![0].data.context;
+    expect(ctx.mensagens[0].content).toBe('[áudio não transcrito]');
+  });
+
+  it('a janela ganha piso: não responde antes de ouvir o áudio', async () => {
+    prismaMock.flow.findFirst.mockResolvedValue({
+      ...FLUXO,
+      graph: { nodes: [{ id: 't', type: 'trigger.message_received' }], edges: [] },
+    });
+    // Sem run aberto: aqui interessa o `create`, não o anexar.
+    const antes = Date.now();
+
+    await flowService.onInboundMessage(audio());
+
+    // Sem agrupamento a janela seria 0 e o run executaria antes de a
+    // transcrição chegar — a resposta sairia sem o agente ter ouvido nada.
+    const espera = prismaMock.flowRun.create.mock.calls[0][0].data.runAfter.getTime() - antes;
+    expect(espera).toBeGreaterThan(9_000);
+  });
+
+  it('desligado no gatilho, não transcreve nem segura a janela', async () => {
+    prismaMock.flow.findFirst.mockResolvedValue({
+      ...FLUXO,
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger.message_received', config: { transcreverAudio: false } },
+          { id: 'b', type: 'buffer.debounce', config: { segundos: 3 } },
+        ],
+        edges: [],
+      },
+    });
+    const antes = Date.now();
+
+    await flowService.onInboundMessage(audio());
+
+    expect(transcribeMock).not.toHaveBeenCalled();
+    const espera = prismaMock.flowRun.create.mock.calls[0][0].data.runAfter.getTime() - antes;
+    expect(espera).toBeLessThan(5_000);
+  });
+
+  it('texto não passa pela transcrição', async () => {
+    await flowService.onInboundMessage(evento());
+    expect(transcribeMock).not.toHaveBeenCalled();
+  });
+
+  it('janela fechada antes da transcrição não estoura', async () => {
+    prismaMock.flowRun.findFirst.mockResolvedValue(null); // run já saiu do buffering
+    await expect(flowService.onInboundMessage(audio())).resolves.not.toThrow();
+  });
+});
+
+describe('a janela: do gatilho, com o bloco antigo como reserva', () => {
+  it('lê os segundos do gatilho quando ele tem o campo', async () => {
+    prismaMock.flow.findFirst.mockResolvedValue({
+      ...FLUXO,
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger.message_received', config: { agruparSegundos: 4 } },
+          { id: 'b', type: 'buffer.debounce', config: { segundos: 15 } },
+        ],
+        edges: [],
+      },
+    });
+    const antes = Date.now();
+    await flowService.onInboundMessage(evento());
+    const espera = prismaMock.flowRun.create.mock.calls[0][0].data.runAfter.getTime() - antes;
+    expect(espera).toBeLessThan(6_000); // o do gatilho vence o do bloco
+  });
+
+  /*
+    Compatibilidade: fluxo salvo ANTES de o campo existir no gatilho continua
+    agrupando pelos mesmos segundos, sem ninguém abrir pra reeditar.
+  */
+  it('sem o campo no gatilho, cai no bloco antigo', async () => {
+    const antes = Date.now();
+    await flowService.onInboundMessage(evento());
+    const espera = prismaMock.flowRun.create.mock.calls[0][0].data.runAfter.getTime() - antes;
+    expect(espera).toBeGreaterThan(13_000); // os 15s do buffer.debounce do FLUXO
+  });
 });
 
 describe('gatilho', () => {
