@@ -47,6 +47,8 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+import { toast } from 'sonner';
+
 const servico = vi.mocked(aiService);
 
 const STATUS: AiStatus = {
@@ -157,6 +159,112 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe('criar base a partir do arquivo', () => {
+  /*
+    O formulário pedia um NOME — abstração — para alguém que chegou com um
+    arquivo na mão. Numa conta real a pessoa colou a tabela de preços no campo
+    do nome, e nome de base não é indexado: nunca chegou ao agente.
+  */
+  it('o arquivo cria a base e o nome sai dele', async () => {
+    servico.createBase.mockResolvedValue({ ...base(), id: 'nova-1', name: 'Tabela de precos' });
+    servico.uploadDoc.mockResolvedValue(doc());
+    const { onEscolher } = renderPainel();
+
+    fireEvent.click(await screen.findByRole('button', { name: /nova base/i }));
+    const arquivo = new File(['%PDF-1.4'], 'tabela-de-precos.pdf', { type: 'application/pdf' });
+    fireEvent.change(document.getElementById('pb-arquivo-novo')!, { target: { files: [arquivo] } });
+
+    await waitFor(() => expect(servico.createBase).toHaveBeenCalled());
+    // O nome vem do arquivo, sem hífen e com maiúscula.
+    expect(servico.createBase.mock.calls[0][0].name).toBe('Tabela de precos');
+    await waitFor(() => expect(servico.uploadDoc).toHaveBeenCalled());
+    expect(servico.uploadDoc.mock.calls[0][1]).toBe(arquivo);
+    await waitFor(() => expect(onEscolher).toHaveBeenCalledWith('nova-1'));
+  });
+
+  it('arquivo recusado não joga fora a base recém-criada', async () => {
+    servico.createBase.mockResolvedValue({ ...base(), id: 'nova-2' });
+    servico.uploadDoc.mockRejectedValue(new Error('PDF sem texto (provavelmente escaneado).'));
+    const { onEscolher } = renderPainel();
+
+    fireEvent.click(await screen.findByRole('button', { name: /nova base/i }));
+    fireEvent.change(document.getElementById('pb-arquivo-novo')!, {
+      target: { files: [new File([''], 'escaneado.pdf', { type: 'application/pdf' })] },
+    });
+
+    // A base fica em pé: a pessoa tenta outro arquivo sem recomeçar.
+    await waitFor(() => expect(onEscolher).toHaveBeenCalledWith('nova-2'));
+    // E o erro não passa em branco: neste instante o painel está trocando de
+    // base, então o aviso da seção de material ainda não está montado.
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/escaneado/i))
+    );
+  });
+});
+
+describe('base vazia oferece os quatro assuntos', () => {
+  /*
+    Base em branco é onde a pessoa trava. E a divisão não é estética: em
+    produção, documento de assunto único deu 0,58–0,65 nas buscas, e o que
+    misturava quatro assuntos deu 0,35.
+  */
+  it('mostra o modelo em vez de "nenhum documento"', async () => {
+    servico.listDocs.mockResolvedValue([]);
+    renderPainel();
+    expect(await screen.findByRole('button', { name: /Preços/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Dúvidas frequentes/ })).toBeInTheDocument();
+  });
+
+  it('escolher um assunto já abre o formulário com o título preenchido', async () => {
+    servico.listDocs.mockResolvedValue([]);
+    renderPainel();
+    // "Dúvidas frequentes" cai no caminho de TEXTO, onde o título aparece na
+    // hora — no caminho de arquivo o campo só existe depois de escolher o arquivo.
+    fireEvent.click(await screen.findByRole('button', { name: /Dúvidas frequentes/ }));
+    await waitFor(() =>
+      expect(screen.getByDisplayValue('Dúvidas frequentes')).toBeInTheDocument()
+    );
+  });
+});
+
+describe('criar base: o nome é o assunto, não o conteúdo', () => {
+  /*
+    Caso real: uma conta em produção tem uma base chamada
+    "Botox:500, Harmonização:300," — a tabela de preços foi digitada no campo
+    do NOME. Nome de base não é indexado, então aquele preço nunca chegou ao
+    agente e nada avisou.
+  */
+  it('avisa quando o nome tem cara de tabela de preços', async () => {
+    renderPainel();
+    fireEvent.click(await screen.findByRole('button', { name: /nova base/i }));
+    fireEvent.change(screen.getByLabelText(/nome do assunto/i), {
+      target: { value: 'Botox:500, Harmonização:300, Limpeza:180,' },
+    });
+    // O aviso diz o que fazer, não só que está errado: aponta pro Material.
+    const aviso = screen.getByText(/parece o/i);
+    expect(aviso).toBeInTheDocument();
+    expect(aviso.textContent).toMatch(/Material/);
+  });
+
+  it('nome normal não dispara aviso nenhum', async () => {
+    renderPainel();
+    fireEvent.click(await screen.findByRole('button', { name: /nova base/i }));
+    fireEvent.change(screen.getByLabelText(/nome do assunto/i), {
+      target: { value: 'Produto e preços' },
+    });
+    expect(screen.queryByText(/parece o/i)).toBeNull();
+  });
+
+  it('o aviso não impede criar — só avisa', async () => {
+    renderPainel();
+    fireEvent.click(await screen.findByRole('button', { name: /nova base/i }));
+    fireEvent.change(screen.getByLabelText(/nome do assunto/i), {
+      target: { value: 'Botox:500, Harmonização:300, Limpeza:180,' },
+    });
+    expect(screen.getByRole('button', { name: /criar e usar/i })).toBeEnabled();
+  });
 });
 
 describe('lista de bases que falhou', () => {
@@ -275,7 +383,7 @@ describe('fechar com documento pela metade', () => {
     expect(screen.queryByText('não salvo')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Nova base/i }));
-    fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Objeções' } });
+    fireEvent.change(screen.getByLabelText(/nome do assunto/i), { target: { value: 'Objeções' } });
 
     expect(screen.getByText('não salvo')).toBeInTheDocument();
   });

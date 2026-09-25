@@ -140,6 +140,82 @@ async function planilhaParaCsv(file: File): Promise<string> {
   return blocos.map((b) => `# ${b.nome}\n${b.csv}`).join('\n\n');
 }
 
+/**
+ * O texto tem cara de CONTEÚDO em vez de nome de assunto?
+ *
+ * Nasceu de um caso real: uma base chamada "Botox:500, Harmonização:300,".
+ * Nome de base não é indexado — aquele preço nunca chegou ao agente, e nada na
+ * tela avisou. Heurística de propósito frouxa: só avisa, nunca impede.
+ */
+/** "tabela-de-precos.pdf" → "Tabela de precos". O nome sai do arquivo. */
+function nomeDeArquivo(nome: string): string {
+  const semExt = nome.replace(/\.[^.]+$/, '');
+  const limpo = semExt.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return limpo ? limpo.charAt(0).toUpperCase() + limpo.slice(1) : 'Base de conhecimento';
+}
+
+function pareceConteudo(nome: string): boolean {
+  const t = nome.trim();
+  if (t.length < 25) return false;
+  // "Botox:500" — item seguido de valor. É a forma que apareceu de verdade;
+  // procurar número-separador-número não pegaria.
+  const itemComValor = /[A-Za-zÀ-ÿ]\s*[:=]\s*\d/.test(t) || /R\$\s*\d/.test(t);
+  const listaDeItens = (t.match(/[;,]/g) ?? []).length >= 2;
+  return t.length > 70 || t.includes('\n') || (itemComValor && listaDeItens) || itemComValor;
+}
+
+/**
+ * Os quatro assuntos que toda base de atendimento acaba tendo.
+ *
+ * Substitui a tela vazia. Base em branco é o momento em que a pessoa trava — e
+ * foi onde alguém, numa conta real, acabou digitando a tabela de preços no
+ * campo do NOME da base. Aqui ela escolhe um assunto e já cai no formulário
+ * certo, com o título preenchido.
+ *
+ * A divisão não é estética: no teste em produção, documento de assunto único
+ * deu nota 0,58–0,65 nas buscas, e o que misturava cancelamento, atraso,
+ * pagamento e horário deu 0,35. Separar por assunto é o que a busca premia.
+ */
+const MODELO: { titulo: string; exemplo: string; caminho: Caminho }[] = [
+  { titulo: 'Preços', exemplo: 'a tabela, em PDF ou planilha', caminho: 'arquivo' },
+  { titulo: 'Políticas', exemplo: 'cancelamento, atraso, pagamento', caminho: 'arquivo' },
+  { titulo: 'Dúvidas frequentes', exemplo: 'o que perguntam todo dia', caminho: 'texto' },
+  { titulo: 'Sobre os serviços', exemplo: 'o que é cada um, quanto dura', caminho: 'arquivo' },
+];
+
+function ModeloDeBase({
+  onEscolher,
+}: {
+  onEscolher: (m: { titulo: string; caminho: Caminho }) => void;
+}) {
+  return (
+    <div className="py-4 space-y-3">
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Base vazia. O agente só tem o texto do negócio acima — e é pouco. Comece por um destes:
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {MODELO.map((m) => (
+          <button
+            key={m.titulo}
+            type="button"
+            onClick={() => onEscolher(m)}
+            className="rounded-md border border-dashed p-2.5 text-left transition-colors hover:border-primary/50 hover:bg-muted/40"
+          >
+            <span className="block text-xs font-medium">{m.titulo}</span>
+            <span className="block text-[11px] text-muted-foreground leading-snug">
+              {m.exemplo}
+            </span>
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground leading-relaxed">
+        Um assunto por documento. Misturar tudo num arquivo só faz o agente achar o trecho
+        errado — medimos: separado, a busca acerta quase o dobro.
+      </p>
+    </div>
+  );
+}
+
 export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
   const queryClient = useQueryClient();
 
@@ -362,6 +438,48 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
       documentoEntrou();
     },
     onError: (e: unknown) => setErroMaterial(mensagemDeErro(e, 'Não deu pra enviar o arquivo')),
+  });
+
+  /**
+   * Cria a base A PARTIR do arquivo, num gesto só.
+   *
+   * O formulário pedia primeiro um NOME — uma abstração — para alguém que
+   * chegou com um arquivo na mão. Numa conta real a pessoa fez o que fazia
+   * sentido pra ela e colou a tabela de preços no campo do nome; nome de base
+   * não é indexado, então aquilo nunca chegou ao agente.
+   *
+   * Aqui o material vem primeiro e o nome sai do arquivo. A pessoa confirma
+   * depois, se quiser.
+   */
+  const criarComArquivoMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const base = await aiService.createBase({
+        name: nomeDeArquivo(file.name),
+        description: null,
+      });
+      try {
+        await aiService.uploadDoc(base.id, file, nomeDeArquivo(file.name));
+      } catch (err) {
+        // A base fica: o material é que falhou (PDF escaneado, por exemplo). A
+        // pessoa tenta outro arquivo sem recomeçar do zero.
+        //
+        // Toast além do aviso na seção: neste instante o painel está trocando
+        // para a base recém-criada, e o aviso de material viveria numa seção
+        // que ainda vai montar. Sem o toast, o erro passaria em branco.
+        const msg = mensagemDeErro(err, 'A base foi criada, mas o arquivo não entrou');
+        setErroMaterial(msg);
+        toast.error(msg);
+      }
+      return base;
+    },
+    onSuccess: (base) => {
+      invalidarBases();
+      setCriandoBase(false);
+      setNovaBase({ name: '', description: '' });
+      onEscolher(base.id);
+      toast.success('Base criada com o material dentro.');
+    },
+    onError: (e: unknown) => toast.error(mensagemDeErro(e, 'Não deu pra criar a base')),
   });
 
   const criarDocMutation = useMutation({
@@ -643,17 +761,76 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
 
             {criandoBase && (
               <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                {/*
+                  A explicação vem ANTES dos campos. Depois é tarde: numa conta
+                  real alguém criou a base com o nome
+                  "Botox:500, Harmonização:300," — colou a tabela de preços no
+                  campo do nome. Nome de base não é indexado, então aquele
+                  conteúdo nunca chegou ao agente, e nada avisou.
+                */}
+                {/*
+                  O ARQUIVO VEM PRIMEIRO. A pessoa chega com um material na mão;
+                  pedir um nome antes é pedir uma abstração, e foi assim que
+                  alguém acabou colando a tabela de preços no campo do nome.
+                */}
+                <div className="rounded-md border border-dashed p-3 text-center space-y-1.5">
+                  <p className="text-xs font-medium">Já tem o material?</p>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Envie o arquivo e a base nasce pronta, com o nome tirado dele.
+                  </p>
+                  <input
+                    id="pb-arquivo-novo"
+                    type="file"
+                    className="hidden"
+                    accept={ACEITA_ARQUIVO}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = '';
+                      if (f) criarComArquivoMutation.mutate(f);
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={criarComArquivoMutation.isPending}
+                    onClick={() => document.getElementById('pb-arquivo-novo')?.click()}
+                  >
+                    {criarComArquivoMutation.isPending ? (
+                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                    ) : (
+                      <Upload className="w-3.5 h-3.5 mr-1.5" />
+                    )}
+                    Escolher arquivo
+                  </Button>
+                </div>
+
+                <p className="text-[11px] text-muted-foreground text-center">
+                  ou crie vazia e adicione o material depois
+                </p>
+
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  O nome é só o <strong>assunto</strong>. O conteúdo — tabela de preços,
+                  regulamento, FAQ — entra em Material, e é só ele que o agente consulta.
+                </p>
                 <div className="space-y-1.5">
                   <Label htmlFor="pb-nome" className="text-xs">
-                    Nome
+                    Nome do assunto
                   </Label>
                   <Input
                     id="pb-nome"
                     className="h-8 bg-background"
+                    maxLength={120}
                     value={novaBase.name}
                     onChange={(e) => setNovaBase({ ...novaBase, name: e.target.value })}
                     placeholder="Produto e preços"
                   />
+                  {pareceConteudo(novaBase.name) && (
+                    <p className="text-[11px] rounded-md border border-amber-500/60 bg-amber-500/10 p-2 leading-relaxed">
+                      Isso parece o <strong>conteúdo</strong>, não o nome. O nome é curto, tipo
+                      “Produto e preços”. A tabela em si entra em <strong>Material</strong> depois
+                      que a base existir — e é de lá que o agente responde.
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="pb-desc" className="text-xs">
@@ -954,7 +1131,72 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                 )}
               </div>
 
-              {/* ---------- 4. Documentos ---------- */}
+              {/* ---------- 4. Testar a busca ---------- */}
+              <div className="space-y-2">
+                <span className="text-sm font-medium flex items-center gap-2">
+                  <Search className="w-4 h-4" /> Testar a busca
+                </span>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Pergunte como um lead perguntaria e veja o que o agente receberia. Sai mais
+                  barato descobrir aqui do que no meio do atendimento.
+                </p>
+                <div className="flex gap-2">
+                  <Input
+                    className="h-9"
+                    value={busca}
+                    onChange={(e) => setBusca(e.target.value)}
+                    placeholder="Quanto custa o plano mais barato?"
+                    onKeyDown={(e) => {
+                      // Mesma trava do botão: segurar Enter dispararia uma busca
+                      // por repetição de tecla, todas concorrentes.
+                      if (e.key === 'Enter' && busca.trim() && !buscarMutation.isPending) {
+                        e.preventDefault();
+                        buscarMutation.mutate();
+                      }
+                    }}
+                  />
+                  <Button
+                    className="h-9 shrink-0"
+                    aria-label="Buscar na base"
+                    onClick={() => buscarMutation.mutate()}
+                    disabled={!busca.trim() || buscarMutation.isPending}
+                  >
+                    {buscarMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Search className="w-4 h-4" />
+                    )}
+                  </Button>
+                </div>
+
+                {trechos && (
+                  <div className="space-y-2">
+                    {trechos.length === 0 ? (
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        Nenhum trecho passou do corte de relevância — nesse caso o agente
+                        responderia sem a base. Vale subir um documento que cubra o assunto.
+                      </p>
+                    ) : (
+                      trechos.map((t) => (
+                        <div key={t.chunkId} className="rounded-md border p-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium truncate">
+                              {t.docTitle || 'sem título'}
+                            </span>
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
+                              {(t.score * 100).toFixed(0)}%
+                            </Badge>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mt-1 line-clamp-3 leading-snug">
+                            {t.content}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            {/* ---------- 5. Documentos ---------- */}
               <div className="space-y-2">
                 <span className="text-sm font-medium">
                   Documentos
@@ -981,10 +1223,7 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
                     </Button>
                   </div>
                 ) : docsQuery.data?.length === 0 ? (
-                  <p className="text-xs text-muted-foreground text-center py-6 leading-relaxed">
-                    Nenhum documento nesta base. Sem eles o agente só tem o texto do negócio
-                    acima — envie um arquivo, cole um texto ou importe uma página do site.
-                  </p>
+                  <ModeloDeBase onEscolher={(m) => { setCaminho(m.caminho); setDocForm({ title: m.titulo, content: '' }); setTituloArquivo(m.titulo); }} />
                 ) : (
                   docsQuery.data?.map((doc) => {
                     const meta = STATUS_META[doc.status];
@@ -1095,72 +1334,7 @@ export function PainelBase({ baseId, onEscolher, onFechar }: Props) {
 
               <Separator />
 
-              {/* ---------- 5. Testar a busca ---------- */}
-              <div className="space-y-2">
-                <span className="text-sm font-medium flex items-center gap-2">
-                  <Search className="w-4 h-4" /> Testar a busca
-                </span>
-                <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  Pergunte como um lead perguntaria e veja o que o agente receberia. Sai mais
-                  barato descobrir aqui do que no meio do atendimento.
-                </p>
-                <div className="flex gap-2">
-                  <Input
-                    className="h-9"
-                    value={busca}
-                    onChange={(e) => setBusca(e.target.value)}
-                    placeholder="Quanto custa o plano mais barato?"
-                    onKeyDown={(e) => {
-                      // Mesma trava do botão: segurar Enter dispararia uma busca
-                      // por repetição de tecla, todas concorrentes.
-                      if (e.key === 'Enter' && busca.trim() && !buscarMutation.isPending) {
-                        e.preventDefault();
-                        buscarMutation.mutate();
-                      }
-                    }}
-                  />
-                  <Button
-                    className="h-9 shrink-0"
-                    aria-label="Buscar na base"
-                    onClick={() => buscarMutation.mutate()}
-                    disabled={!busca.trim() || buscarMutation.isPending}
-                  >
-                    {buscarMutation.isPending ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Search className="w-4 h-4" />
-                    )}
-                  </Button>
-                </div>
-
-                {trechos && (
-                  <div className="space-y-2">
-                    {trechos.length === 0 ? (
-                      <p className="text-[11px] text-muted-foreground leading-relaxed">
-                        Nenhum trecho passou do corte de relevância — nesse caso o agente
-                        responderia sem a base. Vale subir um documento que cubra o assunto.
-                      </p>
-                    ) : (
-                      trechos.map((t) => (
-                        <div key={t.chunkId} className="rounded-md border p-2.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium truncate">
-                              {t.docTitle || 'sem título'}
-                            </span>
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
-                              {(t.score * 100).toFixed(0)}%
-                            </Badge>
-                          </div>
-                          <p className="text-[11px] text-muted-foreground mt-1 line-clamp-3 leading-snug">
-                            {t.content}
-                          </p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-            </>
+              </>
           )}
         </div>
       </DialogContent>
