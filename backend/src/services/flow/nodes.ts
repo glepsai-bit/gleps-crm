@@ -1101,9 +1101,10 @@ const flowWait: NodeDefinition = {
  */
 const flowAguardar: NodeDefinition = {
   type: 'flow.aguardar',
-  label: 'Aguardar (horas ou dias)',
+  label: 'Aguardar',
   description:
-    'Suspende o atendimento e retoma depois, do ponto seguinte. É o que permite ' +
+    'Espera e continua do ponto seguinte. Segundos dão ritmo dentro da conversa; ' +
+    'horas ou dias suspendem o atendimento e retomam depois — é o que permite ' +
     'follow-up sem segurar processo nenhum.',
   branches: [{ key: 'default', label: '' }],
   mutates: false,
@@ -1116,6 +1117,15 @@ const flowAguardar: NodeDefinition = {
     // Teto de 60 dias: espera maior que isso não é follow-up, é campanha de
     // reativação — que tem outra régua de consentimento.
     let quando = new Date(Date.now() + Math.min(ms, 60 * UNIDADES.dias));
+
+    // ESPERA CURTA: segura o processo, que é o que o antigo bloco "Esperar"
+    // fazia. Acontece de verdade no simulador também — é o ritmo que o lead vai
+    // sentir, e pular aqui fazia a simulação parecer mais rápida que o
+    // atendimento real.
+    if (unidade === 'segundos' && ms <= LIMITE_SEGURAR_MS) {
+      await new Promise((r) => setTimeout(r, ms));
+      return { output: { esperou: duracaoLegivel(valor, unidade) } };
+    }
 
     // No simulador ninguém vai esperar dois dias olhando a tela. O passo diz
     // quanto tempo teria passado, pra tela mostrar "pulado (2 dias)".
@@ -1147,10 +1157,25 @@ const flowAguardar: NodeDefinition = {
 };
 
 const UNIDADES: Record<string, number> = {
+  segundos: 1_000,
   minutos: 60_000,
   horas: 3_600_000,
   dias: 86_400_000,
 };
+
+/**
+ * Até aqui a espera SEGURA o processo; daí pra cima, dorme.
+ *
+ * São dois mecanismos e a escolha é técnica, não preferência de quem monta:
+ * segurar por dois dias não é opção (o run precisa sobreviver a restart e
+ * deploy), e dormir por cinco segundos custaria um ciclo do worker (até 5s)
+ * sobre uma espera de 5s — o ritmo dentro da conversa iria pro brejo.
+ *
+ * Só vale pra unidade SEGUNDOS. Um minuto já é tempo demais pra prender um
+ * processo, e quem escolhe "minutos" está pensando em cadência, não em ritmo
+ * de conversa.
+ */
+const LIMITE_SEGURAR_MS = 60_000;
 
 /** Acima disto o `flow.wait` é pulado no simulador em vez de segurar a tela. */
 const MAX_ESPERA_SIMULADOR_S = 120;

@@ -38,6 +38,26 @@ const MAX_DEBOUNCE_SECONDS = 300;
  */
 const PISO_AUDIO_SEGUNDOS = 10;
 
+/**
+ * Quanto a resposta fica longe do último sinal de "está digitando".
+ *
+ * A presença não reaplica a janela inteira: ela diz "ainda estou falando", e o
+ * que se precisa é de um rabicho depois que a pessoa PARA. Curto de propósito —
+ * quem parou de digitar não quer esperar a janela cheia de novo.
+ */
+const RABICHO_PRESENCA_SEGUNDOS = 6;
+
+/**
+ * Teto do quanto a presença pode empurrar, contado do nascimento do run.
+ *
+ * Sem teto, quem escreve sem parar nunca é respondido: cada sinal empurraria o
+ * relógio e a janela nunca fecharia.
+ */
+const TETO_PRESENCA_SEGUNDOS = 120;
+
+/** Presença chega várias vezes por segundo; só uma a cada 2s vira consulta. */
+const PRESENCA_THROTTLE_MS = 2_000;
+
 /** Fica no lugar do áudio que não deu pra transcrever. */
 const AUDIO_SEM_TEXTO = '[áudio não transcrito]';
 const MAX_RUNS_PER_TICK = 5;
@@ -60,6 +80,13 @@ const STATUS_TERMINAL = new Set(['done', 'failed', 'sleeping', 'skipped']);
  * É a MESMA função pro gatilho real e pro simulador: se cada um lesse do seu
  * jeito, a simulação esperaria um tempo diferente do atendimento.
  */
+/**
+ * Último sinal de presença tratado, por conversa. Em memória de propósito: é
+ * descartável — se o processo reinicia, o pior que acontece é uma consulta a
+ * mais. Não vale uma coluna no banco escrita a cada tecla do lead.
+ */
+const ultimaPresenca = new Map<string, number>();
+
 function configDeEntrada(graph: FlowGraph): {
   segundos: number;
   transcrever: boolean;
@@ -392,6 +419,48 @@ class FlowService {
       where: { id: aberto.id },
       data: { context: { ...ctx, mensagens } as unknown as Prisma.InputJsonValue },
     });
+  }
+
+  /**
+   * O lead está digitando ou gravando: adia a resposta.
+   *
+   * É o que impede a IA de cortar alguém no meio da frase — a janela sozinha
+   * adivinha se a pessoa terminou; a presença SABE. Também resolve o áudio
+   * longo de graça: quem grava 40 segundos emite `recording` o tempo todo, e
+   * sem isso a janela fecharia antes de o áudio sequer chegar.
+   *
+   * Nunca cria nada: sem run em agrupamento, não há o que adiar.
+   */
+  async onLeadPresence(accountId: string, externalId: string): Promise<void> {
+    const agora = Date.now();
+    if (agora - (ultimaPresenca.get(externalId) ?? 0) < PRESENCA_THROTTLE_MS) return;
+    ultimaPresenca.set(externalId, agora);
+    // O mapa não pode crescer sem fim num processo que roda por semanas.
+    if (ultimaPresenca.size > 5_000) {
+      for (const [k, t] of ultimaPresenca) {
+        if (agora - t > 60_000) ultimaPresenca.delete(k);
+      }
+    }
+
+    const conversa = await prisma.conversation.findFirst({
+      where: { accountId, externalId },
+      select: { id: true },
+    });
+    if (!conversa) return;
+
+    const run = await prisma.flowRun.findFirst({
+      where: { conversationId: conversa.id, status: 'buffering' },
+      select: { id: true, runAfter: true, createdAt: true },
+    });
+    if (!run?.runAfter) return;
+
+    const teto = run.createdAt.getTime() + TETO_PRESENCA_SEGUNDOS * 1000;
+    const alvo = Math.min(agora + RABICHO_PRESENCA_SEGUNDOS * 1000, teto);
+    // Só empurra pra FRENTE, e só se valer a escrita: a janela configurada pode
+    // já estar mais longe que o rabicho, e aí não há o que adiar.
+    if (alvo <= run.runAfter.getTime() + 500) return;
+
+    await prisma.flowRun.update({ where: { id: run.id }, data: { runAfter: new Date(alvo) } });
   }
 
   /**

@@ -404,6 +404,41 @@ export class EvolutionController {
       // silenciosamente pulado quando o provider entregava o formato UPPER_SNAKE.
       const normalizedEvent =
         typeof event === 'string' ? event.toLowerCase().replace(/_/g, '.') : event;
+
+      // PRESENÇA: o lead está digitando ou gravando áudio. Só adia a resposta de
+      // um agrupamento em andamento — não cria conversa, não grava mensagem, não
+      // responde nada. Se falhar, o atendimento segue com a janela configurada.
+      if (normalizedEvent === 'presence.update') {
+        try {
+          // A Evolution manda { id, presences: { <jid>: { lastKnownPresence } } },
+          // mas versões antigas mandam `presence` solto — aceita as duas formas.
+          const dados = (req.body?.data ?? {}) as {
+            id?: string;
+            remoteJid?: string;
+            presence?: string;
+            lastKnownPresence?: string;
+            presences?: Record<string, { lastKnownPresence?: string }>;
+          };
+          const jid = dados.id ?? dados.remoteJid;
+          const estado =
+            dados.presences?.[jid ?? '']?.lastKnownPresence ??
+            dados.presence ??
+            dados.lastKnownPresence;
+          const falando = estado === 'composing' || estado === 'recording';
+
+          if (falando && jid && String(jid).endsWith('@s.whatsapp.net')) {
+            await flowService.onLeadPresence(accountId, String(jid));
+          }
+        } catch (err) {
+          logger.debug('[evolution-webhook] presença ignorada', {
+            accountId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        res.json({ received: true });
+        return;
+      }
+
       if (normalizedEvent === 'messages.upsert') {
         try {
           const body: any = req.body || {};

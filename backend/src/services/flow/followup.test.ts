@@ -276,3 +276,33 @@ describe('motor — suspender e retomar', () => {
     expect(prismaMock.flowRunStep.create).not.toHaveBeenCalled();
   });
 });
+
+
+/*
+  A FUSÃO: "Esperar" e "Aguardar" eram o mesmo conceito partido em dois pela
+  implementação. Agora é um bloco só e o motor escolhe: segundos SEGURAM o
+  processo (ritmo dentro da conversa), o resto DORME (sobrevive a restart).
+  Quem monta escolhe a unidade; a estratégia não é botão na tela.
+*/
+describe('Aguardar: segura ou dorme, conforme a unidade', () => {
+  it('segundos SEGURAM o processo — não voltam pra fila', async () => {
+    const t0 = Date.now();
+    const r = await espera.execute(no({ valor: 1, unidade: 'segundos' }), ctx());
+
+    expect(r.sleep).toBeUndefined(); // esperou aqui mesmo, não dormiu
+    expect(Date.now() - t0).toBeGreaterThan(900);
+  });
+
+  it('minutos DORMEM — prender processo por um minuto não é opção', async () => {
+    const r = await espera.execute(no({ valor: 1, unidade: 'minutos' }), ctx());
+    expect(r.sleep?.until).toBeInstanceOf(Date);
+  });
+
+  it('no simulador a espera curta acontece de verdade — é o ritmo que o lead sente', async () => {
+    const t0 = Date.now();
+    const r = await espera.execute(no({ valor: 1, unidade: 'segundos' }), ctx({ __simulador: true }));
+
+    expect(r.output?.pulado).toBeUndefined();
+    expect(Date.now() - t0).toBeGreaterThan(900);
+  });
+});

@@ -154,7 +154,12 @@ export default function AdminIaFluxosPage() {
 const GRUPOS: { titulo: string; tipos: string[]; nota?: string; recolhido?: boolean }[] = [
   {
     titulo: 'Atender',
-    tipos: ['ai.atender', 'guard.conditions', 'buffer.debounce', 'media.transcribe'],
+    // Agrupar e transcrever saíram: não eram passos. O agrupamento funcionava
+    // até desconectado (o motor lê o valor do grafo, não da posição) e a
+    // transcrição só podia ficar num lugar. Os dois viraram campo do gatilho,
+    // que é onde acontecem — antes do fluxo começar. Continuam no catálogo do
+    // backend, então fluxo que já tem os blocos segue rodando igual.
+    tipos: ['ai.atender', 'guard.conditions'],
   },
   {
     titulo: 'Fontes',
@@ -172,7 +177,10 @@ const GRUPOS: { titulo: string; tipos: string[]; nota?: string; recolhido?: bool
       'http.request',
     ],
   },
-  { titulo: 'Tempo', tipos: ['flow.aguardar', 'flow.wait'] },
+  // Um bloco só: "Esperar" e "Aguardar" eram o mesmo conceito partido em dois
+  // pela implementação (um segura o processo, o outro dorme). Quem monta não
+  // pensa nisso — agora escolhe a unidade e o motor decide a estratégia.
+  { titulo: 'Tempo', tipos: ['flow.aguardar'] },
   {
     titulo: 'Em partes',
     tipos: ['ai.agent', 'logic.switch'],
@@ -1024,6 +1032,23 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
    * contexto mudaria de referência a cada render e nenhum bloco memoizado
    * seguraria nada.
    */
+  /*
+    A janela que vale: o campo do gatilho vence, e o bloco antigo é a reserva —
+    a mesma ordem que `configDeEntrada` usa no backend. As duas leituras
+    precisam concordar, senão a tela diz um número e o atendimento usa outro.
+  */
+  const janelaEfetiva = useMemo(() => {
+    const cfg = (id: string) =>
+      (nodes.find((n) => String(n.data.tipo ?? '').startsWith(id))?.data.config ?? {}) as Record<
+        string,
+        unknown
+      >;
+    const doGatilho = Number(cfg('trigger.').agruparSegundos);
+    if (Number.isFinite(doGatilho)) return doGatilho;
+    const doBloco = Number(cfg('buffer.debounce').segundos);
+    return Number.isFinite(doBloco) ? doBloco : 15;
+  }, [nodes]);
+
   const editorCtx = useMemo(
     () => ({
       setConfig: (nodeId: string, chave: string, valor: unknown) => {
@@ -1085,13 +1110,14 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
         setEdges((es) => es.filter((e) => e.id !== edgeId));
         setSujo(true);
       },
+      janelaDoFluxo: janelaEfetiva,
       ampliar: (nodeId: string) => setAmpliado(nodeId),
       abrirMemoria: (nodeId: string) => setMemoriaDe(nodeId),
       agentes: agentes ?? [],
       bases: bases ?? [],
       abertos,
     }),
-    [setNodes, setEdges, agentes, bases, abertos]
+    [setNodes, setEdges, agentes, bases, abertos, janelaEfetiva]
   );
 
   const removerNo = (nodeId: string) => {

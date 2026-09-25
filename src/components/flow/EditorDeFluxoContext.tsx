@@ -37,6 +37,14 @@ export interface EditorDeFluxo {
    * pergunta "o que ele lembra?", feita em outro momento de quem monta.
    */
   abrirMemoria: (nodeId: string) => void;
+  /**
+   * A janela de agrupamento que está REALMENTE valendo neste fluxo.
+   *
+   * O campo mora no gatilho, mas fluxo salvo antes disso guarda o valor no
+   * bloco `buffer.debounce`. Sem passar o valor efetivo, o gatilho mostraria o
+   * padrão (15) num fluxo que agrupa em 30 — a tela mentiria.
+   */
+  janelaDoFluxo: number;
   agentes: { id: string; name: string }[];
   bases: { id: string; name: string }[];
   /** Blocos com os campos abertos. */

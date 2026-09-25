@@ -193,6 +193,9 @@ export const DEFAULT_WEBHOOK_EVENTS = [
   'CONNECTION_UPDATE',
   'CONTACTS_UPDATE',
   'SEND_MESSAGE',
+  // O lead digitando/gravando. Serve pro agrupamento não cortar ninguém no meio
+  // da frase: a janela sozinha adivinha se a pessoa terminou, este evento sabe.
+  'PRESENCE_UPDATE',
 ];
 
 class EvolutionService {
@@ -1102,6 +1105,7 @@ class EvolutionService {
           'CONNECTION_UPDATE',
           'CONTACTS_UPDATE',
           'SEND_MESSAGE',
+          'PRESENCE_UPDATE',
         ],
         headers: input.webhookAuthToken
           ? { 'x-crm-webhook-token': input.webhookAuthToken }

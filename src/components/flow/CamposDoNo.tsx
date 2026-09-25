@@ -34,6 +34,8 @@ export interface CamposDoNoProps {
   config: Record<string, unknown>;
   agentes: { id: string; name: string }[];
   bases?: { id: string; name: string }[];
+  /** A janela de agrupamento que está valendo — do gatilho, ou do bloco antigo. */
+  janelaDoFluxo?: number;
   /** Grava uma chave da configuração. O chamador decide como persistir. */
   set: (chave: string, valor: unknown) => void;
 }
@@ -200,7 +202,7 @@ function SeletorDeEtapa({ etapa, set }: { etapa: string; set: CamposDoNoProps['s
   );
 }
 
-export function CamposDoNo({ tipo, config, agentes, bases = [], set }: CamposDoNoProps) {
+export function CamposDoNo({ tipo, config, agentes, bases = [], janelaDoFluxo = 15, set }: CamposDoNoProps) {
   return (
     <>
       {tipo.startsWith('trigger.') && (
@@ -357,6 +359,7 @@ export function CamposDoNo({ tipo, config, agentes, bases = [], set }: CamposDoN
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="segundos">segundos</SelectItem>
               <SelectItem value="minutos">minutos</SelectItem>
               <SelectItem value="horas">horas</SelectItem>
               <SelectItem value="dias">dias</SelectItem>
@@ -544,7 +547,7 @@ export function CamposDoNo({ tipo, config, agentes, bases = [], set }: CamposDoN
           min={0}
           max={300}
           className="h-8"
-          value={String(config.agruparSegundos ?? 15)}
+          value={String(config.agruparSegundos ?? janelaDoFluxo)}
           onChange={(e) => set('agruparSegundos', Math.max(0, Number(e.target.value)))}
         />
         <p className="text-[11px] text-muted-foreground leading-relaxed">

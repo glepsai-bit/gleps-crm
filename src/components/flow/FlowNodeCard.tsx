@@ -384,7 +384,8 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
               agentes={editor!.agentes}
               bases={editor!.bases}
               set={(chave, valor) => editor!.setConfig(id!, chave, valor)}
-            />
+              janelaDoFluxo={editor!.janelaDoFluxo}
+              />
             {!ehGatilho && (
               <button
                 type="button"

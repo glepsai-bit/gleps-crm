@@ -210,6 +210,74 @@ describe('a janela: do gatilho, com o bloco antigo como reserva', () => {
   });
 });
 
+describe('presença: o lead ainda está falando', () => {
+  const JID = '5511999998888@s.whatsapp.net';
+  const emAgrupamento = (over: Record<string, unknown> = {}) => {
+    prismaMock.conversation.findFirst.mockResolvedValue({ id: 'conv-1' });
+    prismaMock.flowRun.findFirst.mockResolvedValue({
+      id: 'run-1',
+      runAfter: new Date(Date.now() + 1_000),
+      createdAt: new Date(),
+      ...over,
+    });
+  };
+
+  it('adia a resposta enquanto o lead digita', async () => {
+    emAgrupamento();
+    const antes = Date.now();
+
+    await flowService.onLeadPresence('acc-1', JID);
+
+    const novoAlvo = prismaMock.flowRun.update.mock.calls[0][0].data.runAfter.getTime() - antes;
+    // O rabicho são 6s depois do último sinal — a resposta não sai em cima de
+    // quem ainda está escrevendo.
+    expect(novoAlvo).toBeGreaterThan(4_000);
+    expect(novoAlvo).toBeLessThan(8_000);
+  });
+
+  it('não empurra pra trás quando a janela configurada já está mais longe', async () => {
+    emAgrupamento({ runAfter: new Date(Date.now() + 30_000) });
+    await flowService.onLeadPresence('acc-1', JID);
+    expect(prismaMock.flowRun.update).not.toHaveBeenCalled();
+  });
+
+  /* Sem teto, quem escreve sem parar nunca seria respondido. */
+  it('respeita o teto contado do nascimento do run', async () => {
+    emAgrupamento({ createdAt: new Date(Date.now() - 200_000) });
+    await flowService.onLeadPresence('acc-1', JID);
+    expect(prismaMock.flowRun.update).not.toHaveBeenCalled();
+  });
+
+  it('sem agrupamento em andamento, não faz nada', async () => {
+    prismaMock.conversation.findFirst.mockResolvedValue({ id: 'conv-1' });
+    prismaMock.flowRun.findFirst.mockResolvedValue(null);
+    await flowService.onLeadPresence('acc-1', JID);
+    expect(prismaMock.flowRun.update).not.toHaveBeenCalled();
+  });
+
+  it('presença de quem nunca conversou não cria nada', async () => {
+    prismaMock.conversation.findFirst.mockResolvedValue(null);
+    await flowService.onLeadPresence('acc-1', '5511000000000@s.whatsapp.net');
+    expect(prismaMock.flowRun.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.flowRun.update).not.toHaveBeenCalled();
+  });
+
+  /*
+    Presença chega várias vezes por segundo enquanto a pessoa digita. Sem
+    throttle, cada tecla viraria duas consultas ao banco.
+  */
+  it('sinais seguidos não viram consulta a cada tecla', async () => {
+    emAgrupamento();
+    const jid = '5511777776666@s.whatsapp.net';
+
+    await flowService.onLeadPresence('acc-1', jid);
+    await flowService.onLeadPresence('acc-1', jid);
+    await flowService.onLeadPresence('acc-1', jid);
+
+    expect(prismaMock.conversation.findFirst).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('gatilho', () => {
   it('não faz nada quando não há fluxo publicado', async () => {
     prismaMock.flow.findFirst.mockResolvedValue(null);
