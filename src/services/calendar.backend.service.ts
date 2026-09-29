@@ -53,6 +53,8 @@ export const calendarBackendService = {
     missing: string[];
     email: string | null;
     needsReauth: boolean;
+    /** Por que a reconexão é necessária — ex.: "token revogado no Google". */
+    reauthReason?: string | null;
   }> => {
     const res = await apiClient.get<ApiResponse<any>>(`/api/calendar/google/status?_t=${Date.now()}`);
     return res.data;

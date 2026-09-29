@@ -36,6 +36,15 @@ const agentCreateSchema = z.object({
   // Validado em profundidade no service (`lerHttpTools`), que é quem conhece
   // as regras — aqui só garantimos que é uma lista.
   httpTools: z.array(z.record(z.unknown())).max(20).optional().nullable(),
+  // T-039 — a agenda como habilidade. Forma aqui; quem pode/o quê, no service.
+  agenda: z
+    .object({
+      ativo: z.boolean(),
+      profissionalIds: z.array(z.string().uuid()).max(50).optional(),
+      produtoIds: z.array(z.string().uuid()).max(100).optional(),
+    })
+    .optional()
+    .nullable(),
   // T-037 — campos de memória que o agente mantém. Mesma divisão de trabalho do
   // httpTools: aqui só a forma, e as regras de chave/escopo no service
   // (`validarCamposDeMemoria`), que é quem as conhece e quem explica o erro.

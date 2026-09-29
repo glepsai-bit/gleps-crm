@@ -1,6 +1,6 @@
 import { prisma } from '../config/database';
 import { trackingService } from './tracking.service';
-import { CalendarEventType, CalendarEventStatus } from '@prisma/client';
+import { CalendarEventType, CalendarEventStatus, CalendarEventSource } from '@prisma/client';
 import { PaginationParams, DateRangeFilter } from '../types';
 import { NotFoundError, AppError } from '../utils/errors';
 import { getPaginationMeta } from '../utils/helpers';
@@ -18,6 +18,45 @@ export interface CreateCalendarEventInput {
   notes?: string;
   createdById?: string;
   attendees?: Array<{ name: string; email: string }>;
+  // T-039 — agendamento pelo agente. Com profissional, o create recusa
+  // horário que já tem evento dele (ver conflitoLocal).
+  profissionalUserId?: string;
+  productId?: string;
+  conversationId?: string;
+  /** `held` = reserva enquanto o lead confirma; exige holdExpiresAt. */
+  status?: Extract<CalendarEventStatus, 'scheduled' | 'held'>;
+  holdExpiresAt?: Date;
+  googleEventId?: string;
+  googleCalendarId?: string;
+  source?: CalendarEventSource;
+}
+
+/** O que `conflitoLocal` devolve: o bastante pra dizer ao lead "às 14h já tem". */
+export interface ConflitoLocal {
+  id: string;
+  title: string;
+  startTime: Date;
+  endTime: Date;
+}
+
+/** Margem antes do vencimento pra renovar: uma chamada em curso não pode cair
+ * com o token vencendo no meio. */
+const MARGEM_RENOVACAO_MS = 60_000;
+
+/** Tamanho da coluna `reauth_reason` no banco. */
+const REAUTH_REASON_MAX = 200;
+
+/**
+ * Diz se o escopo concedido pelo Google deixa CRIAR evento. Token antigo
+ * (só `calendar.readonly`) lê mas não escreve — a tela pede reconexão em vez
+ * de falhar na hora de marcar. Compara o fim de cada escopo, e não
+ * "contém", porque `calendar.events.readonly` também contém `calendar.events`.
+ */
+export function escopoPermiteEscrita(scope: string | null | undefined): boolean {
+  if (!scope) return false;
+  return scope
+    .split(/\s+/)
+    .some((s) => s.endsWith('/auth/calendar.events') || s.endsWith('/auth/calendar'));
 }
 
 export interface UpdateCalendarEventInput {
@@ -236,6 +275,23 @@ class CalendarService {
    * Create calendar event
    */
   async create(input: CreateCalendarEventInput) {
+    // T-039: o profissional é o recurso da agenda — dois eventos dele não
+    // podem se sobrepor. Evento sem profissional (reunião solta do CRM) segue
+    // livre como sempre foi.
+    if (input.profissionalUserId) {
+      const conflito = await this.conflitoLocal(
+        input.accountId,
+        input.profissionalUserId,
+        input.startTime,
+        input.endTime
+      );
+      if (conflito) {
+        throw new AppError('Horário já ocupado para este profissional', 409, 'HORARIO_OCUPADO', {
+          conflito,
+        });
+      }
+    }
+
     const event = await prisma.calendarEvent.create({
       data: {
         accountId: input.accountId,
@@ -249,6 +305,14 @@ class CalendarService {
         notes: input.notes,
         createdById: input.createdById,
         attendees: input.attendees ? { create: input.attendees } : undefined,
+        profissionalUserId: input.profissionalUserId,
+        productId: input.productId,
+        conversationId: input.conversationId,
+        status: input.status,
+        holdExpiresAt: input.holdExpiresAt,
+        googleEventId: input.googleEventId,
+        googleCalendarId: input.googleCalendarId,
+        source: input.source,
       },
       include: { attendees: true },
     });
@@ -320,7 +384,14 @@ class CalendarService {
       );
     }
 
-    const scopes = ['https://www.googleapis.com/auth/calendar.readonly'];
+    // T-039: o agente CRIA evento, então `calendar.events` em vez do readonly
+    // antigo. `userinfo.email` porque o /userinfo era chamado sem escopo de
+    // e-mail e o e-mail nem sempre vinha — a tela mostrava "conectado" sem
+    // dizer qual conta.
+    const scopes = [
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/userinfo.email',
+    ];
     const productionRedirectUri = this.buildProductionRedirectUri(requestOrigin);
     const redirectUri = productionRedirectUri || creds.redirectUri;
     const statePayload = this.encodeOAuthState({ accountId, userId, origin: requestOrigin });
@@ -381,6 +452,10 @@ class CalendarService {
     // T-026: tokens criptografados em repouso via AES-256-GCM (encrypt()).
     const encAccess = encrypt(tokens.access_token);
     const encRefresh = tokens.refresh_token ? encrypt(tokens.refresh_token) : undefined;
+    // T-039: guarda o escopo que o Google de fato concedeu (o usuário pode
+    // desmarcar caixas na tela de consentimento) e zera o pedido de
+    // reconexão — reconectou, resolvido.
+    const scope: string | null = typeof tokens.scope === 'string' ? tokens.scope : null;
     await prisma.googleCalendarToken.upsert({
       where: { userId },
       create: {
@@ -391,12 +466,18 @@ class CalendarService {
         expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
         connectedEmail: userInfo.email,
         calendarId: 'primary',
+        scope,
+        reauthRequiredAt: null,
+        reauthReason: null,
       },
       update: {
         accessToken: encAccess,
         refreshToken: encRefresh,
         expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
         connectedEmail: userInfo.email,
+        scope,
+        reauthRequiredAt: null,
+        reauthReason: null,
       },
     });
 
@@ -441,7 +522,11 @@ class CalendarService {
       missing: [],
       email: token.connectedEmail,
       expiresAt: token.expiresAt,
-      needsReauth: token.expiresAt < new Date(),
+      // T-039: access token vence a cada hora e isso é normal (renova sozinho
+      // pelo refresh). Reconectar só quando o refresh foi recusado.
+      needsReauth: Boolean(token.reauthRequiredAt),
+      reauthReason: token.reauthReason ?? null,
+      canWrite: escopoPermiteEscrita(token.scope),
       source,
     };
   }
@@ -450,15 +535,7 @@ class CalendarService {
    * Sync with Google Calendar — credentials from DB
    */
   async syncWithGoogle(accountId: string, userId: string) {
-    const token = await prisma.googleCalendarToken.findUnique({ where: { userId } });
-    if (!token) throw new Error('Google Calendar não conectado');
-
-    // T-026: decrypt() é compat-plaintext — registros não migrados ainda funcionam.
-    let accessToken = decrypt(token.accessToken);
-    const refreshTokenPlain = decrypt(token.refreshToken);
-    if (token.expiresAt < new Date()) {
-      accessToken = await this.refreshGoogleToken(accountId, userId, refreshTokenPlain);
-    }
+    const accessToken = await this.accessTokenValido(accountId, userId);
 
     const now = new Date();
     const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -549,7 +626,21 @@ class CalendarService {
       }),
     });
 
-    if (!response.ok) throw new Error('Falha ao renovar token do Google');
+    if (!response.ok) {
+      // T-039: `invalid_grant` é o Google dizendo que o refresh token morreu
+      // (revogado, senha trocada, projeto OAuth em "Testing" vence em 7 dias).
+      // Não adianta tentar de novo — só reconectar resolve, então marca.
+      // Qualquer outra falha (rede, 500 do Google) NÃO marca: queda não é
+      // revogação, e marcar à toa tiraria a agenda do ar sem motivo.
+      const corpo = await response.json().catch(() => null) as
+        | { error?: string; error_description?: string }
+        | null;
+      if (corpo?.error === 'invalid_grant') {
+        await this.marcarReauth(userId, corpo.error_description || 'invalid_grant');
+        throw this.erroReauth();
+      }
+      throw new Error('Falha ao renovar token do Google');
+    }
 
     const tokens: any = await response.json();
 
@@ -563,6 +654,89 @@ class CalendarService {
     });
 
     return tokens.access_token;
+  }
+
+  private async marcarReauth(userId: string, motivo: string): Promise<void> {
+    await prisma.googleCalendarToken.update({
+      where: { userId },
+      data: {
+        reauthRequiredAt: new Date(),
+        reauthReason: motivo.slice(0, REAUTH_REASON_MAX),
+      },
+    });
+  }
+
+  private erroReauth(): AppError {
+    return new AppError('Conexão com o Google expirou — reconecte a agenda', 409, 'GOOGLE_REAUTH_REQUIRED');
+  }
+
+  /**
+   * T-039: access token pronto pra usar como Bearer. Quem chama não precisa
+   * saber de criptografia, vencimento nem refresh — só de dois erros:
+   * `GOOGLE_NAO_CONECTADO` (nunca conectou) e `GOOGLE_REAUTH_REQUIRED` (o
+   * refresh foi recusado; só reconectar resolve).
+   *
+   * `forcarRenovacao` é pro cliente que levou 401 com um token que o banco
+   * dizia válido (revogado no meio da hora): renova uma vez e tenta de novo.
+   */
+  async accessTokenValido(
+    accountId: string,
+    userId: string,
+    opts: { forcarRenovacao?: boolean } = {}
+  ): Promise<string> {
+    const token = await prisma.googleCalendarToken.findUnique({ where: { userId } });
+    if (!token || token.accountId !== accountId) {
+      throw new AppError('Google Calendar não conectado', 409, 'GOOGLE_NAO_CONECTADO');
+    }
+    if (token.reauthRequiredAt) throw this.erroReauth();
+
+    const venceEm = token.expiresAt.getTime() - Date.now();
+    if (!opts.forcarRenovacao && venceEm > MARGEM_RENOVACAO_MS) {
+      // T-026: decrypt() é compat-plaintext — registros não migrados ainda funcionam.
+      return decrypt(token.accessToken);
+    }
+
+    const refreshTokenPlain = decrypt(token.refreshToken);
+    if (!refreshTokenPlain) {
+      // Conexão antiga sem refresh token (antes de `prompt=consent`): venceu,
+      // não tem como renovar. É reconexão, não erro genérico.
+      await this.marcarReauth(userId, 'sem refresh token');
+      throw this.erroReauth();
+    }
+    return this.refreshGoogleToken(accountId, userId, refreshTokenPlain);
+  }
+
+  /**
+   * T-039: primeiro evento do profissional que se sobrepõe a [inicio, fim).
+   * Conta `scheduled` e `held` com reserva ainda válida; reserva vencida é
+   * horário livre sem ninguém precisar apagar nada. `ignorarEventoId` é pra
+   * remarcar: o próprio evento não conflita consigo.
+   */
+  async conflitoLocal(
+    accountId: string,
+    profissionalUserId: string,
+    inicio: Date,
+    fim: Date,
+    ignorarEventoId?: string
+  ): Promise<ConflitoLocal | null> {
+    const agora = new Date();
+    return prisma.calendarEvent.findFirst({
+      where: {
+        accountId,
+        profissionalUserId,
+        // Sobreposição de intervalos meio-abertos: começa antes do fim e
+        // termina depois do começo. Encostar (fim == inicio) não conflita.
+        startTime: { lt: fim },
+        endTime: { gt: inicio },
+        ...(ignorarEventoId ? { id: { not: ignorarEventoId } } : {}),
+        OR: [
+          { status: 'scheduled' },
+          { status: 'held', holdExpiresAt: { gt: agora } },
+        ],
+      },
+      orderBy: { startTime: 'asc' },
+      select: { id: true, title: true, startTime: true, endTime: true },
+    });
   }
 }
 

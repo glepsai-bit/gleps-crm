@@ -52,6 +52,7 @@ import attachmentRoutes from './attachment.routes';
 import warmupRoutes from './warmup.routes';
 import aiRoutes from './ai.routes';
 import flowRoutes from './flow.routes';
+import agendaRoutes from './agenda.routes';
 import voiceRoutes, { voicePublicRoutes } from './voice.routes';
 import mentionRoutes from './mention.routes';
 import pushRoutes from './push.routes';
@@ -210,6 +211,7 @@ router.use('/warmup', warmupRoutes);
 router.use('/ai', aiRoutes);
 // T-028 — motor de fluxo de atendimento (Fase 2)
 router.use('/flows', flowRoutes);
+router.use('/agenda', agendaRoutes);
 // T-029 — discador (rotas da operadora são públicas; ver voice.routes.ts)
 router.use('/voice', voiceRoutes);
 

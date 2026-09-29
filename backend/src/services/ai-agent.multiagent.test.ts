@@ -11,6 +11,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const prismaMock = vi.hoisted(() => ({
+  // O run lê o fuso da conta pro bloco AGORA do prompt (T-039).
+  account: { findUnique: vi.fn(async () => ({ timezone: 'America/Sao_Paulo' })) },
   aiAgent: { findFirst: vi.fn(), findMany: vi.fn() },
   conversation: { findFirst: vi.fn() },
   message: { findMany: vi.fn(), count: vi.fn() },

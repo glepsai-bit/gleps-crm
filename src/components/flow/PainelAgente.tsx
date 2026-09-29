@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   Bot,
   Brain,
+  CalendarClock,
   Columns3,
   GitBranch,
   Loader2,
@@ -31,9 +32,11 @@ import {
 } from 'lucide-react';
 import {
   aiService,
+  type AiAgentAgenda,
   type AiAgentInput,
   type AiProviderName,
 } from '@/services/ai.backend.service';
+import { agendaBackendService } from '@/services/agenda.backend.service';
 import { useEtapasDoFunil, useTimesDaConta } from './CamposDoNo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -96,6 +99,20 @@ const MEMORIA_LONGA_DIAS = 60;
 const FERRAMENTA_DE_MEMORIA = 'lembrar';
 const FERRAMENTA_DE_BASE = 'buscar_conhecimento';
 
+/**
+ * As seis ferramentas de agenda — só informativas aqui. Ninguém liga ou
+ * desliga uma por uma: ligando o interruptor "Este agente pode marcar
+ * horários" elas entram juntas; desligando, saem juntas.
+ */
+const FERRAMENTAS_DE_AGENDA = [
+  'consultar_horarios',
+  'reservar',
+  'agendar',
+  'minha_reuniao',
+  'remarcar',
+  'cancelar',
+];
+
 /** "a, b e c" — enumeração em frase, sem lista solta no meio do texto. */
 function emFrase(itens: string[]): string {
   if (itens.length < 2) return itens[0] ?? '';
@@ -157,8 +174,16 @@ interface Rascunho {
   knowledgeBaseId: string | null;
   tools: string[];
   subAgentIds: string[];
+  /**
+   * Nunca `null` no rascunho — mesmo com o interruptor desligado, os ids já
+   * marcados ficam guardados: religar na mesma sessão não perde a seleção.
+   * Vira `null` só na hora de montar o payload, se `ativo` for false.
+   */
+  agenda: AiAgentAgenda;
   active: boolean;
 }
+
+const AGENDA_VAZIA: AiAgentAgenda = { ativo: false, profissionalIds: [], produtoIds: [] };
 
 const RASCUNHO_VAZIO: Rascunho = {
   name: '',
@@ -172,6 +197,7 @@ const RASCUNHO_VAZIO: Rascunho = {
   knowledgeBaseId: null,
   tools: [],
   subAgentIds: [],
+  agenda: AGENDA_VAZIA,
   active: true,
 };
 
@@ -407,6 +433,12 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
   const statusQuery = useQuery({ queryKey: ['ai', 'status'], queryFn: aiService.getStatus });
   const etapasQuery = useEtapasDoFunil();
   const timesQuery = useTimesDaConta();
+  // Mesma chave que a tela de regras (AdminIaAgendaPage) usa: quem passa por
+  // lá antes já encontra o cache quente aqui.
+  const agendaQuery = useQuery({
+    queryKey: ['agenda', 'configuracao'],
+    queryFn: agendaBackendService.getConfiguracao,
+  });
 
   const [rascunho, setRascunho] = useState<Rascunho>(RASCUNHO_VAZIO);
   const [esquemaTexto, setEsquemaTexto] = useState('');
@@ -444,6 +476,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
       knowledgeBaseId: agente.knowledgeBaseId,
       tools: agente.tools ?? [],
       subAgentIds: agente.subAgentIds ?? [],
+      agenda: agente.agenda ?? AGENDA_VAZIA,
       active: agente.active,
     });
     setEsquemaTexto(agente.outputSchema ? JSON.stringify(agente.outputSchema, null, 2) : '');
@@ -468,6 +501,30 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
     if (corrigido !== rascunho[campo]) editar({ [campo]: corrigido } as Partial<Rascunho>);
   };
 
+  const ligarAgenda = (ativo: boolean) => editar({ agenda: { ...rascunho.agenda, ativo } });
+
+  const alternarProfissionalDaAgenda = (userId: string, marcado: boolean) => {
+    const { profissionalIds } = rascunho.agenda;
+    editar({
+      agenda: {
+        ...rascunho.agenda,
+        profissionalIds: marcado
+          ? [...profissionalIds, userId]
+          : profissionalIds.filter((id) => id !== userId),
+      },
+    });
+  };
+
+  const alternarProdutoDaAgenda = (produtoId: string, marcado: boolean) => {
+    const { produtoIds } = rascunho.agenda;
+    editar({
+      agenda: {
+        ...rascunho.agenda,
+        produtoIds: marcado ? [...produtoIds, produtoId] : produtoIds.filter((id) => id !== produtoId),
+      },
+    });
+  };
+
   const editarEsquema = (texto: string) => {
     setEsquemaTexto(texto);
     setSujo(true);
@@ -482,7 +539,9 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
   const incluirRota = (bruto: string) => {
     const nome = normalizarRota(bruto);
     if (!nome) return false;
-    if (ROTAS_FIXAS.includes(nome)) {
+    // `agendou` é reservada mesmo com a agenda desligada — religar depois não
+    // pode colidir com uma rota que o usuário criou entretanto.
+    if (ROTAS_FIXAS.includes(nome) || nome === 'agendou') {
       toast.error(`"${nome}" já é uma saída fixa do bloco.`);
       return false;
     }
@@ -567,6 +626,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
         tools: rascunho.tools,
         subAgentIds: rascunho.subAgentIds,
         outputSchema: (formato as Record<string, unknown> | null) ?? null,
+        agenda: rascunho.agenda.ativo ? rascunho.agenda : null,
         active: rascunho.active,
       };
       return criando || !agentId
@@ -664,6 +724,16 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
   const baseLigada = criando ? null : (agente?.knowledgeBase ?? null);
   const temBase = criando ? false : !!(agente?.knowledgeBaseId || baseLigada);
   const buscaSemBase = rascunho.tools.includes(FERRAMENTA_DE_BASE) && !temBase;
+
+  // Todos os usuários da conta, mesmo os que ainda não têm agenda — os sem
+  // `ativo` aparecem desabilitados, apontando pra onde ligar. Serviços só
+  // entram na lista quando têm duração: sem duração não dá pra marcar.
+  const configuracaoDaAgenda = agendaQuery.data;
+  const profissionaisDaAgenda = configuracaoDaAgenda?.profissionais ?? [];
+  const profissionaisComAgendaAtiva = profissionaisDaAgenda.filter((p) => p.ativo);
+  const servicosAgendaveis = (configuracaoDaAgenda?.servicos ?? []).filter(
+    (s) => s.ativo && s.duracaoMinutos != null
+  );
 
   // Times viram sugestão de rota: um clique cria "financeiro" a partir do
   // time Financeiro. Os que já são rota (ou colidem com fixa) não aparecem.
@@ -1086,6 +1156,180 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
 
               <Separator />
 
+              {/* AGENDA — habilidade do agente, não um bloco do fluxo. Ligou,
+                  as seis ferramentas de agenda entram sozinhas (nada aqui se
+                  liga uma a uma) e o bloco "Atender com IA" ganha a quarta
+                  porta fixa, `agendou`. */}
+              <div className="space-y-2">
+                <Label className="text-xs flex items-center gap-1.5">
+                  <CalendarClock className="w-3.5 h-3.5" /> Agenda
+                </Label>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <Switch
+                    aria-label="Este agente pode marcar horários"
+                    checked={rascunho.agenda.ativo}
+                    onCheckedChange={ligarAgenda}
+                  />
+                  <span className="text-xs">Este agente pode marcar horários</span>
+                </label>
+
+                {rascunho.agenda.ativo && (
+                  <div className="space-y-3 pt-1">
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Ligou, as ferramentas de agenda entram sozinhas. O agente só oferece o
+                      que a agenda devolver — ele nunca calcula horário.
+                    </p>
+
+                    {agendaQuery.isLoading ? (
+                      <Skeleton className="h-20 w-full" />
+                    ) : agendaQuery.isError ? (
+                      <p className="text-[11px] text-destructive rounded-md border border-destructive/40 p-2.5 leading-relaxed">
+                        Não consegui carregar profissionais e serviços. O que já estava marcado
+                        continua salvo.
+                      </p>
+                    ) : profissionaisComAgendaAtiva.length === 0 ? (
+                      <div
+                        role="alert"
+                        className="flex items-start gap-2 rounded-md border border-amber-500/60 bg-amber-500/10 p-2.5 text-[11px] leading-relaxed"
+                      >
+                        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                        <span>
+                          Nenhum profissional atende com hora marcada ainda.{' '}
+                          <a
+                            href="/admin/ia/agenda"
+                            className="underline underline-offset-2 font-medium"
+                          >
+                            Regras da agenda
+                          </a>
+                        </span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="space-y-1.5">
+                          <Label className="text-[11px] text-muted-foreground">
+                            Profissionais que ele pode marcar
+                          </Label>
+                          <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                            {profissionaisDaAgenda.map((p) => {
+                              const marcado = rascunho.agenda.profissionalIds.includes(p.userId);
+                              return (
+                                <label
+                                  key={p.userId}
+                                  className={`flex items-start gap-2.5 rounded-md border p-2.5 ${
+                                    p.ativo ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                                  }`}
+                                  title={p.ativo ? undefined : 'Ative em Regras da agenda'}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="mt-0.5"
+                                    disabled={!p.ativo}
+                                    checked={marcado}
+                                    onChange={(e) =>
+                                      alternarProfissionalDaAgenda(p.userId, e.target.checked)
+                                    }
+                                  />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="text-xs font-medium block">{p.nome}</span>
+                                    <span className="mt-1 flex flex-wrap gap-1">
+                                      {!p.ativo ? (
+                                        <Badge variant="outline" className="text-[10px]">
+                                          ative em Regras da agenda
+                                        </Badge>
+                                      ) : p.google.precisaReconectar ? (
+                                        <Badge
+                                          variant="outline"
+                                          className="text-[10px] border-amber-500/60 text-amber-600 dark:text-amber-400"
+                                        >
+                                          precisa reconectar
+                                        </Badge>
+                                      ) : p.google.conectado ? (
+                                        <Badge variant="outline" className="text-[10px]">
+                                          Google conectado
+                                        </Badge>
+                                      ) : (
+                                        <Badge variant="outline" className="text-[10px]">
+                                          agenda do CRM
+                                        </Badge>
+                                      )}
+                                    </span>
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-[11px] text-muted-foreground">Serviços</Label>
+                          {servicosAgendaveis.length === 0 ? (
+                            <p className="text-[11px] text-muted-foreground rounded-md border p-2.5">
+                              Nenhum serviço com duração cadastrada — configure em{' '}
+                              <a
+                                href="/admin/ia/agenda"
+                                className="underline underline-offset-2 font-medium"
+                              >
+                                Regras da agenda
+                              </a>
+                              .
+                            </p>
+                          ) : (
+                            <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                              {servicosAgendaveis.map((s) => (
+                                <label
+                                  key={s.id}
+                                  className="flex items-center gap-2.5 rounded-md border p-2.5 cursor-pointer"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={rascunho.agenda.produtoIds.includes(s.id)}
+                                    onChange={(e) =>
+                                      alternarProdutoDaAgenda(s.id, e.target.checked)
+                                    }
+                                  />
+                                  <span className="text-xs flex-1 min-w-0 truncate">{s.nome}</span>
+                                  <Badge variant="outline" className="text-[10px] shrink-0">
+                                    {s.duracaoMinutos} min
+                                  </Badge>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {rascunho.agenda.profissionalIds.length === 0 && (
+                          <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-relaxed">
+                            Marque ao menos um profissional.
+                          </p>
+                        )}
+                      </>
+                    )}
+
+                    <div className="space-y-1">
+                      <Label className="text-[11px] text-muted-foreground">
+                        Ferramentas ligadas
+                      </Label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {FERRAMENTAS_DE_AGENDA.map((f) => (
+                          <Badge key={f} variant="outline" className="font-mono text-[10px]">
+                            {f}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+
+                    <a
+                      href="/admin/ia/agenda"
+                      className="inline-block text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    >
+                      Regras da agenda
+                    </a>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
               <div className="space-y-2">
                 <Label className="text-xs flex items-center gap-1.5">
                   <Users className="w-3.5 h-3.5" /> Especialistas que ele pode consultar
@@ -1186,7 +1430,9 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                   tem.
                 </p>
                 <div className="flex flex-wrap gap-1.5">
-                  {ROTAS_FIXAS.map((r) => (
+                  {/* `agendou` só entra na lista com a agenda ligada — é o
+                      mesmo critério que desenha a quarta porta no bloco. */}
+                  {(rascunho.agenda.ativo ? [...ROTAS_FIXAS, 'agendou'] : ROTAS_FIXAS).map((r) => (
                     /* O rótulo é o que se lê na tela; `title` guarda o valor que
                        vai no formato de resposta e na aresta. */
                     <Badge key={r} variant="secondary" className="text-[10px]" title={r}>
@@ -1429,7 +1675,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
         <DialogFooter className="sm:justify-between">
           <p className="text-[11px] text-muted-foreground sm:self-center text-left">
             {editando
-              ? `Depois de salvar, o bloco fica com ${ROTAS_FIXAS.length + rotas.length} saídas.`
+              ? `Depois de salvar, o bloco fica com ${ROTAS_FIXAS.length + rotas.length + (rascunho.agenda.ativo ? 1 : 0)} saídas.`
               : 'Nada selecionado.'}
           </p>
           <div className="flex gap-2 sm:justify-end">

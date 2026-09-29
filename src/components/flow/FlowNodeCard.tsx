@@ -102,6 +102,8 @@ export interface FlowNodeData extends Record<string, unknown> {
    * "(salvar pra aplicar)" quando a linha foi desenhada e não salva.
    */
   base?: { nome: string | null; aviso?: string | null };
+  /** O agente deste bloco pode marcar horários (T-039) — a agenda é habilidade dele. */
+  agendaAtiva?: boolean;
   /** Problemas do grafo que apontam para este nó. */
   temProblema?: boolean;
   /** Houve um teste. Sem isto não dá pra distinguir "não rodou" de "não passou aqui". */
@@ -371,6 +373,15 @@ function FlowNodeCardBase({ data, selected }: NodeProps) {
           </p>
         )}
 
+        {d.agendaAtiva && (
+          /* A agenda é habilidade do agente, não bloco: o card diz que este
+             atendimento marca horário — e a quarta saída ("Se agendar") explica
+             por que existe. */
+          <span className="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+            marca horário
+          </span>
+        )}
+
         {aberto && editavel && (
           /* nodrag para o arrasto não roubar o clique no campo; nowheel para o
              scroll de textarea e lista não virar zoom do canvas; nopan porque
@@ -504,6 +515,7 @@ function mesmoDesenho(a: NodeProps, b: NodeProps): boolean {
     x.agenteNome === y.agenteNome &&
     x.base?.nome === y.base?.nome &&
     x.base?.aviso === y.base?.aviso &&
+    x.agendaAtiva === y.agendaAtiva &&
     x.temProblema === y.temProblema &&
     x.execRodou === y.execRodou &&
     x.exec?.status === y.exec?.status &&

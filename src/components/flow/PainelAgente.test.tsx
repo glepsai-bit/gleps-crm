@@ -27,6 +27,11 @@ import {
 } from '@/services/ai.backend.service';
 import { tagsBackendService } from '@/services/tags.backend.service';
 import { teamsBackendService, type TeamWithMembers } from '@/services/teams.backend.service';
+import {
+  agendaBackendService,
+  type AgendaConfiguracaoResponse,
+  type ProfissionalDaAgenda,
+} from '@/services/agenda.backend.service';
 import type { Tag } from '@/services/tags.cloud.service';
 
 vi.mock('@/services/ai.backend.service', () => ({
@@ -47,6 +52,10 @@ vi.mock('@/services/teams.backend.service', () => ({
   teamsBackendService: { listTeams: vi.fn() },
 }));
 
+vi.mock('@/services/agenda.backend.service', () => ({
+  agendaBackendService: { getConfiguracao: vi.fn() },
+}));
+
 // O backend escopa pelo JWT; o hook só precisa de um account_id qualquer.
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { account_id: 'acc1' }, account: null }),
@@ -61,6 +70,7 @@ import { toast } from 'sonner';
 const servico = vi.mocked(aiService);
 const etapasApi = vi.mocked(tagsBackendService);
 const timesApi = vi.mocked(teamsBackendService);
+const agendaApi = vi.mocked(agendaBackendService);
 const avisos = vi.mocked(toast);
 
 const STATUS: AiStatus = {
@@ -121,6 +131,31 @@ function time(over: Partial<TeamWithMembers> = {}): TeamWithMembers {
   };
 }
 
+function profissional(over: Partial<ProfissionalDaAgenda> = {}): ProfissionalDaAgenda {
+  return {
+    userId: 'u1',
+    nome: 'Dra. Marina',
+    email: 'marina@clinica.com',
+    ativo: true,
+    horarios: { '1': [{ inicio: '09:00', fim: '18:00' }] },
+    intervaloMinutos: 15,
+    google: { conectado: true, email: 'marina@gmail.com', podeEscrever: true, precisaReconectar: false, motivo: null },
+    ...over,
+  };
+}
+
+const CONFIG_AGENDA: AgendaConfiguracaoResponse = {
+  configuracao: {
+    antecedenciaMinimaMinutos: 120,
+    janelaMaximaDias: 14,
+    passoMinutos: 15,
+    holdMinutos: 5,
+    etapaAoAgendar: null,
+  },
+  profissionais: [profissional()],
+  servicos: [{ id: 'p1', nome: 'Botox', duracaoMinutos: 30, ativo: true }],
+};
+
 function agente(over: Partial<AiAgent> = {}): AiAgent {
   return {
     id: 'a1',
@@ -139,6 +174,7 @@ function agente(over: Partial<AiAgent> = {}): AiAgent {
     tools: [],
     outputSchema: null,
     subAgentIds: [],
+    agenda: null,
     active: true,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -242,6 +278,7 @@ beforeEach(() => {
   );
   etapasApi.listStageTags.mockResolvedValue(FUNIL_PADRAO);
   timesApi.listTeams.mockResolvedValue([]);
+  agendaApi.getConfiguracao.mockResolvedValue(CONFIG_AGENDA);
 });
 
 describe('enum de rota — o bug que mandava toda conversa pelo desvio', () => {
@@ -734,5 +771,102 @@ describe('lista de agentes que falhou', () => {
     expect(
       await screen.findByText(/O agente deste passo não existe mais/i)
     ).toBeInTheDocument();
+  });
+});
+
+describe('Agenda — habilidade do agente', () => {
+  it('desligada por padrão, e liga mostrando os profissionais com agenda ativa', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    const interruptor = screen.getByRole('switch', { name: 'Este agente pode marcar horários' });
+    expect(interruptor).not.toBeChecked();
+    expect(screen.queryByText('Dra. Marina')).toBeNull();
+
+    fireEvent.click(interruptor);
+    expect(interruptor).toBeChecked();
+    expect(await screen.findByText('Dra. Marina')).toBeInTheDocument();
+    expect(screen.getByText('Botox')).toBeInTheDocument();
+    expect(screen.getByText('30 min')).toBeInTheDocument();
+  });
+
+  it('marcar um profissional e salvar grava a agenda no payload', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Este agente pode marcar horários' }));
+    await screen.findByText('Dra. Marina');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Dra\. Marina/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Botox/ }));
+
+    await salvar();
+
+    const payload = ultimoUpdate();
+    expect(payload?.agenda).toEqual({
+      ativo: true,
+      profissionalIds: ['u1'],
+      produtoIds: ['p1'],
+    });
+  });
+
+  it('profissional sem agenda ativa aparece desabilitado, ao lado dos que têm', async () => {
+    agendaApi.getConfiguracao.mockResolvedValue({
+      ...CONFIG_AGENDA,
+      profissionais: [
+        profissional({ userId: 'u1', nome: 'Dra. Marina', ativo: false }),
+        profissional({ userId: 'u2', nome: 'Ana Paula', ativo: true }),
+      ],
+    });
+    renderPainel();
+    await esperarFormulario();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Este agente pode marcar horários' }));
+    const desabilitado = await screen.findByRole('checkbox', { name: /Dra\. Marina/ });
+    expect(desabilitado).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: /Ana Paula/ })).not.toBeDisabled();
+  });
+
+  it('sem nenhum profissional com agenda ativa, mostra o aviso com o link', async () => {
+    agendaApi.getConfiguracao.mockResolvedValue({
+      ...CONFIG_AGENDA,
+      profissionais: [profissional({ ativo: false })],
+    });
+    renderPainel();
+    await esperarFormulario();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Este agente pode marcar horários' }));
+    const aviso = await screen.findByRole('alert');
+    expect(aviso).toHaveTextContent(/Nenhum profissional atende com hora marcada ainda/);
+    expect(within(aviso).getByRole('link', { name: 'Regras da agenda' })).toHaveAttribute(
+      'href',
+      '/admin/ia/agenda'
+    );
+  });
+
+  it('desligar a agenda salva `agenda: null`', async () => {
+    servico.listAgents.mockResolvedValue([
+      agente({ agenda: { ativo: true, profissionalIds: ['u1'], produtoIds: ['p1'] } }),
+    ]);
+    renderPainel();
+    await esperarFormulario();
+
+    const interruptor = screen.getByRole('switch', { name: 'Este agente pode marcar horários' });
+    expect(interruptor).toBeChecked();
+
+    fireEvent.click(interruptor);
+    await salvar();
+
+    expect(ultimoUpdate()?.agenda).toBeNull();
+  });
+
+  it('agenda ligada acrescenta "agendou" em Para onde ele encaminha', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    expect(screen.queryByTitle('agendou')).toBeNull();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Este agente pode marcar horários' }));
+    expect(screen.getByTitle('agendou')).toBeInTheDocument();
   });
 });

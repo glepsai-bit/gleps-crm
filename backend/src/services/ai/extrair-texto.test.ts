@@ -122,6 +122,14 @@ describe('extrairHtml', () => {
     const texto = extrairHtml(pagina);
     expect(texto).toContain('Plano | Mensal | Anual\nEssencial | 500 | 5000\nPro | 890 | 8900');
   });
+  it('declaração de documento não vira conteúdo da base', () => {
+    // `<!doctype html>` não casa com o regex de tags (que exige letra depois
+    // do `<`), então escapava e era indexado como se fosse texto da página.
+    const t = extrairHtml('<!doctype html><html><body><p>Preço: R$ 10</p></body></html>');
+    expect(t).not.toMatch(/doctype/i);
+    expect(t).toContain('Preço: R$ 10');
+  });
+
 
   it('página sem conteúdo devolve string vazia (quem chama decide o 422)', () => {
     expect(extrairHtml('<html><head><script>x()</script></head><body></body></html>')).toBe('');

@@ -545,7 +545,9 @@ class FlowService {
    */
   private async cancelarFollowupPendente(conversationId: string, motivo: string): Promise<void> {
     const { count } = await prisma.flowRun.updateMany({
-      where: { conversationId, status: 'sleeping' },
+      // Run ancorado a uma reunião é LEMBRETE, não follow-up: o lead falar não
+      // o cancela. Só a reunião cair cancela (ver agendaService).
+      where: { conversationId, status: 'sleeping', agendaEventoId: null },
       data: {
         status: 'skipped',
         stopReason: motivo,
@@ -799,6 +801,7 @@ class FlowService {
       __toque: _toque,
       __blocoAtivo: _blocoAtivo,
       __simulador: _simulador,
+      __aguardandoReuniao: aguardandoReuniao,
       memoria: _memoria,
       sessao: _sessao,
       ...contexto
@@ -818,6 +821,8 @@ class FlowService {
           status: 'sleeping',
           runAfter: resultado.sleepUntil ?? new Date(),
           resumeNodeId: resultado.resumeNodeId ?? null,
+          // Dormindo POR CAUSA de uma reunião (lembrete): fica ancorado a ela.
+          agendaEventoId: typeof aguardandoReuniao === 'string' ? aguardandoReuniao : null,
           context: contexto as unknown as Prisma.InputJsonValue,
         },
       });
@@ -834,6 +839,7 @@ class FlowService {
         // Acabou de verdade: limpa a retomada pra um run concluído nunca
         // parecer retomável.
         resumeNodeId: null,
+        agendaEventoId: null,
         finishedAt: new Date(),
       },
     });

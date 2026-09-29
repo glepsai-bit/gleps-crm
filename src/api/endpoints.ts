@@ -517,6 +517,17 @@ export const API_ENDPOINTS = {
     UNSUBSCRIBE: '/api/push/unsubscribe',
   },
 
+  // ============= AGENDA IA (agenda como habilidade do agente) =============
+  // Regras de agendamento por conta/profissional/serviço + o testador de
+  // horários. O agente consulta essas regras via ferramentas no backend;
+  // estas rotas são as TELAS de configuração (admin) e o simulador.
+  AGENDA_IA: {
+    CONFIGURACAO: '/api/agenda/configuracao',
+    PROFISSIONAL: (userId: string) => `/api/agenda/profissionais/${userId}`,
+    SERVICO: (productId: string) => `/api/agenda/servicos/${productId}`,
+    HORARIOS: '/api/agenda/horarios',
+  },
+
   // ============= ATTACHMENTS (Bug A + PISTA D) =============
   // Proxy autenticado pra midia baixada da Evolution (GET /:id) + upload
   // multipart dedicado (POST /upload) usado pelo composer para arquivos

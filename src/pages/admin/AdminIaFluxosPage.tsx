@@ -9,6 +9,7 @@
  * editor dele, não uma camada por cima.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ReactFlow,
@@ -40,6 +41,7 @@ import { PainelBase } from '@/components/flow/PainelBase';
 import { PainelMemoria } from '@/components/flow/PainelMemoria';
 import {
   TIPOS_DE_AGENTE,
+  agendaLigada,
   basesDesenhadas,
   ehFonte,
   entradaDaAresta,
@@ -49,6 +51,7 @@ import {
 import {
   AlertTriangle,
   ArrowLeft,
+  CalendarClock,
   ChevronRight,
   Clock,
   Eye,
@@ -243,8 +246,15 @@ function portaDaAresta(branch: string | null, portas: string[] | undefined): str
   return portas.includes(alvo) ? alvo : undefined;
 }
 
-function portasDoAgente(outputSchema: unknown): string[] {
-  const base = ['respondeu', 'humano', 'encerrou'];
+/**
+ * `agendou` é a quarta porta fixa, e só existe quando o agente do bloco tem a
+ * agenda ligada (`agendaLigada`, em `portas.ts` — mesma regra que o painel do
+ * agente usa pra desenhar essa saída em "Para onde ele encaminha").
+ */
+function portasDoAgente(outputSchema: unknown, comAgendou: boolean): string[] {
+  const base = comAgendou
+    ? ['respondeu', 'humano', 'encerrou', 'agendou']
+    : ['respondeu', 'humano', 'encerrou'];
   const schema = outputSchema as
     | { properties?: { rota?: { enum?: unknown[] } } }
     | null
@@ -267,11 +277,12 @@ function portasDoNo(
   tipo: string,
   config: Record<string, unknown>,
   info: NodeTypeInfo | undefined,
-  agentes: { id: string; outputSchema?: unknown }[] | undefined
+  agentes: { id: string; outputSchema?: unknown; agenda?: { ativo: boolean } | null }[] | undefined
 ): string[] | undefined {
   if (tipo === 'ai.atender') {
     const agentId = (config as { agentId?: string }).agentId;
-    return portasDoAgente(agentes?.find((a) => a.id === agentId)?.outputSchema);
+    const agente = agentes?.find((a) => a.id === agentId);
+    return portasDoAgente(agente?.outputSchema, agendaLigada(agente));
   }
   if (tipo === 'logic.switch') {
     const casos = Array.isArray(config.casos) ? (config.casos as { branch?: unknown }[]) : [];
@@ -394,6 +405,7 @@ function DialogoExcluirFluxo({
 function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [paraExcluir, setParaExcluir] = useState<{
     id: string;
     name: string;
@@ -451,6 +463,14 @@ function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
+          <Button
+            variant="outline"
+            onClick={() => navigate('/admin/ia/agenda')}
+            title="Profissionais, horários e serviços que o agente pode marcar"
+          >
+            <CalendarClock className="w-4 h-4 mr-2" />
+            Agenda
+          </Button>
           <Button
             variant="outline"
             onClick={() => criarFollowup.mutate()}
@@ -694,6 +714,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
       const agentId = rodaAgente ? textoDaConfig(d.config ?? {}, 'agentId') : null;
       const agente = rodaAgente ? agentes?.find((a) => a.id === agentId) : undefined;
       const agenteNome = rodaAgente ? (agente?.name ?? null) : undefined;
+      const agendaAtiva = rodaAgente ? agente?.agenda?.ativo === true : undefined;
       const base = rodaAgente
         ? baseDoBloco({
             agentId,
@@ -711,6 +732,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
           antes.exec === exec &&
           antes.execRodou === houveTeste &&
           antes.agenteNome === agenteNome &&
+          antes.agendaAtiva === agendaAtiva &&
           antes.base?.nome === base?.nome &&
           antes.base?.aviso === base?.aviso &&
           antes.portas === portas
@@ -729,7 +751,7 @@ function EditorDeFluxo({ flowId, onVoltar }: { flowId: string; onVoltar: () => v
           // PRÓPRIO agente: quem monta declara as rotas dele uma vez e o bloco
           // passa a ter uma saída por rota. O motor casa aresta por nome.
           portas,
-          ...(rodaAgente ? { agenteNome, base, temProblema: !agentId } : {}),
+          ...(rodaAgente ? { agenteNome, agendaAtiva, base, temProblema: !agentId } : {}),
         },
       };
       cache.set(n.id, { origem: n, saida: saidaDoNo });

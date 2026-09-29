@@ -44,6 +44,16 @@ import {
   ehChaveReservada,
   type CampoDeMemoria,
 } from './ai/memoria-declarada';
+import {
+  lerAgendaDoAgente,
+  validarAgendaDoAgente,
+  definicoesDasFerramentasDeAgenda,
+  executarFerramentaDeAgenda,
+  ehFerramentaDeAgenda,
+  type AgendaDoAgente,
+  type CatalogoDoAgente,
+} from './agenda/ferramentas';
+import { agoraPorExtenso } from './agenda/horarios';
 
 export type AgentRole = 'classifier' | 'responder' | 'custom';
 
@@ -78,6 +88,8 @@ export interface UpsertAgentInput {
   httpTools?: unknown;
   /** Campos de memória que este agente mantém. Vazio = campo livre. */
   memoryFields?: unknown;
+  /** A agenda como habilidade: { ativo, profissionalIds, produtoIds } ou null. */
+  agenda?: unknown;
   provider?: AiProviderName;
   model?: string | null;
   temperature?: number;
@@ -158,10 +170,21 @@ export interface RunAgentInput {
   contato?: ContatoResumo | null;
   /** Profundidade da consulta entre agentes. 0 = chamada de origem. */
   depth?: number;
+  /**
+   * Sombra/simulador: ferramentas que agem pra fora (marcar reunião) fingem.
+   * O modelo recebe a mesma resposta que receberia de verdade — é o que faz o
+   * simulador mostrar o atendimento como ele vai acontecer.
+   */
+  shadow?: boolean;
 }
 
 export interface RunAgentResult {
   text: string;
+  /**
+   * O que as ferramentas fizeram e o FLUXO precisa saber (ex.: `agendou`).
+   * Vazio na maioria das rodadas.
+   */
+  efeitos: Record<string, unknown>;
   /** Objeto validado contra outputSchema; null quando o agente não define schema. */
   structured: Record<string, unknown> | null;
   toolCalls: ChatToolCall[];
@@ -364,6 +387,12 @@ class AiAgentService {
       data.memoryFields = campos as unknown as object;
     }
 
+    if (input.agenda !== undefined) {
+      const { agenda, erros } = validarAgendaDoAgente(input.agenda);
+      if (erros.length > 0) throw new ValidationError(erros.join(' '));
+      data.agenda = agenda ?? null;
+    }
+
     if (input.outputSchema !== undefined) {
       if (input.outputSchema && typeof input.outputSchema !== 'object') {
         throw new ValidationError('outputSchema precisa ser um objeto JSON Schema');
@@ -449,8 +478,33 @@ class AiAgentService {
     const etapas = schemaTemEtapa(schemaBruto) ? await carregarEtapasDoFunil(input.accountId) : [];
     const schema = aplicarEtapasNoSchema(schemaBruto, etapas);
 
+    // QUE DIA É HOJE. O agente não sabia: "amanhã", "sexta" e "semana que vem"
+    // não tinham referência — e com agenda isso vira reunião no dia errado.
+    // O fuso é o da conta, que é o que o lead e a profissional vivem.
+    const timezone = await this.timezoneDaConta(input.accountId);
+    const agora = agoraPorExtenso(new Date(), timezone);
+
+    // A AGENDA COMO HABILIDADE: ligada, as seis ferramentas entram sozinhas —
+    // não passam pela whitelist `tools`, porque não são opcionais uma a uma.
+    const agenda = lerAgendaDoAgente(agent.agenda);
+    let ferramentasDeAgenda: ChatToolDef[] = [];
+    let catalogoDeAgenda: CatalogoDoAgente | null = null;
+    if (agenda) {
+      try {
+        const def = await definicoesDasFerramentasDeAgenda(input.accountId, agenda);
+        ferramentasDeAgenda = def.tools;
+        catalogoDeAgenda = def.catalogo;
+      } catch (err) {
+        logger.warn('[ai-agent] não foi possível montar as ferramentas de agenda; seguindo sem', {
+          agentId: agent.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     const system = this.buildSystemPrompt({
       agent,
+      agora,
       hits,
       camposDeMemoria,
       temFerramentaLembrar,
@@ -527,9 +581,11 @@ class AiAgentService {
     // que decide se ela é chamada.
     const httpTools: HttpToolConfig[] = lerHttpTools(agent.httpTools);
     for (const t of httpTools) tools.push(definicaoDaHttpTool(t));
+    tools.push(...ferramentasDeAgenda);
 
     const usageTotal: ChatUsage = { inputTokens: 0, outputTokens: 0, usdEstimate: 0, priced: true };
     const allToolCalls: ChatToolCall[] = [];
+    const efeitos: Record<string, unknown> = {};
 
     const callModel = async () => {
       const res = await chat({
@@ -592,6 +648,34 @@ class AiAgentService {
           continue;
         }
 
+        // AGENDA. Só existe se a habilidade está ligada — e a resposta é
+        // sempre uma frase, inclusive nas recusas, porque é o que o modelo
+        // vai repassar ao lead.
+        if (agenda && catalogoDeAgenda && ehFerramentaDeAgenda(call.name)) {
+          let saida: string;
+          try {
+            saida = await executarFerramentaDeAgenda(
+              call.name,
+              call.arguments,
+              {
+                accountId: input.accountId,
+                contactId: input.contactId ?? null,
+                conversationId: input.conversationId ?? null,
+                shadow: input.shadow === true,
+                efeitos,
+              },
+              agenda,
+              catalogoDeAgenda
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn('[ai-agent] ferramenta de agenda falhou', { agentId: agent.id, tool: call.name, error: msg });
+            saida = `Não consegui agora (${msg}). Não diga ao lead que está feito; peça um instante e tente de novo.`;
+          }
+          messages.push({ role: 'tool', content: saida, toolCallId: call.id });
+          continue;
+        }
+
         const tool = AVAILABLE_TOOLS[call.name];
         let output: string;
         if (!tool) {
@@ -621,6 +705,7 @@ class AiAgentService {
     if (!schema) {
       return {
         text: res.text,
+        efeitos,
         structured: null,
         toolCalls: allToolCalls,
         hits,
@@ -666,6 +751,7 @@ class AiAgentService {
 
     return {
       text: res.text,
+      efeitos,
       structured: parsed as Record<string, unknown>,
       toolCalls: allToolCalls,
       hits,
@@ -745,12 +831,31 @@ class AiAgentService {
   }
 
   /**
+   * Fuso da conta — é nele que o lead e a profissional vivem. Falha ao ler não
+   * derruba o atendimento: cai no fuso padrão e o motivo fica no log.
+   */
+  private async timezoneDaConta(accountId: string): Promise<string> {
+    try {
+      const conta = await prisma.account.findUnique({ where: { id: accountId }, select: { timezone: true } });
+      return conta?.timezone?.trim() || 'America/Sao_Paulo';
+    } catch (err) {
+      logger.warn('[ai-agent] não foi possível ler o fuso da conta; usando o padrão', {
+        accountId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 'America/Sao_Paulo';
+    }
+  }
+
+  /**
    * Objeto em vez de posicionais: com o índice e o contexto do negócio seriam
    * oito argumentos em sequência, e trocar dois de lugar por engano passaria
    * pelo compilador — todos são string ou objeto.
    */
   private buildSystemPrompt(p: {
     agent: AiAgent;
+    /** Data e hora de agora, por extenso, no fuso da conta. */
+    agora?: string;
     hits: SearchHit[];
     /** Campos declarados deste agente. Vazio = prompt igual ao de antes. */
     camposDeMemoria?: CampoDeMemoria[];
@@ -799,6 +904,15 @@ class AiAgentService {
     }
 
     const blocos = [prompt];
+
+    // Data e hora de AGORA, antes de tudo que fala de tempo. Sem isto o modelo
+    // chuta o ano do treinamento e "amanhã" vira qualquer dia.
+    if (p.agora) {
+      blocos.push(
+        `AGORA\n\nHoje é ${p.agora}. Toda referência a dia ou hora ("amanhã", "sexta", ` +
+          '"semana que vem") parte daqui. Nunca invente data: se precisar de horário, consulte a agenda.'
+      );
+    }
 
     // As etapas vêm logo depois do prompt: são instrução de FORMATO da saída
     // (o nome exato que o kanban reconhece), não contexto sobre o lead.

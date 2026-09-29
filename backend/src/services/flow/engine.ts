@@ -270,7 +270,9 @@ export async function executeRun(params: {
           error: null,
           vars: ctx.vars,
           sleepUntil: r.sleep.until,
-          resumeNodeId: proximo.id,
+          // `retomarAqui`: o lembrete de reunião acorda NO PRÓPRIO bloco pra
+          // conferir se a reunião ainda existe antes de seguir.
+          resumeNodeId: r.sleep.retomarAqui ? node.id : proximo.id,
         };
       }
 

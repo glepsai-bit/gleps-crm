@@ -214,6 +214,10 @@ export function decodificarEntidades(texto: string): string {
  */
 export function extrairHtml(html: string): string {
   let h = html.replace(/<!--[\s\S]*?-->/g, '');
+  // Declarações (`<!doctype html>`, `<![CDATA[...]>`) não são tags: o regex
+  // abaixo exige letra depois do `<`, então elas escapavam e iam parar no
+  // conteúdo da base como se fossem texto da página.
+  h = h.replace(/<![^>]*>/g, ' ');
   for (const tag of TAGS_DESCARTADAS) {
     h = h.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}\\s*>`, 'gi'), ' ');
   }

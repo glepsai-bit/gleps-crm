@@ -173,7 +173,12 @@ export function CalendarProvider({ children, accountId, userId }: CalendarProvid
         setGoogleConfigured(status.configured ?? true);
         setGoogleMissing(status.missing ?? []);
         if (status.needsReauth) {
-          setConnection({ ...defaultConnection, status: 'error', email: status.email });
+          setConnection({
+            ...defaultConnection,
+            status: 'error',
+            email: status.email,
+            errorMessage: status.reauthReason ?? undefined,
+          });
         } else if (status.connected) {
           setConnection({
             status: 'connected',

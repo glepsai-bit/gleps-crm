@@ -17,9 +17,12 @@ router.get('/events/:id', requirePermission('agenda'), (req, res, next) => calen
 router.put('/events/:id', requirePermission('agenda'), (req, res, next) => calendarController.update(req, res, next));
 router.delete('/events/:id', requirePermission('agenda'), (req, res, next) => calendarController.delete(req, res, next));
 
-// Google Calendar integration (Admin only)
-router.post('/google/connect', requireAdmin, (req, res, next) => calendarController.connectGoogle(req, res, next));
-router.post('/google/disconnect', requireAdmin, (req, res, next) => calendarController.disconnectGoogle(req, res, next));
+// Google Calendar integration.
+// T-039: o token é por usuário — cada um conecta o PRÓPRIO Google, e as
+// profissionais de uma clínica costumam ser `agent`. Conectar/desconectar
+// pede só a permissão de agenda; o sync (importa pro CRM inteiro) segue admin.
+router.post('/google/connect', requirePermission('agenda'), (req, res, next) => calendarController.connectGoogle(req, res, next));
+router.post('/google/disconnect', requirePermission('agenda'), (req, res, next) => calendarController.disconnectGoogle(req, res, next));
 router.post('/google/sync', requireAdmin, (req, res, next) => calendarController.syncGoogle(req, res, next));
 router.get('/google/status', (req, res, next) => calendarController.getGoogleStatus(req, res, next));
 

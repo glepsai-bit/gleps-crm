@@ -21,6 +21,18 @@ export interface AiStatus {
   tools: { name: string; description: string }[];
 }
 
+/**
+ * A agenda que ESTE agente pode marcar — habilidade dele, não um bloco do
+ * fluxo. `ativo: false` (ou `agenda: null`) = ele não tem a ferramenta de
+ * agenda; as seis ferramentas (`consultar_horarios`, `reservar`, `agendar`,
+ * `minha_reuniao`, `remarcar`, `cancelar`) entram sozinhas quando ligado.
+ */
+export interface AiAgentAgenda {
+  ativo: boolean;
+  profissionalIds: string[];
+  produtoIds: string[];
+}
+
 export interface AiAgent {
   id: string;
   name: string;
@@ -38,6 +50,7 @@ export interface AiAgent {
   outputSchema: Record<string, unknown> | null;
   /** Agentes que este pode consultar no meio do raciocínio. */
   subAgentIds: string[] | null;
+  agenda: AiAgentAgenda | null;
   active: boolean;
   createdAt: string;
   updatedAt: string;
@@ -57,6 +70,7 @@ export interface AiAgentInput {
   tools?: string[];
   outputSchema?: Record<string, unknown> | null;
   subAgentIds?: string[] | null;
+  agenda?: AiAgentAgenda | null;
   active?: boolean;
 }
 

@@ -57,6 +57,7 @@ export const ROTULOS_DE_PORTA: Record<string, string> = {
   respondeu: 'Depois de responder',
   humano: 'Se pedir humano',
   encerrou: 'Se encerrar',
+  agendou: 'Se agendar',
 };
 
 /**
@@ -104,6 +105,28 @@ export function ligacaoPermitida(
  */
 export function entradaDaAresta(tipoDaOrigem: string): string {
   return ehFonte(tipoDaOrigem) ? ENTRADA_DE_CONHECIMENTO : ENTRADA_DE_FLUXO;
+}
+
+/**
+ * Um agente com o campo `agenda` — que pode faltar enquanto o backend desta
+ * feature ainda não chegou na resposta (roda em paralelo com o front).
+ */
+export interface AgenteComAgenda {
+  agenda?: { ativo: boolean } | null;
+}
+
+/**
+ * Este agente tem a agenda ligada — e portanto o bloco "Atender com IA" que o
+ * usa ganha a quarta porta fixa, `agendou`.
+ *
+ * Campo ausente (`'agenda' in agente` falso) conta como ligada: é o caso de
+ * uma resposta antiga, de antes desta feature. Aí é melhor desenhar uma porta
+ * a mais do que apagar em silêncio uma aresta que alguém já ligou nela.
+ */
+export function agendaLigada(agente: AgenteComAgenda | null | undefined): boolean {
+  if (!agente) return false;
+  if (!('agenda' in agente)) return true;
+  return Boolean(agente.agenda?.ativo);
 }
 
 /** Lê uma chave de texto da config do bloco; vazio vira null, que é o que os painéis esperam. */

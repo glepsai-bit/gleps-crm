@@ -20,6 +20,7 @@ import { agentAvailabilityService } from '../agent-availability.service';
 import { attachmentStorageService } from '../attachment-storage.service';
 import { teamService } from '../team.service';
 import { aiAgentService, type ContatoResumo } from '../ai-agent.service';
+import { agendaService, type ReuniaoMarcada } from '../agenda.service';
 import { transcribe } from '../ai/transcription';
 import {
   type FlowNode,
@@ -458,6 +459,9 @@ const aiAtender: NodeDefinition = {
     { key: 'respondeu', label: 'Respondeu' },
     { key: 'humano', label: 'Pediu humano' },
     { key: 'encerrou', label: 'Encerrou' },
+    // T-039 — o agente marcou uma reunião nesta rodada. É por aqui que o
+    // lembrete entra: "Aguardar até X horas antes" → "Responder no WhatsApp".
+    { key: 'agendou', label: 'Agendou' },
   ],
   mutates: true,
   async execute(node, ctx) {
@@ -479,6 +483,9 @@ const aiAtender: NodeDefinition = {
       session: (ctx.vars.sessao ?? {}) as Record<string, unknown>,
       contactId: (ctx.vars.__contactId ?? null) as string | null,
       contato: (ctx.vars.__contato ?? null) as ContatoResumo | null,
+      // Em sombra as ferramentas de agenda fingem: o simulador mostra a
+      // marcação como ela aconteceria, sem gravar no Google nem no CRM.
+      shadow: ctx.shadow,
       variables: {
         ...Object.fromEntries(
           Object.entries(ctx.vars)
@@ -545,29 +552,49 @@ const aiAtender: NodeDefinition = {
       };
     }
 
+    // ---- MARCOU REUNIÃO? ----
+    //
+    // A ferramenta `agendar` gravou o efeito; o bloco vira isso em saída e em
+    // variável. A etapa "ao agendar" vem das REGRAS DA CONTA e é aplicada por
+    // código — não depende de o modelo lembrar de devolver `etapa`. Só entra
+    // se o modelo não aplicou outra nesta rodada.
+    const reuniao = (r.efeitos?.agendou ?? null) as ReuniaoMarcada | null;
+    let etapaDaAgenda: Awaited<ReturnType<typeof aplicarEtapaDoFunil>> | null = null;
+    if (reuniao?.etapa && !etapaResultado?.etapa) {
+      etapaDaAgenda = await aplicarEtapaDoFunil(ctx, reuniao.etapa);
+    }
+
     // ---- PARA ONDE IR ----
     //
-    // Rota PRÓPRIA do agente primeiro (financeiro, agendamento...): é a decisão
-    // mais específica. Depois os dois sinais clássicos. Uma rota com o nome de
-    // porta fixa ("respondeu") NÃO vence os sinais: o modelo devolvia
-    // `rota: "respondeu"` junto de `transferir_para_humano: true`, a rota
-    // ganhava e o lead que pediu humano ficava com a IA.
+    // Reunião marcada vence tudo: o lembrete precisa nascer, e isso só acontece
+    // pela porta `agendou`. Depois a rota PRÓPRIA do agente (financeiro,
+    // agendamento...): é a decisão mais específica. Depois os dois sinais
+    // clássicos. Uma rota com o nome de porta fixa ("respondeu") NÃO vence os
+    // sinais: o modelo devolvia `rota: "respondeu"` junto de
+    // `transferir_para_humano: true`, a rota ganhava e o lead que pediu humano
+    // ficava com a IA.
     const pediuHumano = saida.transferir_para_humano === true;
     const encerrou = saida.resolver_conversa === true;
-    const fixa = ['respondeu', 'humano', 'encerrou'];
+    const fixa = ['respondeu', 'humano', 'encerrou', 'agendou'];
     const rotaPropria = rota && !fixa.includes(rota) ? rota : null;
-    const branch =
-      rotaPropria ?? (pediuHumano ? 'humano' : encerrou ? 'encerrou' : (rota ?? 'respondeu'));
+    const branch = reuniao
+      ? 'agendou'
+      : (rotaPropria ?? (pediuHumano ? 'humano' : encerrou ? 'encerrou' : (rota ?? 'respondeu')));
 
     return {
       branch,
-      vars,
+      vars: reuniao ? { ...vars, agenda: reuniao } : vars,
       output: {
         texto: resposta.slice(0, 1000),
         ...etapaResultado,
+        ...(etapaDaAgenda ? { etapaDaAgenda } : {}),
         rota,
         saiuPor: branch,
         simulado: ctx.shadow || undefined,
+        ferramentas: r.toolCalls.length > 0 ? r.toolCalls.map((t) => t.name) : undefined,
+        agendou: reuniao
+          ? { quando: reuniao.rotulo, profissional: reuniao.profissional, servico: reuniao.servico, simulado: reuniao.simulado }
+          : undefined,
         consultasAEspecialistas: r.toolCalls.filter((t) => t.name === 'consultar_especialista')
           .length,
         custoUsd: Number(r.usage.usdEstimate.toFixed(6)),
@@ -1110,6 +1137,8 @@ const flowAguardar: NodeDefinition = {
   mutates: false,
   async execute(node, ctx) {
     const c = cfg(node);
+    if (str(c.modo) === 'antes_da_reuniao') return aguardarAntesDaReuniao(node, ctx);
+
     const valor = Math.max(1, num(c.valor, 1));
     const unidade = str(c.unidade, 'dias');
     const ms = valor * (UNIDADES[unidade] ?? UNIDADES.dias);
@@ -1155,6 +1184,71 @@ const flowAguardar: NodeDefinition = {
     };
   },
 };
+
+/**
+ * "Até X horas antes da reunião" — o lembrete.
+ *
+ * Diferente da espera por duração em três coisas, e as três são o que faz um
+ * lembrete ser confiável:
+ *
+ * 1. O alvo é relativo à REUNIÃO, não a agora. Vem de `{{agenda.inicio}}`,
+ *    que o bloco "Atender com IA" gravou ao sair por `agendou`.
+ * 2. O run dorme e ACORDA NESTE MESMO BLOCO (`retomarAqui`), que confere a
+ *    reunião de novo — no Google, se ela vive lá. Cancelada: o fluxo para
+ *    aqui, sem lembrete órfão. Remarcada: dorme de novo pra nova hora.
+ * 3. O run fica ancorado à reunião (`agendaEventoId`): o lead mandar
+ *    mensagem cancela follow-up, mas não cancela lembrete.
+ */
+async function aguardarAntesDaReuniao(node: FlowNode, ctx: NodeContext): Promise<NodeResult> {
+  const c = cfg(node);
+  const horas = Math.min(Math.max(num(c.antesHoras, 24), 1), 24 * 7);
+  const agenda = (ctx.vars.agenda ?? null) as ReuniaoMarcada | null;
+  if (!agenda?.eventoId || !agenda.inicio) {
+    return { stop: true, stopReason: 'sem_reuniao', output: { motivo: 'nenhuma reunião marcada neste atendimento' } };
+  }
+
+  // No simulador a reunião não foi gravada (sombra): a variável é a verdade.
+  // Em produção, a reunião vive no banco e talvez no Google — é lá que se
+  // confere se ela ainda existe e a que horas.
+  let inicio = new Date(agenda.inicio);
+  if (!ctx.vars.__simulador && !agenda.simulado) {
+    const estado = await agendaService.estadoDaReuniao(ctx.accountId, agenda.eventoId);
+    if (estado.status !== 'scheduled') {
+      return {
+        stop: true,
+        stopReason: 'reuniao_cancelada',
+        vars: { __aguardandoReuniao: null },
+        output: { reuniao: agenda.rotulo, motivo: 'a reunião foi cancelada' },
+      };
+    }
+    if (estado.inicio && estado.inicio.getTime() !== inicio.getTime()) inicio = estado.inicio;
+  }
+
+  const alvo = new Date(inicio.getTime() - horas * UNIDADES.horas);
+  const agendaAtual: ReuniaoMarcada = { ...agenda, inicio: inicio.toISOString() };
+  const legivel = duracaoLegivel(horas, 'horas');
+
+  if (alvo.getTime() <= Date.now()) {
+    // Já é hora (ou já passou — reunião marcada pra daqui a pouco): segue.
+    return {
+      vars: { agenda: agendaAtual, __aguardandoReuniao: null },
+      output: { reuniao: agendaAtual.rotulo, antes: legivel, seguiu: 'ja_era_hora' },
+    };
+  }
+
+  if (ctx.vars.__simulador) {
+    return {
+      vars: { agenda: agendaAtual },
+      output: { reuniao: agendaAtual.rotulo, antes: legivel, retomaEm: alvo.toISOString(), pulado: 'simulador', duracao: `${legivel} antes da reunião` },
+    };
+  }
+
+  return {
+    sleep: { until: alvo, retomarAqui: true },
+    vars: { agenda: agendaAtual, __aguardandoReuniao: agenda.eventoId },
+    output: { reuniao: agendaAtual.rotulo, antes: legivel, retomaEm: alvo.toISOString(), esperou: `até ${legivel} antes da reunião` },
+  };
+}
 
 const UNIDADES: Record<string, number> = {
   segundos: 1_000,

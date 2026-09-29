@@ -195,6 +195,44 @@ describe('Aplicar etapa — só do funil real', () => {
   });
 });
 
+describe('Aguardar — duração x antes da reunião', () => {
+  it('modo padrão é "duração", com os campos de sempre', () => {
+    renderCampos({ tipo: 'flow.aguardar' });
+    expect(screen.getByRole('combobox', { name: 'Modo' }).textContent).toContain('Por duração');
+    expect(screen.getByText('Esperar')).toBeInTheDocument();
+    expect(screen.getByText(/Só em horário comercial/)).toBeInTheDocument();
+    expect(screen.queryByText(/Horas antes da reunião/)).toBeNull();
+  });
+
+  it('trocar para "antes da reunião" esconde valor/unidade/horário comercial/dispersão', async () => {
+    renderCampos({ tipo: 'flow.aguardar', config: { modo: 'antes_da_reuniao' } });
+
+    expect(screen.queryByText('Esperar')).toBeNull();
+    expect(screen.queryByText(/Só em horário comercial/)).toBeNull();
+    expect(screen.queryByText(/Espalhar os envios/)).toBeNull();
+
+    expect(screen.getByText('Horas antes da reunião')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Continua X horas antes da reunião marcada pelo agente/)
+    ).toBeInTheDocument();
+  });
+
+  it('escolher "antes da reunião" grava `modo`', async () => {
+    const { set } = renderCampos({ tipo: 'flow.aguardar' });
+    await abrirEEscolher('Modo', 'Até X horas antes da reunião');
+    expect(set).toHaveBeenCalledWith('modo', 'antes_da_reuniao');
+  });
+
+  it('horas antes da reunião tem padrão 24 e grava `antesHoras`', () => {
+    const { set } = renderCampos({ tipo: 'flow.aguardar', config: { modo: 'antes_da_reuniao' } });
+    const campo = screen.getByLabelText('Horas antes da reunião') as HTMLInputElement;
+    expect(campo.value).toBe('24');
+
+    fireEvent.change(campo, { target: { value: '48' } });
+    expect(set).toHaveBeenCalledWith('antesHoras', 48);
+  });
+});
+
 describe('o que não mudou', () => {
   it('"Responder" continua com o texto livre', () => {
     renderCampos({ tipo: 'chat.reply', config: { texto: 'Olá {{agente.nome}}' } });

@@ -335,112 +335,159 @@ export function CamposDoNo({ tipo, config, agentes, bases = [], janelaDoFluxo = 
   )}
 
   {/* ESPERA LONGA — o nó do follow-up. Estava sem nenhuma forma: dava pra
-      arrastar o bloco e não havia como dizer quantos dias esperar. */}
+      arrastar o bloco e não havia como dizer quantos dias esperar.
+
+      Dois modos: "duração" (o de sempre — some tempo fixo) e "antes da
+      reunião" (T-0xx agenda) — que conta pra trás a partir do horário que o
+      próprio agente marcou. Os dois não fazem sentido juntos: em "antes da
+      reunião" o valor/unidade/horário comercial/dispersão não significam
+      nada (não sei qual reunião até o agente marcar uma), então somem. */}
   {tipo === 'flow.aguardar' && (
     <div className="space-y-3">
-      <div className="flex gap-2">
-        <div className="space-y-1.5 w-20">
-          <Label className="text-xs">Esperar</Label>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Modo</Label>
+        <Select
+          value={String(config.modo ?? 'duracao')}
+          onValueChange={(v) => set('modo', v)}
+        >
+          <SelectTrigger className="h-8" aria-label="Modo">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="duracao">Por duração</SelectItem>
+            <SelectItem value="antes_da_reuniao">Até X horas antes da reunião</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {config.modo === 'antes_da_reuniao' ? (
+        <div className="space-y-1.5">
+          <Label htmlFor="aguardar-antes-horas" className="text-xs">
+            Horas antes da reunião
+          </Label>
           <Input
+            id="aguardar-antes-horas"
             type="number"
             min={1}
-            className="h-8"
-            value={Number(config.valor ?? 1)}
-            onChange={(e) => set('valor', Math.max(1, Number(e.target.value)))}
+            max={168}
+            className="h-8 w-24"
+            value={Number(config.antesHoras ?? 24)}
+            onChange={(e) =>
+              set('antesHoras', Math.min(168, Math.max(1, Number(e.target.value))))
+            }
           />
+          <p className="text-[11px] text-muted-foreground">
+            Continua X horas antes da reunião marcada pelo agente. Se a reunião for
+            cancelada, o fluxo para aqui — sem lembrete órfão.
+          </p>
         </div>
-        <div className="space-y-1.5 flex-1">
-          <Label className="text-xs">&nbsp;</Label>
-          <Select
-            value={String(config.unidade ?? 'dias')}
-            onValueChange={(v) => set('unidade', v)}
-          >
-            <SelectTrigger className="h-8">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="segundos">segundos</SelectItem>
-              <SelectItem value="minutos">minutos</SelectItem>
-              <SelectItem value="horas">horas</SelectItem>
-              <SelectItem value="dias">dias</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      <p className="text-[11px] text-muted-foreground">
-        O atendimento é suspenso e retomado do passo seguinte. Teto de 60 dias — acima
-        disso não é follow-up, é campanha de reativação.
-      </p>
+      ) : (
+        <>
+          <div className="flex gap-2">
+            <div className="space-y-1.5 w-20">
+              <Label className="text-xs">Esperar</Label>
+              <Input
+                type="number"
+                min={1}
+                className="h-8"
+                value={Number(config.valor ?? 1)}
+                onChange={(e) => set('valor', Math.max(1, Number(e.target.value)))}
+              />
+            </div>
+            <div className="space-y-1.5 flex-1">
+              <Label className="text-xs">&nbsp;</Label>
+              <Select
+                value={String(config.unidade ?? 'dias')}
+                onValueChange={(v) => set('unidade', v)}
+              >
+                <SelectTrigger className="h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="segundos">segundos</SelectItem>
+                  <SelectItem value="minutos">minutos</SelectItem>
+                  <SelectItem value="horas">horas</SelectItem>
+                  <SelectItem value="dias">dias</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            O atendimento é suspenso e retomado do passo seguinte. Teto de 60 dias — acima
+            disso não é follow-up, é campanha de reativação.
+          </p>
 
-      <label className="flex items-start gap-2 text-xs">
-        <input
-          type="checkbox"
-          className="mt-0.5"
-          checked={Boolean(config.horarioComercial)}
-          onChange={(e) =>
-            set(
-              'horarioComercial',
-              e.target.checked
-                ? { inicio: '09:00', fim: '18:00', dias: [1, 2, 3, 4, 5], timezone: 'America/Sao_Paulo' }
-                : undefined
-            )
-          }
-        />
-        <span>
-          Só em horário comercial
-          <span className="block text-muted-foreground">
-            Mensagem às 3h da manhã é pior que nenhuma mensagem.
-          </span>
-        </span>
-      </label>
-
-      {Boolean(config.horarioComercial) && (
-        <div className="flex gap-2 pl-6">
-          <div className="space-y-1.5 flex-1">
-            <Label className="text-xs">Das</Label>
-            <Input
-              type="time"
-              className="h-8"
-              value={String((config.horarioComercial as Record<string, string>)?.inicio ?? '09:00')}
+          <label className="flex items-start gap-2 text-xs">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={Boolean(config.horarioComercial)}
               onChange={(e) =>
-                set('horarioComercial', {
-                  ...(config.horarioComercial as Record<string, unknown>),
-                  inicio: e.target.value,
-                })
+                set(
+                  'horarioComercial',
+                  e.target.checked
+                    ? { inicio: '09:00', fim: '18:00', dias: [1, 2, 3, 4, 5], timezone: 'America/Sao_Paulo' }
+                    : undefined
+                )
               }
             />
-          </div>
-          <div className="space-y-1.5 flex-1">
-            <Label className="text-xs">Até</Label>
+            <span>
+              Só em horário comercial
+              <span className="block text-muted-foreground">
+                Mensagem às 3h da manhã é pior que nenhuma mensagem.
+              </span>
+            </span>
+          </label>
+
+          {Boolean(config.horarioComercial) && (
+            <div className="flex gap-2 pl-6">
+              <div className="space-y-1.5 flex-1">
+                <Label className="text-xs">Das</Label>
+                <Input
+                  type="time"
+                  className="h-8"
+                  value={String((config.horarioComercial as Record<string, string>)?.inicio ?? '09:00')}
+                  onChange={(e) =>
+                    set('horarioComercial', {
+                      ...(config.horarioComercial as Record<string, unknown>),
+                      inicio: e.target.value,
+                    })
+                  }
+                />
+              </div>
+              <div className="space-y-1.5 flex-1">
+                <Label className="text-xs">Até</Label>
+                <Input
+                  type="time"
+                  className="h-8"
+                  value={String((config.horarioComercial as Record<string, string>)?.fim ?? '18:00')}
+                  onChange={(e) =>
+                    set('horarioComercial', {
+                      ...(config.horarioComercial as Record<string, unknown>),
+                      fim: e.target.value,
+                    })
+                  }
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label className="text-xs">Espalhar os envios em até (minutos)</Label>
             <Input
-              type="time"
+              type="number"
+              min={0}
+              max={120}
               className="h-8"
-              value={String((config.horarioComercial as Record<string, string>)?.fim ?? '18:00')}
-              onChange={(e) =>
-                set('horarioComercial', {
-                  ...(config.horarioComercial as Record<string, unknown>),
-                  fim: e.target.value,
-                })
-              }
+              value={Number(config.dispersaoMinutos ?? 12)}
+              onChange={(e) => set('dispersaoMinutos', Number(e.target.value))}
             />
+            <p className="text-[11px] text-muted-foreground">
+              200 mensagens saindo às 9h em ponto é o padrão que marca o número como robô.
+            </p>
           </div>
-        </div>
+        </>
       )}
-
-      <div className="space-y-1.5">
-        <Label className="text-xs">Espalhar os envios em até (minutos)</Label>
-        <Input
-          type="number"
-          min={0}
-          max={120}
-          className="h-8"
-          value={Number(config.dispersaoMinutos ?? 12)}
-          onChange={(e) => set('dispersaoMinutos', Number(e.target.value))}
-        />
-        <p className="text-[11px] text-muted-foreground">
-          200 mensagens saindo às 9h em ponto é o padrão que marca o número como robô.
-        </p>
-      </div>
     </div>
   )}
 

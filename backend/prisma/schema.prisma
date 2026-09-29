@@ -58,27 +58,27 @@ model Account {
 
   // T-029 — Telefonia (discador). Credenciais por conta, mesmo padrão das
   // chaves de IA: nunca retornadas pela API, só o sentinel '***SET***'.
-  twilioAccountSid  String? @map("twilio_account_sid") @db.VarChar(120)
-  twilioAuthToken   String? @map("twilio_auth_token") @db.VarChar(200)
-  twilioApiKeySid   String? @map("twilio_api_key_sid") @db.VarChar(120)
+  twilioAccountSid   String? @map("twilio_account_sid") @db.VarChar(120)
+  twilioAuthToken    String? @map("twilio_auth_token") @db.VarChar(200)
+  twilioApiKeySid    String? @map("twilio_api_key_sid") @db.VarChar(120)
   twilioApiKeySecret String? @map("twilio_api_key_secret") @db.VarChar(200)
-  twilioTwimlAppSid String? @map("twiml_app_sid") @db.VarChar(120)
+  twilioTwimlAppSid  String? @map("twiml_app_sid") @db.VarChar(120)
   /// Número Twilio que aparece pro destinatário (E.164).
-  twilioCallerId    String? @map("twilio_caller_id") @db.VarChar(30)
+  twilioCallerId     String? @map("twilio_caller_id") @db.VarChar(30)
   /// Gravar as ligações. Exige aviso ao destinatário — ver voice.service.ts.
-  voiceRecording    Boolean @default(false) @map("voice_recording")
+  voiceRecording     Boolean @default(false) @map("voice_recording")
 
   /// Operadora do discador: 'twilio' (API paga por minuto) ou 'sip' (plano
   /// fechado de provedor nacional, via SIP sobre WebSocket).
-  voiceProvider     String  @default("sip") @map("voice_provider") @db.VarChar(20)
+  voiceProvider String  @default("sip") @map("voice_provider") @db.VarChar(20)
   /// Endereço WSS do provedor. Ex: wss://sip.provedor.com.br:7443
-  sipWsServer       String? @map("sip_ws_server") @db.VarChar(300)
+  sipWsServer   String? @map("sip_ws_server") @db.VarChar(300)
   /// Domínio SIP (a parte depois do @ no seu ramal).
-  sipDomain         String? @map("sip_domain") @db.VarChar(200)
-  sipUsername       String? @map("sip_username") @db.VarChar(120)
-  sipPassword       String? @map("sip_password") @db.VarChar(200)
+  sipDomain     String? @map("sip_domain") @db.VarChar(200)
+  sipUsername   String? @map("sip_username") @db.VarChar(120)
+  sipPassword   String? @map("sip_password") @db.VarChar(200)
   /// Número que aparece pro destinatário quando o provedor não define sozinho.
-  sipCallerId       String? @map("sip_caller_id") @db.VarChar(30)
+  sipCallerId   String? @map("sip_caller_id") @db.VarChar(30)
 
   // Email/AI Integration
   openaiApiKey      String? @map("openai_api_key") @db.VarChar(500)
@@ -99,6 +99,8 @@ model Account {
   calendarEvents       CalendarEvent[]
   events               Event[]
   googleCalendarTokens GoogleCalendarToken[]
+  agendaProfissionais  AgendaProfissional[]
+  agendaConfiguracao   AgendaConfiguracao?
   apiUsageLogs         ApiUsageLog[]
   dispatchBatches      DispatchBatch[]
   dispatchLogs         DispatchLog[]
@@ -141,11 +143,11 @@ model Account {
   flowRuns FlowRun[]
 
   // T-029 — Discador
-  calls Call[]
+  calls          Call[]
+  trackingConfig TrackingConfig?
+  trackingEvents TrackingEvent[]
 
   @@index([status])
-  trackingConfig  TrackingConfig?
-  trackingEvents  TrackingEvent[]
   @@map("accounts")
 }
 
@@ -287,14 +289,17 @@ model User {
   updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   // Relations
-  account                  Account?           @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  sales                    Sale[]             @relation("SalesResponsavel")
-  refundedSales            Sale[]             @relation("SalesRefundedBy")
+  account                  Account?            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sales                    Sale[]              @relation("SalesResponsavel")
+  refundedSales            Sale[]              @relation("SalesRefundedBy")
   leadNotes                LeadNote[]
   calendarEvents           CalendarEvent[]
-  actorEvents              Event[]            @relation("EventActor")
+  /// T-039 — reuniões em que este usuário é o PROFISSIONAL atendendo.
+  atendimentosAgendados    CalendarEvent[]     @relation("CalendarEventProfissional")
+  agendaProfissional       AgendaProfissional?
+  actorEvents              Event[]             @relation("EventActor")
   refreshTokens            RefreshToken[]
-  whatsappTemplatesCreated WhatsappTemplate[] @relation("WhatsappTemplateCreatedBy")
+  whatsappTemplatesCreated WhatsappTemplate[]  @relation("WhatsappTemplateCreatedBy")
 
   // T-022 Sprint 4 — Chat interno
   conversationsAssigned      Conversation[]            @relation("ConversationAssignee")
@@ -314,7 +319,7 @@ model User {
   // Web Push — subscriptions do navegador do agente pra receber notificacao
   // quando mensagem inbound chega numa conversa dele. Multi-endpoint por user
   // (desktop + mobile). Ver push.service.ts + push.routes.ts.
-  pushSubscriptions          PushSubscription[]
+  pushSubscriptions PushSubscription[]
 
   @@index([accountId])
   @@index([email])
@@ -367,17 +372,17 @@ model Contact {
   // (pushName WhatsApp vs nome digitado pelo agente). Quando 'manual',
   // webhooks NUNCA sobrescrevem; quando 'inbound', podem atualizar.
   // pushName guarda o último valor visto no WhatsApp pra auditoria.
-  nameSource    ContactNameSource @default(inbound) @map("name_source")
-  pushName      String?           @map("push_name") @db.VarChar(255)
-  pushNameUpdatedAt DateTime?     @map("push_name_updated_at") @db.Timestamptz
-  pushNameChangeCount Int         @default(0) @map("push_name_change_count")
+  nameSource          ContactNameSource @default(inbound) @map("name_source")
+  pushName            String?           @map("push_name") @db.VarChar(255)
+  pushNameUpdatedAt   DateTime?         @map("push_name_updated_at") @db.Timestamptz
+  pushNameChangeCount Int               @default(0) @map("push_name_change_count")
 
   // Foto de perfil (WhatsApp Business avatar). Populada por
   // evolutionService.fetchProfilePictureUrl no primeiro contato + refresh
   // ocasional (24h) via contact.service. Text pra caber URLs longas do
   // WhatsApp CDN. null = sem foto (privado ou nunca buscado).
-  profilePicUrl        String?   @map("profile_pic_url") @db.Text
-  profilePicFetchedAt  DateTime? @map("profile_pic_fetched_at") @db.Timestamptz
+  profilePicUrl       String?   @map("profile_pic_url") @db.Text
+  profilePicFetchedAt DateTime? @map("profile_pic_fetched_at") @db.Timestamptz
 
   // REMOVED: external contact/conversation ids (deprecated integration)
 
@@ -590,13 +595,18 @@ model Product {
   metodosPagamento String[] @default(["pix"]) @map("metodos_pagamento")
   conveniosAceitos String[] @default([]) @map("convenios_aceitos")
   ativo            Boolean  @default(true)
+  /// T-039 — duração do atendimento em minutos. NULL = este produto não é
+  /// agendável (é venda, não serviço). É o que faz o catálogo de produtos
+  /// servir de catálogo de serviços sem uma segunda lista.
+  duracaoMinutos   Int?     @map("duracao_minutos")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   // Relations
-  account   Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  saleItems SaleItem[]
+  account        Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  saleItems      SaleItem[]
+  calendarEvents CalendarEvent[]
 
   @@index([accountId])
   @@index([ativo])
@@ -751,18 +761,34 @@ model CalendarEvent {
   googleEventId    String? @map("google_event_id") @db.VarChar(255)
   googleCalendarId String? @map("google_calendar_id") @db.VarChar(255)
 
+  // T-039 — agendamento pelo agente.
+  /// Quem ATENDE (o recurso da agenda). É por ele que se calcula conflito:
+  /// dois eventos do mesmo profissional não podem se sobrepor.
+  profissionalUserId String?   @map("profissional_user_id") @db.Uuid
+  /// O serviço marcado — de onde vem a duração.
+  productId          String?   @map("product_id") @db.Uuid
+  /// Conversa em que foi marcado. É o elo do lembrete e do "minha reunião".
+  conversationId     String?   @map("conversation_id") @db.Uuid
+  /// Só em status `held`: até quando a reserva segura o horário. Vencida, o
+  /// horário volta a ser livre sem ninguém precisar apagar nada.
+  holdExpiresAt      DateTime? @map("hold_expires_at") @db.Timestamptz
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   // Relations
-  account   Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  contact   Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  createdBy User?              @relation(fields: [createdById], references: [id])
-  attendees CalendarAttendee[]
+  account      Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contact      Contact?           @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  createdBy    User?              @relation(fields: [createdById], references: [id])
+  profissional User?              @relation("CalendarEventProfissional", fields: [profissionalUserId], references: [id], onDelete: SetNull)
+  product      Product?           @relation(fields: [productId], references: [id], onDelete: SetNull)
+  attendees    CalendarAttendee[]
 
   @@index([accountId])
   @@index([startTime])
   @@index([googleEventId])
+  @@index([accountId, profissionalUserId, startTime])
+  @@index([accountId, contactId, startTime])
   @@map("calendar_events")
 }
 
@@ -782,6 +808,8 @@ enum CalendarEventStatus {
   scheduled
   cancelled
   completed
+  /// T-039 — reserva temporária feita pelo agente enquanto o lead confirma.
+  held
 }
 
 // ============================================
@@ -832,15 +860,24 @@ model ResolutionLog {
 // GOOGLE_CALENDAR_TOKENS
 // ============================================
 model GoogleCalendarToken {
-  id             String   @id @default(uuid()) @db.Uuid
-  accountId      String   @map("account_id") @db.Uuid
-  userId         String   @unique @map("user_id") @db.Uuid
-  accessToken    String   @map("access_token")
-  refreshToken   String   @map("refresh_token")
-  tokenType      String   @default("Bearer") @map("token_type") @db.VarChar(50)
-  expiresAt      DateTime @map("expires_at") @db.Timestamptz
-  calendarId     String?  @map("calendar_id") @db.VarChar(255)
-  connectedEmail String?  @map("connected_email") @db.VarChar(255)
+  id               String    @id @default(uuid()) @db.Uuid
+  accountId        String    @map("account_id") @db.Uuid
+  userId           String    @unique @map("user_id") @db.Uuid
+  accessToken      String    @map("access_token")
+  refreshToken     String    @map("refresh_token")
+  tokenType        String    @default("Bearer") @map("token_type") @db.VarChar(50)
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz
+  calendarId       String?   @map("calendar_id") @db.VarChar(255)
+  connectedEmail   String?   @map("connected_email") @db.VarChar(255)
+  /// T-039 — escopos que o Google concedeu (separados por espaço). Token
+  /// antigo (só `calendar.readonly`) não consegue CRIAR evento: a tela usa
+  /// isto pra pedir reconexão em vez de falhar na hora de marcar.
+  scope            String?   @db.VarChar(500)
+  /// Quando o refresh devolveu `invalid_grant` (token revogado, senha trocada,
+  /// projeto em teste vencendo em 7 dias). Preenchido = precisa reconectar;
+  /// a agenda deste profissional fica indisponível até lá.
+  reauthRequiredAt DateTime? @map("reauth_required_at") @db.Timestamptz
+  reauthReason     String?   @map("reauth_reason") @db.VarChar(200)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
@@ -849,6 +886,59 @@ model GoogleCalendarToken {
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@map("google_calendar_tokens")
+}
+
+// ============================================
+// T-039 — AGENDAMENTO PELO AGENTE
+// ============================================
+// O Google Calendar é a agenda (o evento vive lá; editado lá, vence). O CRM
+// entra com o que o Google não tem: horário de trabalho, duração por serviço,
+// cálculo de horários livres, reserva enquanto o lead confirma, e o vínculo
+// entre a reunião e a conversa. Quem não conecta o Google usa a agenda daqui.
+
+/// Um usuário da conta que atende com hora marcada e as regras dele.
+model AgendaProfissional {
+  id               String  @id @default(uuid()) @db.Uuid
+  accountId        String  @map("account_id") @db.Uuid
+  userId           String  @map("user_id") @db.Uuid
+  ativo            Boolean @default(true)
+  /// Horário de trabalho por dia da semana, no fuso da conta:
+  /// { "1": [{ "inicio": "09:00", "fim": "12:00" }, { "inicio": "13:00", "fim": "18:00" }], ... }
+  /// Chave 0 = domingo … 6 = sábado. Dia ausente = não atende.
+  horarios         Json    @default("{}")
+  /// Folga entre um atendimento e o próximo, em minutos.
+  intervaloMinutos Int     @default(0) @map("intervalo_minutos")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId])
+  @@index([accountId, ativo])
+  @@map("agenda_profissionais")
+}
+
+/// Regras da conta que valem pra todo profissional.
+model AgendaConfiguracao {
+  accountId                 String  @id @map("account_id") @db.Uuid
+  /// Não oferecer horário mais perto que isto de agora.
+  antecedenciaMinimaMinutos Int     @default(120) @map("antecedencia_minima_minutos")
+  /// Nem mais longe que isto.
+  janelaMaximaDias          Int     @default(30) @map("janela_maxima_dias")
+  /// De quanto em quanto os horários são oferecidos (09:00, 09:30, …).
+  passoMinutos              Int     @default(30) @map("passo_minutos")
+  /// Quanto tempo a reserva segura o horário enquanto o lead confirma.
+  holdMinutos               Int     @default(5) @map("hold_minutos")
+  /// Etapa do funil (slug) aplicada sozinha quando o agente marca. NULL = não mexe.
+  etapaAoAgendar            String? @map("etapa_ao_agendar") @db.VarChar(120)
+
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("agenda_configuracao")
 }
 
 // ============================================
@@ -1303,19 +1393,19 @@ model Inbox {
 }
 
 model Team {
-  id              String   @id @default(uuid()) @db.Uuid
-  accountId       String   @map("account_id") @db.Uuid
-  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  name            String   @db.VarChar(120)
-  description     String?  @db.Text
-  allowAutoAssign Boolean  @default(true) @map("allow_auto_assign")
+  id               String   @id @default(uuid()) @db.Uuid
+  accountId        String   @map("account_id") @db.Uuid
+  account          Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name             String   @db.VarChar(120)
+  description      String?  @db.Text
+  allowAutoAssign  Boolean  @default(true) @map("allow_auto_assign")
   // Visibilidade das conversas do time (migration 0055):
   //  true  = compartilhada (todos os membros veem) — comportamento legado
   //  false = carteira individual (cada agente só vê as próprias atribuídas)
-  sharedVisibility Boolean @default(true) @map("shared_visibility")
-  businessHours   Json?    @map("business_hours")
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  sharedVisibility Boolean  @default(true) @map("shared_visibility")
+  businessHours    Json?    @map("business_hours")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   members          TeamMember[]
   inboxesAsDefault Inbox[]        @relation("DefaultTeam")
@@ -1431,10 +1521,10 @@ model ConversationCycle {
   snapshot              Json? // priority, team, assignee, labels no momento da resolucao
 
   // SLA v2 — outcome + avaliacao + CSAT
-  outcome        String? @db.VarChar(30) // resolved | transferred | spam | not_related | abandoned | unable_to_resolve
-  internalRating Int?    @map("internal_rating") // 1-5 auto-avaliacao agente/IA, opcional
-  resolveReason  String? @map("resolve_reason") @db.Text // motivo opcional ao fechar
-  customerCsat   Int?    @map("customer_csat") // 1-5 resposta do cliente, opcional (vem via webhook depois)
+  outcome        String?   @db.VarChar(30) // resolved | transferred | spam | not_related | abandoned | unable_to_resolve
+  internalRating Int?      @map("internal_rating") // 1-5 auto-avaliacao agente/IA, opcional
+  resolveReason  String?   @map("resolve_reason") @db.Text // motivo opcional ao fechar
+  customerCsat   Int?      @map("customer_csat") // 1-5 resposta do cliente, opcional (vem via webhook depois)
   customerCsatAt DateTime? @map("customer_csat_at") @db.Timestamptz
   csatSentAt     DateTime? @map("csat_sent_at") @db.Timestamptz // quando perguntou (pra nao mandar 2x)
   csatRequested  Boolean   @default(false) @map("csat_requested") // flag: agente marcou pra enviar CSAT
@@ -1507,7 +1597,7 @@ model MessageReaction {
 }
 
 model Attachment {
-  id           String   @id @default(uuid()) @db.Uuid
+  id            String   @id @default(uuid()) @db.Uuid
   // PISTA D (upload multipart dedicado): messageId eh nullable pra permitir
   // upload via POST /api/attachments/upload ANTES da Message existir. O
   // composer primeiro sobe o arquivo grande (>5MB) e recebe { id, fileUrl };
@@ -1517,9 +1607,9 @@ model Attachment {
   // continuam preenchendo messageId no create nested. Migration 0047
   // removeu o NOT NULL. onDelete: Cascade continua ativo — orfaos com
   // messageId=NULL nao sao afetados por cascade (nada pra cascatar).
-  messageId    String?  @map("message_id") @db.Uuid
-  message      Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  fileType     String   @map("file_type") @db.VarChar(40) // image | video | audio | document
+  messageId     String?  @map("message_id") @db.Uuid
+  message       Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileType      String   @map("file_type") @db.VarChar(40) // image | video | audio | document
   // fileUrl: URL servível pelo frontend. Após baixar a mídia da Evolution,
   // passa a ser '/api/attachments/<id>' (proxy autenticado). Em rows legadas
   // pode estar a URL original (Evolution) — preservada também em sourceUrl.
@@ -1527,19 +1617,19 @@ model Attachment {
   // como data URL base64 inline (ex.: PNG 100x100 já gera ~4KB de string).
   // VarChar(2000) explodia com 500 INTERNAL_ERROR silencioso em qualquer
   // imagem >2KB. Rows legadas continuam válidas (upcast VarChar→Text é lossless).
-  fileUrl      String   @map("file_url") @db.Text
-  fileSize     Int?     @map("file_size")
-  fileName     String?  @map("file_name") @db.VarChar(255)
-  mimeType     String?  @map("mime_type") @db.VarChar(120)
-  thumbnailUrl String?  @map("thumbnail_url") @db.Text
-  duration     Int? // segundos pra audio/video
+  fileUrl       String   @map("file_url") @db.Text
+  fileSize      Int?     @map("file_size")
+  fileName      String?  @map("file_name") @db.VarChar(255)
+  mimeType      String?  @map("mime_type") @db.VarChar(120)
+  thumbnailUrl  String?  @map("thumbnail_url") @db.Text
+  duration      Int? // segundos pra audio/video
   // Bug A: storagePath = caminho relativo a backend/uploads onde a mídia foi
   // materializada (ex.: '<accountId>/<id>.ogg'). storageStatus = pending |
   // downloaded | failed. sourceUrl = URL original da Evolution pra retry/fallback.
   storagePath   String?  @map("storage_path") @db.VarChar(500)
   storageStatus String?  @default("pending") @map("storage_status") @db.VarChar(20)
   sourceUrl     String?  @map("source_url") @db.Text
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([messageId])
   @@index([storageStatus])
@@ -1728,7 +1818,7 @@ model WarmupPool {
   strategy    String   @default("moderate") @db.VarChar(20) // conservative | moderate | aggressive
   useAi       Boolean  @default(false) @map("use_ai")
   aiProvider  String?  @map("ai_provider") @db.VarChar(20) // 'openai' | 'anthropic' | null
-  aiModel     String?  @map("ai_model") @db.VarChar(80)    // 'gpt-4o-mini' | 'claude-haiku-4-5' | null (auto-default por provider)
+  aiModel     String?  @map("ai_model") @db.VarChar(80) // 'gpt-4o-mini' | 'claude-haiku-4-5' | null (auto-default por provider)
   aiTone      String?  @default("casual") @map("ai_tone") @db.VarChar(20) // casual | formal | gym | clinic
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
@@ -1742,25 +1832,25 @@ model WarmupPool {
 
 // WarmupNumber: numero Evolution dentro de uma pool, com plano diario e estado de protocolo
 model WarmupNumber {
-  id                 String    @id @default(uuid()) @db.Uuid
-  poolId             String    @map("pool_id") @db.Uuid
+  id                 String     @id @default(uuid()) @db.Uuid
+  poolId             String     @map("pool_id") @db.Uuid
   pool               WarmupPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
-  accountId          String    @map("account_id") @db.Uuid
-  account            Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  evolutionInstance  String    @map("evolution_instance") @db.VarChar(255)
-  phoneE164          String    @map("phone_e164") @db.VarChar(20)
-  displayName        String?   @map("display_name") @db.VarChar(160)
-  status             String    @default("cold") @db.VarChar(20) // cold | warming | warm | paused | banned | error
-  currentDay         Int       @default(0) @map("current_day")
-  qualityScore       Int       @default(100) @map("quality_score")
-  dailyEnvioPlan     Json?     @map("daily_envio_plan") // plano completo dos dias (array de quotas)
-  dailyEnviadasHoje  Int       @default(0) @map("daily_enviadas_hoje")
-  dailyRecebidasHoje Int       @default(0) @map("daily_recebidas_hoje")
-  startedAt          DateTime? @map("started_at") @db.Timestamptz
-  lastActivityAt     DateTime? @map("last_activity_at") @db.Timestamptz
-  pausedReason       String?   @map("paused_reason") @db.VarChar(500)
-  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  accountId          String     @map("account_id") @db.Uuid
+  account            Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  evolutionInstance  String     @map("evolution_instance") @db.VarChar(255)
+  phoneE164          String     @map("phone_e164") @db.VarChar(20)
+  displayName        String?    @map("display_name") @db.VarChar(160)
+  status             String     @default("cold") @db.VarChar(20) // cold | warming | warm | paused | banned | error
+  currentDay         Int        @default(0) @map("current_day")
+  qualityScore       Int        @default(100) @map("quality_score")
+  dailyEnvioPlan     Json?      @map("daily_envio_plan") // plano completo dos dias (array de quotas)
+  dailyEnviadasHoje  Int        @default(0) @map("daily_enviadas_hoje")
+  dailyRecebidasHoje Int        @default(0) @map("daily_recebidas_hoje")
+  startedAt          DateTime?  @map("started_at") @db.Timestamptz
+  lastActivityAt     DateTime?  @map("last_activity_at") @db.Timestamptz
+  pausedReason       String?    @map("paused_reason") @db.VarChar(500)
+  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   conversationsAsA WarmupConversation[] @relation("WarmupConversationNumberA")
   conversationsAsB WarmupConversation[] @relation("WarmupConversationNumberB")
@@ -1798,21 +1888,21 @@ model WarmupConversation {
 
 // WarmupMessage: trace de cada envio (auditoria + replay de qualidade)
 model WarmupMessage {
-  id              String             @id @default(uuid()) @db.Uuid
-  conversationId  String             @map("conversation_id") @db.Uuid
-  conversation    WarmupConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  senderId        String             @map("sender_id") @db.Uuid
-  sender          WarmupNumber       @relation("WarmupMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
-  receiverId      String             @map("receiver_id") @db.Uuid
-  receiver        WarmupNumber       @relation("WarmupMessageReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
-  messageType     String             @map("message_type") @db.VarChar(20) // text | audio | sticker | image | reaction
-  content         String?            @db.Text
-  contentSource   String             @default("template") @map("content_source") @db.VarChar(20) // 'template' | 'openai' | 'anthropic' | 'fallback'
-  evolutionMsgId  String?            @map("evolution_msg_id") @db.VarChar(255)
-  status          String             @default("pending") @db.VarChar(20) // pending | sent | delivered | failed
-  errorMessage    String?            @map("error_message") @db.VarChar(1000)
-  sentAt          DateTime?          @map("sent_at") @db.Timestamptz
-  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  id             String             @id @default(uuid()) @db.Uuid
+  conversationId String             @map("conversation_id") @db.Uuid
+  conversation   WarmupConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String             @map("sender_id") @db.Uuid
+  sender         WarmupNumber       @relation("WarmupMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId     String             @map("receiver_id") @db.Uuid
+  receiver       WarmupNumber       @relation("WarmupMessageReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  messageType    String             @map("message_type") @db.VarChar(20) // text | audio | sticker | image | reaction
+  content        String?            @db.Text
+  contentSource  String             @default("template") @map("content_source") @db.VarChar(20) // 'template' | 'openai' | 'anthropic' | 'fallback'
+  evolutionMsgId String?            @map("evolution_msg_id") @db.VarChar(255)
+  status         String             @default("pending") @db.VarChar(20) // pending | sent | delivered | failed
+  errorMessage   String?            @map("error_message") @db.VarChar(1000)
+  sentAt         DateTime?          @map("sent_at") @db.Timestamptz
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([conversationId, createdAt])
   @@index([senderId, sentAt])
@@ -1821,17 +1911,17 @@ model WarmupMessage {
 
 // WarmupDailyStats: snapshot diario por numero (relatorio + decisao de promocao)
 model WarmupDailyStats {
-  id            String       @id @default(uuid()) @db.Uuid
-  numberId      String       @map("number_id") @db.Uuid
-  number        WarmupNumber @relation(fields: [numberId], references: [id], onDelete: Cascade)
-  date          DateTime     @db.Date
-  protocolDay   Int          @map("protocol_day")
-  plannedSends  Int          @default(0) @map("planned_sends")
-  actualSends   Int          @default(0) @map("actual_sends")
-  actualReceives Int         @default(0) @map("actual_receives")
-  failedSends   Int          @default(0) @map("failed_sends")
-  qualityEnd   Int          @default(100) @map("quality_end")
-  statusEnd    String       @default("warming") @map("status_end") @db.VarChar(20)
+  id             String       @id @default(uuid()) @db.Uuid
+  numberId       String       @map("number_id") @db.Uuid
+  number         WarmupNumber @relation(fields: [numberId], references: [id], onDelete: Cascade)
+  date           DateTime     @db.Date
+  protocolDay    Int          @map("protocol_day")
+  plannedSends   Int          @default(0) @map("planned_sends")
+  actualSends    Int          @default(0) @map("actual_sends")
+  actualReceives Int          @default(0) @map("actual_receives")
+  failedSends    Int          @default(0) @map("failed_sends")
+  qualityEnd     Int          @default(100) @map("quality_end")
+  statusEnd      String       @default("warming") @map("status_end") @db.VarChar(20)
 
   @@unique([numberId, date])
   @@index([date])
@@ -1845,25 +1935,25 @@ model WarmupDailyStats {
 // (relativo a backend/uploads) OU mediaUrl (URL absoluta, override pra CDN).
 // Validacao runtime no service garante coerencia tipo<->mime.
 model WarmupTemplate {
-  id              String   @id @default(uuid()) @db.Uuid
-  accountId       String?  @map("account_id") @db.Uuid
-  account         Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  type            String   @db.VarChar(20) // text | audio | sticker | image | reaction
-  category        String   @db.VarChar(40) // greeting | response | smalltalk | reaction | media
-  content         String   @db.Text
-  weight          Int      @default(1)
-  language        String   @default("pt-BR") @db.VarChar(10)
-  isActive        Boolean  @default(true) @map("is_active")
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String?  @map("account_id") @db.Uuid
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  type      String   @db.VarChar(20) // text | audio | sticker | image | reaction
+  category  String   @db.VarChar(40) // greeting | response | smalltalk | reaction | media
+  content   String   @db.Text
+  weight    Int      @default(1)
+  language  String   @default("pt-BR") @db.VarChar(10)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   // V2: midia (audio/sticker/image). Para type='text' ficam null.
-  mediaPath       String?  @map("media_path") @db.VarChar(500)        // ex: 'warmup/audio/<accountId>/abc.ogg' (relativo a backend/uploads)
-  mediaUrl        String?  @map("media_url") @db.VarChar(1000)        // URL absoluta opcional (override pra CDN/S3 futuro)
-  mediaMimeType   String?  @map("media_mime_type") @db.VarChar(120)   // 'audio/ogg', 'image/webp', etc
-  mediaSizeBytes  Int?     @map("media_size_bytes")
-  mediaDurationMs Int?     @map("media_duration_ms")                  // pra audios
-  fileName        String?  @map("file_name") @db.VarChar(255)
-  uploadedById    String?  @map("uploaded_by_id") @db.Uuid
+  mediaPath       String? @map("media_path") @db.VarChar(500) // ex: 'warmup/audio/<accountId>/abc.ogg' (relativo a backend/uploads)
+  mediaUrl        String? @map("media_url") @db.VarChar(1000) // URL absoluta opcional (override pra CDN/S3 futuro)
+  mediaMimeType   String? @map("media_mime_type") @db.VarChar(120) // 'audio/ogg', 'image/webp', etc
+  mediaSizeBytes  Int?    @map("media_size_bytes")
+  mediaDurationMs Int?    @map("media_duration_ms") // pra audios
+  fileName        String? @map("file_name") @db.VarChar(255)
+  uploadedById    String? @map("uploaded_by_id") @db.Uuid
 
   @@index([type, isActive])
   @@index([accountId])
@@ -1895,7 +1985,6 @@ model PushSubscription {
   @@index([userId])
   @@map("push_subscriptions")
 }
-
 
 // ============================================
 // TRACKING (Meta Ads / CTWA) — módulo de inteligência de rastreamento
@@ -1955,18 +2044,18 @@ model TrackingEvent {
 // KnowledgeBase: um "assunto" de RAG (ex.: "Produto Mychooice", "Objeções").
 // Um agente aponta pra no máximo uma base; várias bases por conta.
 model KnowledgeBase {
-  id          String   @id @default(uuid()) @db.Uuid
-  accountId   String   @map("account_id") @db.Uuid
-  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  name        String   @db.VarChar(120)
-  description String?  @db.Text
+  id              String   @id @default(uuid()) @db.Uuid
+  accountId       String   @map("account_id") @db.Uuid
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name            String   @db.VarChar(120)
+  description     String?  @db.Text
   /// Quem é o negócio, em texto curto. Entra SEMPRE no prompt de qualquer
   /// agente ligado nesta base — não é recuperado por similaridade. Mora aqui e
   /// não no systemPrompt do agente porque, com vários agentes, a descrição
   /// seria copiada em cada um e divergiria no primeiro ajuste.
-  businessContext String? @map("business_context") @db.Text
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  businessContext String?  @map("business_context") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   docs   KnowledgeDoc[]
   chunks KnowledgeChunk[]
@@ -2080,6 +2169,11 @@ model AiAgent {
   /// chave leva a descrição que o modelo lê. Vazio = campo livre (comportamento
   /// de antes desta coluna, que é o de toda a produção existente).
   memoryFields    Json?          @default("[]") @map("memory_fields")
+  /// T-039 — a agenda como HABILIDADE do agente, não bloco do fluxo.
+  /// { ativo: boolean, profissionalIds: string[], produtoIds: string[] }.
+  /// Ligada, as seis ferramentas de agenda entram sozinhas na chamada.
+  /// NULL = desligada (todo agente que já existe).
+  agenda          Json?
   active          Boolean        @default(true)
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
@@ -2088,7 +2182,6 @@ model AiAgent {
   @@index([accountId, active])
   @@map("ai_agents")
 }
-
 
 // ============================================
 // T-028 — MOTOR DE FLUXO DE ATENDIMENTO (Fase 2)
@@ -2155,6 +2248,10 @@ model FlowRun {
   // Quantas vezes este run já acordou = qual toque da cadência é este. Sem
   // contador a cadência não sabe onde está e insiste pra sempre.
   wakeCount      Int       @default(0) @map("wake_count")
+  // T-039 — o run dorme ESPERANDO UMA REUNIÃO (lembrete "X horas antes"), e
+  // não o silêncio do lead. O lead responder cancela follow-up, mas não pode
+  // cancelar o lembrete; e a reunião cair é o que cancela este run.
+  agendaEventoId String?   @map("agenda_evento_id") @db.Uuid
   // Idempotência do gatilho externo: sistema que erra reenvia, e dois "feliz
   // aniversário" é pior que nenhum.
   dedupeKey      String?   @map("dedupe_key") @db.VarChar(200)
@@ -2197,7 +2294,6 @@ model FlowRunStep {
   @@map("flow_run_steps")
 }
 
-
 // ============================================
 // T-029 — DISCADOR (telefonia ativa)
 // ============================================
@@ -2206,29 +2302,29 @@ model FlowRunStep {
 // que uma chamada que nunca conecta ainda apareça no histórico — sem isso, a
 // ligação que falha some e o operador não entende o que aconteceu.
 model Call {
-  id        String  @id @default(uuid()) @db.Uuid
-  accountId String  @map("account_id") @db.Uuid
-  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String   @map("account_id") @db.Uuid
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
   /// Quem discou.
-  userId    String? @map("user_id") @db.Uuid
-  user      User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
-  contactId String? @map("contact_id") @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  contactId String?  @map("contact_id") @db.Uuid
   contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
-  direction String @default("outbound") @db.VarChar(12) // outbound | inbound
+  direction  String  @default("outbound") @db.VarChar(12) // outbound | inbound
   /// Número discado, em E.164 (+5511999999999).
   toNumber   String  @map("to_number") @db.VarChar(30)
   fromNumber String? @map("from_number") @db.VarChar(30)
 
   // queued → ringing → in-progress → completed | no-answer | busy | failed | canceled
-  status String @default("queued") @db.VarChar(20)
+  status          String  @default("queued") @db.VarChar(20)
   /// Sid da Twilio. Nulo enquanto a chamada não foi aceita pelo provedor.
   providerCallSid String? @unique @map("provider_call_sid") @db.VarChar(80)
 
-  durationSec Int?    @map("duration_sec")
+  durationSec  Int?     @map("duration_sec")
   /// Custo informado pelo provedor, em USD. Chega no callback final.
-  priceUsd    Decimal? @map("price_usd") @db.Decimal(10, 5)
-  recordingUrl String? @map("recording_url") @db.Text
+  priceUsd     Decimal? @map("price_usd") @db.Decimal(10, 5)
+  recordingUrl String?  @map("recording_url") @db.Text
 
   /// Resultado que o operador marca (agendou, sem interesse, retornar...).
   disposition String? @db.VarChar(40)

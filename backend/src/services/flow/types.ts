@@ -80,7 +80,14 @@ export interface NodeResult {
    * motor guarda o PRÓXIMO nó e devolve a execução à fila. É o que torna
    * follow-up possível sem segurar um processo por dias.
    */
-  sleep?: { until: Date };
+  sleep?: {
+    until: Date;
+    /**
+     * Acordar NESTE nó, e não no seguinte. Pro nó que precisa reavaliar ao
+     * acordar (o lembrete confere se a reunião ainda existe).
+     */
+    retomarAqui?: boolean;
+  };
 }
 
 export interface NodeDefinition {

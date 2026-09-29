@@ -23,6 +23,10 @@ const createEventSchema = z.object({
     name: z.string(),
     email: z.string().email(),
   })).optional(),
+  // T-039: quem atende e qual serviço. Com profissional, o service recusa
+  // horário sobreposto (409 HORARIO_OCUPADO).
+  profissionalUserId: z.string().uuid().optional(),
+  productId: z.string().uuid().optional(),
   // Flag opcional: permite registrar evento historico/manual no passado
   allowPast: z.boolean().optional(),
 }).superRefine((data, ctx) => {
@@ -80,7 +84,9 @@ const listEventsSchema = z.object({
   startDate: z.string().datetime().optional(),
   endDate: z.string().datetime().optional(),
   type: z.enum(['meeting', 'appointment', 'block', 'other']).optional(),
-  status: z.enum(['scheduled', 'cancelled', 'completed']).optional(),
+  // `held` (T-039) só na listagem: a tela pode mostrar a reserva do agente,
+  // mas ninguém cria/edita reserva à mão.
+  status: z.enum(['scheduled', 'cancelled', 'completed', 'held']).optional(),
   contactId: z.string().uuid().optional(),
 });
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { CalendarView, GoogleConnectModal, EventDialog } from '@/components/calendar';
 import { useCalendar } from '@/contexts/CalendarContext';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -224,6 +225,33 @@ export default function AdminAgendaPage() {
           )}
         </div>
       </div>
+
+      {/* `connection.status === 'error'` é como o contexto traduz
+          `getGoogleStatus().needsReauth` — o botão "Reconectar" já existia no
+          cabeçalho acima, discreto. Este alerta é o mesmo estado, só que
+          impossível de não ver, com o motivo (quando o backend manda um). */}
+      {hasError && (
+        <Alert variant="destructive" className="mb-4">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Sua conexão com o Google expirou</AlertTitle>
+          <AlertDescription className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              {connection.errorMessage ||
+                'Reconecte para os eventos do Google voltarem a sincronizar com o CRM.'}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowConnectModal(true)}
+              disabled={isConnecting}
+              className="shrink-0"
+            >
+              {isConnecting && <RefreshCw className="w-4 h-4 mr-2 animate-spin" />}
+              Reconectar
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
       <CalendarView onNewEvent={handleNewEvent} />
 
