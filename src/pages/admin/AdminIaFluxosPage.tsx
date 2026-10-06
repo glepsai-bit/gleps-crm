@@ -56,6 +56,7 @@ import {
   Clock,
   Eye,
   FlaskConical,
+  ListChecks,
   Pause,
   Play,
   Plus,
@@ -470,6 +471,14 @@ function ListaDeFluxos({ onAbrir }: { onAbrir: (id: string) => void }) {
           >
             <CalendarClock className="w-4 h-4 mr-2" />
             Agenda
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => navigate('/admin/ia/execucoes')}
+            title="O que cada fluxo fez nas conversas: passo a passo, erros e custo"
+          >
+            <ListChecks className="w-4 h-4 mr-2" />
+            Execuções
           </Button>
           <Button
             variant="outline"

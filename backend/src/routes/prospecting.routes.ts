@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { prospectingController } from '../controllers/prospecting.controller';
 import { prospectingAudienceController } from '../controllers/prospecting-audience.controller';
-import { authenticate, requireAccountId, requirePermission } from '../middlewares/auth.middleware';
+import { authenticate, requireAccountId, requirePermission, requireModulo } from '../middlewares/auth.middleware';
 
 const router = Router();
 
-router.use(authenticate, requireAccountId);
+// Módulo "extracao" (ETAPA A): conta sem ele toma 403 MODULO_DESLIGADO.
+router.use(authenticate, requireModulo('extracao'), requireAccountId);
 // AUDIT-RBAC-PROSPECCAO: o front oferece a permissão granular 'extracao'
 // (AgenteFormDialog → "Prospecção") e libera /admin/extracao|/admin/prospeccao
 // para agentes com ela, mas o backend estava requireRole('admin','super_admin')

@@ -43,6 +43,7 @@ import { prismaTest } from '../test/setup';
 import { prisma as prismaSingleton } from '../config/database';
 import { authHeader, apiKeyHeader } from '../test/helpers';
 import { createTestApp } from '../test/app';
+import { MODULOS_OPCIONAIS } from '../config/modulos';
 
 const app = createTestApp();
 
@@ -101,7 +102,11 @@ async function createTenant(name: string): Promise<Tenant> {
   // visibilidade no singleton.
   const { account, user } = await withRetry(() =>
     prismaSingleton.$transaction(async (tx) => {
-      const account = await tx.account.create({ data: { nome: name } });
+      // Todos os módulos ligados: este arquivo bate em /sales e /finance, e o
+      // que está em teste é o isolamento entre contas, não o módulo desligado.
+      const account = await tx.account.create({
+        data: { nome: name, modulos: [...MODULOS_OPCIONAIS] },
+      });
       const user = await tx.user.create({
         data: {
           accountId: account.id,

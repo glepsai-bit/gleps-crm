@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef, type DragEvent } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useModulos } from '@/hooks/useModulos';
 import { useFinance } from '@/contexts/FinanceContext';
 import { CreateSaleDialog } from '@/components/finance/CreateSaleDialog';
 import { LeadCard, CreateStageDialog, SyncIndicator, CreateLeadDialog } from '@/components/kanban';
@@ -76,6 +77,7 @@ interface KanbanLead extends Contact {
 
 export default function AdminKanbanPage() {
   const { user, account } = useAuth();
+  const { ligado: moduloLigado } = useModulos();
   const { contacts, refetchContacts, isLoadingContacts, isSyncingContacts, lastContactsSync, newContactIds } = useFinance();
 
   const [stageTags, setStageTags] = useState<CloudTag[]>([]);
@@ -705,12 +707,14 @@ export default function AdminKanbanPage() {
                 </div>
               </div>
 
-              <div className="pt-4 border-t space-y-2">
-                <Button className="w-full gap-2" onClick={() => handleOpenSaleDialog(selectedLead.id)}>
-                  <DollarSign className="w-4 h-4" />
-                  Registrar Venda
-                </Button>
-              </div>
+              {moduloLigado('vendas') && (
+                <div className="pt-4 border-t space-y-2">
+                  <Button className="w-full gap-2" onClick={() => handleOpenSaleDialog(selectedLead.id)}>
+                    <DollarSign className="w-4 h-4" />
+                    Registrar Venda
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>

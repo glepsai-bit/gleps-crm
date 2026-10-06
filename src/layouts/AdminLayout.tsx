@@ -2,6 +2,8 @@ import { ReactNode, useState, useMemo, useCallback, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useModulos } from '@/hooks/useModulos';
+import type { ModuloChave } from '@/config/modulos.config';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -29,6 +31,7 @@ import {
   LayoutDashboard,
   Users,
   LogOut,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Menu,
@@ -37,7 +40,6 @@ import {
   Kanban,
   DollarSign,
   Wallet,
-  Package,
   Calendar,
   Crosshair,
   Mail,
@@ -54,7 +56,6 @@ import {
   Bot,
   PhoneCall,
   MessagesSquare,
-  ListChecks,
   UserCog,
   Radar,
 } from 'lucide-react';
@@ -117,43 +118,178 @@ interface AdminLayoutProps {
   children: ReactNode;
 }
 
-const adminNavItems = [
-  // Atendimento (operação diária — topo)
-  { title: 'Chat', href: '/admin/chat', icon: MessageCircle },
-  { title: 'Dashboard Chat', href: '/admin/chat/dashboard', icon: BarChart3 },
-  // Funil comercial
-  { title: 'Kanban', href: '/admin/kanban', icon: Kanban },
-  { title: 'Leads', href: '/admin/leads', icon: Users },
-  { title: 'Agenda', href: '/admin/agenda', icon: Calendar },
-  // Negócio
-  { title: 'Vendas', href: '/admin/sales', icon: DollarSign },
-  { title: 'Financeiro', href: '/admin/finance', icon: Wallet },
-  { title: 'Produtos', href: '/admin/products', icon: Package },
-  // Captação / marketing
-  { title: 'Prospecção', href: '/admin/prospeccao', icon: Crosshair },
-  { title: 'Tracking Ads', href: '/admin/tracking', icon: Radar },
-  { title: 'E-mails', href: '/admin/emails', icon: Mail },
-  { title: 'Templates WA', href: '/admin/whatsapp-templates', icon: MessageSquare },
-  { title: 'Aquecimento', href: '/admin/warmup', icon: Flame },
-  // T-027 — Atendimento IA.
-  // UMA porta só: base, agente, fluxo e teste se montam dentro do construtor.
-  // /admin/ia/agentes e /admin/ia/conhecimento continuam existindo como rota
-  // (link antigo não quebra), mas saíram do menu: montar passando por três
-  // telas era o que cansava.
-  { title: 'Atendimento IA', href: '/admin/ia/fluxos', icon: Bot },
-  { title: 'Discador', href: '/admin/discador', icon: PhoneCall },
-  { title: 'Execuções', href: '/admin/ia/execucoes', icon: ListChecks },
-  // Config do Chat (uso ocasional)
-  { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox },
-  { title: 'Equipe', href: '/admin/agentes', icon: UserCog },
-  { title: 'Times', href: '/admin/teams', icon: Users },
-  { title: 'Respostas Rápidas', href: '/admin/canned-responses', icon: Zap },
-  // SLA oculto por decisao do produto ("depois vemos isso"). Rotas/paginas/
-  // service preservados no repo — reversivel. Ver App.tsx.
-  { title: 'Atributos Custom', href: '/admin/custom-attributes', icon: Settings2 },
-  { title: 'Opt-outs WA', href: '/admin/opt-outs', icon: Ban },
-  { title: 'Integrações', href: '/admin/integracoes', icon: Webhook },
+type GrupoDoMenu = 'principal' | 'captacao' | 'opcionais' | 'configuracoes';
+
+interface ItemDoMenu {
+  title: string;
+  href: string;
+  icon: typeof MessageCircle;
+  grupo: GrupoDoMenu;
+  /** Módulo opcional que liga o item. Sem chave = núcleo, sempre visível. */
+  modulo?: ModuloChave;
+}
+
+// Produtos (vira Serviços, dentro da Agenda IA) e Execuções (botão no cabeçalho
+// dos fluxos) saíram do menu; as rotas continuam existindo.
+// SLA oculto por decisao do produto ("depois vemos isso"). Rotas/paginas/
+// service preservados no repo — reversivel. Ver App.tsx.
+const adminNavItems: ItemDoMenu[] = [
+  { title: 'Chat', href: '/admin/chat', icon: MessageCircle, grupo: 'principal' },
+  { title: 'Dashboard', href: '/admin/chat/dashboard', icon: BarChart3, grupo: 'principal' },
+  { title: 'Kanban', href: '/admin/kanban', icon: Kanban, grupo: 'principal' },
+  { title: 'Leads', href: '/admin/leads', icon: Users, grupo: 'principal' },
+  { title: 'Agenda', href: '/admin/agenda', icon: Calendar, grupo: 'principal' },
+  // T-027 — Atendimento IA. UMA porta só: base, agente, fluxo e teste se montam
+  // dentro do construtor. /admin/ia/agentes e /admin/ia/conhecimento continuam
+  // como rota (link antigo não quebra), mas saíram do menu.
+  { title: 'Atendimento IA', href: '/admin/ia/fluxos', icon: Bot, grupo: 'principal' },
+  { title: 'Tracking Ads', href: '/admin/tracking', icon: Radar, grupo: 'principal' },
+  // Captação (ligados por padrão, mas desligáveis por conta)
+  { title: 'Extração', href: '/admin/prospeccao', icon: Crosshair, grupo: 'captacao', modulo: 'extracao' },
+  { title: 'Disparos', href: '/admin/whatsapp-templates', icon: MessageSquare, grupo: 'captacao', modulo: 'disparos' },
+  // Opcionais: só aparecem onde o super admin ligou
+  { title: 'E-mails', href: '/admin/emails', icon: Mail, grupo: 'opcionais', modulo: 'emails' },
+  { title: 'Discador', href: '/admin/discador', icon: PhoneCall, grupo: 'opcionais', modulo: 'discador' },
+  { title: 'Vendas', href: '/admin/sales', icon: DollarSign, grupo: 'opcionais', modulo: 'vendas' },
+  { title: 'Financeiro', href: '/admin/finance', icon: Wallet, grupo: 'opcionais', modulo: 'vendas' },
+  { title: 'Aquecimento', href: '/admin/warmup', icon: Flame, grupo: 'opcionais', modulo: 'aquecimento' },
+  // Configurações (uso ocasional; grupo recolhível)
+  { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox, grupo: 'configuracoes' },
+  { title: 'Equipe', href: '/admin/agentes', icon: UserCog, grupo: 'configuracoes' },
+  { title: 'Times', href: '/admin/teams', icon: Users, grupo: 'configuracoes' },
+  { title: 'Respostas Rápidas', href: '/admin/canned-responses', icon: Zap, grupo: 'configuracoes' },
+  { title: 'Atributos Custom', href: '/admin/custom-attributes', icon: Settings2, grupo: 'configuracoes' },
+  { title: 'Opt-outs WA', href: '/admin/opt-outs', icon: Ban, grupo: 'configuracoes' },
+  { title: 'Integrações', href: '/admin/integracoes', icon: Webhook, grupo: 'configuracoes' },
 ];
+
+const TITULO_DO_GRUPO: Partial<Record<GrupoDoMenu, string>> = {
+  captacao: 'Captação',
+  opcionais: 'Opcionais',
+  configuracoes: 'Configurações',
+};
+const ORDEM_DOS_GRUPOS: GrupoDoMenu[] = ['principal', 'captacao', 'opcionais', 'configuracoes'];
+
+const CHAVE_CONFIG_ABERTA = 'gleps_menu_configuracoes_aberto';
+
+function lerConfigAberta(): boolean {
+  try {
+    return localStorage.getItem(CHAVE_CONFIG_ABERTA) === '1';
+  } catch {
+    return false; // localStorage bloqueado: começa recolhido
+  }
+}
+
+function gravarConfigAberta(aberto: boolean): void {
+  try {
+    localStorage.setItem(CHAVE_CONFIG_ABERTA, aberto ? '1' : '0');
+  } catch {
+    /* sem persistência, o menu continua funcionando */
+  }
+}
+
+interface MenuDeNavegacaoProps {
+  itens: ItemDoMenu[];
+  pathname: string;
+  variante: 'desktop' | 'mobile';
+  /** Sidebar desktop estreita: só ícones, sem títulos de grupo nem recolher. */
+  compacto?: boolean;
+  configAberta: boolean;
+  onAlternarConfig: () => void;
+  onNavegar?: () => void;
+}
+
+function MenuDeNavegacao({
+  itens,
+  pathname,
+  variante,
+  compacto = false,
+  configAberta,
+  onAlternarConfig,
+  onNavegar,
+}: MenuDeNavegacaoProps) {
+  const mobile = variante === 'mobile';
+
+  const renderItem = (item: ItemDoMenu) => {
+    const isActive = pathname === item.href;
+    return (
+      <Link
+        key={item.href}
+        to={item.href}
+        onClick={onNavegar}
+        aria-current={isActive ? 'page' : undefined}
+        title={compacto ? item.title : undefined}
+        className={cn(
+          'flex items-center gap-3 rounded-lg transition-all',
+          mobile ? 'justify-start px-4 py-3 touch-target text-left' : 'px-3 py-2.5',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar',
+          isActive
+            ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+            : 'text-sidebar-foreground hover:bg-sidebar-accent'
+        )}
+      >
+        <item.icon className={cn('w-5 h-5 flex-shrink-0', compacto && 'mx-auto')} />
+        {!compacto && <span className="font-medium">{item.title}</span>}
+      </Link>
+    );
+  };
+
+  return (
+    <nav className="p-3 space-y-1">
+      {ORDEM_DOS_GRUPOS.map((grupo) => {
+        const doGrupo = itens.filter((i) => i.grupo === grupo);
+        if (doGrupo.length === 0) return null;
+        const titulo = TITULO_DO_GRUPO[grupo];
+
+        if (!titulo) return <div key={grupo} className="space-y-1">{doGrupo.map(renderItem)}</div>;
+
+        // Sidebar estreita não tem onde escrever o título: vira um filete e os
+        // ícones ficam sempre à mostra (recolher esconderia tudo sem pista).
+        if (compacto) {
+          return (
+            <div key={grupo} className="space-y-1 pt-2 mt-2 border-t border-sidebar-border">
+              {doGrupo.map(renderItem)}
+            </div>
+          );
+        }
+
+        if (grupo === 'configuracoes') {
+          // Estando numa tela de configuração o grupo não pode estar fechado.
+          const ativoDentro = doGrupo.some((i) => i.href === pathname);
+          const aberto = configAberta || ativoDentro;
+          return (
+            <div key={grupo} className="pt-2 mt-2 border-t border-sidebar-border">
+              <button
+                type="button"
+                onClick={onAlternarConfig}
+                aria-expanded={aberto}
+                aria-controls="menu-grupo-configuracoes"
+                className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-sidebar-muted hover:text-sidebar-foreground rounded-lg"
+              >
+                <span>{titulo}</span>
+                <ChevronDown className={cn('w-4 h-4 transition-transform', !aberto && '-rotate-90')} />
+              </button>
+              {aberto && (
+                <div id="menu-grupo-configuracoes" className="space-y-1 mt-1">
+                  {doGrupo.map(renderItem)}
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        return (
+          <div key={grupo} className="pt-2 mt-2 border-t border-sidebar-border">
+            <p className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-sidebar-muted">
+              {titulo}
+            </p>
+            <div className="space-y-1">{doGrupo.map(renderItem)}</div>
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -163,10 +299,22 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Filter nav items based on user permissions
+  const { ligado } = useModulos();
+  const [configAberta, setConfigAberta] = useState<boolean>(lerConfigAberta);
+  const alternarConfig = useCallback(() => {
+    setConfigAberta((atual) => {
+      gravarConfigAberta(!atual);
+      return !atual;
+    });
+  }, []);
+
+  // Dois filtros independentes: permissão do agente (já existia) E módulo
+  // ligado na conta (novo). Um item some se qualquer um dos dois negar.
   const visibleNavItems = useMemo(() => {
-    return adminNavItems.filter(item => canAccessRoute(item.href));
-  }, [canAccessRoute]);
+    return adminNavItems.filter(
+      (item) => canAccessRoute(item.href) && (!item.modulo || ligado(item.modulo)),
+    );
+  }, [canAccessRoute, ligado]);
 
   const handleExitImpersonation = useCallback(() => {
     exitImpersonation();
@@ -367,28 +515,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         {/* Navigation - flex-1 + min-h-0 garante que o nav cresça e role,
             nunca sobrepondo o footer (Critical #7: viewport <800px). */}
         <ScrollArea className="flex-1 min-h-0">
-          <nav className="p-3 space-y-1">
-            {visibleNavItems.map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  to={item.href}
-                  aria-current={isActive ? 'page' : undefined}
-                  className={cn(
-                    'flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar',
-                    isActive
-                      ? 'bg-sidebar-primary text-sidebar-primary-foreground'
-                      : 'text-sidebar-foreground hover:bg-sidebar-accent'
-                  )}
-                >
-                  <item.icon className={cn('w-5 h-5 flex-shrink-0', collapsed && 'mx-auto')} />
-                  {!collapsed && <span className="font-medium">{item.title}</span>}
-                </Link>
-              );
-            })}
-          </nav>
+          <MenuDeNavegacao
+            itens={visibleNavItems}
+            pathname={location.pathname}
+            variante="desktop"
+            compacto={collapsed}
+            configAberta={configAberta}
+            onAlternarConfig={alternarConfig}
+          />
         </ScrollArea>
 
         {/* User Menu - footer no fim do flex-col, sem absolute */}
@@ -481,29 +615,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         )}
       >
         <ScrollArea className="flex-1 min-h-0">
-          <nav className="p-3 space-y-1">
-            {visibleNavItems.map((item) => {
-              const isActive = location.pathname === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  to={item.href}
-                  onClick={() => setMobileOpen(false)}
-                  aria-current={isActive ? 'page' : undefined}
-                  className={cn(
-                    'flex items-center justify-start gap-3 px-4 py-3 rounded-lg transition-all touch-target text-left',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar',
-                    isActive
-                      ? 'bg-sidebar-primary text-sidebar-primary-foreground'
-                      : 'text-sidebar-foreground hover:bg-sidebar-accent'
-                  )}
-                >
-                  <item.icon className="w-5 h-5 flex-shrink-0" />
-                  <span className="font-medium">{item.title}</span>
-                </Link>
-              );
-            })}
-          </nav>
+          <MenuDeNavegacao
+            itens={visibleNavItems}
+            pathname={location.pathname}
+            variante="mobile"
+            configAberta={configAberta}
+            onAlternarConfig={alternarConfig}
+            onNavegar={() => setMobileOpen(false)}
+          />
         </ScrollArea>
         <div className="flex-shrink-0 p-3 border-t border-sidebar-border safe-area-bottom">
           <Button

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requireAccountId, requirePermission, requireRole } from '../middlewares/auth.middleware';
+import { authenticate, requireAccountId, requirePermission, requireRole, requireModulo } from '../middlewares/auth.middleware';
 import { requireApiKey, requireScope } from '../middlewares/apiKey.middleware';
 import { whatsappCampaignController } from '../controllers/whatsapp-campaign.controller';
 
@@ -8,6 +8,10 @@ import { whatsappCampaignController } from '../controllers/whatsapp-campaign.con
 // ============================================
 const jwtRouter = Router();
 jwtRouter.use(authenticate);
+// Módulo "disparos" (ETAPA A). Vale pros dois mounts (/whatsapp/campaigns e
+// /dispatch). O apiKeyRouter abaixo (integrações n8n/IA) fica de fora de
+// propósito: a chave de API tem escopo próprio e não carrega req.account.
+jwtRouter.use(requireModulo('disparos'));
 jwtRouter.use(requireRole('super_admin', 'admin'));
 jwtRouter.use(requireAccountId);
 

@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import { audienceController } from '../controllers/audience.controller';
-import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
+import { authenticate, requirePermission, requireAccountId, requireModulo } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 router.use(authenticate);
+// Audiências são parte do módulo "emails" (ETAPA A).
+router.use(requireModulo('emails'));
 router.use(requireAccountId);
 
 // Audiences CRUD

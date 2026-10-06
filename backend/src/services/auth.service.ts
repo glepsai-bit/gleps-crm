@@ -34,6 +34,8 @@ export interface LoginResult {
     nome: string;
     status: string;
     timezone: string;
+    /** Módulos opcionais ligados — o front monta o menu a partir daqui. */
+    modulos: string[];
   } | null;
   token: string;
   refreshToken: string;
@@ -160,6 +162,7 @@ class AuthService {
         nome: user.account.nome,
         status: user.account.status,
         timezone: user.account.timezone,
+        modulos: user.account.modulos,
       } : null,
       token,
       refreshToken,
@@ -322,6 +325,7 @@ class AuthService {
         status: user.account.status,
         timezone: user.account.timezone,
         plano: user.account.plano,
+        modulos: user.account.modulos,
       } : null,
     };
   }

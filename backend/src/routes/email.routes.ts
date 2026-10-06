@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { emailController, emailWebhookController } from '../controllers/email.controller';
-import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
+import { authenticate, requirePermission, requireAccountId, requireModulo } from '../middlewares/auth.middleware';
 
 const router = Router();
 
@@ -9,6 +9,9 @@ router.post('/webhook/sendgrid', (req, res, next) => emailWebhookController.hand
 
 // ==================== AUTHENTICATED ROUTES ====================
 router.use(authenticate);
+// Módulo "emails" (ETAPA A) — depois do authenticate (precisa do req.account)
+// e depois do webhook público acima (o SendGrid não tem conta nem token).
+router.use(requireModulo('emails'));
 router.use(requireAccountId);
 
 // Cadences

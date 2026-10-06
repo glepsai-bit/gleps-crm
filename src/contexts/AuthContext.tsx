@@ -21,6 +21,8 @@ interface Account {
   id: string;
   nome: string;
   status: 'active' | 'paused' | 'cancelled';
+  /** Módulos opcionais ligados (chaves de modulos.config.ts). Ausente = todos. */
+  modulos?: string[];
 }
 
 interface AuthState {

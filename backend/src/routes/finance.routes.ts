@@ -4,12 +4,15 @@ import {
   authenticate,
   requirePermission,
   requireAccountId,
+  requireModulo,
 } from '../middlewares/auth.middleware';
 
 const router = Router();
 
-// All routes require authentication and finance permission
-router.use(authenticate, requirePermission('finance'));
+// All routes require authentication and finance permission.
+// Módulo "vendas" (ETAPA A) vem antes da permissão: conta sem o módulo
+// recebe MODULO_DESLIGADO, não PERMISSION_DENIED — o front trata diferente.
+router.use(authenticate, requireModulo('vendas'), requirePermission('finance'));
 /**
  * `requireAccountId` depois do `authenticate`: os controllers desta rota leem
  * `req.user!.accountId!`, e esse `!` mente — a coluna é nullable, e um

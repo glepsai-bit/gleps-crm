@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { accountService } from '../services/account.service';
 import { AuthenticatedRequest } from '../types';
 import { getPaginationParams } from '../utils/helpers';
+import { MODULOS_OPCIONAIS } from '../config/modulos';
 
 // Validation schemas
 // Pré-trata strings vazias como undefined antes da validação de URL,
@@ -41,6 +42,14 @@ const updateAccountSchema = createAccountSchema.partial().extend({
   sendgridApiKey: z.string().optional().nullable(),
   sendgridFromEmail: z.string().email().optional().nullable(),
   sendgridFromName: z.string().optional().nullable(),
+  // ETAPA A: lista completa dos módulos ligados. Só chaves conhecidas, sem
+  // repetição — o super admin manda o estado final dos switches.
+  modulos: z
+    .array(z.enum(MODULOS_OPCIONAIS))
+    .refine((lista) => new Set(lista).size === lista.length, {
+      message: 'Chave de módulo repetida',
+    })
+    .optional(),
 });
 
 const listAccountsSchema = z.object({

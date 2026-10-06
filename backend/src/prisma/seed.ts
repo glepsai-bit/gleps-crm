@@ -60,6 +60,8 @@ async function main() {
       status: 'active',
       limiteUsuarios: 20,
       timezone: 'America/Sao_Paulo',
+      // Conta demo vê tudo (ETAPA A): é nela que se mostra o produto inteiro.
+      modulos: ['extracao', 'disparos', 'emails', 'discador', 'vendas', 'aquecimento'],
     },
   });
   console.log('✅ Account created:', account1.nome);

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { campaignController } from '../controllers/campaign.controller';
 import { inboxController } from '../controllers/inbox.controller';
-import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
+import { authenticate, requirePermission, requireAccountId, requireModulo } from '../middlewares/auth.middleware';
 
 // ==================== PUBLIC WEBHOOK ROUTER (no auth) ====================
 // CRITICAL #6 fix: rota pública precisa ficar em um router separado,
@@ -15,6 +15,8 @@ const router = Router();
 
 // ==================== AUTHENTICATED ROUTES ====================
 router.use(authenticate);
+// Módulo "emails" (ETAPA A). O inboundWebhookRouter acima fica de fora.
+router.use(requireModulo('emails'));
 router.use(requireAccountId);
 
 // Campaigns

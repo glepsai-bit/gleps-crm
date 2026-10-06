@@ -5,12 +5,15 @@ import {
   requireAccountId,
   requirePermission,
   requireRole,
+  requireModulo,
 } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // All routes require authentication and an account context
 router.use(authenticate);
+// Módulo "disparos" (ETAPA A): templates só existem pra disparar.
+router.use(requireModulo('disparos'));
 router.use(requireRole('super_admin', 'admin'));
 router.use(requireAccountId);
 

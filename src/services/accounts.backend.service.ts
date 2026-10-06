@@ -32,6 +32,7 @@ function mapAccount(raw: any): Account {
     created_at: raw.createdAt ?? raw.created_at ?? new Date().toISOString(),
     updated_at: raw.updatedAt ?? raw.updated_at ?? new Date().toISOString(),
     users_count: raw.usersCount ?? raw.users_count ?? 0,
+    modulos: Array.isArray(raw.modulos) ? raw.modulos : undefined,
   };
 }
 
@@ -82,6 +83,7 @@ export const accountsBackendService = {
       evolutionBaseUrl: input.evolution_base_url,
       evolutionApiKey: input.evolution_api_key,
       evolutionInstance: input.evolution_instance,
+      modulos: input.modulos,
     });
     const raw = response?.data ?? response;
     return mapAccount(raw);

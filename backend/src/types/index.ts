@@ -28,6 +28,8 @@ export interface AuthenticatedRequest extends Request {
     nome: string;
     status: AccountStatus;
     timezone: string;
+    /** Chaves de módulo ligadas (src/config/modulos.ts). Lido por requireModulo. */
+    modulos: string[];
   };
 }
 

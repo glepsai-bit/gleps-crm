@@ -23,6 +23,8 @@ export interface Account {
   created_at: string;
   updated_at: string;
   users_count?: number;
+  /** Módulos opcionais ligados. Ausente = servidor sem o recurso (tratar como todos). */
+  modulos?: string[];
 }
 
 export interface CreateAccountInput {
@@ -41,6 +43,7 @@ export interface CreateAccountInput {
 }
 
 export interface UpdateAccountInput {
+  modulos?: string[];
   nome?: string;
   status?: 'active' | 'paused' | 'cancelled';
   plano?: string;
@@ -155,9 +158,11 @@ export const accountsCloudService = {
    * Update an account
    */
   async update(id: string, input: UpdateAccountInput): Promise<Account> {
+    // `modulos` só existe no backend Express; a tabela do Supabase não tem a coluna.
+    const { modulos: _modulos, ...campos } = input;
     const { data, error } = await supabase
       .from('accounts')
-      .update(input)
+      .update(campos)
       .eq('id', id)
       .select()
       .single();

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useMemo, ReactNode, useCallback, useEffect, useRef } from 'react';
 import { Sale, SaleItem, Contact, LeadFunnelState, SaleStatus, PaymentMethod, Product, ContactOrigin, LeadNote } from '@/types/crm';
 import { useAuth } from '@/contexts/AuthContext';
+import { useModulos } from '@/hooks/useModulos';
 import { useTagContext } from '@/contexts/TagContext';
 import { useBackend } from '@/config/backend.config';
 import { supabase } from '@/integrations/supabase/client';
@@ -135,6 +136,8 @@ interface FinanceProviderProps {
 
 export function FinanceProvider({ children, accountId }: FinanceProviderProps) {
   const { user } = useAuth();
+  const { ligado } = useModulos();
+  const vendasLigado = ligado('vendas');
   let tagContext: ReturnType<typeof useTagContext> | null = null;
   try {
     tagContext = useTagContext();
@@ -163,6 +166,8 @@ export function FinanceProvider({ children, accountId }: FinanceProviderProps) {
   // Fetch sales from database
   const fetchSalesFromDb = useCallback(async () => {
     if (!accountId) return;
+    // Módulo Vendas desligado: /sales responde 403 MODULO_DESLIGADO; nem chama.
+    if (!vendasLigado) return;
     try {
       if (useBackend) {
         const mapped = await financeBackendService.fetchSales(accountId);
@@ -210,7 +215,7 @@ export function FinanceProvider({ children, accountId }: FinanceProviderProps) {
     } catch (err) {
       console.error('Error fetching sales:', err);
     }
-  }, [accountId]);
+  }, [accountId, vendasLigado]);
 
   // Fetch products from database
   const fetchProductsFromDb = useCallback(async () => {

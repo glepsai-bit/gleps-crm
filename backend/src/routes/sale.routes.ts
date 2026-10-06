@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { saleController } from '../controllers/sale.controller';
-import { authenticate, requirePermission, verifyPassword, requireAccountId } from '../middlewares/auth.middleware';
+import { authenticate, requirePermission, verifyPassword, requireAccountId, requireModulo } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // All routes require authentication + accountId
 router.use(authenticate);
+// Módulo "vendas" (ETAPA A): Vendas e Financeiro ligam e desligam juntos.
+router.use(requireModulo('vendas'));
 router.use(requireAccountId);
 
 router.get('/', requirePermission('sales', 'finance'), (req, res, next) => saleController.list(req, res, next));

@@ -38,8 +38,8 @@ export class UnauthorizedError extends AppError {
 }
 
 export class ForbiddenError extends AppError {
-  constructor(message: string = 'Acesso negado') {
-    super(message, 403, resolveCode(message, 'FORBIDDEN'));
+  constructor(message: string = 'Acesso negado', details?: Record<string, unknown>) {
+    super(message, 403, resolveCode(message, 'FORBIDDEN'), details);
   }
 }
 
@@ -101,6 +101,9 @@ export const ErrorCodes = {
   PERMISSION_DENIED: 'Permissão negada',
   SUPER_ADMIN_REQUIRED: 'Apenas Super Admin pode realizar esta ação',
   ADMIN_REQUIRED: 'Apenas Admin pode realizar esta ação',
+  // Módulo opcional desligado nesta conta (ETAPA A). O front usa o código
+  // pra redirecionar ao /admin/chat em vez de mostrar "sem permissão".
+  MODULO_DESLIGADO: 'Este módulo não está ativo nesta conta',
 } as const;
 
 // Populate reverse lookup: message → KEY (machine-readable code)

@@ -94,6 +94,21 @@ router.use('/v1', (req, res) => {
   });
 });
 
+// ETAPA A — módulos opcionais por conta (src/config/modulos.ts).
+// O `requireModulo(chave)` fica DENTRO de cada router, logo após o
+// `authenticate` dele, porque precisa do req.account e porque vários desses
+// routers têm rota pública antes do authenticate (webhook SendGrid em
+// /email, Twilio em /voice) que não pode tomar 401 por falta de conta.
+// Mapa:
+//   extracao    → /prospecting
+//   disparos    → /whatsapp-templates, /whatsapp/campaigns, /dispatch
+//                 (NÃO os routers por API key em /integrations/*)
+//   emails      → /email (emailRoutes + emailExtendedRoutes), /email/audiences
+//                 (NÃO /email/inbound nem /email/webhook/sendgrid)
+//   discador    → /voice (voiceRoutes; NÃO voicePublicRoutes)
+//   vendas      → /sales, /finance  (/products é núcleo: vira Serviços)
+//   aquecimento → /warmup
+
 // API routes
 router.use('/auth', authRoutes);
 router.use('/accounts', accountRoutes);

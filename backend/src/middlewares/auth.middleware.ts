@@ -6,6 +6,7 @@ import { env } from '../config/env';
 import { AuthenticatedRequest, JwtPayload } from '../types';
 import { UnauthorizedError, ForbiddenError, ErrorCodes } from '../utils/errors';
 import { UserRole } from '@prisma/client';
+import { ModuloOpcional } from '../config/modulos';
 
 /**
  * Middleware to authenticate JWT token
@@ -82,6 +83,8 @@ export async function authenticate(
         nome: user.account.nome,
         status: user.account.status,
         timezone: user.account.timezone,
+        // Já veio no include acima — requireModulo lê daqui sem query extra.
+        modulos: user.account.modulos,
       };
     }
 
@@ -165,6 +168,42 @@ export function requirePermission(...permissions: string[]) {
 
     if (!hasPermission) {
       return next(new ForbiddenError(ErrorCodes.PERMISSION_DENIED));
+    }
+
+    next();
+  };
+}
+
+/**
+ * Exige que a conta tenha o módulo opcional ligado (ETAPA A).
+ *
+ * Vai DEPOIS de `authenticate` em cada router de módulo (não em routes/index.ts),
+ * porque precisa do `req.account` que o authenticate monta — e porque vários
+ * desses routers têm rota pública antes do authenticate (webhook do SendGrid
+ * em /email, Twilio em /voice) que não pode tomar 401 por falta de conta.
+ *
+ * - super_admin passa: ele administra os módulos, não é cliente deles.
+ * - sem req.account → 401 (middleware mal posicionado ou token sem conta).
+ * - conta sem o módulo → 403 MODULO_DESLIGADO. Não é PERMISSION_DENIED de
+ *   propósito: o front trata um como "fale com o admin" e o outro como
+ *   "módulo não contratado" (redireciona pro chat).
+ */
+export function requireModulo(modulo: ModuloOpcional) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      return next(new UnauthorizedError());
+    }
+
+    if (req.user.role === 'super_admin') {
+      return next();
+    }
+
+    if (!req.account) {
+      return next(new UnauthorizedError());
+    }
+
+    if (!req.account.modulos.includes(modulo)) {
+      return next(new ForbiddenError(ErrorCodes.MODULO_DESLIGADO, { modulo }));
     }
 
     next();

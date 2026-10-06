@@ -27,11 +27,14 @@ import {
   authenticate,
   requireAccountId,
   requireRole,
+  requireModulo,
 } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 router.use(authenticate);
+// Módulo "aquecimento" (ETAPA A).
+router.use(requireModulo('aquecimento'));
 router.use(requireAccountId);
 router.use(requireRole('admin', 'super_admin'));
 

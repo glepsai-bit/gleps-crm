@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { ModulosDaContaCard } from '@/components/super-admin/ModulosDaContaCard';
 import {
   Dialog,
   DialogContent,
@@ -657,6 +658,13 @@ export default function SuperAdminAccountDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Módulos opcionais (menu + 403 no servidor) */}
+      <ModulosDaContaCard
+        accountId={account.id}
+        modulos={account.modulos}
+        onSalvo={(modulos) => setAccount({ ...account, modulos })}
+      />
 
       {/* API Keys */}
       <Card className="card-gradient border-border/50">

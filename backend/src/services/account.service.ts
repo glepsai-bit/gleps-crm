@@ -1,9 +1,30 @@
 import { prisma } from '../config/database';
 import { AccountStatus } from '@prisma/client';
 import { PaginationParams } from '../types';
-import { NotFoundError, ConflictError, ErrorCodes } from '../utils/errors';
+import { NotFoundError, ConflictError, ErrorCodes, ValidationError } from '../utils/errors';
 import { getPaginationMeta, escapeLike } from '../utils/helpers';
 import { eventService } from './event.service';
+import { MODULOS_PADRAO_CONTA_NOVA, isModuloOpcional } from '../config/modulos';
+
+/**
+ * Conferência do `modulos` no service (o controller já valida com zod, mas o
+ * service é chamado de outros lugares — seed, scripts — e é a última porta
+ * antes do banco). Chave inválida ou repetida é recusada, nunca "limpa" em
+ * silêncio: um super admin que digitou errado precisa saber.
+ */
+export function validarModulos(modulos: unknown): string[] {
+  if (!Array.isArray(modulos)) {
+    throw new ValidationError('modulos deve ser uma lista de chaves de módulo');
+  }
+  const invalidas = modulos.filter((m) => !isModuloOpcional(m));
+  if (invalidas.length > 0) {
+    throw new ValidationError('Chave de módulo inválida', { invalidas });
+  }
+  if (new Set(modulos).size !== modulos.length) {
+    throw new ValidationError('Chave de módulo repetida', { modulos });
+  }
+  return modulos as string[];
+}
 
 const SENSITIVE_KEYS = [
   'evolutionApiKey',
@@ -56,6 +77,8 @@ export interface UpdateAccountInput extends Partial<CreateAccountInput> {
   sendgridApiKey?: string | null;
   sendgridFromEmail?: string | null;
   sendgridFromName?: string | null;
+  /** Lista completa dos módulos ligados (substitui, não mescla). */
+  modulos?: string[];
 }
 
 export interface AccountFilters {
@@ -165,6 +188,8 @@ class AccountService {
           googleClientId: input.googleClientId,
           googleClientSecret: input.googleClientSecret,
           googleRedirectUri: input.googleRedirectUri,
+          // Conta nova nasce só com captação; o super admin liga o resto.
+          modulos: [...MODULOS_PADRAO_CONTA_NOVA],
         },
       });
 
@@ -189,7 +214,7 @@ class AccountService {
       });
 
       return created;
-    });
+    }, { timeout: 15_000 });
 
     return account;
   }
@@ -200,9 +225,12 @@ class AccountService {
   async update(id: string, input: UpdateAccountInput, updatedById?: string) {
     const existing = await this.getById(id);
 
+    const modulos = input.modulos !== undefined ? validarModulos(input.modulos) : undefined;
+
     const account = await prisma.account.update({
       where: { id },
       data: {
+        modulos,
         nome: input.nome,
         plano: input.plano,
         limiteUsuarios: input.limiteUsuarios,

@@ -39,6 +39,9 @@ model Account {
   monthlyExtractionLimit Int?          @default(500) @map("monthly_extraction_limit")
   monthlyEmailLimit      Int?          @default(3000) @map("monthly_email_limit")
   dailyEmailLimit        Int?          @default(100) @map("daily_email_limit")
+  /// Módulos opcionais ligados nesta conta (chaves em src/config/modulos.ts).
+  /// Vazio no banco = nada opcional; conta nova recebe o padrão no service.
+  modulos                String[]      @default([]) @map("modulos")
 
   // Evolution API Integration (WhatsApp non-official) — T-022 FitPark
   // @deprecated Usar SystemSettings global. Estes campos permanecem como override

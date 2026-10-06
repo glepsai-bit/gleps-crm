@@ -37,6 +37,8 @@ function normalizeAccount(raw: any): Account | null {
     id: raw.id,
     nome: raw.nome,
     status: raw.status,
+    // Ausente = servidor antigo/cache velho: o front trata como "todos ligados".
+    modulos: Array.isArray(raw.modulos) ? raw.modulos : undefined,
   };
 }
 
@@ -55,6 +57,8 @@ interface Account {
   id: string;
   nome: string;
   status: 'active' | 'paused' | 'cancelled';
+  /** Módulos opcionais ligados (chaves de modulos.config.ts). Ausente = todos. */
+  modulos?: string[];
 }
 
 interface AuthState {

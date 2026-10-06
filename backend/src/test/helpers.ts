@@ -9,6 +9,7 @@ import * as crypto from 'crypto';
 import { randomUUID } from 'crypto';
 import { prismaTest } from './setup';
 import { authService } from '../services/auth.service';
+import { MODULOS_OPCIONAIS } from '../config/modulos';
 
 export interface TestAccountResult {
   account: { id: string; nome: string };
@@ -34,8 +35,11 @@ export async function createTestAccount(overrides?: {
   const accountName = overrides?.accountName ?? 'Test Account';
   const userName = overrides?.userName ?? 'Test Admin';
 
+  // Conta de teste nasce com TODOS os módulos (como uma conta que já existia
+  // antes da ETAPA A): os testes de /email, /sales, /warmup etc. exercitam o
+  // módulo, não o bloqueio. O bloqueio tem teste próprio (auth.middleware.modulos).
   const account = await prismaTest.account.create({
-    data: { nome: accountName },
+    data: { nome: accountName, modulos: [...MODULOS_OPCIONAIS] },
   });
 
   const passwordHash = await bcrypt.hash(password, 10);

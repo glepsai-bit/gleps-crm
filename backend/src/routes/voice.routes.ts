@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { voiceController } from '../controllers/voice.controller';
-import { authenticate, requireAdmin, requireAccountId } from '../middlewares/auth.middleware';
+import { authenticate, requireAdmin, requireAccountId, requireModulo } from '../middlewares/auth.middleware';
 
 /**
  * T-029 — Discador.
@@ -29,6 +29,9 @@ voicePublicRoutes.post('/recording', (req, res) => voiceController.recording(req
 const router = Router();
 
 router.use(authenticate);
+// Módulo "discador" (ETAPA A). Só aqui — as rotas públicas da operadora
+// acima não têm conta pra conferir e precisam continuar respondendo.
+router.use(requireModulo('discador'));
 router.use(requireAccountId);
 
 router.get('/token', (req, res, next) => voiceController.token(req, res, next));
