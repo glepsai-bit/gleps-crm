@@ -19,6 +19,8 @@ export interface Tag {
   type: 'stage' | 'operational';
   color: string;
   ordem: number;
+  /** Etapa fixa do funil ('fechamento' | 'perda'); null = etapa comum. */
+  papel?: 'fechamento' | 'perda' | null;
   ativo: boolean;
   created_at: string;
 }

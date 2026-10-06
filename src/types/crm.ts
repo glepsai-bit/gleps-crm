@@ -7,7 +7,7 @@ export type UserStatus = 'active' | 'inactive' | 'suspended';
 export type ConversationStatus = 'open' | 'pending' | 'resolved';
 export type AssigneeType = 'user' | 'agent_bot';
 export type SaleStatus = 'pending' | 'paid' | 'refunded' | 'partial_refund';
-export type PaymentMethod = 'pix' | 'boleto' | 'debito' | 'credito' | 'dinheiro' | 'convenio';
+export type PaymentMethod = 'pix' | 'boleto' | 'debito' | 'credito' | 'dinheiro' | 'convenio' | 'nao_informado';
 export type ActorType = 'user' | 'agent_bot' | 'system' | 'external';
 export type TransactionType = 'charge' | 'refund';
 export type ContactOrigin = 'whatsapp' | 'instagram' | 'site' | 'indicacao' | 'outro';
@@ -53,6 +53,11 @@ export interface AgentBot {
 
 // ============= CONTACTS & CONVERSATIONS =============
 
+export interface Fechamento {
+  valor: number | null;
+  em: string; // ISO
+}
+
 export interface Contact {
   id: string;
   account_id: string;
@@ -69,6 +74,12 @@ export interface Contact {
    */
   profile_pic_url?: string | null;
   profilePicUrl?: string | null;
+  /**
+   * Última venda originada de fechamento (soltar o lead na etapa fixa de
+   * fechamento). `valor: null` = fechou sem informar valor (venda pendente).
+   * `null`/ausente = o lead nunca fechou.
+   */
+  fechamento?: Fechamento | null;
   followup_count?: number;
   last_followup_at?: string | null;
   created_at: string;
@@ -133,6 +144,9 @@ export interface LeadFunnelHistory {
 
 export type TagType = 'stage' | 'operational';
 
+/** Papel fixo de uma etapa: 'fechamento' (ganho) ou 'perda'. Etapa com papel não se apaga. */
+export type PapelDaEtapa = 'fechamento' | 'perda';
+
 /**
  * Tag = Etapa do Kanban (se type === 'stage') ou tag operacional complementar.
  * A tag é a fonte única de verdade para a estrutura do funil.
@@ -146,6 +160,7 @@ export interface Tag {
   type: TagType; // 'stage' = etapa do funil, 'operational' = tag complementar
   color: string;
   ordem: number; // Ordem no funil (apenas para type === 'stage')
+  papel?: PapelDaEtapa | null; // etapa fixa do funil; null/ausente = etapa comum
   ativo: boolean;
   created_at: string;
 }
@@ -197,6 +212,8 @@ export interface Product {
   account_id: string;
   nome: string;
   valor_padrao: number;
+  /** Duração em minutos: com ela o produto é um serviço agendável. */
+  duracao_minutos?: number | null;
   metodos_pagamento: PaymentMethod[];
   convenios_aceitos: string[];
   ativo: boolean;

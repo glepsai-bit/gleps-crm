@@ -5,6 +5,32 @@ import { ConflictError, NotFoundError, ValidationError, ErrorCodes } from '../ut
 import { getPaginationMeta, escapeLike } from '../utils/helpers';
 import { eventService } from './event.service';
 import { webhookOutboundService } from './webhook-outbound.service';
+import { aoEntrarNaEtapa } from './fechamento.gatilho';
+import { ORIGEM_FECHAMENTO } from './sale.service';
+
+/**
+ * ETAPA B — o que o Kanban mostra no card: a última venda nascida do
+ * fechamento. `valor: null` = fechou sem informar valor (pendente).
+ */
+const ULTIMO_FECHAMENTO_INCLUDE = {
+  where: { origem: ORIGEM_FECHAMENTO },
+  orderBy: { createdAt: 'desc' as const },
+  take: 1,
+  select: { valor: true, status: true, createdAt: true },
+};
+
+type VendaDoFechamento = { valor: unknown; status: string; createdAt: Date };
+
+export function resumoDoFechamento(
+  vendas: VendaDoFechamento[] | undefined
+): { valor: number | null; em: string } | null {
+  const ultima = vendas?.[0];
+  if (!ultima) return null;
+  return {
+    valor: ultima.status === 'pending' ? null : Number(ultima.valor),
+    em: ultima.createdAt.toISOString(),
+  };
+}
 
 export interface CreateContactInput {
   accountId: string;
@@ -73,10 +99,12 @@ class ContactService {
                   name: true,
                   color: true,
                   type: true,
+                  papel: true,
                 },
               },
             },
           },
+          sales: ULTIMO_FECHAMENTO_INCLUDE,
           _count: {
             select: {
               sales: true,
@@ -94,6 +122,8 @@ class ContactService {
         tags: c.leadTags.map(lt => lt.tag),
         salesCount: c._count.sales,
         notesCount: c._count.leadNotes,
+        fechamento: resumoDoFechamento(c.sales),
+        sales: undefined,
         leadTags: undefined,
         _count: undefined,
       })),
@@ -118,6 +148,7 @@ class ContactService {
             tag: true,
           },
         },
+        sales: ULTIMO_FECHAMENTO_INCLUDE,
         _count: {
           select: {
             sales: true,
@@ -136,6 +167,8 @@ class ContactService {
       tags: contact.leadTags.map(lt => lt.tag),
       salesCount: contact._count.sales,
       notesCount: contact._count.leadNotes,
+      fechamento: resumoDoFechamento(contact.sales),
+      sales: undefined,
       leadTags: undefined,
       _count: undefined,
     };
@@ -393,6 +426,10 @@ class ContactService {
     const actorId: string | undefined = appliedById ?? options?.apiKeyId ?? undefined;
     const reason = options?.reason ?? null;
 
+    // ETAPA B — só a ENTRADA na etapa dispara o fechamento; reaplicar a mesma
+    // etapa (idempotente) não é entrar de novo.
+    let entrouNaEtapa = false;
+
     try {
       await prisma.$transaction(async (tx) => {
         // (a) Advisory lock pelo contactId — serializa concorrência neste lead.
@@ -469,6 +506,7 @@ class ContactService {
             contactNome: contact.nome,
           },
         });
+        entrouNaEtapa = true;
       });
     } catch (err: any) {
       // T1-APPLYTAG-RACE: corrida residual entre transações concorrentes que
@@ -505,6 +543,19 @@ class ContactService {
         ...(options?.apiKeyId ? { apiKeyId: options.apiKeyId } : {}),
       },
     });
+
+    // ETAPA B — entrou em etapa de fechamento → venda (pendente até o valor).
+    // Depois da transação de propósito: a etapa já está aplicada e a venda não
+    // pode desfazê-la.
+    if (tag.type === 'stage' && entrouNaEtapa) {
+      await aoEntrarNaEtapa({
+        accountId,
+        contactId: id,
+        tag: { id: tag.id, name: tag.name, papel: tag.papel },
+        responsavelId: appliedById,
+        source,
+      });
+    }
 
     return this.getById(id, accountId);
   }
@@ -766,6 +817,7 @@ class ContactService {
             name: true,
             color: true,
             type: true,
+            papel: true,
           },
         },
       },

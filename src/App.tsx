@@ -47,7 +47,6 @@ import AdminLeadsPage from "./pages/admin/AdminLeadsPage";
 import AdminSalesPage from "./pages/admin/AdminSalesPage";
 
 import AdminFinancePage from "./pages/admin/AdminFinancePage";
-import AdminProductsPage from "./pages/admin/AdminProductsPage";
 import AdminAgendaPage from "./pages/admin/AdminAgendaPage";
 import AdminExtracaoPage from "./pages/admin/AdminExtracaoPage";
 import AdminEmailsPage from "./pages/admin/AdminEmailsPage";
@@ -142,7 +141,7 @@ const App = () => (
             <Route path="/admin/sales" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><RotaDeModulo modulo="vendas"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminSalesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
             
             <Route path="/admin/finance" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><RotaDeModulo modulo="vendas"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminFinancePage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
-            <Route path="/admin/products" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminProductsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            <Route path="/admin/products" element={<Navigate to="/admin/ia/agenda" replace />} />
             <Route path="/admin/agenda" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminAgendaPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/prospeccao" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><RotaDeModulo modulo="extracao"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminExtracaoPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
             <Route path="/admin/emails" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><RotaDeModulo modulo="emails"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminEmailsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />

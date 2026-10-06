@@ -139,14 +139,17 @@ export interface ProductListParams extends PaginationParams {
 export interface CreateProductRequest {
   nome: string;
   valorPadrao: number;
-  metodosPagamento: ('pix' | 'boleto' | 'debito' | 'credito' | 'dinheiro' | 'convenio')[];
+  /** 5..600; com ela o produto vira serviço agendável. */
+  duracaoMinutos?: number | null;
+  metodosPagamento?: import('@/types/crm').PaymentMethod[];
   conveniosAceitos?: string[];
 }
 
 export interface UpdateProductRequest {
   nome?: string;
   valorPadrao?: number;
-  metodosPagamento?: ('pix' | 'boleto' | 'debito' | 'credito' | 'dinheiro' | 'convenio')[];
+  duracaoMinutos?: number | null;
+  metodosPagamento?: import('@/types/crm').PaymentMethod[];
   conveniosAceitos?: string[];
   ativo?: boolean;
 }

@@ -75,6 +75,8 @@ export const API_ENDPOINTS = {
     // endpoints sem antes ter rota correspondente no backend.
     NOTES: (id: string) => `/api/contacts/${id}/notes`,
     ADD_NOTE: (id: string) => `/api/contacts/${id}/notes`,
+    // Completa (ou cria) a venda de fechamento: { valor, productId? }
+    FECHAMENTO: (id: string) => `/api/contacts/${id}/fechamento`,
   },
 
   // ============= SALES SERVICE =============

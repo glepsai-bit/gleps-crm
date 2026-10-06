@@ -30,6 +30,10 @@ router.get('/:id/tags', requirePermission('leads', 'kanban'), (req, res, next) =
 router.post('/:id/tags', requirePermission('leads', 'kanban'), (req, res, next) => contactController.applyTag(req, res, next));
 router.delete('/:id/tags/:tagId', requirePermission('leads', 'kanban'), (req, res, next) => contactController.removeTag(req, res, next));
 
+// ETAPA B — "Quanto fechou?" do Kanban. Núcleo: sem requireModulo('vendas'),
+// porque fechar lead é atendimento, não o módulo financeiro.
+router.patch('/:id/fechamento', requirePermission('leads', 'kanban'), (req, res, next) => contactController.registrarFechamento(req, res, next));
+
 router.get('/:id/history', requirePermission('leads', 'kanban'), (req, res, next) => contactController.getHistory(req, res, next));
 
 export default router;

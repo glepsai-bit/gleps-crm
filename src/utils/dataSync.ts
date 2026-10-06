@@ -94,7 +94,21 @@ export function mergeContacts<T extends Identifiable>(
   existing: T[],
   incoming: T[]
 ): MergeResult<T> {
-  return mergeById(existing, incoming, true);
+  const result = mergeById(existing, incoming, true);
+
+  // `fechamento` vem de uma venda, não do contato: registrar o valor não mexe em
+  // contacts.updated_at, então o merge por timestamp manteria o card velho
+  // ("informe o valor") mesmo depois do PATCH. O servidor é a fonte da verdade.
+  const incomingMap = new Map(incoming.map((item) => [item.id, item as T & { fechamento?: unknown }]));
+  result.data = result.data.map((item) => {
+    const novo = incomingMap.get(item.id);
+    const atual = item as T & { fechamento?: unknown };
+    if (!novo || JSON.stringify(novo.fechamento ?? null) === JSON.stringify(atual.fechamento ?? null)) {
+      return item;
+    }
+    return { ...item, fechamento: novo.fechamento ?? null };
+  });
+  return result;
 }
 
 /**

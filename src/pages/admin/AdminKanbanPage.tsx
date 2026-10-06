@@ -3,7 +3,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useModulos } from '@/hooks/useModulos';
 import { useFinance } from '@/contexts/FinanceContext';
 import { CreateSaleDialog } from '@/components/finance/CreateSaleDialog';
-import { LeadCard, CreateStageDialog, SyncIndicator, CreateLeadDialog } from '@/components/kanban';
+import { LeadCard, CreateStageDialog, SyncIndicator, CreateLeadDialog, FechamentoDialog } from '@/components/kanban';
+import { EditStageDialog } from '@/components/kanban/EditStageDialog';
+import { useProduct } from '@/contexts/ProductContext';
+import { contactsBackendService } from '@/services/contacts.backend.service';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Contact } from '@/types/crm';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -56,6 +60,8 @@ import {
   ChevronRight,
   Trash2,
   RefreshCw,
+  Lock,
+  Pencil,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
 import { toast } from 'sonner';
@@ -75,9 +81,24 @@ interface KanbanLead extends Contact {
   stage_id: string | null;
 }
 
+/**
+ * Etapas com papel (Fechado/Perdido) ficam SEMPRE no fim e fora da reordenação,
+ * mesmo que a ordem vinda do servidor diga outra coisa — o funil nunca mostra
+ * "Perdido" no meio das etapas comuns.
+ */
+const ORDEM_DOS_PAPEIS: Record<string, number> = { fechamento: 0, perda: 1 };
+function ordenarEtapas(etapas: CloudTag[]): CloudTag[] {
+  const comuns = etapas.filter((e) => !e.papel);
+  const fixas = etapas
+    .filter((e) => e.papel)
+    .sort((a, b) => (ORDEM_DOS_PAPEIS[a.papel!] ?? 9) - (ORDEM_DOS_PAPEIS[b.papel!] ?? 9));
+  return [...comuns, ...fixas];
+}
+
 export default function AdminKanbanPage() {
   const { user, account } = useAuth();
   const { ligado: moduloLigado } = useModulos();
+  const { getActiveProducts, refreshProducts } = useProduct();
   const { contacts, refetchContacts, isLoadingContacts, isSyncingContacts, lastContactsSync, newContactIds } = useFinance();
 
   const [stageTags, setStageTags] = useState<CloudTag[]>([]);
@@ -96,6 +117,9 @@ export default function AdminKanbanPage() {
   const [deleteMigrateToId, setDeleteMigrateToId] = useState<string>('');
   const [deleteForceMode, setDeleteForceMode] = useState<'migrate' | 'detach' | null>(null);
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
+  // Lead cujo valor de fechamento está sendo informado ("Quanto fechou?").
+  const [fechamentoContactId, setFechamentoContactId] = useState<string | null>(null);
+  const [etapaEmEdicao, setEtapaEmEdicao] = useState<CloudTag | null>(null);
 
   const isFirstTagsLoad = useRef(true);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
@@ -129,7 +153,7 @@ export default function AdminKanbanPage() {
     try {
       // Fetch stage tags
       const tags = await tagsService.listStageTags(accountId);
-      setStageTags(tags);
+      setStageTags(ordenarEtapas(tags));
 
       // Fetch all lead_tags for this account's contacts
       let incoming: LeadTag[] = [];
@@ -302,6 +326,11 @@ export default function AdminKanbanPage() {
     try {
       await tagsService.applyStageTag(draggedLead, stageTagId, 'kanban');
       toast.success(`${lead?.nome} movido para ${stage?.name}`);
+      // Gesto de núcleo (não depende do módulo Vendas): entrou no fechamento,
+      // pergunta quanto foi. O backend já criou a venda pendente ao aplicar a etapa.
+      if (stage?.papel === 'fechamento') {
+        setFechamentoContactId(draggedLead);
+      }
       // Light refresh to reconcile temp IDs with real ones from backend (silent)
       fetchTagsData(true);
     } catch (error: any) {
@@ -315,8 +344,16 @@ export default function AdminKanbanPage() {
     const currentIndex = stageTags.findIndex(t => t.id === tagId);
     if (currentIndex === -1) return;
 
+    if (stageTags[currentIndex].papel) {
+      toast.error('Esta etapa é fixa do funil');
+      return;
+    }
+
     const newIndex = direction === 'left' ? currentIndex - 1 : currentIndex + 1;
-    if (newIndex < 0 || newIndex >= stageTags.length) {
+    // Etapas comuns não passam das fixas, que ficam sempre no fim.
+    const limite = stageTags.findIndex((t) => t.papel);
+    const ultimoComum = limite === -1 ? stageTags.length - 1 : limite - 1;
+    if (newIndex < 0 || newIndex > ultimoComum) {
       toast.error('Não é possível mover nessa direção');
       return;
     }
@@ -379,6 +416,46 @@ export default function AdminKanbanPage() {
       default:
         return <Badge variant="secondary" className="text-xs">Manual</Badge>;
     }
+  };
+
+  const handleSalvarEtapa = async (id: string, dados: { name: string; color: string }) => {
+    try {
+      await tagsService.updateTag(id, dados);
+      toast.success('Etapa atualizada');
+      await fetchTagsData(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao atualizar etapa');
+      throw error;
+    }
+  };
+
+  // Serviço criado na Agenda depois do primeiro carregamento: relê ao abrir o diálogo.
+  useEffect(() => {
+    if (fechamentoContactId) void refreshProducts?.();
+  }, [fechamentoContactId, refreshProducts]);
+
+  const leadDoFechamento = fechamentoContactId
+    ? contacts.find((c) => c.id === fechamentoContactId) ?? null
+    : null;
+
+  const handleRegistrarFechamento = async (dados: { valor: number; productId?: string }) => {
+    if (!fechamentoContactId) return;
+    try {
+      await contactsBackendService.registrarFechamento(fechamentoContactId, dados);
+      toast.success('Fechamento registrado');
+      setFechamentoContactId(null);
+      refetchContacts();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao registrar o fechamento');
+      throw error;
+    }
+  };
+
+  // "Fechou sem valor": a venda já ficou pendente quando a etapa foi aplicada,
+  // então não há nada a enviar — só fecha e atualiza o card (chip "informe o valor").
+  const handleFecharSemValor = () => {
+    setFechamentoContactId(null);
+    refetchContacts();
   };
 
   const handleOpenSaleDialog = (leadId: string) => {
@@ -521,14 +598,22 @@ export default function AdminKanbanPage() {
                       const created = newFunnel?.data ?? newFunnel;
                       funnelId = created.id;
                     }
-                    for (const s of defaultStages) {
+                    // Fechado/Perdido já nascem com o funil (etapas fixas, com papel):
+                    // recriar "Convertido"/"Perdido" aqui colidiria no slug e duplicaria o fim do funil.
+                    const jaExistem = new Set(
+                      (await tagsBackendService.listStageTags(accountId)).map((t) => t.name.trim().toLowerCase()),
+                    );
+                    const etapasComuns = defaultStages.filter(
+                      (s) => s.name !== 'Convertido' && s.name !== 'Perdido' && !jaExistem.has(s.name.toLowerCase()),
+                    );
+                    for (const s of etapasComuns) {
                       await tagsBackendService.createStageTag({ accountId, funnelId, name: s.name, color: s.color, ordem: s.ordem });
                     }
                   } else {
                     await tagsCloudService.createDefaultStages(accountId);
                   }
                   await fetchTagsData(false);
-                  toast.success('6 etapas criadas com sucesso!');
+                  toast.success('Etapas criadas com sucesso!');
                 } catch (err: any) {
                   toast.error(err.message || 'Erro ao criar etapas');
                 } finally {
@@ -583,6 +668,12 @@ export default function AdminKanbanPage() {
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: stage.color }} />
                         <CardTitle className="text-sm font-semibold truncate">{stage.name}</CardTitle>
+                        {stage.papel && (
+                          <Lock
+                            className="w-3 h-3 flex-shrink-0 text-muted-foreground"
+                            aria-label="Etapa fixa do funil"
+                          />
+                        )}
                       </div>
                       <div className="flex items-center gap-1">
                         <Badge variant="secondary" className="text-xs">{stageLeads.length}</Badge>
@@ -593,21 +684,44 @@ export default function AdminKanbanPage() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setEtapaEmEdicao(stage)}>
+                              <Pencil className="w-4 h-4 mr-2" />
+                              Renomear / cor
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem
                               onClick={() => handleMoveStage(stage.id, 'left')}
-                              disabled={isFirst}
+                              disabled={isFirst || !!stage.papel}
                             >
                               <ChevronLeft className="w-4 h-4 mr-2" />
                               Mover para Esquerda
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               onClick={() => handleMoveStage(stage.id, 'right')}
-                              disabled={isLast}
+                              disabled={isLast || !!stage.papel || stageTags[index + 1]?.papel != null}
                             >
                               <ChevronRight className="w-4 h-4 mr-2" />
                               Mover para Direita
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
+                            {stage.papel ? (
+                              <TooltipProvider delayDuration={100}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    {/* item desabilitado não recebe hover: o tooltip vive no wrapper */}
+                                    <div>
+                                      <DropdownMenuItem disabled>
+                                        <Lock className="w-4 h-4 mr-2" />
+                                        Excluir Etapa
+                                      </DropdownMenuItem>
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="left">
+                                    Esta etapa é fixa do funil — dá pra renomear, mas não apagar.
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            ) : (
                             <DropdownMenuItem
                               onClick={() => {
                                 // Check if stage has leads to show options immediately
@@ -622,6 +736,7 @@ export default function AdminKanbanPage() {
                               <Trash2 className="w-4 h-4 mr-2" />
                               Excluir Etapa
                             </DropdownMenuItem>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
@@ -640,6 +755,7 @@ export default function AdminKanbanPage() {
                             onClick={() => setSelectedLead(lead)}
                             onDragStart={() => handleDragStart(lead.id)}
                             onDragEnd={handleDragEnd}
+                            onInformarValor={() => setFechamentoContactId(lead.id)}
                           />
                         ))}
                         {stageLeads.length === 0 && (
@@ -808,6 +924,25 @@ export default function AdminKanbanPage() {
 
 
 
+
+      <FechamentoDialog
+        open={!!fechamentoContactId}
+        onOpenChange={(aberto) => {
+          if (!aberto) setFechamentoContactId(null);
+        }}
+        nomeDoLead={leadDoFechamento?.nome}
+        servicos={getActiveProducts()}
+        onRegistrar={handleRegistrarFechamento}
+        onSemValor={handleFecharSemValor}
+      />
+
+      <EditStageDialog
+        etapa={etapaEmEdicao}
+        onOpenChange={(aberto) => {
+          if (!aberto) setEtapaEmEdicao(null);
+        }}
+        onSalvar={handleSalvarEtapa}
+      />
 
       {saleContactId && (
         <CreateSaleDialog preSelectedContactId={saleContactId} onClose={() => setSaleContactId(null)} />

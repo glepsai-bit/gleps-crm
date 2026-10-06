@@ -46,6 +46,17 @@ export const contactsBackendService = {
     );
   },
 
+  /**
+   * Informa o valor do fechamento. O backend completa a venda pendente criada
+   * quando o lead entrou na etapa de fechamento (ou cria uma já paga).
+   */
+  async registrarFechamento(
+    contactId: string,
+    input: { valor: number; productId?: string }
+  ): Promise<void> {
+    await apiClient.patch(API_ENDPOINTS.CONTACTS.FECHAMENTO(contactId), input);
+  },
+
   async deleteLead(contactId: string): Promise<DeleteLeadResult> {
     try {
       await apiClient.delete(API_ENDPOINTS.CONTACTS.DELETE(contactId));

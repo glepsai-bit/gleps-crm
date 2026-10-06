@@ -61,6 +61,8 @@ export interface ServicoDaAgenda {
   nome: string;
   duracaoMinutos: number | null;
   ativo: boolean;
+  /** ETAPA B — a tela de Serviços edita preço junto da duração. 0 = sem preço. */
+  valorPadrao: number;
 }
 
 /** Um horário que o agente pode oferecer. `id` é o que ele devolve ao marcar. */
@@ -179,10 +181,15 @@ class AgendaService {
       prisma.agendaProfissional.findMany({ where: { accountId } }),
       prisma.product.findMany({
         where: { accountId },
-        select: { id: true, nome: true, duracaoMinutos: true, ativo: true },
+        select: { id: true, nome: true, duracaoMinutos: true, ativo: true, valorPadrao: true },
         orderBy: { nome: 'asc' },
       }),
     ]);
+
+    const servicos: ServicoDaAgenda[] = produtos.map((p) => ({
+      ...p,
+      valorPadrao: Number(p.valorPadrao),
+    }));
 
     const porUsuario = new Map(regras.map((r) => [r.userId, r]));
     const profissionais = await Promise.all(
@@ -200,7 +207,7 @@ class AgendaService {
       })
     );
 
-    return { timezone, configuracao, profissionais, servicos: produtos };
+    return { timezone, configuracao, profissionais, servicos };
   }
 
   async salvarConfiguracao(
@@ -305,9 +312,9 @@ class AgendaService {
     const salvo = await prisma.product.update({
       where: { id: productId },
       data: { duracaoMinutos: duracao },
-      select: { id: true, nome: true, duracaoMinutos: true, ativo: true },
+      select: { id: true, nome: true, duracaoMinutos: true, ativo: true, valorPadrao: true },
     });
-    return salvo;
+    return { ...salvo, valorPadrao: Number(salvo.valorPadrao) };
   }
 
   /**

@@ -1,6 +1,6 @@
 # Documentação das Métricas do Dashboard de Atendimento
 
-> Última atualização: 2026-03-02
+> Última atualização: 2026-10-06 (ETAPA B — fechamentos: conversão real, receita e perdas)
 
 Este documento descreve **cada métrica exibida no Dashboard de Atendimento**, incluindo a regra de negócio, a fonte de dados e o critério de cálculo.
 
@@ -257,7 +257,30 @@ Apenas agentes com pelo menos 1 conversa atribuída são exibidos na tabela.
 | Métrica | Cálculo | Status |
 |---------|---------|--------|
 | **Conversas Sem Resposta** | Conversas abertas onde `agent_last_seen_at = null` | ✅ Funcional |
-| **Taxa Atendimento → Venda** | Fixo em `0%` | ⏳ Pendente (requer integração com módulo financeiro) |
+| **Taxa Atendimento → Venda** | `fechamento.taxaConversao` (ver abaixo) | ✅ Funcional desde 2026-10-06 (ETAPA B) — antes era fixo em `0%` |
+
+### Fechamentos do período (`fechamento`) — ETAPA B (2026-10-06)
+
+> Vem no mesmo `GET /api/chat/metrics`, campo `fechamento`. **Respeita o filtro de data; ignora os filtros de canal/time/agente** — são números do contato (funil), não da conversa.
+
+Fonte: etapas fixas do funil (`tags.papel = 'fechamento' | 'perda'`, migration 0069), o histórico de etapas (`tag_history`) e a tabela `sales`. O gatilho: quando um contato **entra** numa etapa com `papel = 'fechamento'` (Kanban, API ou agente de IA via label de conversa), o backend cria uma `Sale` com `origem = 'fechamento'` — pendente (valor 0) até o usuário informar o valor em `PATCH /api/contacts/:id/fechamento`, que a marca como paga.
+
+| Campo | Cálculo |
+|-------|---------|
+| **conversoes** | `COUNT(DISTINCT contact_id)` de `tag_history` com `action = 'added'`, `created_at` no período e tag com `papel = 'fechamento'` da conta. Distinto por contato: o lead que sai e volta da etapa é **um** fechamento |
+| **novosContatos** | `COUNT(contacts)` da conta com `created_at` no período |
+| **taxaConversao** | `conversoes / novosContatos * 100`, 1 casa decimal. `null` quando `novosContatos = 0` (sem base). É uma taxa de coorte aproximada: quem entrou há 2 meses e fechou hoje conta no numerador de hoje |
+| **receita** | `SUM(sales.valor)` com `status = 'paid'` e `paid_at` no período, **qualquer origem** (Kanban ou Financeiro) |
+| **vendasComValor** | `COUNT(sales)` com `status = 'paid'` e `paid_at` no período |
+| **perdas** | Idem `conversoes`, para tags com `papel = 'perda'` |
+
+```
+Taxa Atendimento → Venda = contatos que entraram em etapa 'fechamento' no período
+                           ÷ contatos criados no período × 100
+Receita do período        = Σ sales.valor WHERE status = 'paid' AND paid_at ∈ período
+```
+
+Venda pendente (fechou sem informar valor) **não** entra em `receita` nem em `vendasComValor`; entra em `conversoes` (o contato entrou na etapa). Venda estornada sai de `receita` (status deixa de ser `paid`), mas o fechamento continua contado em `conversoes` — o histórico de etapas é imutável.
 
 ---
 

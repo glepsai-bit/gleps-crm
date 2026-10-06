@@ -14,6 +14,7 @@ import {
   type ProfissionalDaAgenda,
 } from '@/services/agenda.backend.service';
 import { calendarBackendService } from '@/services/calendar.backend.service';
+import { productsService } from '@/services/products.service';
 import { tagsBackendService } from '@/services/tags.backend.service';
 import type { Tag } from '@/services/tags.cloud.service';
 
@@ -33,6 +34,10 @@ vi.mock('@/services/agenda.backend.service', async (importOriginal) => {
   };
 });
 
+vi.mock('@/services/products.service', () => ({
+  productsService: { create: vi.fn(), update: vi.fn() },
+}));
+
 vi.mock('@/services/calendar.backend.service', () => ({
   calendarBackendService: { connectGoogle: vi.fn() },
 }));
@@ -51,6 +56,7 @@ vi.mock('sonner', () => ({
 
 const agendaApi = vi.mocked(agendaBackendService);
 const calendarApi = vi.mocked(calendarBackendService);
+const produtosApi = vi.mocked(productsService);
 const etapasApi = vi.mocked(tagsBackendService);
 
 beforeAll(() => {
@@ -159,8 +165,9 @@ describe('profissionais', () => {
 
     expect(await screen.findByText('Dra. Marina')).toBeInTheDocument();
     expect(screen.getByText('Dr. Pedro')).toBeInTheDocument();
-    expect(screen.getByText('Botox terço superior')).toBeInTheDocument();
-    expect(screen.getByText('Consultoria (sem duração)')).toBeInTheDocument();
+    // o nome do serviço agora é um campo editável (renomear inline)
+    expect(screen.getByDisplayValue('Botox terço superior')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Consultoria (sem duração)')).toBeInTheDocument();
   });
 
   it('salvar um profissional envia PUT com ativo, intervalo e horários', async () => {
@@ -225,7 +232,7 @@ describe('profissionais', () => {
 describe('serviços', () => {
   it('editar a duração e sair do campo envia PUT com o número certo', async () => {
     renderPagina();
-    await screen.findByText('Botox terço superior');
+    await screen.findByDisplayValue('Botox terço superior');
 
     const campo = screen.getByLabelText('Duração de Botox terço superior');
     fireEvent.change(campo, { target: { value: '45' } });
@@ -236,13 +243,75 @@ describe('serviços', () => {
 
   it('duração vazia envia null — o serviço vira "só venda"', async () => {
     renderPagina();
-    await screen.findByText('Botox terço superior');
+    await screen.findByDisplayValue('Botox terço superior');
 
     const campo = screen.getByLabelText('Duração de Botox terço superior');
     fireEvent.change(campo, { target: { value: '' } });
     fireEvent.blur(campo);
 
     await waitFor(() => expect(agendaApi.atualizarServico).toHaveBeenCalledWith('p1', null));
+  });
+
+  it('duração fora de 5–600 é recusada sem chamar o servidor', async () => {
+    renderPagina();
+    await screen.findByDisplayValue('Botox terço superior');
+
+    const campo = screen.getByLabelText('Duração de Botox terço superior');
+    fireEvent.change(campo, { target: { value: '3' } });
+    fireEvent.blur(campo);
+
+    expect(agendaApi.atualizarServico).not.toHaveBeenCalled();
+  });
+
+  it('"+ Novo serviço" envia nome, duracaoMinutos e valorPadrao ao criar o produto', async () => {
+    produtosApi.create.mockResolvedValue({} as never);
+    renderPagina();
+    await screen.findByDisplayValue('Botox terço superior');
+
+    fireEvent.click(screen.getByRole('button', { name: /novo serviço/i }));
+    fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Limpeza de pele' } });
+    fireEvent.change(screen.getByLabelText('Duração (min)'), { target: { value: '45' } });
+    fireEvent.change(screen.getByLabelText('Valor (opcional)'), { target: { value: '150,50' } });
+    fireEvent.click(screen.getByRole('button', { name: /criar serviço/i }));
+
+    await waitFor(() =>
+      expect(produtosApi.create).toHaveBeenCalledWith({
+        nome: 'Limpeza de pele',
+        duracaoMinutos: 45,
+        valorPadrao: 150.5,
+      })
+    );
+  });
+
+  it('serviço sem preço é criado com valorPadrao 0', async () => {
+    produtosApi.create.mockResolvedValue({} as never);
+    renderPagina();
+    await screen.findByDisplayValue('Botox terço superior');
+
+    fireEvent.click(screen.getByRole('button', { name: /novo serviço/i }));
+    fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Avaliação' } });
+    fireEvent.click(screen.getByRole('button', { name: /criar serviço/i }));
+
+    await waitFor(() =>
+      expect(produtosApi.create).toHaveBeenCalledWith({
+        nome: 'Avaliação',
+        duracaoMinutos: 30,
+        valorPadrao: 0,
+      })
+    );
+  });
+
+  it('renomear inline e desativar usam o update de produtos', async () => {
+    produtosApi.update.mockResolvedValue({} as never);
+    renderPagina();
+    const nome = await screen.findByDisplayValue('Botox terço superior');
+
+    fireEvent.change(nome, { target: { value: 'Botox full face' } });
+    fireEvent.blur(nome);
+    await waitFor(() => expect(produtosApi.update).toHaveBeenCalledWith('p1', { nome: 'Botox full face' }));
+
+    fireEvent.click(screen.getByRole('switch', { name: /desativar botox terço superior/i }));
+    await waitFor(() => expect(produtosApi.update).toHaveBeenCalledWith('p1', { ativo: false }));
   });
 });
 

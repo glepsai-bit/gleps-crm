@@ -10,6 +10,8 @@ export interface CreateProductInput {
   valorPadrao: number;
   metodosPagamento?: string[];
   conveniosAceitos?: string[];
+  /** Duração do atendimento (serviço agendável). null/ausente = não é serviço. */
+  duracaoMinutos?: number | null;
 }
 
 export interface UpdateProductInput {
@@ -18,6 +20,7 @@ export interface UpdateProductInput {
   metodosPagamento?: string[];
   conveniosAceitos?: string[];
   ativo?: boolean;
+  duracaoMinutos?: number | null;
 }
 
 export interface ProductFilters {
@@ -111,6 +114,7 @@ class ProductService {
         valorPadrao: input.valorPadrao,
         metodosPagamento: input.metodosPagamento || ['pix'],
         conveniosAceitos: input.conveniosAceitos || [],
+        duracaoMinutos: input.duracaoMinutos ?? null,
       },
     });
 
@@ -144,6 +148,8 @@ class ProductService {
         metodosPagamento: input.metodosPagamento,
         conveniosAceitos: input.conveniosAceitos,
         ativo: input.ativo,
+        // undefined = não mexe; null = deixa de ser serviço.
+        duracaoMinutos: input.duracaoMinutos,
       },
     });
 

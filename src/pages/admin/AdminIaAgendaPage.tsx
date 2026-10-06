@@ -25,6 +25,7 @@ import {
   type ProfissionalDaAgenda,
   type ServicoDaAgenda,
 } from '@/services/agenda.backend.service';
+import { SecaoServicos } from '@/components/agenda/SecaoServicos';
 import { calendarBackendService } from '@/services/calendar.backend.service';
 import { useAuth } from '@/contexts/AuthContext';
 import { useEtapasDoFunil } from '@/components/flow/CamposDoNo';
@@ -306,83 +307,6 @@ function SecaoProfissionais({ profissionais }: { profissionais: ProfissionalDaAg
           profissionais.map((p) => (
             <CardProfissional key={p.userId} profissional={p} meuUserId={user?.id} />
           ))
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ============================================
-// Serviços
-// ============================================
-
-function LinhaServico({ servico }: { servico: ServicoDaAgenda }) {
-  const qc = useQueryClient();
-  const [duracao, setDuracao] = useState(
-    servico.duracaoMinutos != null ? String(servico.duracaoMinutos) : ''
-  );
-
-  const salvar = useMutation({
-    mutationFn: (valor: number | null) => agendaBackendService.atualizarServico(servico.id, valor),
-    onSuccess: (atualizado) => {
-      setDuracao(atualizado.duracaoMinutos != null ? String(atualizado.duracaoMinutos) : '');
-      qc.invalidateQueries({ queryKey: ['agenda', 'configuracao'] });
-    },
-    onError: (e: Error) => toast.error(e.message || 'Não foi possível salvar'),
-  });
-
-  const aplicar = () => {
-    const bruto = duracao.trim();
-    if (!bruto) {
-      salvar.mutate(null);
-      return;
-    }
-    const numero = Number(bruto);
-    if (!Number.isFinite(numero) || numero <= 0) {
-      toast.error('Duração precisa ser um número maior que zero');
-      return;
-    }
-    salvar.mutate(Math.round(numero));
-  };
-
-  return (
-    <div className="flex items-center gap-3 rounded-md border p-3">
-      <span className="min-w-0 flex-1 truncate text-sm font-medium">{servico.nome}</span>
-      <Input
-        type="number"
-        min={1}
-        className="h-8 w-24"
-        placeholder="min"
-        aria-label={`Duração de ${servico.nome}`}
-        value={duracao}
-        onChange={(e) => setDuracao(e.target.value)}
-        onBlur={aplicar}
-      />
-      <Button size="sm" variant="outline" onClick={aplicar} disabled={salvar.isPending}>
-        {salvar.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Salvar'}
-      </Button>
-    </div>
-  );
-}
-
-function SecaoServicos({ servicos }: { servicos: ServicoDaAgenda[] }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Serviços</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-xs text-muted-foreground">
-          Produtos com duração viram serviços que o agente pode marcar. Sem duração, é só venda.
-        </p>
-        {servicos.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nenhum produto cadastrado ainda.</p>
-        ) : (
-          <div className="space-y-2">
-            {servicos.map((s) => (
-              <LinhaServico key={s.id} servico={s} />
-            ))}
-          </div>
         )}
       </CardContent>
     </Card>

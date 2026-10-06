@@ -4,6 +4,7 @@ import { PaginationParams } from '../types';
 import { NotFoundError, ConflictError, ErrorCodes, ValidationError } from '../utils/errors';
 import { getPaginationMeta, escapeLike } from '../utils/helpers';
 import { eventService } from './event.service';
+import { criarEtapasFixas } from './tag.service';
 import { MODULOS_PADRAO_CONTA_NOVA, isModuloOpcional } from '../config/modulos';
 
 /**
@@ -194,7 +195,7 @@ class AccountService {
       });
 
       // Create default funnel
-      await tx.funnel.create({
+      const funil = await tx.funnel.create({
         data: {
           accountId: created.id,
           name: 'Funil Principal',
@@ -202,6 +203,8 @@ class AccountService {
           isDefault: true,
         },
       });
+      // ETAPA B — conta nova já nasce com Fechado e Perdido.
+      await criarEtapasFixas(tx, created.id, funil.id, funil.slug);
 
       await eventService.create({
         eventType: 'account.created',

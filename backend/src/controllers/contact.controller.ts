@@ -5,7 +5,9 @@ import { z } from 'zod';
 import { contactService } from '../services/contact.service';
 import { conversationService } from '../services/conversation.service';
 import { avatarStorageService } from '../services/avatar-storage.service';
+import { saleService } from '../services/sale.service';
 import { AuthenticatedRequest } from '../types';
+import { ValidationError } from '../utils/errors';
 import { getPaginationParams } from '../utils/helpers';
 
 // Validation schemas
@@ -60,6 +62,13 @@ const listContactsSchema = z.object({
 const applyTagSchema = z.object({
   tagId: z.string().uuid(),
   source: z.enum(['kanban', 'system', 'api']).default('api'),
+});
+
+// ETAPA B — "Quanto fechou?" do Kanban. productId só vem quando o usuário
+// escolheu um serviço.
+const fechamentoSchema = z.object({
+  valor: z.number().positive('Informe um valor maior que zero'),
+  productId: z.string().uuid().optional(),
 });
 
 const addNoteSchema = z.object({
@@ -247,6 +256,43 @@ export class ContactController {
       );
 
       res.json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PATCH /contacts/:id/fechamento
+   *
+   * Completa a venda pendente criada quando o lead entrou na etapa de
+   * fechamento (ou cria uma já paga se não houver) e dispara o Purchase.
+   * Rota de núcleo: funciona com o módulo `vendas` desligado.
+   */
+  async registrarFechamento(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const body = fechamentoSchema.parse(req.body);
+      const resultado = await saleService.registrarFechamento({
+        accountId: req.user!.accountId!,
+        contactId: id,
+        valor: body.valor,
+        productId: body.productId,
+        responsavelId: req.user!.id,
+        source: 'kanban',
+      });
+      if (!resultado) {
+        throw new ValidationError('A conta não tem um admin ativo para assinar a venda');
+      }
+
+      res.json({
+        data: {
+          saleId: resultado.sale.id,
+          fechamento: {
+            valor: Number(resultado.sale.valor),
+            em: resultado.sale.createdAt.toISOString(),
+          },
+        },
+      });
     } catch (error) {
       next(error);
     }

@@ -38,6 +38,7 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   boleto: 'Boleto',
   dinheiro: 'Dinheiro',
   convenio: 'Convênio',
+  nao_informado: 'Não informado',
 };
 
 const PAYMENT_METHOD_COLORS: Record<PaymentMethod, string> = {
@@ -47,6 +48,7 @@ const PAYMENT_METHOD_COLORS: Record<PaymentMethod, string> = {
   boleto: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
   dinheiro: 'bg-green-500/20 text-green-400 border-green-500/30',
   convenio: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+  nao_informado: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
 };
 
 export default function AdminProductsPage() {

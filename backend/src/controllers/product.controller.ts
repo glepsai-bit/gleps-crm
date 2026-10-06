@@ -5,11 +5,15 @@ import { AuthenticatedRequest } from '../types';
 import { getPaginationParams } from '../utils/helpers';
 
 // Validation schemas
+// ETAPA B — o catálogo também é a lista de Serviços da Agenda: serviço pode
+// não ter preço (valorPadrao 0) e tem duração em minutos (null = não é
+// agendável, é venda).
 const createProductSchema = z.object({
   nome: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
-  valorPadrao: z.number().positive('Valor deve ser positivo'),
+  valorPadrao: z.number().nonnegative('Valor não pode ser negativo'),
   metodosPagamento: z.array(z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio'])).optional(),
   conveniosAceitos: z.array(z.string()).optional(),
+  duracaoMinutos: z.number().int().min(5).max(600).nullable().optional(),
 });
 
 const updateProductSchema = createProductSchema.partial().extend({

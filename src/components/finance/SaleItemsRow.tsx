@@ -80,6 +80,7 @@ export function SaleItemsRow({
       boleto: 'Boleto',
       dinheiro: 'Dinheiro',
       convenio: 'Convênio',
+      nao_informado: 'Não informado',
     };
     return method ? (
       <Badge variant="secondary">{labels[method] || method}</Badge>

@@ -1,8 +1,9 @@
 import type { Conversation, Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { ForbiddenError, NotFoundError, ValidationError } from '../utils/errors';
-import { escapeLike, slugify } from '../utils/helpers';
+import { escapeLike, isValidUUID, slugify } from '../utils/helpers';
 import { eventService } from './event.service';
+import { aoEntrarNaEtapa } from './fechamento.gatilho';
 import { logger } from '../utils/logger';
 import { emitConversationUpdated, emitConversationAssigned } from '../socket';
 import { sanitizeMessageAttachments } from '../utils/attachment-api.util';
@@ -1216,9 +1217,16 @@ class ConversationService {
 
     const tag = await prisma.tag.findFirst({
       where: { id: tagId, accountId },
-      select: { id: true, type: true, name: true, slug: true },
+      select: { id: true, type: true, name: true, slug: true, papel: true },
     });
     if (!tag) throw new NotFoundError('Tag');
+
+    // O agente de IA chega aqui com um ator sentinela (`flow:<id>`), que não
+    // é usuário: LeadTag.appliedById e TagHistory.actorId são UUID com FK, e
+    // gravar o sentinela ali derrubava a transação inteira — a etapa nunca
+    // era aplicada pelo fluxo. Sentinela vira 'system' sem id.
+    const atorUuid = isValidUUID(userId) ? userId : null;
+    const atorType: 'user' | 'system' = atorUuid ? 'user' : 'system';
 
     // Pré-carrega o nome do contato fora da transação (usado em TagHistory).
     let contactNome: string | null = null;
@@ -1239,7 +1247,7 @@ class ConversationService {
     let labelWasCreated = false;
     let mirroredLeadTagId: string | null = null;
     const removedStageTagIds: string[] = [];
-    let removedStageTagsMeta: Array<{ tagId: string; tagName: string }> = [];
+    const removedStageTagsMeta: Array<{ tagId: string; tagName: string }> = [];
 
     try {
       await prisma.$transaction(async (tx) => {
@@ -1286,8 +1294,8 @@ class ConversationService {
                   contactId: conversation.contactId,
                   tagId: existing.tagId,
                   action: 'removed',
-                  actorType: 'user',
-                  actorId: userId,
+                  actorType: atorType,
+                  actorId: atorUuid,
                   source: 'system',
                   tagName: existing.tag.name,
                   contactNome,
@@ -1302,8 +1310,8 @@ class ConversationService {
               data: {
                 contactId: conversation.contactId,
                 tagId,
-                appliedByType: 'user',
-                appliedById: userId,
+                appliedByType: atorType,
+                appliedById: atorUuid,
                 source: 'system',
               },
             });
@@ -1315,8 +1323,8 @@ class ConversationService {
                   contactId: conversation.contactId,
                   tagId,
                   action: 'added',
-                  actorType: 'user',
-                  actorId: userId,
+                  actorType: atorType,
+                  actorId: atorUuid,
                   source: 'system',
                   tagName: tag.name,
                   contactNome,
@@ -1378,6 +1386,16 @@ class ConversationService {
         entityType: 'contact',
         entityId: conversation.contactId,
         payload: { tagId, tagName: tag.name, source: 'system' },
+      });
+
+      // ETAPA B — mesmo gatilho do Kanban: entrou em etapa de fechamento →
+      // venda pendente. É por aqui que o agente de IA fecha um lead.
+      await aoEntrarNaEtapa({
+        accountId,
+        contactId: conversation.contactId,
+        tag: { id: tag.id, name: tag.name, papel: tag.papel },
+        responsavelId: atorUuid,
+        source: atorUuid ? 'chat' : userId,
       });
     }
 

@@ -94,6 +94,27 @@ export interface DailyVolumeBucket {
   open: number;
 }
 
+/**
+ * ETAPA B — fechamentos do período. Vem das etapas fixas do funil (papel
+ * 'fechamento'/'perda') e das vendas pagas; ignora os filtros de inbox/time/
+ * agente porque são números do contato, não da conversa.
+ * Regras em docs/METRICAS_DASHBOARD.md › "Qualidade & Conversão".
+ */
+export interface FechamentoMetrics {
+  /** Contatos distintos que entraram em etapa de fechamento no período. */
+  conversoes: number;
+  /** Contatos criados no período (base da taxa). */
+  novosContatos: number;
+  /** conversoes / novosContatos em % (0–100, 1 casa). null = sem base. */
+  taxaConversao: number | null;
+  /** Soma das Sales paid com paidAt no período (R$). */
+  receita: number;
+  /** Quantas Sales paid no período. */
+  vendasComValor: number;
+  /** Contatos distintos que entraram em etapa de perda no período. */
+  perdas: number;
+}
+
 export interface ChatMetricsResult {
   totalConversations: number;
   openConversations: number;
@@ -108,6 +129,7 @@ export interface ChatMetricsResult {
   byInbox: InboxMetricRow[];
   /** Série temporal por dia (preenchida com zeros nos dias sem dados) */
   dailyVolume: DailyVolumeBucket[];
+  fechamento: FechamentoMetrics;
 }
 
 export interface AgentPeriod {
@@ -631,6 +653,8 @@ class ChatMetricsService {
       return { date, total: v.total, resolved: v.resolved, open: v.open };
     });
 
+    const fechamento = await this.getFechamentoMetrics(accountId, fromDate, toDate);
+
     return {
       totalConversations,
       openConversations,
@@ -644,6 +668,64 @@ class ChatMetricsService {
       byTeam,
       byInbox,
       dailyVolume,
+      fechamento,
+    };
+  }
+
+  /**
+   * ETAPA B — "Atendimento → Venda" de verdade (antes era 0% fixo).
+   *
+   * - conversões: contatos DISTINTOS com entrada ('added' no tag_history) em
+   *   etapa papel='fechamento' dentro do período. Distinto porque o lead que
+   *   sai e volta da etapa é um fechamento só.
+   * - base: contatos criados no período. É taxa de coorte aproximada — quem
+   *   entrou há 2 meses e fechou hoje conta no numerador de hoje; é o que o
+   *   operador espera ver ("quanto do que entrou virou venda").
+   * - receita: Sales paid com paidAt no período, qualquer origem (Kanban ou
+   *   Financeiro) — dinheiro é dinheiro.
+   * - perdas: idem conversões, em papel='perda'.
+   */
+  async getFechamentoMetrics(
+    accountId: string,
+    fromDate: Date,
+    toDate: Date
+  ): Promise<FechamentoMetrics> {
+    const periodo = { gte: fromDate, lte: toDate };
+
+    const entradasEm = (papel: 'fechamento' | 'perda') =>
+      prisma.tagHistory.findMany({
+        where: {
+          action: 'added',
+          createdAt: periodo,
+          contactId: { not: null },
+          tag: { accountId, papel },
+        },
+        select: { contactId: true },
+        distinct: ['contactId'],
+      });
+
+    const [fechamentos, perdas, novosContatos, pagas] = await Promise.all([
+      entradasEm('fechamento'),
+      entradasEm('perda'),
+      prisma.contact.count({ where: { accountId, createdAt: periodo } }),
+      prisma.sale.aggregate({
+        where: { accountId, status: 'paid', paidAt: periodo },
+        _sum: { valor: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const conversoes = fechamentos.length;
+    const taxaConversao =
+      novosContatos > 0 ? Math.round((conversoes / novosContatos) * 1000) / 10 : null;
+
+    return {
+      conversoes,
+      novosContatos,
+      taxaConversao,
+      receita: Number(pagas._sum.valor ?? 0),
+      vendasComValor: pagas._count._all,
+      perdas: perdas.length,
     };
   }
 

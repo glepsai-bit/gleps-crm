@@ -490,6 +490,10 @@ model Tag {
   color     String  @default("#6366F1") @db.VarChar(20)
   ordem     Int     @default(0)
   ativo     Boolean @default(true)
+  /// ETAPA B — etapa fixa do funil: 'fechamento' (ganhou) | 'perda' (perdeu).
+  /// NULL = etapa comum. Com papel não se apaga, não troca de papel e fica no
+  /// fim do funil. Entrar em 'fechamento' registra a venda (sale.service).
+  papel     String? @db.VarChar(20)
 
   // REMOVED: external label id (deprecated integration)
 
@@ -629,6 +633,11 @@ model Sale {
   convenioNome    String?       @map("convenio_nome") @db.VarChar(255)
   responsavelId   String        @map("responsavel_id") @db.Uuid
   isRecurring     Boolean       @default(false) @map("is_recurring")
+  /// ETAPA B — 'fechamento' quando a venda nasceu do lead entrar na etapa
+  /// fixa de fechamento (Kanban/agente). NULL = lançada à mão no Financeiro.
+  /// É o que o Kanban lê pra mostrar "Fechou R$ X" e o que impede venda
+  /// duplicada quando o lead sai e volta da etapa.
+  origem          String?       @db.VarChar(20)
 
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
   paidAt     DateTime? @map("paid_at") @db.Timestamptz
@@ -669,6 +678,8 @@ enum PaymentMethod {
   credito
   dinheiro
   convenio
+  /// ETAPA B — venda registrada pelo Kanban, sem passar pelo formulário.
+  nao_informado
 }
 
 // ============================================

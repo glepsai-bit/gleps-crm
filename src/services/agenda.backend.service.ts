@@ -69,6 +69,8 @@ export interface ServicoDaAgenda {
   nome: string;
   /** null = produto sem duração cadastrada — não agendável. */
   duracaoMinutos: number | null;
+  /** Preço padrão do serviço (pode faltar em respostas antigas). */
+  valorPadrao?: number;
   ativo: boolean;
 }
 

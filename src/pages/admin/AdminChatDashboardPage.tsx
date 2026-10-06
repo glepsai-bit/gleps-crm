@@ -107,6 +107,10 @@ import {
   Activity,
   Loader2,
   X,
+  DollarSign,
+  Percent,
+  Trophy,
+  ThumbsDown,
 } from 'lucide-react';
 import {
   startOfDay,
@@ -483,7 +487,7 @@ export default function AdminChatDashboardPage() {
       <div className="page-header">
         <div>
           <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-foreground">
-            Dashboard de Chat
+            Dashboard
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground">
             Métricas de conversas e performance dos agentes
@@ -703,6 +707,53 @@ export default function AdminChatDashboardPage() {
             standby — "depois vemos isso"). metrics.slaBreaches segue vindo do
             backend; so o card foi removido da UI. */}
       </div>
+
+      {/* Receita e conversão — vêm das etapas fixas de fechamento/perda do Kanban */}
+      {metrics?.fechamento && (
+        <div className="space-y-2" data-testid="bloco-receita">
+          <h2 className="text-sm font-semibold text-foreground">Receita e conversão</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 auto-rows-fr">
+            <KpiCard
+              icon={<DollarSign className="w-4 h-4" />}
+              label="Receita do período"
+              value={metrics.fechamento.receita}
+              formatter={(v) =>
+                new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                  (v as number | null) ?? 0
+                )
+              }
+              tone="success"
+              subtitle={`${metrics.fechamento.vendasComValor} venda(s) com valor`}
+              isLoading={isLoading}
+            />
+            <KpiCard
+              icon={<Percent className="w-4 h-4" />}
+              label="Atendimento → Venda"
+              value={metrics.fechamento.taxaConversao}
+              formatter={(v) =>
+                v == null ? '—' : `${(v as number).toFixed(1).replace('.', ',')}%`
+              }
+              tone="primary"
+              subtitle={`${metrics.fechamento.conversoes} de ${metrics.fechamento.novosContatos} contatos novos`}
+              isLoading={isLoading}
+            />
+            <KpiCard
+              icon={<Trophy className="w-4 h-4" />}
+              label="Fechamentos"
+              value={metrics.fechamento.conversoes}
+              tone="success"
+              isLoading={isLoading}
+            />
+            <KpiCard
+              icon={<ThumbsDown className="w-4 h-4" />}
+              label="Perdidos"
+              value={metrics.fechamento.perdas}
+              tone="destructive"
+              isLoading={isLoading}
+            />
+          </div>
+        </div>
+      )}
 
       {/* T-022 — Atendimento ao vivo (IA vs Humano vs Em Aberto) */}
       <LiveAttendanceCard

@@ -88,6 +88,7 @@ export function SalesTable({ isLoading = false }: SalesTableProps) {
       boleto: 'Boleto',
       dinheiro: 'Dinheiro',
       convenio: 'Convênio',
+      nao_informado: 'Não informado',
     };
     return method ? (
       <Badge variant="secondary">{labels[method]}</Badge>

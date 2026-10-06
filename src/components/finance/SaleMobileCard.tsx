@@ -67,6 +67,7 @@ export function SaleMobileCard({
       boleto: 'Boleto',
       dinheiro: 'Dinheiro',
       convenio: 'Convênio',
+      nao_informado: 'Não informado',
     };
     return method ? labels[method] || method : '-';
   };

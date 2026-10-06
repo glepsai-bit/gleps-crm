@@ -18,10 +18,13 @@ const prismaMock = vi.hoisted(() => {
     findUnique: vi.fn(),
   };
   const funnel = { create: vi.fn() };
-  const tx = { account, funnel };
+  // ETAPA B — a conta nova cria Fechado/Perdido no mesmo tx (criarEtapasFixas).
+  const tag = { findFirst: vi.fn(), create: vi.fn() };
+  const tx = { account, funnel, tag };
   return {
     account,
     funnel,
+    tag,
     $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)),
   };
 });
@@ -60,7 +63,34 @@ beforeEach(() => {
     ...contaDoBanco(),
     ...data,
   }));
-  prismaMock.funnel.create.mockResolvedValue({ id: 'funil-1' });
+  prismaMock.funnel.create.mockResolvedValue({ id: 'funil-1', slug: 'principal' });
+  // Tags criadas ficam na memória pra findFirst (maior ordem / papel já
+  // existe) responder como o banco — senão as duas fixas nascem com ordem 0.
+  const tags: Array<Record<string, unknown>> = [];
+  prismaMock.tag.findFirst.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+    if (where.papel) return tags.find((t) => t.papel === where.papel) ?? null;
+    if (where.slug) return null;
+    if (where.type === 'stage' && tags.length > 0) return { ordem: Math.max(...tags.map((t) => t.ordem as number)) };
+    return null;
+  });
+  prismaMock.tag.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => {
+    const criada = { id: `tag-${data.slug}`, ...data };
+    tags.push(criada);
+    return criada;
+  });
+});
+
+describe('accountService.create — etapas fixas (ETAPA B)', () => {
+  it('conta nova nasce com Fechado e Perdido no funil padrão', async () => {
+    await accountService.create({ nome: 'Nova' }, 'super-1');
+
+    const criadas = prismaMock.tag.create.mock.calls.map((c) => c[0].data);
+    expect(criadas.map((t) => [t.name, t.papel, t.slug, t.ordem])).toEqual([
+      ['Fechado', 'fechamento', 'fechado', 0],
+      ['Perdido', 'perda', 'perdido', 1],
+    ]);
+    expect(criadas.every((t) => t.funnelId === 'funil-1' && t.type === 'stage')).toBe(true);
+  });
 });
 
 describe('accountService.create — módulos padrão', () => {

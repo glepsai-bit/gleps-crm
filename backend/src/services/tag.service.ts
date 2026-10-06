@@ -1,9 +1,83 @@
 import { prisma } from '../config/database';
-import { TagType } from '@prisma/client';
-import { NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
+import { Prisma, TagType } from '@prisma/client';
+import { ConflictError, NotFoundError, ValidationError, ErrorCodes } from '../utils/errors';
 import { slugify } from '../utils/helpers';
 import { eventService } from './event.service';
 import { logger } from '../utils/logger';
+
+/**
+ * ETAPA B — papel fixo de uma etapa. 'fechamento' é onde o lead vira venda;
+ * 'perda' é onde ele sai do funil. Todo funil tem exatamente uma de cada, e
+ * elas não se apagam: o gatilho da venda e as métricas do dashboard dependem
+ * de existirem.
+ */
+export type PapelDaEtapa = 'fechamento' | 'perda';
+
+export const ETAPAS_FIXAS: ReadonlyArray<{
+  name: string;
+  slug: string;
+  color: string;
+  papel: PapelDaEtapa;
+}> = [
+  { name: 'Fechado', slug: 'fechado', color: '#F0A532', papel: 'fechamento' },
+  { name: 'Perdido', slug: 'perdido', color: '#E5484D', papel: 'perda' },
+];
+
+export const MENSAGEM_ETAPA_FIXA = 'Esta etapa é fixa do funil';
+
+/** O que basta pra criar etapas: serve tanto pro client quanto pra um `tx`. */
+type DbComTags = Pick<Prisma.TransactionClient, 'tag'>;
+
+/**
+ * Garante Fechado e Perdido no funil (criação de funil, conta nova, seed).
+ * Só cria o que falta, pelo papel — não duplica se já houver. O slug é único
+ * por conta, então o segundo funil da conta leva o sufixo do próprio funil.
+ */
+export async function criarEtapasFixas(
+  db: DbComTags,
+  accountId: string,
+  funnelId: string,
+  funnelSlug: string
+) {
+  const criadas = [];
+  for (const fixa of ETAPAS_FIXAS) {
+    const jaTem = await db.tag.findFirst({
+      where: { funnelId, papel: fixa.papel },
+      select: { id: true },
+    });
+    if (jaTem) continue;
+
+    const ultima = await db.tag.findFirst({
+      where: { funnelId, type: 'stage' },
+      orderBy: { ordem: 'desc' },
+      select: { ordem: true },
+    });
+
+    let slug = fixa.slug;
+    if (await db.tag.findFirst({ where: { accountId, slug }, select: { id: true } })) {
+      slug = `${fixa.slug}-${funnelSlug}`;
+    }
+    if (await db.tag.findFirst({ where: { accountId, slug }, select: { id: true } })) {
+      slug = `${slug}-${Date.now()}`;
+    }
+
+    criadas.push(
+      await db.tag.create({
+        data: {
+          accountId,
+          funnelId,
+          name: fixa.name,
+          slug,
+          type: 'stage',
+          color: fixa.color,
+          ordem: (ultima?.ordem ?? -1) + 1,
+          papel: fixa.papel,
+        },
+      })
+    );
+  }
+  return criadas;
+}
 
 export interface CreateTagInput {
   accountId: string;
@@ -13,6 +87,10 @@ export interface CreateTagInput {
   color?: string;
 }
 
+/**
+ * `papel` fica de fora de propósito: a etapa fixa pode mudar de nome e cor,
+ * nunca de papel — é o papel que o gatilho da venda procura.
+ */
 export interface UpdateTagInput {
   name?: string;
   color?: string;
@@ -108,6 +186,25 @@ class TagService {
       orderBy: { ordem: 'desc' },
       select: { ordem: true },
     });
+    let ordem = (maxOrdem?.ordem ?? -1) + 1;
+
+    // ETAPA B — etapa nova entra ANTES das fixas: Fechado e Perdido encerram
+    // o funil, então tudo que vier depois delas não faz sentido no Kanban.
+    // Abre espaço empurrando a primeira fixa (e o que estiver atrás dela).
+    if (input.type === 'stage') {
+      const primeiraFixa = await prisma.tag.findFirst({
+        where: { funnelId: input.funnelId, type: 'stage', papel: { not: null } },
+        orderBy: { ordem: 'asc' },
+        select: { ordem: true },
+      });
+      if (primeiraFixa) {
+        ordem = primeiraFixa.ordem;
+        await prisma.tag.updateMany({
+          where: { funnelId: input.funnelId, type: 'stage', ordem: { gte: ordem } },
+          data: { ordem: { increment: 1 } },
+        });
+      }
+    }
 
     const slug = slugify(input.name);
 
@@ -129,7 +226,7 @@ class TagService {
         slug: finalSlug,
         type: input.type,
         color: input.color || '#6366F1',
-        ordem: (maxOrdem?.ordem ?? -1) + 1,
+        ordem,
       },
     });
 
@@ -191,6 +288,12 @@ class TagService {
   async delete(id: string, accountId: string, deletedById: string, options?: { force?: boolean; migrateToId?: string }) {
     const tag = await this.getById(id, accountId);
 
+    // ETAPA B — Fechado e Perdido não se apagam, nem com force: sem elas o
+    // funil não tem onde registrar venda nem perda.
+    if (tag.papel) {
+      throw new ConflictError(MENSAGEM_ETAPA_FIXA, { tagId: id, papel: tag.papel });
+    }
+
     // Check if tag has leads
     const leadsCount = await prisma.leadTag.count({
       where: { tagId: id },
@@ -245,7 +348,10 @@ class TagService {
    * Reorder a single tag
    */
   async reorder(id: string, ordem: number, accountId: string, reorderedById: string) {
-    await this.getById(id, accountId);
+    const existente = await this.getById(id, accountId);
+    if (existente.papel) {
+      throw new ValidationError(MENSAGEM_ETAPA_FIXA, { tagId: id, papel: existente.papel });
+    }
 
     const tag = await prisma.tag.update({
       where: { id },
@@ -267,7 +373,7 @@ class TagService {
     // mexer aqui e furar a conferência, a escrita ainda não atravessa.
     const proprias = await prisma.tag.findMany({
       where: { id: { in: tagIds }, accountId },
-      select: { id: true, ordem: true },
+      select: { id: true, ordem: true, papel: true },
     });
     // Lote inteiro ou nada: aprovar só as próprias deixaria a reordenação pela
     // metade, que é pior que recusar — o funil ficaria num estado que o usuário
@@ -276,8 +382,13 @@ class TagService {
       throw new NotFoundError('Uma ou ambas as tags não foram encontradas');
     }
     const ordemPorId = new Map(proprias.map((t) => [t.id, t.ordem]));
+    const papelPorId = new Map(proprias.map((t) => [t.id, t.papel]));
 
     if (tagIds.length === 2) {
+      // ETAPA B — trocar de lugar com uma fixa a tiraria do fim do funil.
+      if (tagIds.some((id) => papelPorId.get(id))) {
+        throw new ValidationError(MENSAGEM_ETAPA_FIXA, { tagIds });
+      }
       // Swap mode: exchange ordem values between the two tags
       const [id1, id2] = tagIds;
       await prisma.$transaction([
@@ -291,9 +402,18 @@ class TagService {
         }),
       ]);
     } else {
-      // Full reorder: assign ordem based on array position
+      // Full reorder: assign ordem based on array position.
+      // ETAPA B — as fixas vão pro fim seja qual for a posição em que
+      // chegaram, Fechado antes de Perdido.
+      const pesoDoPapel = (id: string) => {
+        const papel = papelPorId.get(id);
+        if (papel === 'fechamento') return 1;
+        if (papel === 'perda') return 2;
+        return 0;
+      };
+      const ordenadas = [...tagIds].sort((a, b) => pesoDoPapel(a) - pesoDoPapel(b));
       await prisma.$transaction(
-        tagIds.map((id, index) =>
+        ordenadas.map((id, index) =>
           prisma.tag.updateMany({
             where: { id, accountId },
             data: { ordem: index },
@@ -358,6 +478,7 @@ class TagService {
       name: tag.name,
       color: tag.color,
       ordem: tag.ordem,
+      papel: tag.papel,
       leads: tag.leadTags.map(lt => ({
         ...lt.contact,
         tags: lt.contact.leadTags.map(t => t.tag),
@@ -424,12 +545,18 @@ class FunnelService {
   async create(accountId: string, name: string, createdById?: string) {
     const slug = slugify(name);
 
-    const funnel = await prisma.funnel.create({
-      data: {
-        accountId,
-        name,
-        slug,
-      },
+    // ETAPA B — funil já nasce com Fechado e Perdido, na mesma transação:
+    // um funil sem etapa de fechamento não tem onde registrar venda.
+    const funnel = await prisma.$transaction(async (tx) => {
+      const criado = await tx.funnel.create({
+        data: {
+          accountId,
+          name,
+          slug,
+        },
+      });
+      await criarEtapasFixas(tx, accountId, criado.id, criado.slug);
+      return criado;
     });
 
     return funnel;

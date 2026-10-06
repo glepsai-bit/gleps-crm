@@ -37,7 +37,8 @@ const listSalesSchema = z
     contactId: z.string().uuid().optional(),
     status: z.enum(['pending', 'paid', 'refunded', 'partial_refund']).optional(),
     responsavelId: z.string().uuid().optional(),
-    metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio']).optional(),
+    // 'nao_informado' só em filtro: venda manual continua exigindo o método.
+    metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio', 'nao_informado']).optional(),
     startDate: z.string().datetime().optional(),
     endDate: z.string().datetime().optional(),
   })
@@ -56,7 +57,7 @@ const salesKpisQuerySchema = z
     startDate: z.string().datetime().optional(),
     endDate: z.string().datetime().optional(),
     responsavelId: z.string().uuid().optional(),
-    metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio']).optional(),
+    metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio', 'nao_informado']).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.startDate && data.endDate && data.startDate > data.endDate) {

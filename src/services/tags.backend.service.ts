@@ -22,6 +22,7 @@ function mapBackendTag(t: any): Tag {
     type: t.type,
     color: t.color,
     ordem: t.ordem ?? 0,
+    papel: t.papel ?? null,
     ativo: t.ativo ?? true,
     created_at: t.created_at ?? t.createdAt,
   };

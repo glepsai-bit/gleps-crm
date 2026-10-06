@@ -148,6 +148,13 @@ export const financeBackendService = {
       origem: c.origem,
       // REMOVED: campos de integracao externa de atendimento
       first_resolved_at: c.firstResolvedAt || c.first_resolved_at || null,
+      fechamento: c.fechamento
+        ? {
+            // Decimal do Prisma pode chegar como string
+            valor: c.fechamento.valor == null ? null : Number(c.fechamento.valor),
+            em: c.fechamento.em,
+          }
+        : null,
       created_at: c.createdAt || c.created_at,
       updated_at: c.updatedAt || c.updated_at,
     }));

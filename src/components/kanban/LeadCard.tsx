@@ -35,9 +35,11 @@ interface LeadCardProps {
   onClick: () => void;
   onDragStart: () => void;
   onDragEnd?: () => void;
+  /** Abre o diálogo "Quanto fechou?" — chamado pelo chip "informe o valor". */
+  onInformarValor?: () => void;
 }
 
-export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart, onDragEnd }: LeadCardProps) {
+export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart, onDragEnd, onInformarValor }: LeadCardProps) {
   const { getContactSales } = useFinance();
 
   const sales = useMemo(() => getContactSales(lead.id), [lead.id, getContactSales]);
@@ -55,6 +57,12 @@ export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart,
 
     return null;
   }, [sales]);
+
+  // Só faz sentido na própria etapa de fechamento: se o lead saiu de lá, o card
+  // volta a ser um card comum.
+  const fechamento = stage.papel === 'fechamento' ? lead.fechamento : null;
+  const formatarReais = (v: number) =>
+    new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 
   const getInitials = (name: string | null) => {
     if (!name) return '??';
@@ -159,6 +167,25 @@ export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart,
               <span className="truncate">{lead.telefone}</span>
             </p>
           )}
+
+          {fechamento && (fechamento.valor != null && fechamento.valor > 0 ? (
+            <p className="mt-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+              Fechou {formatarReais(fechamento.valor)} em {safeFormatDateBR(fechamento.em, 'dd/MM')}
+            </p>
+          ) : (
+            <button
+              type="button"
+              // O card inteiro abre o detalhe do lead; o chip só abre o diálogo.
+              onClick={(e) => {
+                e.stopPropagation();
+                onInformarValor?.();
+              }}
+              className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-500/25 dark:text-amber-400"
+            >
+              <AlertCircle className="w-3 h-3" />
+              informe o valor
+            </button>
+          ))}
 
           <div className="flex items-center justify-between mt-1.5 gap-2">
             {getOriginBadge(lead.origem)}

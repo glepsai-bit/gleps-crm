@@ -28,6 +28,7 @@ const COLORS: Record<PaymentMethod | 'none', string> = {
   boleto: '#F59E0B',    // chart-3 yellow
   dinheiro: '#22C55E',  // green variant
   convenio: '#8B5CF6',  // purple
+  nao_informado: '#94A3B8', // fechamento sem forma de pagamento
   none: '#94A3B8',      // muted
 };
 
@@ -38,6 +39,7 @@ const LABELS: Record<PaymentMethod | 'none', string> = {
   boleto: 'Boleto',
   dinheiro: 'Dinheiro',
   convenio: 'Convênio',
+  nao_informado: 'Não informado',
   none: 'Não informado',
 };
 
@@ -48,6 +50,7 @@ const chartConfig = {
   boleto: { label: 'Boleto', color: COLORS.boleto },
   dinheiro: { label: 'Dinheiro', color: COLORS.dinheiro },
   convenio: { label: 'Convênio', color: COLORS.convenio },
+  nao_informado: { label: 'Não informado', color: COLORS.nao_informado },
   none: { label: 'Não informado', color: COLORS.none },
 } satisfies ChartConfig;
 

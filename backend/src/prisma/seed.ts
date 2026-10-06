@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { criarEtapasFixas } from '../services/tag.service';
 
 const prisma = new PrismaClient();
 
@@ -79,19 +80,21 @@ async function main() {
   });
 
   // Create Tags/Stages for Funnel 1
-  const stages = [
+  // ETAPA B — Fechado e Perdido são as etapas fixas (papel); o resto é livre.
+  const stages: Array<{ name: string; slug: string; color: string; ordem: number; papel?: 'fechamento' | 'perda' }> = [
     { name: 'Novo Lead', slug: 'novo-lead', color: '#6366F1', ordem: 0 },
     { name: 'Em Contato', slug: 'em-contato', color: '#8B5CF6', ordem: 1 },
     { name: 'Agendado', slug: 'agendado', color: '#F59E0B', ordem: 2 },
     { name: 'Em Negociação', slug: 'em-negociacao', color: '#3B82F6', ordem: 3 },
-    { name: 'Fechado', slug: 'fechado', color: '#10B981', ordem: 4 },
-    { name: 'Perdido', slug: 'perdido', color: '#EF4444', ordem: 5 },
+    { name: 'Fechado', slug: 'fechado', color: '#F0A532', ordem: 4, papel: 'fechamento' },
+    { name: 'Perdido', slug: 'perdido', color: '#E5484D', ordem: 5, papel: 'perda' },
   ];
 
   for (const stage of stages) {
     await prisma.tag.upsert({
       where: { accountId_slug: { accountId: account1.id, slug: stage.slug } },
-      update: {},
+      // Seed antigo não tinha papel: re-rodar carimba sem mexer no resto.
+      update: stage.papel ? { papel: stage.papel } : {},
       create: {
         accountId: account1.id,
         funnelId: funnel1.id,
@@ -101,6 +104,7 @@ async function main() {
         color: stage.color,
         ordem: stage.ordem,
         ativo: true,
+        papel: stage.papel ?? null,
       },
     });
   }
@@ -278,7 +282,7 @@ async function main() {
   });
 
   // Create Default Funnel for Account 2
-  await prisma.funnel.upsert({
+  const funnel2 = await prisma.funnel.upsert({
     where: { accountId_slug: { accountId: account2.id, slug: 'principal' } },
     update: {},
     create: {
@@ -288,6 +292,8 @@ async function main() {
       isDefault: true,
     },
   });
+  // ETAPA B — todo funil tem Fechado e Perdido.
+  await criarEtapasFixas(prisma, account2.id, funnel2.id, funnel2.slug);
 
   // Create Admin for Account 2 (suspended)
   await prisma.user.upsert({

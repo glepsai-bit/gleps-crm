@@ -81,6 +81,26 @@ export interface ChatMetricsResult {
    * Pode vir vazio em deploys antigos do backend — caller deve tolerar.
    */
   dailyVolume?: DailyVolumeBucket[];
+  /**
+   * Fechamentos do período (etapas com papel 'fechamento'/'perda'). Ausente em
+   * deploys antigos do backend — a tela esconde o bloco de receita nesse caso.
+   */
+  fechamento?: FechamentoMetrics;
+}
+
+export interface FechamentoMetrics {
+  /** Contatos que entraram em etapa de fechamento no período. */
+  conversoes: number;
+  /** Contatos criados no período (base da taxa). */
+  novosContatos: number;
+  /** conversoes / novosContatos, em % (0-100). null = sem base de cálculo. */
+  taxaConversao: number | null;
+  /** Soma das vendas pagas no período (R$). */
+  receita: number;
+  /** Vendas pagas (com valor) no período. */
+  vendasComValor: number;
+  /** Contatos que entraram em etapa de perda no período. */
+  perdas: number;
 }
 
 export interface AgentMetricsResult {

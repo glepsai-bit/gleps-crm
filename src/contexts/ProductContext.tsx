@@ -39,6 +39,8 @@ interface ProductContextType {
   // Helpers
   getProductById: (productId: string) => Product | undefined;
   getActiveProducts: () => Product[];
+  /** Relê os produtos do servidor (serviço criado na Agenda não existia quando o contexto carregou). */
+  refreshProducts: () => Promise<void>;
 }
 
 interface ProductProviderProps {
@@ -78,32 +80,34 @@ export function ProductProvider({ children, accountId }: ProductProviderProps) {
     'GEAP',
   ]);
 
+  const carregarProdutos = useCallback(async () => {
+    if (!accountId) return;
+    try {
+      const response = await productsService.list({ ativo: undefined });
+      const items = Array.isArray(response) ? response : (response?.data || []);
+      setProducts(items.map((p: any) => ({
+        id: p.id,
+        account_id: p.account_id || p.accountId || accountId,
+        nome: p.nome,
+        valor_padrao: Number(p.valor_padrao ?? p.valorPadrao ?? 0),
+        ativo: p.ativo ?? true,
+        metodos_pagamento: p.metodos_pagamento || p.metodosPagamento || ['pix'],
+        convenios_aceitos: p.convenios_aceitos || p.conveniosAceitos || [],
+        created_at: p.created_at || p.createdAt || new Date().toISOString(),
+        updated_at: p.updated_at || p.updatedAt || new Date().toISOString(),
+      })));
+    } catch (err) {
+      console.error('Error fetching products:', err);
+    } finally {
+      setIsLoaded(true);
+    }
+  }, [accountId]);
+
   // Fetch products from API on mount
   useEffect(() => {
     if (!accountId || isLoaded) return;
-
-    (async () => {
-      try {
-        const response = await productsService.list({ ativo: undefined });
-        const items = Array.isArray(response) ? response : (response?.data || []);
-        setProducts(items.map((p: any) => ({
-          id: p.id,
-          account_id: p.account_id || p.accountId || accountId,
-          nome: p.nome,
-          valor_padrao: Number(p.valor_padrao ?? p.valorPadrao ?? 0),
-          ativo: p.ativo ?? true,
-          metodos_pagamento: p.metodos_pagamento || p.metodosPagamento || ['pix'],
-          convenios_aceitos: p.convenios_aceitos || p.conveniosAceitos || [],
-          created_at: p.created_at || p.createdAt || new Date().toISOString(),
-          updated_at: p.updated_at || p.updatedAt || new Date().toISOString(),
-        })));
-      } catch (err) {
-        console.error('Error fetching products:', err);
-      } finally {
-        setIsLoaded(true);
-      }
-    })();
-  }, [accountId, isLoaded]);
+    void carregarProdutos();
+  }, [accountId, isLoaded, carregarProdutos]);
 
   // ============= CRUD OPERATIONS =============
 
@@ -280,8 +284,9 @@ export function ProductProvider({ children, accountId }: ProductProviderProps) {
       removeConvenio,
       getProductById,
       getActiveProducts,
+      refreshProducts: carregarProdutos,
     }),
-    [products, convenios, createProduct, updateProduct, toggleProductStatus, deleteProduct, addConvenio, removeConvenio, getProductById, getActiveProducts]
+    [products, convenios, createProduct, updateProduct, toggleProductStatus, deleteProduct, addConvenio, removeConvenio, getProductById, getActiveProducts, carregarProdutos]
   );
 
   return (
