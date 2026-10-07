@@ -116,7 +116,7 @@ export function FechamentoDialog({
             />
           </div>
 
-          {servicos.length > 0 && (
+          {servicos.length > 0 ? (
             <div className="space-y-1.5">
               <Label htmlFor="fechamento-servico">Serviço (opcional)</Label>
               <Select value={servicoId} onValueChange={escolherServico}>
@@ -132,7 +132,22 @@ export function FechamentoDialog({
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">
+                Os serviços são cadastrados em{' '}
+                <a href="/admin/ia/agenda" className="underline underline-offset-2 hover:text-foreground">
+                  Agenda › Serviços e horários
+                </a>
+                .
+              </p>
             </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Nenhum serviço cadastrado. Cadastre em{' '}
+              <a href="/admin/ia/agenda" className="underline underline-offset-2 hover:text-foreground">
+                Agenda › Serviços e horários
+              </a>{' '}
+              para escolher aqui e sugerir o valor.
+            </p>
           )}
 
           <DialogFooter className="gap-2 sm:gap-2">

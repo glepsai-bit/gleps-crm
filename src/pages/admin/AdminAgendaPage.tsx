@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
 import { CalendarView, GoogleConnectModal, EventDialog } from '@/components/calendar';
 import { useCalendar } from '@/contexts/CalendarContext';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
@@ -8,12 +10,15 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { format, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { Calendar, Clock, MapPin, Link2, User, Trash2, Copy, ExternalLink, RefreshCw, AlertCircle, Info } from 'lucide-react';
+import { Calendar, Clock, MapPin, Link2, User, Trash2, Copy, ExternalLink, RefreshCw, AlertCircle, Info, Settings2 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 
 export default function AdminAgendaPage() {
-  const { 
+  const { user } = useAuth();
+  // A tela de regras é só do admin (rota protegida); agente não vê o atalho.
+  const podeConfigurar = user?.role === 'admin' || user?.role === 'super_admin';
+  const {
     selectedEvent, 
     selectEvent, 
     deleteEvent, 
@@ -146,6 +151,16 @@ export default function AdminAgendaPage() {
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {/* Serviços (duração, preço) e horários de atendimento vivem na tela
+              de regras da agenda; sem este atalho ninguém a encontrava. */}
+          {podeConfigurar && (
+            <Button asChild variant="outline" size="sm">
+              <Link to="/admin/ia/agenda">
+                <Settings2 className="w-4 h-4 mr-2" />
+                Serviços e horários
+              </Link>
+            </Button>
+          )}
           {!googleConfigured ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0" />

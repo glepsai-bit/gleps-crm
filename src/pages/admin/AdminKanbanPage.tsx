@@ -255,14 +255,56 @@ export default function AdminKanbanPage() {
 
   const getLeadsByStage = (stageTagId: string) => leads.filter((lead) => lead.stage_id === stageTagId);
 
+  // Arrastar perto da borda do quadro rola as colunas. O navegador não faz
+  // isso dentro de um container com overflow próprio, e sem rolar o lead
+  // nunca chega numa etapa que está fora da tela.
+  const boardRef = useRef<HTMLDivElement>(null);
+  const rolagem = useRef<{ v: number; raf: number | null; ultimo: number }>({ v: 0, raf: null, ultimo: 0 });
+
+  const pararRolagem = useCallback(() => {
+    if (rolagem.current.raf != null) cancelAnimationFrame(rolagem.current.raf);
+    rolagem.current = { v: 0, raf: null, ultimo: 0 };
+  }, []);
+
+  const rolarAoArrastar = useCallback((e: DragEvent<HTMLDivElement>) => {
+    const el = boardRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const ZONA = 96; // px da borda em que começa a rolar
+    const MAX = 18; // px por quadro, na borda
+    const esquerda = e.clientX - rect.left;
+    const direita = rect.right - e.clientX;
+    let v = 0;
+    if (esquerda < ZONA) v = -Math.ceil(((ZONA - esquerda) / ZONA) * MAX);
+    else if (direita < ZONA) v = Math.ceil(((ZONA - direita) / ZONA) * MAX);
+    rolagem.current.v = v;
+    rolagem.current.ultimo = performance.now();
+    if (v === 0 || rolagem.current.raf != null) return;
+    const passo = () => {
+      const alvo = boardRef.current;
+      // Sem dragover há 150 ms = o arrasto acabou (o dragend nem sempre chega
+      // quando o card troca de coluna e é remontado).
+      if (!alvo || rolagem.current.v === 0 || performance.now() - rolagem.current.ultimo > 150) {
+        rolagem.current.raf = null;
+        return;
+      }
+      alvo.scrollLeft += rolagem.current.v;
+      rolagem.current.raf = requestAnimationFrame(passo);
+    };
+    rolagem.current.raf = requestAnimationFrame(passo);
+  }, []);
+
+  useEffect(() => pararRolagem, [pararRolagem]);
+
   const handleDragStart = useCallback((leadId: string) => {
     setDraggedLead(leadId);
   }, []);
-  
+
   const handleDragEnd = useCallback(() => {
+    pararRolagem();
     setDraggedLead(null);
     setDragOverStage(null);
-  }, []);
+  }, [pararRolagem]);
   
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>, stageId: string) => {
     e.preventDefault();
@@ -642,7 +684,12 @@ export default function AdminKanbanPage() {
 
       {/* Kanban Board - Horizontal scroll with snap */}
       {stageTags.length > 0 && (
-        <div className="kanban-container h-[calc(100%-6rem)]">
+        <div
+          ref={boardRef}
+          className="kanban-container h-[calc(100%-6rem)]"
+          data-dragging={draggedLead ? 'true' : undefined}
+          onDragOver={rolarAoArrastar}
+        >
           {stageTags.map((stage, index) => {
             const stageLeads = getLeadsByStage(stage.id);
             const isFirst = index === 0;

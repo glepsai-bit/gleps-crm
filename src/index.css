@@ -508,6 +508,11 @@
     @apply flex gap-3 overflow-x-auto pb-4 snap-x snap-mandatory sm:snap-none;
   }
 
+  /* Enquanto um lead é arrastado, o snap brigaria com a rolagem automática. */
+  .kanban-container[data-dragging="true"] {
+    scroll-snap-type: none;
+  }
+
   .kanban-column-snap {
     @apply snap-center sm:snap-align-none;
   }
