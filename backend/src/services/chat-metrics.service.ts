@@ -13,12 +13,16 @@
  *   - resolvedByAi / resolvedByHuman
  *   - slaBreaches
  *   - breakdowns por agente, por time, por inbox
+ *   - Dashboard 06/10 (aditivo): anterior (mesmos KPIs no período anterior),
+ *     reunioes, transferidasParaHumano, origem e os campos novos de fechamento.
+ *     Regras em docs/METRICAS_DASHBOARD.md › "Dashboard — métricas novas (06/10)".
  *
  * Filtros suportados: fromDate, toDate (obrigatórios), inboxId, teamId, agentId.
  *
  * Singleton: `chatMetricsService`.
  */
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
 import { ValidationError, NotFoundError } from '../utils/errors';
@@ -113,6 +117,68 @@ export interface FechamentoMetrics {
   vendasComValor: number;
   /** Contatos distintos que entraram em etapa de perda no período. */
   perdas: number;
+  // --- Dashboard 06/10 (funil "do primeiro contato ao fechamento") ---
+  /** Contatos criados no período com ≥1 Conversation respondida (firstResponseAt). */
+  atendidos: number;
+  /** Contatos criados no período com ≥1 CalendarEvent scheduled/completed. */
+  comReuniao: number;
+  /** receita ÷ vendasComValor (R$, 2 casas). null = sem venda com valor. */
+  ticketMedio: number | null;
+  /** Sales pending com origem 'fechamento' criadas no período (fechou sem informar valor). */
+  semValor: number;
+}
+
+/**
+ * Dashboard 06/10 — os mesmos KPIs da linha 1 aplicados ao período
+ * imediatamente anterior (mesma duração). O front calcula a variação.
+ * Respeita os mesmos filtros de conversa (inbox/time/agente) do período atual;
+ * `reunioes` ignora esses filtros, como no bloco `reunioes`.
+ */
+export interface PeriodoAnteriorMetrics {
+  totalConversations: number;
+  resolvedConversations: number;
+  avgFirstResponseMin: number | null;
+  avgResolutionMin: number | null;
+  reunioes: number;
+}
+
+export interface ReunioesPorDiaBucket {
+  date: string; // yyyy-mm-dd
+  total: number;
+}
+
+/**
+ * Dashboard 06/10 — reuniões MARCADAS no período (CalendarEvent.createdAt),
+ * status scheduled/completed (held e cancelled ficam fora). Ignora
+ * inbox/time/agente: é número da agenda, não da conversa.
+ */
+export interface ReunioesMetrics {
+  total: number;
+  /** Marcadas pelo agente de IA (conversationId NOT NULL). */
+  peloAgente: number;
+  /** Só os dias com evento — o front preenche os zeros. */
+  porDia: ReunioesPorDiaBucket[];
+}
+
+/**
+ * Dashboard 06/10 — conversas criadas no período em que a IA falou com o
+ * cliente E um humano também falou (mensagens não-privadas).
+ */
+export interface TransferidasParaHumanoMetrics {
+  total: number;
+  /** total ÷ conversas com ≥1 mensagem da IA, em % (0–100, 1 casa). null = sem base. */
+  pct: number | null;
+}
+
+/**
+ * Dashboard 06/10 — origem dos contatos criados no período, pela PRIMEIRA
+ * conversa de cada um. Ignora inbox/time/agente.
+ */
+export interface OrigemContatosMetrics {
+  /** Primeira conversa com sourceType 'ctwa' (clique em anúncio Meta). */
+  anuncio: number;
+  /** O resto: organic, null ou sem conversa. */
+  organico: number;
 }
 
 export interface ChatMetricsResult {
@@ -130,6 +196,11 @@ export interface ChatMetricsResult {
   /** Série temporal por dia (preenchida com zeros nos dias sem dados) */
   dailyVolume: DailyVolumeBucket[];
   fechamento: FechamentoMetrics;
+  // --- Dashboard 06/10 (tudo aditivo) ---
+  anterior: PeriodoAnteriorMetrics;
+  reunioes: ReunioesMetrics;
+  transferidasParaHumano: TransferidasParaHumanoMetrics;
+  origem: OrigemContatosMetrics;
 }
 
 export interface AgentPeriod {
@@ -177,6 +248,13 @@ export interface LiveAttendanceResult {
   humano: LiveAttendanceBucket;
   emAberto: LiveAttendanceBucket;
   total: number;
+  /**
+   * Dashboard 06/10 — das conversas em `emAberto`, quantas estão com o cliente
+   * esperando há mais de 5 min: última mensagem não-privada é do cliente e tem
+   * mais de 5 min, ou a conversa não tem mensagem nenhuma e foi criada há mais
+   * de 5 min.
+   */
+  esperandoHaMais5Min: number;
 }
 
 export interface ReturningLeadListItem {
@@ -331,6 +409,77 @@ function eachDayKeyInTz(from: Date, to: Date, tz: string | undefined): string[] 
   return keys;
 }
 
+// ============================================
+// Dashboard 06/10 — helpers
+// ============================================
+
+/** Status de CalendarEvent que contam como "reunião marcada". */
+const STATUS_REUNIAO_MARCADA = ['scheduled', 'completed'] as const;
+
+/** Sale.origem gravada pelo gatilho de fechamento (sale.service › ORIGEM_FECHAMENTO). */
+const ORIGEM_SALE_FECHAMENTO = 'fechamento';
+
+/** Quanto tempo o cliente pode ficar sem resposta antes de virar "esperando". */
+const ESPERA_MAX_MS = 5 * 60 * 1000;
+
+type FiltrosDeConversa = Pick<MetricsFilters, 'inboxId' | 'teamId' | 'agentId'>;
+
+/**
+ * Janela imediatamente anterior ao período, de mesma duração. Como o período
+ * é inclusivo nas duas pontas, a anterior termina 1 ms antes do `from` atual.
+ */
+function periodoAnterior(fromDate: Date, toDate: Date): { fromDate: Date; toDate: Date } {
+  const duracao = toDate.getTime() - fromDate.getTime();
+  const to = new Date(fromDate.getTime() - 1);
+  return { fromDate: new Date(to.getTime() - duracao), toDate: to };
+}
+
+/**
+ * `where` de Conversation usado pelos KPIs da linha 1: criada OU resolvida
+ * no período, mais os filtros opcionais. Centralizado pra que o período
+ * anterior conte exatamente como o atual.
+ */
+function whereConversas(
+  accountId: string,
+  fromDate: Date,
+  toDate: Date,
+  f: FiltrosDeConversa
+): Prisma.ConversationWhereInput {
+  return {
+    accountId,
+    OR: [
+      { createdAt: { gte: fromDate, lte: toDate } },
+      { resolvedAt: { gte: fromDate, lte: toDate } },
+    ],
+    ...(f.inboxId ? { inboxId: f.inboxId } : {}),
+    ...(f.teamId ? { teamId: f.teamId } : {}),
+    ...(f.agentId ? { assigneeId: f.agentId } : {}),
+  };
+}
+
+/**
+ * Os mesmos filtros opcionais em SQL, pra queries raw em que a conversa está
+ * com alias `c`. Sem filtro vira fragmento vazio.
+ */
+function filtrosDeConversaSql(f: FiltrosDeConversa): Prisma.Sql {
+  const partes: Prisma.Sql[] = [];
+  if (f.inboxId) partes.push(Prisma.sql`AND c.inbox_id = ${f.inboxId}::uuid`);
+  if (f.teamId) partes.push(Prisma.sql`AND c.team_id = ${f.teamId}::uuid`);
+  if (f.agentId) partes.push(Prisma.sql`AND c.assignee_id = ${f.agentId}::uuid`);
+  return partes.length > 0 ? Prisma.join(partes, ' ') : Prisma.empty;
+}
+
+/** Mesmo arredondamento de `average()` (2 casas), aceitando null do AVG. */
+function arredonda2(v: number | null | undefined): number | null {
+  if (v === null || v === undefined || Number.isNaN(v)) return null;
+  return Math.round(v * 100) / 100;
+}
+
+/** Percentual 0–100 com 1 casa; null quando não há base. */
+function percentual(parte: number, base: number): number | null {
+  return base > 0 ? Math.round((parte / base) * 1000) / 10 : null;
+}
+
 class ChatMetricsService {
   /**
    * Métricas agregadas do chat interno para uma conta no período.
@@ -363,16 +512,7 @@ class ChatMetricsService {
     // sido criadas antes. Ex: ticket criado há 60d e resolvido hoje precisa
     // aparecer no dashboard "últimos 30d" para a taxa de resolução não vir
     // artificialmente baixa.
-    const where = {
-      accountId,
-      OR: [
-        { createdAt: { gte: fromDate, lte: toDate } },
-        { resolvedAt: { gte: fromDate, lte: toDate } },
-      ],
-      ...(inboxId ? { inboxId } : {}),
-      ...(teamId ? { teamId } : {}),
-      ...(agentId ? { assigneeId: agentId } : {}),
-    };
+    const where = whereConversas(accountId, fromDate, toDate, { inboxId, teamId, agentId });
 
     logger.debug('[chat-metrics] getMetrics', { accountId, filters });
 
@@ -653,7 +793,16 @@ class ChatMetricsService {
       return { date, total: v.total, resolved: v.resolved, open: v.open };
     });
 
-    const fechamento = await this.getFechamentoMetrics(accountId, fromDate, toDate);
+    // Dashboard 06/10 — blocos aditivos. Cada um é agregado no Postgres e
+    // independente dos outros, então rodam em paralelo.
+    const [fechamento, anterior, reunioes, transferidasParaHumano, origem] =
+      await Promise.all([
+        this.getFechamentoMetrics(accountId, fromDate, toDate),
+        this.getPeriodoAnteriorMetrics(accountId, filters),
+        this.getReunioesMetrics(accountId, fromDate, toDate, tz),
+        this.getTransferidasParaHumano(accountId, filters),
+        this.getOrigemContatos(accountId, fromDate, toDate),
+      ]);
 
     return {
       totalConversations,
@@ -669,7 +818,180 @@ class ChatMetricsService {
       byInbox,
       dailyVolume,
       fechamento,
+      anterior,
+      reunioes,
+      transferidasParaHumano,
+      origem,
     };
+  }
+
+  // ==========================================================================
+  // Dashboard 06/10 — blocos novos (tudo agregado no Postgres)
+  // ==========================================================================
+
+  /**
+   * Os KPIs da linha 1 no período imediatamente anterior. As contagens usam
+   * o MESMO `where` do período atual; as médias são o mesmo cálculo dos ciclos
+   * (firstResponseAt − openedAt, resolvedAt − openedAt, em minutos), só que
+   * feito pelo AVG do Postgres em vez de carregar os ciclos — arredondado a
+   * 2 casas como `average()`.
+   */
+  async getPeriodoAnteriorMetrics(
+    accountId: string,
+    filters: MetricsFilters
+  ): Promise<PeriodoAnteriorMetrics> {
+    const { inboxId, teamId, agentId } = filters;
+    const { fromDate, toDate } = periodoAnterior(filters.fromDate, filters.toDate);
+    const where = whereConversas(accountId, fromDate, toDate, { inboxId, teamId, agentId });
+    const filtros = filtrosDeConversaSql({ inboxId, teamId, agentId });
+
+    const [totalConversations, resolvedConversations, medias, reunioes] = await Promise.all([
+      prisma.conversation.count({ where }),
+      prisma.conversation.count({ where: { ...where, status: 'resolved' } }),
+      prisma.$queryRaw<Array<{ frt: number | null; res: number | null }>>`
+        /* chat-metrics:anterior */
+        SELECT
+          (AVG(EXTRACT(EPOCH FROM (cy.first_response_at - cy.opened_at)) / 60.0)
+             FILTER (WHERE cy.first_response_at IS NOT NULL))::float8 AS frt,
+          (AVG(EXTRACT(EPOCH FROM (cy.resolved_at - cy.opened_at)) / 60.0)
+             FILTER (WHERE cy.resolved_at IS NOT NULL))::float8 AS res
+        FROM conversation_cycles cy
+        JOIN conversations c ON c.id = cy.conversation_id
+        WHERE cy.account_id = ${accountId}::uuid
+          AND (
+            (cy.opened_at >= ${fromDate}::timestamptz AND cy.opened_at <= ${toDate}::timestamptz)
+            OR (cy.resolved_at >= ${fromDate}::timestamptz AND cy.resolved_at <= ${toDate}::timestamptz)
+          )
+          ${filtros}
+      `,
+      prisma.calendarEvent.count({
+        where: {
+          accountId,
+          createdAt: { gte: fromDate, lte: toDate },
+          status: { in: [...STATUS_REUNIAO_MARCADA] },
+        },
+      }),
+    ]);
+
+    return {
+      totalConversations,
+      resolvedConversations,
+      avgFirstResponseMin: arredonda2(medias[0]?.frt),
+      avgResolutionMin: arredonda2(medias[0]?.res),
+      reunioes,
+    };
+  }
+
+  /**
+   * Reuniões marcadas no período, por dia. Uma query: GROUP BY do dia de
+   * `created_at` no mesmo fuso de `dailyVolume` (`tz`, ou UTC quando omitido),
+   * com o total e o subtotal do agente (conversationId NOT NULL).
+   */
+  async getReunioesMetrics(
+    accountId: string,
+    fromDate: Date,
+    toDate: Date,
+    tz?: string
+  ): Promise<ReunioesMetrics> {
+    const fuso = tz ?? 'UTC';
+    const rows = await prisma.$queryRaw<
+      Array<{ date: string; total: number; pelo_agente: number }>
+    >`
+      /* chat-metrics:reunioes */
+      SELECT
+        to_char(created_at AT TIME ZONE ${fuso}, 'YYYY-MM-DD') AS date,
+        COUNT(*)::int AS total,
+        (COUNT(*) FILTER (WHERE conversation_id IS NOT NULL))::int AS pelo_agente
+      FROM calendar_events
+      WHERE account_id = ${accountId}::uuid
+        AND created_at >= ${fromDate}::timestamptz
+        AND created_at <= ${toDate}::timestamptz
+        AND status IN ('scheduled', 'completed')
+      GROUP BY 1
+      ORDER BY 1
+    `;
+
+    let total = 0;
+    let peloAgente = 0;
+    const porDia: ReunioesPorDiaBucket[] = [];
+    for (const r of rows) {
+      total += r.total;
+      peloAgente += r.pelo_agente;
+      porDia.push({ date: r.date, total: r.total });
+    }
+    return { total, peloAgente, porDia };
+  }
+
+  /**
+   * Conversas criadas no período em que a IA falou E um humano falou (as duas
+   * via mensagens não-privadas — nota interna não é "assumir"). Base do
+   * percentual: conversas em que a IA falou. Uma query com EXISTS duplo.
+   */
+  async getTransferidasParaHumano(
+    accountId: string,
+    filters: MetricsFilters
+  ): Promise<TransferidasParaHumanoMetrics> {
+    const { fromDate, toDate, inboxId, teamId, agentId } = filters;
+    const filtros = filtrosDeConversaSql({ inboxId, teamId, agentId });
+
+    const rows = await prisma.$queryRaw<Array<{ total: number; com_ia: number }>>`
+      /* chat-metrics:transferidas */
+      SELECT
+        (COUNT(*) FILTER (WHERE t.com_ia AND t.com_humano))::int AS total,
+        (COUNT(*) FILTER (WHERE t.com_ia))::int AS com_ia
+      FROM (
+        SELECT
+          EXISTS (
+            SELECT 1 FROM messages m
+            WHERE m.conversation_id = c.id AND m.sender_type = 'ai_bot' AND m.is_private = false
+          ) AS com_ia,
+          EXISTS (
+            SELECT 1 FROM messages m
+            WHERE m.conversation_id = c.id AND m.sender_type = 'agent' AND m.is_private = false
+          ) AS com_humano
+        FROM conversations c
+        WHERE c.account_id = ${accountId}::uuid
+          AND c.created_at >= ${fromDate}::timestamptz
+          AND c.created_at <= ${toDate}::timestamptz
+          ${filtros}
+      ) t
+    `;
+
+    const total = rows[0]?.total ?? 0;
+    const comIa = rows[0]?.com_ia ?? 0;
+    return { total, pct: percentual(total, comIa) };
+  }
+
+  /**
+   * Origem dos contatos criados no período: a PRIMEIRA conversa de cada um
+   * (menor createdAt) veio de anúncio (`sourceType = 'ctwa'`) ou não. Quem
+   * não tem conversa conta como orgânico. Uma query com subselect correlato.
+   */
+  async getOrigemContatos(
+    accountId: string,
+    fromDate: Date,
+    toDate: Date
+  ): Promise<OrigemContatosMetrics> {
+    const rows = await prisma.$queryRaw<Array<{ anuncio: number; organico: number }>>`
+      /* chat-metrics:origem */
+      SELECT
+        (COUNT(*) FILTER (WHERE t.primeira_origem = 'ctwa'))::int AS anuncio,
+        (COUNT(*) FILTER (WHERE t.primeira_origem IS DISTINCT FROM 'ctwa'))::int AS organico
+      FROM (
+        SELECT (
+          SELECT c.source_type FROM conversations c
+          WHERE c.contact_id = ct.id
+          ORDER BY c.created_at ASC, c.id ASC
+          LIMIT 1
+        ) AS primeira_origem
+        FROM contacts ct
+        WHERE ct.account_id = ${accountId}::uuid
+          AND ct.created_at >= ${fromDate}::timestamptz
+          AND ct.created_at <= ${toDate}::timestamptz
+      ) t
+    `;
+
+    return { anuncio: rows[0]?.anuncio ?? 0, organico: rows[0]?.organico ?? 0 };
   }
 
   /**
@@ -704,28 +1026,58 @@ class ChatMetricsService {
         distinct: ['contactId'],
       });
 
-    const [fechamentos, perdas, novosContatos, pagas] = await Promise.all([
-      entradasEm('fechamento'),
-      entradasEm('perda'),
-      prisma.contact.count({ where: { accountId, createdAt: periodo } }),
-      prisma.sale.aggregate({
-        where: { accountId, status: 'paid', paidAt: periodo },
-        _sum: { valor: true },
-        _count: { _all: true },
-      }),
-    ]);
+    const [fechamentos, perdas, novosContatos, pagas, atendidos, comReuniao, semValor] =
+      await Promise.all([
+        entradasEm('fechamento'),
+        entradasEm('perda'),
+        prisma.contact.count({ where: { accountId, createdAt: periodo } }),
+        prisma.sale.aggregate({
+          where: { accountId, status: 'paid', paidAt: periodo },
+          _sum: { valor: true },
+          _count: { _all: true },
+        }),
+        // Dashboard 06/10 — etapas do funil "do primeiro contato ao fechamento".
+        // Os dois `some` viram EXISTS no Postgres: uma query cada, sem N+1.
+        prisma.contact.count({
+          where: {
+            accountId,
+            createdAt: periodo,
+            conversations: { some: { firstResponseAt: { not: null } } },
+          },
+        }),
+        prisma.contact.count({
+          where: {
+            accountId,
+            createdAt: periodo,
+            calendarEvents: { some: { status: { in: [...STATUS_REUNIAO_MARCADA] } } },
+          },
+        }),
+        prisma.sale.count({
+          where: {
+            accountId,
+            status: 'pending',
+            origem: ORIGEM_SALE_FECHAMENTO,
+            createdAt: periodo,
+          },
+        }),
+      ]);
 
     const conversoes = fechamentos.length;
-    const taxaConversao =
-      novosContatos > 0 ? Math.round((conversoes / novosContatos) * 1000) / 10 : null;
+    const taxaConversao = percentual(conversoes, novosContatos);
+    const receita = Number(pagas._sum.valor ?? 0);
+    const vendasComValor = pagas._count._all;
 
     return {
       conversoes,
       novosContatos,
       taxaConversao,
-      receita: Number(pagas._sum.valor ?? 0),
-      vendasComValor: pagas._count._all,
+      receita,
+      vendasComValor,
       perdas: perdas.length,
+      atendidos,
+      comReuniao,
+      ticketMedio: vendasComValor > 0 ? arredonda2(receita / vendasComValor) : null,
+      semValor,
     };
   }
 
@@ -980,6 +1332,7 @@ class ChatMetricsService {
         id: true,
         assigneeId: true,
         customAttributes: true,
+        createdAt: true,
       },
     });
 
@@ -989,37 +1342,45 @@ class ChatMetricsService {
         humano: { count: 0, conversationIds: [] },
         emAberto: { count: 0, conversationIds: [] },
         total: 0,
+        esperandoHaMais5Min: 0,
       };
     }
 
     const ids = conversations.map((c) => c.id);
 
     // Última Message NÃO-privada por conversa (system_note/private notas internas
-    // não devem influenciar quem está "conduzindo" o atendimento).
+    // não devem influenciar quem está "conduzindo" o atendimento). Traz também
+    // o `created_at` pra medir há quanto tempo o cliente espera (mesma query).
     const lastSenders = await prisma.$queryRaw<
-      Array<{ conversation_id: string; sender_type: string }>
+      Array<{ conversation_id: string; sender_type: string; created_at: Date }>
     >`
-      SELECT DISTINCT ON (conversation_id) conversation_id, sender_type
+      SELECT DISTINCT ON (conversation_id) conversation_id, sender_type, created_at
       FROM messages
       WHERE conversation_id = ANY(${ids}::uuid[])
         AND is_private = false
       ORDER BY conversation_id, created_at DESC
     `;
-    const lastSenderByConv = new Map<string, string>();
+    const lastByConv = new Map<string, { senderType: string; createdAt: Date }>();
     for (const r of lastSenders) {
-      lastSenderByConv.set(r.conversation_id, r.sender_type);
+      lastByConv.set(r.conversation_id, {
+        senderType: r.sender_type,
+        createdAt: new Date(r.created_at),
+      });
     }
 
     const ia: string[] = [];
     const humano: string[] = [];
     const emAberto: string[] = [];
+    let esperandoHaMais5Min = 0;
+    const limiteEspera = Date.now() - ESPERA_MAX_MS;
 
     for (const c of conversations) {
       const attrs =
         (c.customAttributes as Record<string, unknown> | null) ?? {};
       const humanActive = attrs.human_active === true;
       const handlerActive = attrs.handler_active === true;
-      const lastSender = lastSenderByConv.get(c.id);
+      const ultima = lastByConv.get(c.id);
+      const lastSender = ultima?.senderType;
 
       // 1. Humano: assignee humano OU flag explícita.
       if (c.assigneeId || humanActive) {
@@ -1036,6 +1397,18 @@ class ChatMetricsService {
 
       // 3. Em aberto: sem assignee, sem flag de humano e sem sinal de IA.
       emAberto.push(c.id);
+
+      // Dashboard 06/10 — cliente esperando há mais de 5 min: a última
+      // mensagem é dele (e velha), ou ninguém disse nada desde que a conversa
+      // abriu (e ela é velha).
+      const esperandoDesde = ultima
+        ? ultima.senderType === 'customer'
+          ? ultima.createdAt
+          : null
+        : c.createdAt;
+      if (esperandoDesde && esperandoDesde.getTime() < limiteEspera) {
+        esperandoHaMais5Min += 1;
+      }
     }
 
     return {
@@ -1043,6 +1416,7 @@ class ChatMetricsService {
       humano: { count: humano.length, conversationIds: humano },
       emAberto: { count: emAberto.length, conversationIds: emAberto },
       total: conversations.length,
+      esperandoHaMais5Min,
     };
   }
 

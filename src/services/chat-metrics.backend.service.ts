@@ -86,6 +86,30 @@ export interface ChatMetricsResult {
    * deploys antigos do backend — a tela esconde o bloco de receita nesse caso.
    */
   fechamento?: FechamentoMetrics;
+  /** Mesmos números do período imediatamente anterior (mesma duração). Opcional. */
+  anterior?: PeriodoAnteriorMetrics;
+  /** Reuniões marcadas no período (CalendarEvent scheduled/completed). Opcional. */
+  reunioes?: ReunioesMetrics;
+  /** Conversas em que a IA falou e depois um humano assumiu. Opcional. */
+  transferidasParaHumano?: { total: number; pct: number | null };
+  /** Origem dos contatos novos: anúncio (ctwa) x orgânico. Opcional. */
+  origem?: { anuncio: number; organico: number };
+}
+
+export interface PeriodoAnteriorMetrics {
+  totalConversations: number;
+  resolvedConversations: number;
+  avgFirstResponseMin: number | null;
+  avgResolutionMin: number | null;
+  reunioes: number;
+}
+
+export interface ReunioesMetrics {
+  total: number;
+  /** Marcadas pelo agente de IA (evento com conversationId). */
+  peloAgente: number;
+  /** Um item por dia com evento (yyyy-mm-dd, UTC). O front preenche zeros. */
+  porDia: { date: string; total: number }[];
 }
 
 export interface FechamentoMetrics {
@@ -101,6 +125,14 @@ export interface FechamentoMetrics {
   vendasComValor: number;
   /** Contatos que entraram em etapa de perda no período. */
   perdas: number;
+  /** Contatos novos com ao menos 1 conversa respondida. Opcional. */
+  atendidos?: number;
+  /** Contatos novos com ao menos 1 reunião marcada. Opcional. */
+  comReuniao?: number;
+  /** receita ÷ vendasComValor; null se não houver venda com valor. Opcional. */
+  ticketMedio?: number | null;
+  /** Vendas pendentes de fechamento sem valor informado. Opcional. */
+  semValor?: number;
 }
 
 export interface AgentMetricsResult {
@@ -135,6 +167,8 @@ export interface LiveAttendanceResult {
   humano: LiveAttendanceBucket;
   emAberto: LiveAttendanceBucket;
   total: number;
+  /** Em aberto cuja última mensagem é do cliente há mais de 5 min. Opcional. */
+  esperandoHaMais5Min?: number;
 }
 
 export interface ReturningLeadListItem {

@@ -225,6 +225,11 @@ describe('dashboard — conversão, receita e perdas', () => {
       receita: 1000,
       vendasComValor: 1,
       perdas: 1,
+      // Dashboard 06/10: ninguém tem conversa nem reunião; B fechou sem valor.
+      atendidos: 0,
+      comReuniao: 0,
+      ticketMedio: 1000,
+      semValor: 1,
     });
 
     // Fora do período: nada, e a taxa fica sem base.
@@ -233,7 +238,18 @@ describe('dashboard — conversão, receita e perdas', () => {
       new Date('2020-01-01'),
       new Date('2020-01-02')
     );
-    expect(vazio).toEqual({ conversoes: 0, novosContatos: 0, taxaConversao: null, receita: 0, vendasComValor: 0, perdas: 0 });
+    expect(vazio).toEqual({
+      conversoes: 0,
+      novosContatos: 0,
+      taxaConversao: null,
+      receita: 0,
+      vendasComValor: 0,
+      perdas: 0,
+      atendidos: 0,
+      comReuniao: 0,
+      ticketMedio: null,
+      semValor: 0,
+    });
   });
 });
 

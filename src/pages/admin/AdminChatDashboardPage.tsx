@@ -1,23 +1,18 @@
 /**
- * AdminChatDashboardPage — T-022 (Fase Frontend)
+ * AdminChatDashboardPage — Dashboard de atendimento (layout de 06/10/2026).
  *
- * Dashboard de métricas do chat interno (Conversation / Message / SLABreach).
- * Fonte: chatMetricsBackendService.getChatMetrics — backend agrega tudo numa
- * única chamada. Filtros (período + inbox + team + agent) reenviam a query via
- * TanStack Query.
+ * Fonte: chatMetricsBackendService.getChatMetrics (uma chamada agrega tudo) +
+ * live-attendance (snapshot "agora") + returning-leads (modal). Filtros
+ * (período + inbox + time + agente) reenviam a query via TanStack Query.
  *
- * Conteúdo:
- *  - Filtros: período (7d / 30d / custom), inbox, team, agent
- *  - KPIs: total / open / resolved / avg first response / avg resolution /
- *          SLA breaches / resolved by AI vs Human (%)
- *  - Charts (recharts): volume por dia (composed), top agentes (bar),
- *          distribuição por time (pie), distribuição por inbox (pie)
+ * A página só orquestra estado/queries; cada bloco visual vive em
+ * src/components/dashboard/. Campos novos do backend (anterior, reunioes,
+ * transferidasParaHumano, origem, fechamento.*, esperandoHaMais5Min) são
+ * opcionais: sem eles o bloco some ou mostra "—".
  *
- * Volume por dia (FIX BUG-3): o endpoint /api/chat/metrics agora devolve
- * `dailyVolume[]` (bucket por dia em UTC). Consumimos direto. Mantemos um
- * fallback (pagina listConversations e agrupa client-side) só pra cobrir
- * deploys antigos do backend que ainda não tenham o campo — assim a UI nunca
- * mostra a antiga linha "flat 0.45" fake.
+ * Volume por dia (FIX BUG-3): o backend devolve `dailyVolume[]` (bucket UTC).
+ * Mantemos o fallback (pagina listConversations e agrupa client-side) só para
+ * deploys antigos sem o campo.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -40,130 +35,39 @@ import {
 import { inboxesBackendService } from '@/services/inboxes.backend.service';
 import { teamsBackendService } from '@/services/teams.backend.service';
 import { usersBackendService } from '@/services/users.backend.service';
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Calendar as CalendarComponent } from '@/components/ui/calendar';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Skeleton } from '@/components/ui/skeleton';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-} from '@/components/ui/chart';
-import {
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Legend,
-  AreaChart,
-  Area,
-  ComposedChart,
-  Line,
-} from 'recharts';
-import {
-  MessageSquare,
-  Clock,
-  CheckCircle2,
-  Bot,
-  User as UserIcon,
-  Calendar as CalendarIcon,
-  Filter,
-  TrendingUp,
-  Repeat,
-  Activity,
-  Loader2,
-  X,
-  DollarSign,
-  Percent,
-  Trophy,
-  ThumbsDown,
-} from 'lucide-react';
-import {
-  startOfDay,
-  endOfDay,
-  subDays,
-  format,
-  eachDayOfInterval,
-  differenceInDays,
-} from 'date-fns';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Repeat, Loader2 } from 'lucide-react';
+import { startOfDay, endOfDay, subDays, format, eachDayOfInterval, differenceInDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { DateRange } from 'react-day-picker';
-import { cn } from '@/lib/utils';
-
-// ============================================
-// Utils
-// ============================================
-
-const PIE_COLORS = [
-  'hsl(var(--primary))',
-  'hsl(var(--success))',
-  'hsl(var(--warning))',
-  'hsl(var(--destructive))',
-  'hsl(220 70% 60%)',
-  'hsl(280 70% 60%)',
-  'hsl(160 70% 45%)',
-  'hsl(35 90% 55%)',
-];
-
-function formatMin(value: number | null): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '—';
-  if (value < 1) return '<1 min';
-  if (value < 60) return `${Math.round(value)} min`;
-  const hours = Math.floor(value / 60);
-  const mins = Math.round(value % 60);
-  return mins > 0 ? `${hours}h ${mins}min` : `${hours}h`;
-}
-
-function pct(part: number, total: number): number {
-  if (!total) return 0;
-  return (part / total) * 100;
-}
-
-type PeriodOption = '7d' | '30d' | 'custom';
-
-// ============================================
-// Componente
-// ============================================
+import {
+  CabecalhoDashboard,
+  FaixaAgora,
+  Indicador,
+  ConversasPorDia,
+  QuemResolveu,
+  FunilFechamento,
+  TabelaEquipe,
+  Canais,
+  type PeriodoOpcao,
+} from '@/components/dashboard';
+import {
+  formatMin,
+  formatNumero,
+  formatPct,
+  pct,
+  variacaoContagem,
+  variacaoTempo,
+} from '@/components/dashboard/dashboardFormat';
 
 export default function AdminChatDashboardPage() {
   const { account } = useAuth();
   const queryClient = useQueryClient();
 
-  const [period, setPeriod] = useState<PeriodOption>('30d');
+  const [period, setPeriod] = useState<PeriodoOpcao>('30d');
   const [dateRange, setDateRange] = useState<DateRange>({
     from: subDays(new Date(), 30),
     to: new Date(),
@@ -175,20 +79,21 @@ export default function AdminChatDashboardPage() {
   // T-022 — drill-down "Retornos no período"
   const [returningModalOpen, setReturningModalOpen] = useState(false);
 
-  // T-022 — filtro especial "somente humanos atendendo" (vem do card Atendimento
-  // ao Vivo). Aplica `assigneeId IS NOT NULL` no breakdown — distinto do filtro
-  // por agente específico (`agentId`).
+  // T-022 — filtro especial "somente humanos atendendo" (vem da faixa Agora).
   const [humanOnlyFilter, setHumanOnlyFilter] = useState(false);
+
+  // Relógio leve para o "atualizado há Xs" do cabeçalho.
+  const [agora, setAgora] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setAgora(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
 
   // ---- Filtros derivados ----
   const effectiveRange = useMemo(() => {
     const today = new Date();
-    if (period === '7d') {
-      return { from: subDays(today, 7), to: today };
-    }
-    if (period === '30d') {
-      return { from: subDays(today, 30), to: today };
-    }
+    if (period === '7d') return { from: subDays(today, 7), to: today };
+    if (period === '30d') return { from: subDays(today, 30), to: today };
     return {
       from: dateRange.from ?? subDays(today, 30),
       to: dateRange.to ?? today,
@@ -229,9 +134,7 @@ export default function AdminChatDashboardPage() {
   });
 
   // ---- Query principal de métricas ----
-  // refetchInterval: 60s para manter o dashboard atualizado sem depender de
-  // socket events (review low-finding). staleTime menor que o intervalo pra
-  // garantir refetch real.
+  // refetchInterval 60s mantém o dashboard vivo sem depender de socket.
   const metricsQuery = useQuery<ChatMetricsResult>({
     queryKey: ['chat-metrics', filters],
     queryFn: () => chatMetricsBackendService.getChatMetrics(filters),
@@ -254,7 +157,6 @@ export default function AdminChatDashboardPage() {
   });
 
   // ---- T-022 — Atendimento ao vivo (IA / Humano / Em aberto) ----
-  // refetchInterval 15s + invalidate em conversation:updated (real-time).
   const liveAttendanceQuery = useQuery<LiveAttendanceResult>({
     queryKey: ['chat-metrics', 'live-attendance'],
     queryFn: () => chatMetricsBackendService.getLiveAttendance(),
@@ -264,7 +166,7 @@ export default function AdminChatDashboardPage() {
     refetchOnWindowFocus: true,
   });
 
-  // Subscrever socket conversation:updated para invalidate live attendance.
+  // Socket conversation:updated invalida o snapshot ao vivo.
   useEffect(() => {
     if (!account?.id) return;
     const unsub = chatSocket.onConversationUpdated(() => {
@@ -280,26 +182,19 @@ export default function AdminChatDashboardPage() {
   // ---- T-022 — Lista paginada de leads retornados (modal) ----
   const returningListQuery = useQuery<ReturningLeadsListResult>({
     queryKey: ['chat-metrics', 'returning-leads', 'list', filters],
-    queryFn: () =>
-      chatMetricsBackendService.getReturningLeadsList(filters, 1, 50),
+    queryFn: () => chatMetricsBackendService.getReturningLeadsList(filters, 1, 50),
     enabled: Boolean(account?.id) && returningModalOpen,
     staleTime: 1000 * 30,
   });
 
-  // ---- Dados derivados para gráficos ----
-  const periodDays = useMemo(() => {
-    const diff = differenceInDays(effectiveRange.to, effectiveRange.from) + 1;
-    return Math.max(diff, 1);
-  }, [effectiveRange]);
-
-  // FIX BUG-3: priorizar `dailyVolume` retornado pelo backend (agregado em SQL
-  // — barato, não pagina conversations). Mantemos a query secundária só como
-  // fallback caso o backend ainda não tenha a versão nova deployada — assim a
-  // UI nunca regressa pra linha fake. A fallback query só dispara quando
-  // metrics chegou SEM dailyVolume.
-  const hasBackendDaily = Boolean(
-    metrics?.dailyVolume && metrics.dailyVolume.length > 0
+  // ---- Dados derivados ----
+  const periodDays = useMemo(
+    () => Math.max(differenceInDays(effectiveRange.to, effectiveRange.from) + 1, 1),
+    [effectiveRange]
   );
+
+  // FIX BUG-3: prioriza `dailyVolume` do backend; fallback só em deploy antigo.
+  const hasBackendDaily = Boolean(metrics?.dailyVolume && metrics.dailyVolume.length > 0);
 
   const dailyConversationsQuery = useQuery<Conversation[]>({
     queryKey: [
@@ -331,147 +226,72 @@ export default function AdminChatDashboardPage() {
       }
       return collected;
     },
-    // Só roda se o backend antigo não trouxe a série
     enabled: Boolean(account?.id) && metricsQuery.isFetched && !hasBackendDaily,
     staleTime: 1000 * 30,
   });
 
   const dailyVolumeData = useMemo(() => {
-    const days = eachDayOfInterval({
-      start: effectiveRange.from,
-      end: effectiveRange.to,
-    });
+    const days = eachDayOfInterval({ start: effectiveRange.from, end: effectiveRange.to });
 
-    // Caminho preferido: backend já agregou.
     if (hasBackendDaily && metrics?.dailyVolume) {
-      // Mapa por chave yyyy-mm-dd UTC pra alinhar com o que o BE devolve.
       const byKey = new Map(metrics.dailyVolume.map((b) => [b.date, b]));
       return days.map((d) => {
-        const key = format(d, 'yyyy-MM-dd');
-        const bucket = byKey.get(key);
+        const chave = format(d, 'yyyy-MM-dd');
+        const bucket = byKey.get(chave);
         return {
+          chave,
           date: format(d, 'dd/MM'),
           total: bucket?.total ?? 0,
           resolvidas: bucket?.resolved ?? 0,
-          abertas: bucket?.open ?? 0,
         };
       });
     }
 
-    // Fallback: agrupar conversations cliente-side (deploy antigo do BE).
+    // Fallback: agrupar conversations no cliente (deploy antigo do BE).
     const fromMs = startOfDay(effectiveRange.from).getTime();
     const toMs = endOfDay(effectiveRange.to).getTime();
-    const buckets = new Map<
-      string,
-      { total: number; resolvidas: number; abertas: number }
-    >();
-    for (const d of days) {
-      buckets.set(format(d, 'yyyy-MM-dd'), {
-        total: 0,
-        resolvidas: 0,
-        abertas: 0,
-      });
-    }
+    const buckets = new Map<string, { total: number; resolvidas: number }>();
+    for (const d of days) buckets.set(format(d, 'yyyy-MM-dd'), { total: 0, resolvidas: 0 });
 
-    const conversations = dailyConversationsQuery.data ?? [];
-    for (const c of conversations) {
+    for (const c of dailyConversationsQuery.data ?? []) {
       const createdMs = new Date(c.createdAt).getTime();
       if (createdMs < fromMs || createdMs > toMs) continue;
-      const key = format(new Date(c.createdAt), 'yyyy-MM-dd');
-      const bucket = buckets.get(key);
+      const bucket = buckets.get(format(new Date(c.createdAt), 'yyyy-MM-dd'));
       if (!bucket) continue;
       bucket.total += 1;
-      if (c.status === 'resolved') {
-        bucket.resolvidas += 1;
-      } else if (['open', 'pending', 'snoozed'].includes(c.status)) {
-        bucket.abertas += 1;
-      }
+      if (c.status === 'resolved') bucket.resolvidas += 1;
     }
 
     return days.map((d) => {
-      const key = format(d, 'yyyy-MM-dd');
-      const bucket = buckets.get(key)!;
-      return {
-        date: format(d, 'dd/MM'),
-        total: bucket.total,
-        resolvidas: bucket.resolvidas,
-        abertas: bucket.abertas,
-      };
+      const chave = format(d, 'yyyy-MM-dd');
+      const bucket = buckets.get(chave)!;
+      return { chave, date: format(d, 'dd/MM'), total: bucket.total, resolvidas: bucket.resolvidas };
     });
-  }, [
-    hasBackendDaily,
-    metrics?.dailyVolume,
-    dailyConversationsQuery.data,
-    effectiveRange,
-  ]);
+  }, [hasBackendDaily, metrics?.dailyVolume, dailyConversationsQuery.data, effectiveRange]);
 
   const isDailyLoading =
-    metricsQuery.isLoading ||
-    (!hasBackendDaily && dailyConversationsQuery.isLoading);
+    metricsQuery.isLoading || (!hasBackendDaily && dailyConversationsQuery.isLoading);
 
-  const topAgents = useMemo(() => {
-    if (!metrics?.byAgent) return [];
-    return [...metrics.byAgent]
-      .sort((a, b) => b.resolved - a.resolved)
-      .slice(0, 10);
-  }, [metrics]);
+  // Série diária de reuniões (preenche zeros nos dias sem evento).
+  const reunioesSerie = useMemo(() => {
+    const porDia = metrics?.reunioes?.porDia;
+    if (!porDia) return undefined;
+    const byKey = new Map(porDia.map((b) => [b.date, b.total]));
+    return dailyVolumeData.map((d) => byKey.get(d.chave) ?? 0);
+  }, [metrics?.reunioes?.porDia, dailyVolumeData]);
 
-  const byTeamPie = useMemo(() => {
-    if (!metrics?.byTeam) return [];
-    return metrics.byTeam
-      .filter((t) => t.total > 0)
-      .map((t) => ({
-        name: t.teamName,
-        value: t.total,
-      }));
-  }, [metrics]);
+  // Rótulo "vs. N dias antes": presets falam 7/30 (a janela inclui o dia de hoje).
+  const diasRotulo = period === '7d' ? 7 : period === '30d' ? 30 : periodDays;
 
-  const byInboxPie = useMemo(() => {
-    if (!metrics?.byInbox) return [];
-    return metrics.byInbox
-      .filter((i) => i.total > 0)
-      .map((i) => ({
-        name: i.inboxName,
-        value: i.total,
-      }));
-  }, [metrics]);
+  const atualizadoHa = metricsQuery.dataUpdatedAt
+    ? Math.max(0, (agora - metricsQuery.dataUpdatedAt) / 1000)
+    : null;
 
-  // KPIs derivados
-  //
-  // H-DASH-1 FIX: numerador (resolvedByAi/Human) vem de ConversationCycle e
-  // denominador era resolvedConversations (count em Conversation). Quando uma
-  // conversa é reaberta e reconcluída, ela gera múltiplos ciclos resolvidos
-  // mas continua contando como 1 só no count de Conversation — o que produzia
-  // valores absurdos como 800%. Alinhamos numerador e denominador no mesmo
-  // domínio (total de ciclos resolvidos = IA + Humano).
-  const totalResolvedCycles = metrics
-    ? metrics.resolvedByAi + metrics.resolvedByHuman
-    : 0;
-  const aiResolvedPct = totalResolvedCycles > 0 && metrics
-    ? pct(metrics.resolvedByAi, totalResolvedCycles)
-    : 0;
-  const humanResolvedPct = totalResolvedCycles > 0 && metrics
-    ? pct(metrics.resolvedByHuman, totalResolvedCycles)
-    : 0;
-  const resolutionRate = metrics
-    ? pct(metrics.resolvedConversations, metrics.totalConversations)
-    : 0;
+  const taxaResolucao = metrics ? pct(metrics.resolvedConversations, metrics.totalConversations) : 0;
+  const anterior = metrics?.anterior;
+  const returningCount = returningLeadsQuery.data?.count;
 
-  // ---- Handlers ----
-  function handlePeriodChange(value: string) {
-    const p = value as PeriodOption;
-    setPeriod(p);
-    const today = new Date();
-    if (p === '7d') {
-      setDateRange({ from: subDays(today, 7), to: today });
-    } else if (p === '30d') {
-      setDateRange({ from: subDays(today, 30), to: today });
-    }
-  }
-
-  // ============================================
-  // Render
-  // ============================================
+  const rotuloGrafico = `${format(effectiveRange.from, "d 'de' MMMM", { locale: ptBR })} a ${format(effectiveRange.to, "d 'de' MMMM", { locale: ptBR })}`;
 
   if (!account?.id) {
     return (
@@ -482,736 +302,137 @@ export default function AdminChatDashboardPage() {
   }
 
   return (
-    <div className="page-container space-y-6">
-      {/* Header */}
-      <div className="page-header">
-        <div>
-          <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-foreground">
-            Dashboard
-          </h1>
-          <p className="text-xs sm:text-sm text-muted-foreground">
-            Métricas de conversas e performance dos agentes
-          </p>
-        </div>
-      </div>
+    <div className="page-container space-y-5">
+      <CabecalhoDashboard
+        periodo={period}
+        onPeriodo={(p) => {
+          setPeriod(p);
+          const today = new Date();
+          if (p === '7d') setDateRange({ from: subDays(today, 7), to: today });
+          else if (p === '30d') setDateRange({ from: subDays(today, 30), to: today });
+        }}
+        intervalo={dateRange}
+        onIntervalo={setDateRange}
+        de={effectiveRange.from}
+        ate={effectiveRange.to}
+        atualizadoHaSegundos={atualizadoHa}
+        inboxId={inboxId}
+        onInbox={setInboxId}
+        inboxes={(inboxesQuery.data ?? []).map((i) => ({ id: i.id, nome: i.name }))}
+        teamId={teamId}
+        onTeam={setTeamId}
+        times={(teamsQuery.data ?? []).map((t) => ({ id: t.id, nome: t.name }))}
+        agentId={agentId}
+        onAgent={setAgentId}
+        agentes={(usersQuery.data ?? []).map((u) => ({ id: u.user_id, nome: u.nome || u.email }))}
+      />
 
-      {/* Filtros */}
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Filter className="w-4 h-4" />
-              <span className="text-sm font-medium">Filtros</span>
-            </div>
-
-            {/* Período */}
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-medium text-muted-foreground uppercase">
-                Período
-              </label>
-              <Select value={period} onValueChange={handlePeriodChange}>
-                {/* C6: tap target 44px em mobile */}
-                <SelectTrigger className="w-[150px] min-h-[44px] sm:min-h-9 h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="7d">Últimos 7 dias</SelectItem>
-                  <SelectItem value="30d">Últimos 30 dias</SelectItem>
-                  <SelectItem value="custom">Personalizado</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Date range (somente em custom) */}
-            {period === 'custom' && (
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] font-medium text-muted-foreground uppercase">
-                  Datas
-                </label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        // C6: tap target 44px em mobile
-                        'min-h-[44px] sm:min-h-9 h-9 justify-start text-left font-normal w-[260px]',
-                        !dateRange?.from && 'text-muted-foreground'
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {dateRange?.from ? (
-                        dateRange.to ? (
-                          <>
-                            {format(dateRange.from, 'dd/MM/yy', { locale: ptBR })}{' '}
-                            -{' '}
-                            {format(dateRange.to, 'dd/MM/yy', { locale: ptBR })}
-                          </>
-                        ) : (
-                          format(dateRange.from, 'dd/MM/yy', { locale: ptBR })
-                        )
-                      ) : (
-                        <span>Selecione um período</span>
-                      )}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <CalendarComponent
-                      initialFocus
-                      mode="range"
-                      defaultMonth={dateRange?.from}
-                      selected={dateRange}
-                      onSelect={(range) => {
-                        if (range) setDateRange(range);
-                      }}
-                      numberOfMonths={2}
-                      locale={ptBR}
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-            )}
-
-            {/* Inbox */}
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-medium text-muted-foreground uppercase">
-                Inbox
-              </label>
-              <Select value={inboxId} onValueChange={setInboxId}>
-                {/* C6: tap target 44px em mobile */}
-                <SelectTrigger className="w-[180px] min-h-[44px] sm:min-h-9 h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os inboxes</SelectItem>
-                  {inboxesQuery.data?.map((i) => (
-                    <SelectItem key={i.id} value={i.id}>
-                      {i.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Team */}
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-medium text-muted-foreground uppercase">
-                Time
-              </label>
-              <Select value={teamId} onValueChange={setTeamId}>
-                {/* C6: tap target 44px em mobile */}
-                <SelectTrigger className="w-[180px] min-h-[44px] sm:min-h-9 h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os times</SelectItem>
-                  {teamsQuery.data?.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Agente */}
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-medium text-muted-foreground uppercase">
-                Agente
-              </label>
-              <Select value={agentId} onValueChange={setAgentId}>
-                {/* C6: tap target 44px em mobile */}
-                <SelectTrigger className="w-[200px] min-h-[44px] sm:min-h-9 h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os agentes</SelectItem>
-                  {usersQuery.data?.map((u) => (
-                    <SelectItem key={u.user_id} value={u.user_id}>
-                      {u.nome || u.email}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 auto-rows-fr">
-        <KpiCard
-          icon={<MessageSquare className="w-4 h-4" />}
-          label="Total de conversas"
-          value={isLoading ? null : metrics?.totalConversations ?? 0}
-          tone="primary"
-        />
-        <KpiCard
-          icon={<TrendingUp className="w-4 h-4" />}
-          label="Abertas"
-          value={isLoading ? null : metrics?.openConversations ?? 0}
-          tone="warning"
-          subtitle={
-            metrics
-              ? `${pct(
-                  metrics.openConversations,
-                  metrics.totalConversations
-                ).toFixed(0)}% do total`
-              : undefined
-          }
-        />
-        <KpiCard
-          icon={<CheckCircle2 className="w-4 h-4" />}
-          label="Resolvidas"
-          value={isLoading ? null : metrics?.resolvedConversations ?? 0}
-          tone="success"
-          subtitle={
-            metrics
-              ? `${resolutionRate.toFixed(0)}% taxa de resolução`
-              : undefined
-          }
-        />
-        {/* T-022 — Retornos no período (clicável: abre modal). */}
-        <KpiCard
-          icon={<Repeat className="w-4 h-4" />}
-          label="Leads que retornaram (>=1 reopen no período)"
-          value={
-            returningLeadsQuery.isLoading
-              ? null
-              : returningLeadsQuery.data?.count ?? 0
-          }
-          tone="warning"
-          onClick={() => setReturningModalOpen(true)}
-          subtitle={
-            returningLeadsQuery.data?.count === 0
-              ? 'Nenhum retorno no período'
-              : 'Clique para ver detalhes'
-          }
-        />
-        <KpiCard
-          icon={<Clock className="w-4 h-4" />}
-          label="1ª resposta (média)"
-          value={metrics?.avgFirstResponseMin ?? null}
-          formatter={(v) => formatMin(v as number | null)}
-          tone="primary"
-          isLoading={isLoading}
-        />
-        <KpiCard
-          icon={<Clock className="w-4 h-4" />}
-          label="Resolução (média)"
-          value={metrics?.avgResolutionMin ?? null}
-          formatter={(v) => formatMin(v as number | null)}
-          tone="primary"
-          isLoading={isLoading}
-        />
-        {/* KpiCard "SLA estourados" oculto por decisao do produto (SLA em
-            standby — "depois vemos isso"). metrics.slaBreaches segue vindo do
-            backend; so o card foi removido da UI. */}
-      </div>
-
-      {/* Receita e conversão — vêm das etapas fixas de fechamento/perda do Kanban */}
-      {metrics?.fechamento && (
-        <div className="space-y-2" data-testid="bloco-receita">
-          <h2 className="text-sm font-semibold text-foreground">Receita e conversão</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 auto-rows-fr">
-            <KpiCard
-              icon={<DollarSign className="w-4 h-4" />}
-              label="Receita do período"
-              value={metrics.fechamento.receita}
-              formatter={(v) =>
-                new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
-                  (v as number | null) ?? 0
-                )
-              }
-              tone="success"
-              subtitle={`${metrics.fechamento.vendasComValor} venda(s) com valor`}
-              isLoading={isLoading}
-            />
-            <KpiCard
-              icon={<Percent className="w-4 h-4" />}
-              label="Atendimento → Venda"
-              value={metrics.fechamento.taxaConversao}
-              formatter={(v) =>
-                v == null ? '—' : `${(v as number).toFixed(1).replace('.', ',')}%`
-              }
-              tone="primary"
-              subtitle={`${metrics.fechamento.conversoes} de ${metrics.fechamento.novosContatos} contatos novos`}
-              isLoading={isLoading}
-            />
-            <KpiCard
-              icon={<Trophy className="w-4 h-4" />}
-              label="Fechamentos"
-              value={metrics.fechamento.conversoes}
-              tone="success"
-              isLoading={isLoading}
-            />
-            <KpiCard
-              icon={<ThumbsDown className="w-4 h-4" />}
-              label="Perdidos"
-              value={metrics.fechamento.perdas}
-              tone="destructive"
-              isLoading={isLoading}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* T-022 — Atendimento ao vivo (IA vs Humano vs Em Aberto) */}
-      <LiveAttendanceCard
+      <FaixaAgora
         data={liveAttendanceQuery.data}
-        isLoading={liveAttendanceQuery.isLoading}
+        carregando={liveAttendanceQuery.isLoading}
         humanOnlyActive={humanOnlyFilter}
         onFilterHumans={() => setHumanOnlyFilter((v) => !v)}
       />
 
-      {/* IA vs Humano */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <Bot className="w-4 h-4 text-primary" />
-            Resolução: IA vs Humano
-          </CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Distribuição percentual de conversas resolvidas no período
-          </p>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <Skeleton className="h-20 w-full" />
-          ) : metrics && totalResolvedCycles > 0 ? (
-            <div className="space-y-4">
-              <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
-                <div
-                  className="bg-primary transition-all"
-                  style={{ width: `${aiResolvedPct}%` }}
-                  title={`IA: ${aiResolvedPct.toFixed(1)}%`}
-                />
-                <div
-                  className="bg-success transition-all"
-                  style={{ width: `${humanResolvedPct}%` }}
-                  title={`Humano: ${humanResolvedPct.toFixed(1)}%`}
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/20">
-                  <div className="p-2 rounded-md bg-primary/10">
-                    <Bot className="w-4 h-4 text-primary" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-xs text-muted-foreground">IA</p>
-                    <p className="text-lg font-bold">
-                      {metrics.resolvedByAi}{' '}
-                      <span className="text-sm font-normal text-muted-foreground">
-                        ({aiResolvedPct.toFixed(1)}%)
-                      </span>
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 p-3 rounded-lg bg-success/5 border border-success/20">
-                  <div className="p-2 rounded-md bg-success/10">
-                    <UserIcon className="w-4 h-4 text-success" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-xs text-muted-foreground">Humano</p>
-                    <p className="text-lg font-bold">
-                      {metrics.resolvedByHuman}{' '}
-                      <span className="text-sm font-normal text-muted-foreground">
-                        ({humanResolvedPct.toFixed(1)}%)
-                      </span>
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground text-center py-6">
-              Sem conversas resolvidas no período selecionado.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Charts row 1 — Volume por dia */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <CalendarIcon className="w-4 h-4 text-primary" />
-            Volume de conversas por dia
-          </CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Distribuição diária de conversas no período ({periodDays} dia
-            {periodDays !== 1 ? 's' : ''})
-          </p>
-        </CardHeader>
-        <CardContent>
-          {isDailyLoading ? (
-            <Skeleton className="h-[280px] w-full" />
-          ) : dailyVolumeData.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-12">
-              Sem dados no período.
-            </p>
-          ) : (
-            <ChartContainer
-              config={{
-                total: { label: 'Total', color: 'hsl(var(--primary))' },
-                resolvidas: {
-                  label: 'Resolvidas',
-                  color: 'hsl(var(--success))',
-                },
-                abertas: { label: 'Abertas', color: 'hsl(var(--warning))' },
-              }}
-              className="h-[280px] w-full"
-            >
-              <ComposedChart
-                data={dailyVolumeData}
-                margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
-              >
-                <defs>
-                  <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
-                    <stop
-                      offset="5%"
-                      stopColor="hsl(var(--primary))"
-                      stopOpacity={0.3}
-                    />
-                    <stop
-                      offset="95%"
-                      stopColor="hsl(var(--primary))"
-                      stopOpacity={0}
-                    />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid
-                  vertical={false}
-                  strokeDasharray="3 3"
-                  stroke="hsl(var(--border))"
-                />
-                <XAxis
-                  dataKey="date"
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-                  width={40}
-                />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Legend
-                  wrapperStyle={{ fontSize: 12 }}
-                  iconType="circle"
-                  iconSize={8}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="total"
-                  name="Total"
-                  stroke="hsl(var(--primary))"
-                  strokeWidth={2}
-                  fill="url(#colorTotal)"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="resolvidas"
-                  name="Resolvidas"
-                  stroke="hsl(var(--success))"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="abertas"
-                  name="Abertas"
-                  stroke="hsl(var(--warning))"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </ComposedChart>
-            </ChartContainer>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Charts row 2 — Distribuição por team + inbox (pies).
-          C6: em tablet (md 768-1024) mostramos 2 colunas em vez de stack vertical
-          gigante. lg mantém 2 colunas. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Por team */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-semibold">
-              Distribuição por time
-            </CardTitle>
-            <p className="text-xs text-muted-foreground">
-              Conversas atribuídas por time no período
-            </p>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <Skeleton className="h-[280px] w-full" />
-            ) : byTeamPie.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-12">
-                Nenhuma conversa atribuída a times.
-              </p>
+      <section
+        aria-label="Indicadores do período"
+        className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"
+      >
+        <Indicador
+          label="Conversas"
+          valor={formatNumero(metrics?.totalConversations ?? 0)}
+          carregando={isLoading}
+          serie={dailyVolumeData.map((d) => d.total)}
+          corSerie="var(--primary)"
+          variacao={variacaoContagem(metrics?.totalConversations, anterior?.totalConversations, diasRotulo)}
+        />
+        <Indicador
+          label="Resolvidas"
+          valor={formatNumero(metrics?.resolvedConversations ?? 0)}
+          carregando={isLoading}
+          serie={dailyVolumeData.map((d) => d.resolvidas)}
+          corSerie="var(--success)"
+          variacao={variacaoContagem(metrics?.resolvedConversations, anterior?.resolvedConversations, diasRotulo)}
+          subtitulo={
+            metrics ? (
+              <>
+                <span className="font-semibold text-foreground">{formatPct(taxaResolucao)}</span> das conversas
+              </>
+            ) : undefined
+          }
+        />
+        <Indicador
+          label="1ª resposta"
+          valor={formatMin(metrics?.avgFirstResponseMin)}
+          carregando={isLoading}
+          variacao={variacaoTempo(metrics?.avgFirstResponseMin, anterior?.avgFirstResponseMin)}
+          subtitulo="Tempo médio"
+        />
+        <Indicador
+          label="Resolução"
+          valor={formatMin(metrics?.avgResolutionMin)}
+          carregando={isLoading}
+          variacao={variacaoTempo(metrics?.avgResolutionMin, anterior?.avgResolutionMin)}
+          subtitulo="Tempo médio"
+        />
+        <Indicador
+          label="Reuniões marcadas"
+          valor={metrics?.reunioes ? formatNumero(metrics.reunioes.total) : '—'}
+          carregando={isLoading}
+          serie={reunioesSerie}
+          corSerie="var(--primary)"
+          variacao={variacaoContagem(metrics?.reunioes?.total, anterior?.reunioes, diasRotulo)}
+          detalhe={
+            metrics?.reunioes ? (
+              <>
+                <span className="font-semibold text-foreground">{formatNumero(metrics.reunioes.peloAgente)}</span> pelo agente de IA
+              </>
+            ) : undefined
+          }
+        />
+        <Indicador
+          label="Leads que voltaram"
+          valor={formatNumero(returningCount ?? 0)}
+          carregando={returningLeadsQuery.isLoading}
+          onClick={() => setReturningModalOpen(true)}
+          subtitulo={
+            returningCount === 0 ? (
+              'Nenhum retorno no período'
             ) : (
-              <ChartContainer
-                config={{}}
-                className="h-[280px] w-full [&_.recharts-pie-label-text]:fill-foreground"
-              >
-                <PieChart>
-                  <Pie
-                    data={byTeamPie}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={90}
-                    innerRadius={45}
-                    paddingAngle={2}
-                    label={({ name, percent }) =>
-                      `${name} ${(percent * 100).toFixed(0)}%`
-                    }
-                    labelLine={false}
-                  >
-                    {byTeamPie.map((_, idx) => (
-                      <Cell
-                        key={idx}
-                        fill={PIE_COLORS[idx % PIE_COLORS.length]}
-                      />
-                    ))}
-                  </Pie>
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                </PieChart>
-              </ChartContainer>
-            )}
-          </CardContent>
-        </Card>
+              <span className="font-medium text-primary">Ver quem voltou →</span>
+            )
+          }
+        />
+      </section>
 
-        {/* Por inbox */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-semibold">
-              Distribuição por inbox
-            </CardTitle>
-            <p className="text-xs text-muted-foreground">
-              Conversas recebidas por canal no período
-            </p>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <Skeleton className="h-[280px] w-full" />
-            ) : byInboxPie.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-12">
-                Nenhuma conversa por inbox no período.
-              </p>
-            ) : (
-              <ChartContainer
-                config={{}}
-                className="h-[280px] w-full [&_.recharts-pie-label-text]:fill-foreground"
-              >
-                <PieChart>
-                  <Pie
-                    data={byInboxPie}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={90}
-                    innerRadius={45}
-                    paddingAngle={2}
-                    label={({ name, percent }) =>
-                      `${name} ${(percent * 100).toFixed(0)}%`
-                    }
-                    labelLine={false}
-                  >
-                    {byInboxPie.map((_, idx) => (
-                      <Cell
-                        key={idx}
-                        fill={PIE_COLORS[idx % PIE_COLORS.length]}
-                      />
-                    ))}
-                  </Pie>
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                </PieChart>
-              </ChartContainer>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <ConversasPorDia dados={dailyVolumeData} carregando={isDailyLoading} rotuloPeriodo={rotuloGrafico} />
+        <QuemResolveu
+          resolvidasIa={metrics?.resolvedByAi ?? 0}
+          resolvidasHumano={metrics?.resolvedByHuman ?? 0}
+          carregando={isLoading}
+          transferidas={metrics?.transferidasParaHumano}
+        />
+      </section>
 
-      {/* Top agentes (bar + table) */}
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <CardTitle className="text-base font-semibold">
-                Top agentes
-              </CardTitle>
-              <p className="text-xs text-muted-foreground">
-                Ranking por conversas resolvidas e tempo médio de resolução. Clique em
-                uma linha para filtrar o dashboard por aquele agente.
-              </p>
-            </div>
-            {agentId !== 'all' && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setAgentId('all')}
-                className="gap-1"
-              >
-                <X className="w-3.5 h-3.5" />
-                Limpar filtro de agente
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {isLoading ? (
-            <Skeleton className="h-[260px] w-full" />
-          ) : topAgents.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-12">
-              Sem conversas atribuídas a agentes no período.
-            </p>
-          ) : (
-            <>
-              <ChartContainer
-                config={{
-                  resolved: {
-                    label: 'Resolvidas',
-                    color: 'hsl(var(--success))',
-                  },
-                  open: { label: 'Abertas', color: 'hsl(var(--warning))' },
-                }}
-                className="h-[260px] w-full"
-              >
-                <BarChart
-                  data={topAgents.map((a) => ({
-                    name: a.agentName,
-                    resolved: a.resolved,
-                    open: a.open,
-                  }))}
-                  margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
-                  layout="vertical"
-                >
-                  <CartesianGrid
-                    horizontal={false}
-                    strokeDasharray="3 3"
-                    stroke="hsl(var(--border))"
-                  />
-                  <XAxis
-                    type="number"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{
-                      fill: 'hsl(var(--muted-foreground))',
-                      fontSize: 10,
-                    }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{
-                      fill: 'hsl(var(--muted-foreground))',
-                      fontSize: 11,
-                    }}
-                    width={120}
-                  />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Legend
-                    wrapperStyle={{ fontSize: 12 }}
-                    iconType="circle"
-                    iconSize={8}
-                  />
-                  <Bar
-                    dataKey="resolved"
-                    name="Resolvidas"
-                    stackId="a"
-                    fill="hsl(var(--success))"
-                    radius={[0, 0, 0, 0]}
-                  />
-                  <Bar
-                    dataKey="open"
-                    name="Abertas"
-                    stackId="a"
-                    fill="hsl(var(--warning))"
-                    radius={[0, 4, 4, 0]}
-                  />
-                </BarChart>
-              </ChartContainer>
+      {metrics?.fechamento && <FunilFechamento fechamento={metrics.fechamento} />}
 
-              <ScrollArea className="max-h-[360px]">
-                <div className="overflow-x-auto">
-                  <Table className="min-w-[600px]">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-[40px]">#</TableHead>
-                        <TableHead>Agente</TableHead>
-                        <TableHead className="text-center">Total</TableHead>
-                        <TableHead className="text-center">Resolvidas</TableHead>
-                        <TableHead className="text-center">Abertas</TableHead>
-                        <TableHead className="text-right">
-                          1ª resposta
-                        </TableHead>
-                        <TableHead className="text-right">
-                          Resolução
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {topAgents.map((a, idx) => {
-                        const isSelected = agentId === a.agentId;
-                        return (
-                          <TableRow
-                            key={a.agentId}
-                            onClick={() =>
-                              setAgentId((cur) =>
-                                cur === a.agentId ? 'all' : a.agentId
-                              )
-                            }
-                            data-selected={isSelected || undefined}
-                            className={cn(
-                              'cursor-pointer transition-colors',
-                              idx < 3 && !isSelected && 'bg-primary/5',
-                              isSelected &&
-                                'bg-primary/10 border-l-4 border-l-primary',
-                              !isSelected && 'hover:bg-muted/50'
-                            )}
-                          >
-                            <TableCell className="font-medium text-muted-foreground">
-                              {idx + 1}º
-                            </TableCell>
-                            <TableCell className="font-medium">
-                              {a.agentName}
-                            </TableCell>
-                            <TableCell className="text-center">
-                              <Badge variant="secondary">{a.total}</Badge>
-                            </TableCell>
-                            <TableCell className="text-center text-success font-semibold">
-                              {a.resolved}
-                            </TableCell>
-                            <TableCell className="text-center text-warning">
-                              {a.open}
-                            </TableCell>
-                            <TableCell className="text-right text-muted-foreground">
-                              {formatMin(a.avgFirstResponseMin)}
-                            </TableCell>
-                            <TableCell className="text-right text-muted-foreground">
-                              {formatMin(a.avgResolutionMin)}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              </ScrollArea>
-            </>
-          )}
-        </CardContent>
-      </Card>
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <TabelaEquipe
+          agentes={metrics?.byAgent ?? []}
+          resolvidasIa={metrics?.resolvedByAi ?? 0}
+          agenteSelecionado={agentId}
+          onSelecionar={(id) => setAgentId((cur) => (cur === id ? 'all' : id))}
+          onLimpar={() => setAgentId('all')}
+          carregando={isLoading}
+        />
+        <Canais
+          porInbox={metrics?.byInbox ?? []}
+          porTime={metrics?.byTeam ?? []}
+          origem={metrics?.origem}
+          carregando={isLoading}
+        />
+      </section>
 
       {/* T-022 — Drill-down modal: leads que retornaram no período */}
       <Dialog open={returningModalOpen} onOpenChange={setReturningModalOpen}>
@@ -1285,218 +506,5 @@ export default function AdminChatDashboardPage() {
         </DialogContent>
       </Dialog>
     </div>
-  );
-}
-
-// ============================================
-// KPI Card subcomponent
-// ============================================
-
-interface KpiCardProps {
-  icon: React.ReactNode;
-  label: string;
-  value: number | null;
-  subtitle?: string;
-  tone?: 'primary' | 'success' | 'warning' | 'destructive';
-  formatter?: (v: number | null) => string;
-  /** Quando informado, renderiza o card clicável (hover/cursor). */
-  onClick?: () => void;
-  /**
-   * Distingue "carregando" de "sem dados". Quando true, mostra skeleton.
-   * Quando false e value=null, mostra "—" (ex: 0 conversas resolvidas → média indefinida).
-   */
-  isLoading?: boolean;
-}
-
-function KpiCard({
-  icon,
-  label,
-  value,
-  subtitle,
-  tone = 'primary',
-  formatter,
-  onClick,
-  isLoading: isLoadingProp,
-}: KpiCardProps) {
-  const toneClasses: Record<NonNullable<KpiCardProps['tone']>, string> = {
-    primary: 'bg-primary/10 text-primary',
-    success: 'bg-success/10 text-success',
-    warning: 'bg-warning/10 text-warning',
-    destructive: 'bg-destructive/10 text-destructive',
-  };
-
-  // Loading explícito via prop; se não informado, fallback para value === null (compat).
-  // Isso distingue "carregando" (skeleton) de "sem dados" (mostra "—" via formatter).
-  const isLoading = isLoadingProp ?? value === null;
-  const display = isLoading
-    ? null
-    : formatter
-    ? formatter(value)
-    : value === null
-    ? '—'
-    : new Intl.NumberFormat('pt-BR').format(value);
-
-  const clickableProps = onClick
-    ? {
-        role: 'button' as const,
-        tabIndex: 0,
-        onClick,
-        onKeyDown: (e: React.KeyboardEvent) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            onClick();
-          }
-        },
-      }
-    : {};
-
-  return (
-    <Card
-      className={cn(
-        onClick &&
-          'cursor-pointer transition-colors hover:border-primary/50 hover:bg-muted/30'
-      )}
-      {...clickableProps}
-    >
-      <CardContent className="p-4">
-        <div className="flex items-center gap-2 mb-2">
-          <div className={cn('p-1.5 rounded-md', toneClasses[tone])}>
-            {icon}
-          </div>
-          <span className="text-xs font-medium text-muted-foreground">
-            {label}
-          </span>
-        </div>
-        {isLoading ? (
-          <Skeleton className="h-8 w-24" />
-        ) : (
-          <p className="text-2xl font-bold">{display}</p>
-        )}
-        {subtitle && (
-          <p className="text-[11px] text-muted-foreground mt-1">{subtitle}</p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ============================================
-// LiveAttendanceCard subcomponent (T-022)
-// ============================================
-
-interface LiveAttendanceCardProps {
-  data: LiveAttendanceResult | undefined;
-  isLoading: boolean;
-  humanOnlyActive: boolean;
-  onFilterHumans: () => void;
-}
-
-function LiveAttendanceCard({
-  data,
-  isLoading,
-  humanOnlyActive,
-  onFilterHumans,
-}: LiveAttendanceCardProps) {
-  const total = data?.total ?? 0;
-  const ia = data?.ia.count ?? 0;
-  const humano = data?.humano.count ?? 0;
-  const emAberto = data?.emAberto.count ?? 0;
-
-  const iaPct = total > 0 ? (ia / total) * 100 : 0;
-  const humanPct = total > 0 ? (humano / total) * 100 : 0;
-  const openPct = total > 0 ? (emAberto / total) * 100 : 0;
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-semibold flex items-center gap-2">
-          <Activity className="w-4 h-4 text-primary" />
-          Atendimento ao Vivo (IA vs Humano)
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Snapshot das conversas em aberto agora — atualiza a cada 15s e em
-          tempo real via socket.
-        </p>
-      </CardHeader>
-      <CardContent>
-        {isLoading && !data ? (
-          <Skeleton className="h-24 w-full" />
-        ) : total === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-6">
-            Nenhuma conversa em aberto no momento.
-          </p>
-        ) : (
-          <div className="space-y-4">
-            <div
-              className="flex h-3 w-full overflow-hidden rounded-full bg-muted"
-              role="img"
-              aria-label={`Distribuição: IA ${iaPct.toFixed(0)}%, Humano ${humanPct.toFixed(0)}%, Em Aberto ${openPct.toFixed(0)}%`}
-            >
-              <div
-                className="bg-primary transition-all"
-                style={{ width: `${iaPct}%` }}
-                title={`IA: ${ia}`}
-              />
-              <div
-                className="bg-success transition-all"
-                style={{ width: `${humanPct}%` }}
-                title={`Humano: ${humano}`}
-              />
-              <div
-                className="bg-muted-foreground/40 transition-all"
-                style={{ width: `${openPct}%` }}
-                title={`Em Aberto: ${emAberto}`}
-              />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/20">
-                <div className="p-2 rounded-md bg-primary/10">
-                  <Bot className="w-4 h-4 text-primary" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-xs text-muted-foreground">IA</p>
-                  <p className="text-lg font-bold">{ia}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={onFilterHumans}
-                className={cn(
-                  'flex items-center gap-3 p-3 rounded-lg border text-left transition-colors',
-                  'bg-success/5 border-success/20 hover:bg-success/10',
-                  humanOnlyActive && 'ring-2 ring-success border-success'
-                )}
-                aria-pressed={humanOnlyActive}
-                title="Clique para filtrar conversas atendidas por humanos"
-              >
-                <div className="p-2 rounded-md bg-success/10">
-                  <UserIcon className="w-4 h-4 text-success" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-xs text-muted-foreground flex items-center gap-1">
-                    Humano
-                    {humanOnlyActive && (
-                      <Badge variant="secondary" className="text-[10px] py-0">
-                        filtrando
-                      </Badge>
-                    )}
-                  </p>
-                  <p className="text-lg font-bold">{humano}</p>
-                </div>
-              </button>
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/40 border border-muted-foreground/20">
-                <div className="p-2 rounded-md bg-muted-foreground/10">
-                  <Clock className="w-4 h-4 text-muted-foreground" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-xs text-muted-foreground">Em Aberto</p>
-                  <p className="text-lg font-bold">{emAberto}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
   );
 }

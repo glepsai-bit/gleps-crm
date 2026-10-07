@@ -1,6 +1,6 @@
 # Documentação das Métricas do Dashboard de Atendimento
 
-> Última atualização: 2026-10-06 (ETAPA B — fechamentos: conversão real, receita e perdas)
+> Última atualização: 2026-10-06 (Dashboard novo — período anterior, reuniões, transferidas, origem, esperando)
 
 Este documento descreve **cada métrica exibida no Dashboard de Atendimento**, incluindo a regra de negócio, a fonte de dados e o critério de cálculo.
 
@@ -17,8 +17,9 @@ Este documento descreve **cada métrica exibida no Dashboard de Atendimento**, i
 7. [Backlog Humano](#backlog-humano)
 8. [Performance de Agentes](#performance-de-agentes)
 9. [Qualidade & Conversão](#qualidade--conversão)
-10. [Filtros e Período](#filtros-e-período)
-11. [Glossário](#glossário)
+10. [Dashboard — métricas novas (06/10)](#dashboard--métricas-novas-0610)
+11. [Filtros e Período](#filtros-e-período)
+12. [Glossário](#glossário)
 
 ---
 
@@ -281,6 +282,124 @@ Receita do período        = Σ sales.valor WHERE status = 'paid' AND paid_at �
 ```
 
 Venda pendente (fechou sem informar valor) **não** entra em `receita` nem em `vendasComValor`; entra em `conversoes` (o contato entrou na etapa). Venda estornada sai de `receita` (status deixa de ser `paid`), mas o fechamento continua contado em `conversoes` — o histórico de etapas é imutável.
+
+---
+
+## Dashboard — métricas novas (06/10)
+
+> Tudo **aditivo** em `GET /api/chat/metrics` e `GET /api/chat/metrics/live-attendance`: nenhum campo existente mudou de nome ou forma. Cada bloco é uma query agregada no Postgres (sem N+1, sem paginação em memória), sempre escopada por `accountId`. Código: `backend/src/services/chat-metrics.service.ts` (seção "Dashboard 06/10"); testes em `chat-metrics.service.test.ts` (Prisma mockado) e `chat-metrics.integracao.test.ts` (Postgres real).
+
+**Período** = `fromDate..toDate` dos filtros (inclusivo nas duas pontas). **Período anterior** = a janela imediatamente anterior, de mesma duração: termina 1 ms antes de `fromDate` e começa `(toDate − fromDate)` antes disso. Ex.: 06/09 00:00 → 06/10 23:59:59.999 tem como anterior 06/08 00:00 → 05/09 23:59:59.999.
+
+**Quem obedece os filtros de inbox / time / agente:** `anterior.{totalConversations,resolvedConversations,avgFirstResponseMin,avgResolutionMin}` e `transferidasParaHumano` (são números de conversa). **Quem ignora:** `reunioes`, `anterior.reunioes`, `origem` e todo o `fechamento` (são números de agenda e de contato, como `fechamento` já fazia).
+
+### `anterior` — os KPIs da linha 1 no período anterior
+
+| Campo | Cálculo |
+|-------|---------|
+| **totalConversations** | `COUNT(conversations)` com o **mesmo `where`** do período atual (criada OU resolvida na janela anterior + filtros) |
+| **resolvedConversations** | Idem, com `status = 'resolved'` |
+| **avgFirstResponseMin** | `AVG(first_response_at − opened_at)` em minutos dos `conversation_cycles` abertos OU resolvidos na janela anterior (filtros via JOIN em `conversations`), 2 casas. `null` sem amostra |
+| **avgResolutionMin** | `AVG(resolved_at − opened_at)` em minutos, mesma base, 2 casas. `null` sem amostra |
+| **reunioes** | `COUNT(calendar_events)` com `created_at` na janela anterior e `status IN ('scheduled','completed')` |
+
+As médias são o **mesmo cálculo** do período atual (ciclo a ciclo, em minutos, arredondado a 2 casas), só que feito pelo `AVG` do Postgres em vez de carregar os ciclos — a única diferença possível é de arredondamento na segunda casa. O front calcula a variação (`atual − anterior`); para os tempos, menor é melhor.
+
+### `reunioes` — reuniões marcadas no período
+
+| Campo | Cálculo |
+|-------|---------|
+| **total** | `COUNT(calendar_events)` com `created_at` no período e `status IN ('scheduled','completed')` — **exclui** `held` (reserva do agente ainda não confirmada) e `cancelled` |
+| **peloAgente** | Os mesmos com `conversation_id IS NOT NULL` (foi o agente de IA que marcou, de dentro de uma conversa) |
+| **porDia** | `[{ date: 'yyyy-mm-dd', total }]`, **só os dias com evento** (o front preenche os zeros). Bucket pelo dia de `created_at` no **mesmo fuso de `dailyVolume`**: o `tz` do filtro quando vem, UTC quando não vem (`to_char(created_at AT TIME ZONE tz, 'YYYY-MM-DD')`) |
+
+```
+Reuniões marcadas = COUNT(calendar_events) WHERE created_at ∈ período AND status IN ('scheduled','completed')
+Pelo agente       = … AND conversation_id IS NOT NULL
+```
+
+É "marcada no período" (data de criação do evento), não "acontece no período" (`start_time`) — mede o trabalho de agendar, que é o que o atendimento produz.
+
+### `transferidasParaHumano` — a IA começou, um humano assumiu
+
+| Campo | Cálculo |
+|-------|---------|
+| **total** | Conversas **criadas** no período (+ filtros) com ≥1 `Message` `sender_type = 'ai_bot'` **E** ≥1 `Message` `sender_type = 'agent'`, as duas com `is_private = false` |
+| **pct** | `total ÷ conversas criadas no período com ≥1 mensagem 'ai_bot' (is_private = false) × 100`, 0–100, 1 casa. `null` quando o denominador é 0 |
+
+```
+Transferidas = COUNT(conversations c) WHERE created_at ∈ período
+               AND EXISTS(messages ai_bot não-privada de c)
+               AND EXISTS(messages agent  não-privada de c)
+pct          = Transferidas ÷ COUNT(c com EXISTS ai_bot não-privada) × 100
+```
+
+Uma query com EXISTS duplo. Nota interna do agente (`is_private = true`) **não** conta como "assumir": o humano precisa ter falado com o cliente. Mensagem privada da IA também não conta como "a IA falou" — o critério é o mesmo nos dois lados.
+
+### `fechamento` — campos novos (funil "do primeiro contato ao fechamento")
+
+| Campo | Cálculo |
+|-------|---------|
+| **atendidos** | `COUNT(contacts)` criados no período com ≥1 `Conversation` cujo `first_response_at IS NOT NULL` (EXISTS) |
+| **comReuniao** | `COUNT(contacts)` criados no período com ≥1 `CalendarEvent` `status IN ('scheduled','completed')` (EXISTS) — qualquer data do evento |
+| **ticketMedio** | `receita ÷ vendasComValor`, 2 casas. `null` quando `vendasComValor = 0` |
+| **semValor** | `COUNT(sales)` com `status = 'pending'`, `origem = 'fechamento'` e `created_at` no período — o lead entrou em Fechado e ninguém informou o valor ainda |
+
+O funil é de **coorte dos contatos criados no período**: `novosContatos` (100%) → `atendidos` → `comReuniao` → `conversoes`. Os três primeiros olham o contato; `conversoes` (já existente) olha a entrada na etapa no período — por isso pode haver contato que fechou sem ter sido criado no período.
+
+### `origem` — de onde vêm os contatos novos
+
+| Campo | Cálculo |
+|-------|---------|
+| **anuncio** | `COUNT(contacts)` criados no período cuja **primeira** `Conversation` (menor `created_at`; empate pelo `id`) tem `source_type = 'ctwa'` |
+| **organico** | O resto: primeira conversa `organic`, `NULL` (legado) ou contato sem conversa nenhuma |
+
+```
+anuncio  = COUNT(contact) WHERE (SELECT source_type FROM conversations WHERE contact_id = contact.id ORDER BY created_at, id LIMIT 1) = 'ctwa'
+organico = COUNT(contact) − anuncio   (IS DISTINCT FROM 'ctwa')
+```
+
+Uma query com subselect correlato. `anuncio + organico = fechamento.novosContatos`.
+
+### `live-attendance.esperandoHaMais5Min` — cliente esperando
+
+Entre as conversas do balde **`emAberto`** (status `open`, sem assignee, sem flag de humano, última mensagem não é do bot), quantas estão com o cliente esperando há mais de **5 minutos**:
+
+- a última mensagem **não-privada** é do `customer` e tem mais de 5 min; **ou**
+- a conversa não tem mensagem não-privada nenhuma e foi **criada** há mais de 5 min.
+
+Sai da mesma query `DISTINCT ON (conversation_id)` que já classificava os baldes (agora traz `created_at` junto) — continua uma query, sem N+1. Última mensagem do `system`/`integration` não conta como "cliente esperando"; nota privada depois da mensagem do cliente também não interrompe a espera.
+
+```
+esperandoHaMais5Min = COUNT(emAberto) WHERE
+    (última msg não-privada é 'customer' AND created_at < agora − 5 min)
+ OR (não há msg não-privada AND conversation.created_at < agora − 5 min)
+```
+
+### Exemplo de resposta
+
+```json
+{
+  "data": {
+    "totalConversations": 184, "openConversations": 12, "resolvedConversations": 140,
+    "avgFirstResponseMin": 2.4, "avgResolutionMin": 48.2,
+    "resolvedByAi": 96, "resolvedByHuman": 44, "slaBreaches": 3,
+    "byAgent": [], "byTeam": [], "byInbox": [], "dailyVolume": [],
+    "fechamento": {
+      "conversoes": 18, "novosContatos": 120, "taxaConversao": 15,
+      "receita": 23400, "vendasComValor": 14, "perdas": 9,
+      "atendidos": 102, "comReuniao": 31, "ticketMedio": 1671.43, "semValor": 4
+    },
+    "anterior": {
+      "totalConversations": 161, "resolvedConversations": 118,
+      "avgFirstResponseMin": 3.1, "avgResolutionMin": 52.9, "reunioes": 27
+    },
+    "reunioes": { "total": 33, "peloAgente": 21, "porDia": [{ "date": "2026-09-08", "total": 2 }] },
+    "transferidasParaHumano": { "total": 27, "pct": 21.6 },
+    "origem": { "anuncio": 44, "organico": 76 }
+  }
+}
+```
 
 ---
 
