@@ -396,6 +396,9 @@ async function bootstrap() {
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => {
+      // A suíte de integração dispara milhares de POSTs do mesmo IP em minutos:
+      // sem isto, testes do fim da suíte tomam 429 e falham por ordem, não por bug.
+      if (env.NODE_ENV === 'test') return true;
       const method = (req.method || '').toUpperCase();
       if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return true;
       const p = req.path || req.originalUrl || '';

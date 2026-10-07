@@ -168,6 +168,33 @@ describe('criar "agora" com números colados', () => {
 });
 
 describe('worker: claim → envia → conversa no Chat → ack → resposta → concluído', () => {
+  it('quem pediu para sair depois do agendamento é pulado na hora de enviar', async () => {
+    const { account, inboxes } = await montarConta();
+    const d = await disparoService.criar(account.id, null, {
+      texto: 'oi {{primeiro_nome}}',
+      lista: { tipo: 'numeros', linhas: LINHAS },
+      inboxIds: [inboxes[0].id],
+    });
+    // Opt-out gravado DEPOIS de o disparo existir (respondeu SAIR noutra conversa).
+    await prisma.whatsappConsent.create({
+      data: { accountId: account.id, phone: '5511987654321', status: 'opted_out', source: 'auto_keyword' },
+    });
+
+    await vencerPendentes(d.id);
+    const r = await rodadaDeDisparos();
+    expect(r.enviados).toBe(2);
+    expect(evolutionMock.sendText).not.toHaveBeenCalledWith(
+      account.id,
+      expect.objectContaining({ number: '5511987654321' })
+    );
+
+    const pulado = await prisma.disparoEnvio.findFirstOrThrow({ where: { disparoId: d.id, telefone: '5511987654321' } });
+    expect(pulado.status).toBe('pulado_optout');
+    const disparo = await prisma.disparo.findUniqueOrThrow({ where: { id: d.id } });
+    expect(disparo.optout).toBe(1);
+    expect(disparo.status).toBe('concluido');
+  });
+
   it('ciclo completo', async () => {
     const { account, inboxes } = await montarConta();
     const d = await disparoService.criar(account.id, null, {

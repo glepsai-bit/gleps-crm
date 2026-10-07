@@ -25,6 +25,7 @@ import { disparoAnexoService, type AnexoDeDisparo } from './disparo-anexo.servic
 import { disparoService } from './disparo.service';
 import { classificarErroEvolution, FALHAS_SEGUIDAS_PARA_PAUSAR, renderizarMensagem, type VariaveisDoEnvio } from './disparo/regras';
 import { evolutionService } from './evolution.service';
+import { whatsappConsentService } from './whatsapp-consent.service';
 import { logger } from '../utils/logger';
 
 export const INTERVALO_DO_WORKER_MS = 15_000;
@@ -153,6 +154,28 @@ export async function rodadaDeDisparos(): Promise<ResultadoDaRodada> {
       infraForaNestaRodada.add(envio.inboxId);
       await reagendarPorInfra(envio, `Número "${inbox.nome}" desconectado; nova tentativa em 5 min`);
       resultado.reagendados += 1;
+      continue;
+    }
+
+    // Reconfere o opt-out NA HORA de enviar: quem pediu para sair depois do
+    // agendamento (ou no meio do disparo) não recebe. Em dúvida, não envia.
+    const consentiu = await whatsappConsentService
+      .hasConsent(envio.accountId, envio.telefone)
+      .catch(() => null);
+    if (consentiu === null) {
+      await reagendarPorInfra(envio, 'Não deu para conferir o opt-out; nova tentativa em 5 min');
+      resultado.reagendados += 1;
+      continue;
+    }
+    if (!consentiu) {
+      await prisma.$transaction([
+        prisma.disparoEnvio.update({
+          where: { id: envio.id },
+          data: { status: 'pulado_optout', erro: 'Pediu para sair depois do agendamento' },
+        }),
+        prisma.disparo.update({ where: { id: d.id }, data: { optout: { increment: 1 }, pulados: { increment: 1 } } }),
+      ]);
+      d.optout += 1;
       continue;
     }
 
