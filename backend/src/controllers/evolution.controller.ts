@@ -10,12 +10,14 @@ import { csatService } from '../services/csat.service';
 import { trackingService } from '../services/tracking.service';
 import { flowService } from '../services/flow.service';
 import { messageService } from '../services/message.service';
+import { aquecimentoService } from '../services/aquecimento.service';
 import { logger } from '../utils/logger';
 import { extractWhatsappMessagePayload } from '../utils/whatsapp-media.util';
 import { AuthenticatedRequest } from '../types';
 import { ForbiddenError, ErrorCodes } from '../utils/errors';
 import { emitInboxConnection } from '../socket';
 import { env, isProduction } from '../config/env';
+import { disparoService } from '../services/disparo.service';
 
 export class EvolutionController {
   /**
@@ -452,7 +454,12 @@ export class EvolutionController {
             const remoteJid: string | undefined = body?.data?.key?.remoteJid;
             const phone = remoteJid ? String(remoteJid).split('@')[0] : '';
 
-            if (messageText && phone) {
+            // Conversa de aquecimento não é cliente pedindo para sair.
+            if (
+              messageText &&
+              phone &&
+              !(await aquecimentoService.ehNumeroDeAquecimento(accountId, phone))
+            ) {
               await whatsappConsentService.handleInboundOptOut(accountId, phone, messageText);
             }
           }
@@ -621,6 +628,14 @@ export class EvolutionController {
           status: statusStr,
         });
         continue;
+      }
+
+      // Disparos: o ack da Evolution é o que vira "entregue/lida" no envio.
+      // Best-effort — o status da mensagem do Chat segue abaixo, independente.
+      if (nextStatus === 'delivered' || nextStatus === 'read') {
+        void disparoService
+          .atualizarStatusPorMsgId(externalId, nextStatus === 'read' ? 'lida' : 'entregue')
+          .catch(() => undefined);
       }
 
       // Lookup tenant-scoped: externalId é único por conversa, e a conversa
@@ -882,6 +897,36 @@ export class EvolutionController {
 
     const phone = remoteJid.split('@')[0];
 
+    // AQUECIMENTO: mensagem trocada entre números em aquecimento desta conta
+    // nunca vira contato, conversa nem mensagem no Chat — e não aciona a IA.
+    // Vale para o inbound (o outro número falou comigo) e para o eco fromMe
+    // (eu falei com o outro número). Só fechamos o ciclo no registro do
+    // aquecimento (entregue / recebida) e paramos aqui.
+    if (await aquecimentoService.ehNumeroDeAquecimento(accountId, phone)) {
+      try {
+        await aquecimentoService.registrarMensagemDeAquecimento({
+          accountId,
+          inboxId: inbox.id,
+          evolutionMsgId: messageId,
+          fromMe,
+        });
+      } catch (err) {
+        logger.warn('[evolution-webhook] registro de mensagem de aquecimento falhou', {
+          accountId,
+          inboxId: inbox.id,
+          messageId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      logger.debug('[evolution-webhook] mensagem de aquecimento — fora do inbox', {
+        accountId,
+        inboxId: inbox.id,
+        phone,
+        fromMe,
+      });
+      return;
+    }
+
     // Cria/reabre conversa (cria contato implicitamente se não existir, via phone).
     const conversation = await conversationService.findOrCreateForCustomer(
       accountId,
@@ -1119,22 +1164,29 @@ export class EvolutionController {
     // persistida e o atendimento humano segue normal — por isso o catch engole
     // o erro em vez de propagar pra Evolution (que reentregaria o webhook).
     if (!fromMe && criada) {
-      void flowService
-        .onInboundMessage({
-          accountId,
-          conversationId: conversation.id,
-          inboxId: conversation.inboxId,
-          messageId: criada.id,
-          content: content ?? null,
-          contentType,
-        })
-        .catch((err: unknown) => {
-          logger.warn('[evolution-webhook] gatilho do fluxo IA falhou', {
+      // Disparos: a primeira resposta do lead conta como "respondeu" no envio.
+      void disparoService.registrarRespostaDeDisparo(conversation.id).catch(() => undefined);
+
+      // Disparo com "quem atende: fila humana" marca a conversa como humana
+      // (customAttributes.human_active) — a IA não entra nela.
+      if (!disparoService.atendimentoHumano(conversation)) {
+        void flowService
+          .onInboundMessage({
             accountId,
             conversationId: conversation.id,
-            error: err instanceof Error ? err.message : String(err),
+            inboxId: conversation.inboxId,
+            messageId: criada.id,
+            content: content ?? null,
+            contentType,
+          })
+          .catch((err: unknown) => {
+            logger.warn('[evolution-webhook] gatilho do fluxo IA falhou', {
+              accountId,
+              conversationId: conversation.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
           });
-        });
+      }
     }
   }
 

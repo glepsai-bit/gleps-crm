@@ -5,6 +5,7 @@ import { webhookOutboundService } from './webhook-outbound.service';
 import { ValidationError } from '../utils/errors';
 import { escapeLike } from '../utils/helpers';
 import { logger } from '../utils/logger';
+import { normalizarTelefoneBR } from '../utils/telefone';
 
 // ============================================
 // Types
@@ -145,6 +146,13 @@ class WhatsappConsentService {
     if (typeof phone !== 'string' || phone.length > 30) {
       throw new ValidationError('Telefone invalido');
     }
+    // ETAPA D: número brasileiro passa pela regra única (utils/telefone.ts) —
+    // "11 98765-4321" e "+55 11 98765-4321" viram o MESMO "5511987654321",
+    // então o opt-out registrado por um formato vale pro outro. O que a
+    // regra BR não reconhece (número estrangeiro, 10 dígitos sem DDI) segue
+    // o comportamento antigo: só dígitos, 10–15.
+    const br = normalizarTelefoneBR(phone);
+    if (br) return br;
     const cleaned = phone.replace(/\D+/g, '');
     if (cleaned.length < 10 || cleaned.length > 15) {
       throw new ValidationError('Telefone deve ter 10-15 digitos');

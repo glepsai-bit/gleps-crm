@@ -50,6 +50,8 @@ import chatMetricsRoutes from './chat-metrics.routes';
 import agentAvailabilityRoutes from './agent-availability.routes';
 import attachmentRoutes from './attachment.routes';
 import warmupRoutes from './warmup.routes';
+import aquecimentoRoutes from './aquecimento.routes';
+import disparoRoutes from './disparo.routes';
 import aiRoutes from './ai.routes';
 import flowRoutes from './flow.routes';
 import agendaRoutes from './agenda.routes';
@@ -152,6 +154,9 @@ router.use('/evolution', evolutionRoutes);
 router.use('/api-keys', apiKeyRoutes);
 router.use('/system-settings', systemSettingsRoutes);
 router.use('/whatsapp-templates', whatsappTemplateRoutes);
+// ETAPA D — motor único de disparos (fila no banco). Os mounts antigos
+// (/whatsapp/campaigns, /dispatch) continuam até a etapa C apagar.
+router.use('/disparos', disparoRoutes);
 router.use('/whatsapp/campaigns', whatsappCampaignJwtRoutes);
 router.use('/dispatch', whatsappCampaignJwtRoutes); // alias canonical para o frontend (DispatchDialog, aba Agendadas, Dashboard)
 router.use('/integrations/whatsapp/campaigns', whatsappCampaignApiKeyRoutes);
@@ -220,6 +225,8 @@ router.use('/mentions', mentionRoutes);
 
 // T-023 — WhatsApp Warmup (aquecimento de chips Evolution)
 router.use('/warmup', warmupRoutes);
+// ETAPA W — aquecimento simples (substitui /warmup na tela; o antigo sai na etapa C)
+router.use('/aquecimento', aquecimentoRoutes);
 
 // T-027 — Atendimento IA nativo: agentes, prompt e base de conhecimento (RAG).
 // Substitui o cérebro que hoje mora no n8n.

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
@@ -8,12 +8,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ExtractionSearchForm } from '@/components/extracao/ExtractionSearchForm';
 import { ExtractionResultsTable } from '@/components/extracao/ExtractionResultsTable';
-import { DispatchDialog } from '@/components/extracao/DispatchDialog';
-import { DispatchMonitor } from '@/components/extracao/DispatchMonitor';
 import { SaveAudienceDialog } from '@/components/extracao/SaveAudienceDialog';
 import { SavedAudiencesTab } from '@/components/extracao/SavedAudiencesTab';
-import { CampaignDashboard } from '@/components/extracao/CampaignDashboard';
-import { DispatchTypeDashboard } from '@/components/extracao/DispatchTypeDashboard';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -51,464 +47,14 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/hooks/use-toast';
 import type { ExtractedLead, ApiUsage } from '@/components/extracao/types';
 
-type BatchStatus = 'scheduled' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
-
-interface BatchRow {
-  id: string;
-  status: BatchStatus | string;
-  keyword?: string | null;
-  triggerName?: string | null;
-  trigger_name?: string | null;
-  template_name?: string | null;
-  templateName?: string | null;
-  total_contacts?: number | null;
-  totalContacts?: number | null;
-  sent_count?: number | null;
-  sentCount?: number | null;
-  failed_count?: number | null;
-  failedCount?: number | null;
-  scheduled_at?: string | null;
-  scheduledAt?: string | null;
-}
-
-function getNum(b: BatchRow, snake: 'total_contacts' | 'sent_count' | 'failed_count', camel: 'totalContacts' | 'sentCount' | 'failedCount'): number {
-  const rec = b as unknown as Record<string, unknown>;
-  const v = rec[snake] ?? rec[camel];
-  return typeof v === 'number' ? v : 0;
-}
-
-function getScheduledAt(b: BatchRow): string | null {
-  return (b.scheduled_at ?? b.scheduledAt) ?? null;
-}
-
-function getBatchName(b: BatchRow): string {
-  return b.keyword ?? b.triggerName ?? b.trigger_name ?? 'Disparo manual';
-}
-
-function getTemplateName(b: BatchRow): string {
-  return b.template_name ?? b.templateName ?? '—';
-}
-
-function statusBadgeVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'running':
-      return 'default';
-    case 'scheduled':
-      return 'secondary';
-    case 'paused':
-      return 'outline';
-    case 'completed':
-      return 'default';
-    case 'cancelled':
-    case 'failed':
-      return 'destructive';
-    default:
-      return 'outline';
-  }
-}
-
-function statusLabel(status: string): string {
-  switch (status) {
-    case 'running':
-      return 'Rodando';
-    case 'scheduled':
-      return 'Agendado';
-    case 'paused':
-      return 'Pausado';
-    case 'completed':
-      return 'Concluído';
-    case 'cancelled':
-      return 'Cancelado';
-    case 'failed':
-      return 'Falhou';
-    default:
-      return status;
-  }
-}
-
-function AgendadasTab({ accountId }: { accountId: string }) {
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [cancelingId, setCancelingId] = useState<string | null>(null);
-  const [detailId, setDetailId] = useState<string | null>(null);
-  // L-CFG-3: filtros UI (status + busca por nome do disparo) — aplicados
-  // client-side sobre o array retornado pelo polling de 5s.
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [searchFilter, setSearchFilter] = useState<string>('');
-
-  const mutateCancelar = useMutation({
-    mutationFn: async (batchId: string) => {
-      await apiClient.delete(API_ENDPOINTS.PROSPECTING.BATCH_CANCEL(batchId));
-    },
-    // BUG-FE-001: onSettled garante que o AlertDialog feche em sucesso E erro
-    // (antes onSuccess fechava e onError deixava o dialog travado preso ao id).
-    onSettled: () => {
-      setCancelingId(null);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['batches-agendadas', accountId] });
-      toast({ title: 'Disparo cancelado.' });
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Erro ao cancelar', description: err.message, variant: 'destructive' });
-    },
-  });
-
-  const mutatePausar = useMutation({
-    mutationFn: async (batchId: string) => {
-      await apiClient.post(API_ENDPOINTS.PROSPECTING.BATCH_PAUSE(batchId), {});
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['batches-agendadas', accountId] });
-      toast({ title: 'Disparo pausado.' });
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Erro ao pausar', description: err.message, variant: 'destructive' });
-    },
-  });
-
-  const mutateRetomar = useMutation({
-    mutationFn: async (batchId: string) => {
-      await apiClient.post(API_ENDPOINTS.PROSPECTING.BATCH_RESUME(batchId), {});
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['batches-agendadas', accountId] });
-      toast({ title: 'Disparo retomado.' });
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Erro ao retomar', description: err.message, variant: 'destructive' });
-    },
-  });
-
-  const { data: agendadas = [], isLoading, isError, error, refetch } = useQuery<BatchRow[]>({
-    queryKey: ['batches-agendadas', accountId],
-    queryFn: async () => {
-      const res = await apiClient.get<unknown>(API_ENDPOINTS.PROSPECTING.BATCHES_SCHEDULED);
-      const payload = (res as { data?: unknown })?.data ?? res;
-      const list = Array.isArray(payload) ? payload : [];
-      return list as BatchRow[];
-    },
-    retry: false,
-    // BUG-FE-002: pausa polling de 5s quando dialog detalhe está aberto
-    // (evita re-render durante leitura do usuário) ou quando uma mutation
-    // está em vôo (evita race entre invalidate manual e refetch automático).
-    refetchInterval: () => {
-      if (detailId) return false;
-      if (mutatePausar.isPending || mutateRetomar.isPending || mutateCancelar.isPending) return false;
-      return 5000;
-    },
-    refetchIntervalInBackground: false,
-    enabled: !!accountId,
-  });
-
-  const detailBatch = detailId ? agendadas.find((b) => b.id === detailId) ?? null : null;
-
-  // L-CFG-3: aplica filtros de status + busca (case-insensitive, trim) antes
-  // de renderizar a Table. `all` mantém o comportamento original (sem filtro).
-  const searchTermNorm = searchFilter.trim().toLowerCase();
-  const filteredAgendadas = agendadas.filter((b) => {
-    if (statusFilter !== 'all' && String(b.status) !== statusFilter) return false;
-    if (searchTermNorm.length > 0) {
-      const nome = getBatchName(b).toLowerCase();
-      if (!nome.includes(searchTermNorm)) return false;
-    }
-    return true;
-  });
-
-  if (isLoading) {
-    return (
-      <Card>
-        <CardContent className="py-8 space-y-3">
-          {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-10 w-full" />
-          ))}
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (isError) {
-    return (
-      <Card>
-        <CardContent className="py-8 flex flex-col items-center justify-center text-muted-foreground gap-2">
-          <p className="text-sm font-medium text-destructive">Erro ao carregar disparos agendados</p>
-          <p className="text-xs">{(error as Error)?.message ?? 'Tente novamente em instantes.'}</p>
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
-            Recarregar
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <>
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">Disparos em andamento e agendados</CardTitle>
-          <Badge variant="outline" className="text-xs">
-            {filteredAgendadas.length} de {agendadas.length} disparo{agendadas.length === 1 ? '' : 's'}
-          </Badge>
-        </CardHeader>
-        <CardContent>
-          {/* L-CFG-3: filtros (status + busca por nome) */}
-          {agendadas.length > 0 && (
-            <div className="flex flex-col sm:flex-row gap-3 mb-4">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="Buscar por nome do disparo..."
-                  className="pl-9"
-                  value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
-                />
-              </div>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-full sm:w-48">
-                  <SelectValue placeholder="Filtrar por status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os status</SelectItem>
-                  <SelectItem value="scheduled">Agendado</SelectItem>
-                  <SelectItem value="running">Em andamento</SelectItem>
-                  <SelectItem value="paused">Pausado</SelectItem>
-                  <SelectItem value="completed">Concluído</SelectItem>
-                  <SelectItem value="cancelled">Cancelado</SelectItem>
-                  <SelectItem value="failed">Falhou</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          {agendadas.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-              <Calendar className="w-10 h-10 mb-3 opacity-30" />
-              <p className="text-sm font-medium">Nenhum disparo agendado ou em andamento</p>
-              <p className="text-xs mt-1">Configure um agendamento ao criar um disparo</p>
-            </div>
-          ) : filteredAgendadas.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-              <Search className="w-10 h-10 mb-3 opacity-30" />
-              <p className="text-sm font-medium">Nenhum disparo corresponde aos filtros</p>
-              <p className="text-xs mt-1">
-                Ajuste a busca ou o status para ver mais resultados.
-              </p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Nome do lote</TableHead>
-                  <TableHead>Qtd. contatos</TableHead>
-                  <TableHead>Template</TableHead>
-                  <TableHead>Agendado para</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Ações</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredAgendadas.map((b) => {
-                  const status = String(b.status ?? 'scheduled');
-                  const total = getNum(b, 'total_contacts', 'totalContacts');
-                  const sent = getNum(b, 'sent_count', 'sentCount');
-                  const failed = getNum(b, 'failed_count', 'failedCount');
-                  const progress = total > 0 ? Math.min(((sent + failed) / total) * 100, 100) : 0;
-                  const scheduledAt = getScheduledAt(b);
-                  const canPause = status === 'scheduled' || status === 'running';
-                  const canResume = status === 'paused';
-                  const canCancel = status === 'scheduled' || status === 'running' || status === 'paused';
-                  const onRowClick = () => setDetailId(b.id);
-                  return (
-                    <TableRow
-                      key={b.id}
-                      className="cursor-pointer hover:bg-muted/40"
-                      onClick={onRowClick}
-                    >
-                      <TableCell className="font-medium">{getBatchName(b)}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-col gap-1">
-                          <span>{total || '—'}</span>
-                          {(status === 'running' || status === 'paused') && total > 0 && (
-                            <div className="w-24">
-                              <Progress value={progress} className="h-1" />
-                              <span className="text-[10px] text-muted-foreground">
-                                {sent + failed}/{total}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-xs">{getTemplateName(b)}</TableCell>
-                      <TableCell className="text-xs">
-                        {scheduledAt
-                          ? new Date(scheduledAt).toLocaleString('pt-BR', {
-                              dateStyle: 'short',
-                              timeStyle: 'short',
-                            })
-                          : '—'}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={statusBadgeVariant(status)} className="text-xs">
-                          {statusLabel(status)}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-1">
-                          {canPause && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => mutatePausar.mutate(b.id)}
-                              disabled={mutatePausar.isPending}
-                              title="Pausar"
-                            >
-                              <Pause className="w-3 h-3 mr-1" />
-                              Pausar
-                            </Button>
-                          )}
-                          {canResume && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => mutateRetomar.mutate(b.id)}
-                              disabled={mutateRetomar.isPending}
-                              title="Retomar"
-                            >
-                              <Play className="w-3 h-3 mr-1" />
-                              Retomar
-                            </Button>
-                          )}
-                          {canCancel && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive hover:text-destructive h-7 text-xs"
-                              onClick={() => setCancelingId(b.id)}
-                              title="Cancelar"
-                            >
-                              <XIcon className="w-3 h-3 mr-1" />
-                              Cancelar
-                            </Button>
-                          )}
-                          {!canCancel && !canPause && !canResume && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={onRowClick}
-                              title="Ver detalhes"
-                            >
-                              <Eye className="w-3 h-3 mr-1" />
-                              Detalhes
-                            </Button>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      <AlertDialog open={!!cancelingId} onOpenChange={(open) => { if (!open) setCancelingId(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Cancelar disparo?</AlertDialogTitle>
-            <AlertDialogDescription>
-              O disparo será cancelado e não será mais executado. Esta ação não pode ser desfeita.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Voltar</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => cancelingId && mutateCancelar.mutate(cancelingId)}
-              disabled={mutateCancelar.isPending}
-            >
-              {mutateCancelar.isPending ? 'Cancelando...' : 'Cancelar disparo'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={!!detailBatch} onOpenChange={(open) => { if (!open) setDetailId(null); }}>
-        <AlertDialogContent className="max-w-lg">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{detailBatch ? getBatchName(detailBatch) : 'Detalhes'}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {detailBatch ? `Status: ${statusLabel(String(detailBatch.status))}` : ''}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {detailBatch && (
-            <div className="space-y-3 text-sm">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <p className="text-xs text-muted-foreground">Total de contatos</p>
-                  <p className="font-medium">{getNum(detailBatch, 'total_contacts', 'totalContacts') || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Enviados</p>
-                  <p className="font-medium">{getNum(detailBatch, 'sent_count', 'sentCount')}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Falhas</p>
-                  <p className="font-medium">{getNum(detailBatch, 'failed_count', 'failedCount')}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Template</p>
-                  <p className="font-medium truncate">{getTemplateName(detailBatch)}</p>
-                </div>
-                <div className="col-span-2">
-                  <p className="text-xs text-muted-foreground">Agendado para</p>
-                  <p className="font-medium">
-                    {getScheduledAt(detailBatch)
-                      ? new Date(getScheduledAt(detailBatch) as string).toLocaleString('pt-BR', {
-                          dateStyle: 'short',
-                          timeStyle: 'short',
-                        })
-                      : '—'}
-                  </p>
-                </div>
-              </div>
-              {(() => {
-                const t = getNum(detailBatch, 'total_contacts', 'totalContacts');
-                const s = getNum(detailBatch, 'sent_count', 'sentCount');
-                const f = getNum(detailBatch, 'failed_count', 'failedCount');
-                if (t === 0) return null;
-                const p = Math.min(((s + f) / t) * 100, 100);
-                return (
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>Progresso</span>
-                      <span>{Math.round(p)}%</span>
-                    </div>
-                    <Progress value={p} className="h-2" />
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel>Fechar</AlertDialogCancel>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
-  );
-}
-
 export default function AdminExtracaoPage() {
   const { account } = useAuth();
   const { toast } = useToast();
   const [leads, setLeads] = useState<ExtractedLead[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
-  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const navigate = useNavigate();
+  const [dispararAposSalvar, setDispararAposSalvar] = useState(false);
   const [saveAudienceOpen, setSaveAudienceOpen] = useState(false);
    const [usage, setUsage] = useState<ApiUsage | null>(null);
    
@@ -557,7 +103,6 @@ export default function AdminExtracaoPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = searchParams.get('tab') ?? 'extracao';
   const [activeTab, setActiveTab] = useState<string>(initialTab);
-  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [extractionMeta, setExtractionMeta] = useState<{ keyword: string; location: string }>({ keyword: '', location: '' });
 
   useEffect(() => {
@@ -631,10 +176,11 @@ export default function AdminExtracaoPage() {
     toast({ title: 'Exportação concluída', description: `${leads.length} leads exportados.` });
   }, [leads, toast]);
 
-  const handleDispatchStarted = useCallback((batchId: string) => {
-    setActiveBatchId(batchId);
-    handleTabChange('disparos');
-  }, [handleTabChange]);
+  // "Disparar" salva a seleção como público e leva ao Novo disparo com ele escolhido:
+  // o motor único trabalha sempre sobre uma lista guardada.
+  const handleDispararSalvo = useCallback((audienceId: string) => {
+    navigate(`/admin/disparos?publico=${audienceId}`);
+  }, [navigate]);
 
    const selectedLeads = leads.filter((l) => selectedIds.has(l.id));
    const usagePercent = usage ? Math.min((usage.used / usage.limit) * 100, 100) : 0;
@@ -646,7 +192,7 @@ export default function AdminExtracaoPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Prospecção</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Extraia leads do Google Maps e dispare mensagens via WhatsApp
+            Extraia leads do Google Maps, guarde em públicos e dispare pela tela Disparos
           </p>
         </div>
         {usage && (
@@ -663,25 +209,12 @@ export default function AdminExtracaoPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} activationMode="manual" className="space-y-4">
-        <TabsList className="w-full max-w-3xl sm:grid sm:grid-cols-6">
+        <TabsList className="w-full max-w-md sm:grid sm:grid-cols-2">
           <TabsTrigger value="extracao" className="gap-1 text-xs sm:text-sm">
             <Search className="w-4 h-4" /> Extração
           </TabsTrigger>
           <TabsTrigger value="publicos" className="gap-1 text-xs sm:text-sm">
             <Users className="w-4 h-4" /> Públicos
-          </TabsTrigger>
-          <TabsTrigger value="disparos" className="gap-1 text-xs sm:text-sm">
-            <Zap className="w-4 h-4" /> Disparos
-          </TabsTrigger>
-          <TabsTrigger value="agendadas" className="gap-1 text-xs sm:text-sm">
-            <Calendar className="w-4 h-4" /> Agendadas
-          </TabsTrigger>
-          <TabsTrigger value="dashboard" className="gap-1 text-xs sm:text-sm">
-            <BarChart2 className="w-4 h-4" /> Dashboard
-          </TabsTrigger>
-          {/* T-022 — agregação por campaign_type / source / trigger_name */}
-          <TabsTrigger value="tipos" className="gap-1 text-xs sm:text-sm">
-            <BarChart2 className="w-4 h-4" /> Tipos
           </TabsTrigger>
         </TabsList>
 
@@ -727,7 +260,7 @@ export default function AdminExtracaoPage() {
                   </Button>
                   <Button
                     size="sm"
-                    onClick={() => setDispatchOpen(true)}
+                    onClick={() => { setDispararAposSalvar(true); setSaveAudienceOpen(true); }}
                     disabled={selectedLeads.length === 0}
                   >
                     <Send className="w-4 h-4 mr-2" /> Disparar ({selectedLeads.length})
@@ -746,40 +279,15 @@ export default function AdminExtracaoPage() {
         </TabsContent>
 
         <TabsContent value="publicos" className="space-y-4">
-          <SavedAudiencesTab
-            accountId={account?.id || ''}
-            onDispatchStarted={handleDispatchStarted}
-          />
-        </TabsContent>
-
-        <TabsContent value="disparos" className="space-y-4">
-          <DispatchMonitor accountId={account?.id || ''} activeBatchId={activeBatchId} />
-        </TabsContent>
-
-        <TabsContent value="agendadas" className="space-y-4">
-          <AgendadasTab accountId={account?.id || ''} />
-        </TabsContent>
-
-        <TabsContent value="dashboard" className="space-y-4">
-          <CampaignDashboard accountId={account?.id || ''} />
-        </TabsContent>
-
-        <TabsContent value="tipos" className="space-y-4">
-          <DispatchTypeDashboard accountId={account?.id || ''} />
+          <SavedAudiencesTab />
         </TabsContent>
       </Tabs>
 
-      <DispatchDialog
-        open={dispatchOpen}
-        onOpenChange={setDispatchOpen}
-        leads={selectedLeads}
-        accountId={account?.id || ''}
-        onDispatchStarted={handleDispatchStarted}
-      />
-
       <SaveAudienceDialog
         open={saveAudienceOpen}
-        onOpenChange={setSaveAudienceOpen}
+        onOpenChange={(o) => { setSaveAudienceOpen(o); if (!o) setDispararAposSalvar(false); }}
+        modoDisparar={dispararAposSalvar}
+        onSavedWithId={handleDispararSalvo}
         leads={selectedLeads}
         keyword={extractionMeta.keyword}
         location={extractionMeta.location}

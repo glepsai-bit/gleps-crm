@@ -13,6 +13,17 @@ datasource db {
 // ============================================
 // SYSTEM SETTINGS (Singleton — configurações globais)
 // ============================================
+// MotorLease: "vez" de um motor (aquecimento) entre réplicas. Um UPDATE
+// atômico pega a vez por 9 min; se o processo cair, a vez expira sozinha.
+model MotorLease {
+  nome String    @id @db.VarChar(60)
+  ate  DateTime  @default(now()) @db.Timestamptz
+  dono String?
+
+  @@map("motor_leases")
+}
+
+// ============================================
 // SystemSettings: configurações globais do sistema (1 row only)
 model SystemSettings {
   id                  String   @id @default("singleton") @db.VarChar(40)
@@ -42,6 +53,9 @@ model Account {
   /// Módulos opcionais ligados nesta conta (chaves em src/config/modulos.ts).
   /// Vazio no banco = nada opcional; conta nova recebe o padrão no service.
   modulos                String[]      @default([]) @map("modulos")
+  /// Aquecimento: falha de infraestrutura (Evolution fora, timeout) pausa a
+  /// conta inteira até aqui, sem punir nenhum número (migration 0070).
+  warmupInfraPausaAte    DateTime?     @map("warmup_infra_pausa_ate") @db.Timestamptz
 
   // Evolution API Integration (WhatsApp non-official) — T-022 FitPark
   // @deprecated Usar SystemSettings global. Estes campos permanecem como override
@@ -117,6 +131,8 @@ model Account {
   prospectingAudiences ProspectingAudience[]
   apiKeys              ApiKey[]
   whatsappTemplates    WhatsappTemplate[]
+  // ETAPA D — Disparos (motor único com fila no banco)
+  disparos             Disparo[]
   webhookSubscriptions WebhookSubscription[]
   inboundIntegrations  InboundIntegration[]
   whatsappConsents     WhatsappConsent[]
@@ -1396,6 +1412,7 @@ model Inbox {
 
   conversations Conversation[]
   slaPolicies   SLAPolicy[]
+  warmupNumbers WarmupNumber[]
 
   // Per-account uniqueness: nome de instance é único DENTRO da conta.
   // (Globalmente os nomes gerados já são únicos pela construção `acc-<8>-inb-<8>`,
@@ -1477,6 +1494,11 @@ model Conversation {
   adSourceId       String?    @map("ad_source_id") @db.VarChar(120)
   adSourceUrl      String?    @map("ad_source_url") @db.Text
   adHeadline       String?    @map("ad_headline") @db.Text
+  // ETAPA D — o disparo que abriu esta conversa (null = conversa comum). A
+  // resposta inbound vira "respondeu" e o agente de IA recebe o contexto por
+  // aqui. "Humano assumiu" NÃO tem coluna: é customAttributes.human_active.
+  disparoId        String?    @map("disparo_id") @db.Uuid
+  disparo          Disparo?   @relation(fields: [disparoId], references: [id], onDelete: SetNull)
   createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1510,6 +1532,7 @@ model Conversation {
   @@index([teamId])
   @@index([externalId])
   @@index([accountId, sourceType])
+  @@index([disparoId])
   @@map("conversations")
 }
 
@@ -1846,25 +1869,37 @@ model WarmupPool {
 
 // WarmupNumber: numero Evolution dentro de uma pool, com plano diario e estado de protocolo
 model WarmupNumber {
-  id                 String     @id @default(uuid()) @db.Uuid
-  poolId             String     @map("pool_id") @db.Uuid
-  pool               WarmupPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
-  accountId          String     @map("account_id") @db.Uuid
-  account            Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  evolutionInstance  String     @map("evolution_instance") @db.VarChar(255)
-  phoneE164          String     @map("phone_e164") @db.VarChar(20)
-  displayName        String?    @map("display_name") @db.VarChar(160)
-  status             String     @default("cold") @db.VarChar(20) // cold | warming | warm | paused | banned | error
-  currentDay         Int        @default(0) @map("current_day")
-  qualityScore       Int        @default(100) @map("quality_score")
-  dailyEnvioPlan     Json?      @map("daily_envio_plan") // plano completo dos dias (array de quotas)
-  dailyEnviadasHoje  Int        @default(0) @map("daily_enviadas_hoje")
-  dailyRecebidasHoje Int        @default(0) @map("daily_recebidas_hoje")
-  startedAt          DateTime?  @map("started_at") @db.Timestamptz
-  lastActivityAt     DateTime?  @map("last_activity_at") @db.Timestamptz
-  pausedReason       String?    @map("paused_reason") @db.VarChar(500)
-  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt          DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  id                 String      @id @default(uuid()) @db.Uuid
+  // Aquecimento simples (0070): número novo nasce sem pool; a pool só resta
+  // nos registros antigos até a etapa C apagar o modelo.
+  poolId             String?     @map("pool_id") @db.Uuid
+  pool               WarmupPool? @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  accountId          String      @map("account_id") @db.Uuid
+  account            Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  // Inbox do Chat de onde vêm a instância Evolution e o telefone.
+  inboxId            String?     @map("inbox_id") @db.Uuid
+  inbox              Inbox?      @relation(fields: [inboxId], references: [id], onDelete: SetNull)
+  evolutionInstance  String      @map("evolution_instance") @db.VarChar(255)
+  phoneE164          String      @map("phone_e164") @db.VarChar(20)
+  displayName        String?     @map("display_name") @db.VarChar(160)
+  status             String      @default("cold") @db.VarChar(20) // cold | warming | warm | paused | banned | error
+  currentDay         Int         @default(0) @map("current_day")
+  qualityScore       Int         @default(100) @map("quality_score")
+  dailyEnvioPlan     Json?       @map("daily_envio_plan") // plano completo dos dias (array de quotas)
+  dailyEnviadasHoje  Int         @default(0) @map("daily_enviadas_hoje")
+  dailyRecebidasHoje Int         @default(0) @map("daily_recebidas_hoje")
+  // Falhas de envio seguidas atribuídas ao NÚMERO (não à infra); 5 pausam.
+  falhasSeguidas     Int         @default(0) @map("falhas_seguidas")
+  // Envios feitos pelo motor de Disparos hoje — descontam da capacidade do dia.
+  disparosHoje       Int         @default(0) @map("disparos_hoje")
+  modo               String      @default("rampa") @db.VarChar(20) // rampa | manutencao
+  prontoEm           DateTime?   @map("pronto_em") @db.Timestamptz
+  pausadoEm          DateTime?   @map("pausado_em") @db.Timestamptz
+  startedAt          DateTime?   @map("started_at") @db.Timestamptz
+  lastActivityAt     DateTime?   @map("last_activity_at") @db.Timestamptz
+  pausedReason       String?     @map("paused_reason") @db.VarChar(500)
+  createdAt          DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   conversationsAsA WarmupConversation[] @relation("WarmupConversationNumberA")
   conversationsAsB WarmupConversation[] @relation("WarmupConversationNumberB")
@@ -1875,14 +1910,15 @@ model WarmupNumber {
   @@unique([accountId, phoneE164])
   @@index([poolId, status])
   @@index([status, currentDay])
+  @@index([inboxId])
   @@map("warmup_numbers")
 }
 
 // WarmupConversation: par ativo entre dois numbers; mantem cursor de turno
 model WarmupConversation {
   id           String       @id @default(uuid()) @db.Uuid
-  poolId       String       @map("pool_id") @db.Uuid
-  pool         WarmupPool   @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  poolId       String?      @map("pool_id") @db.Uuid
+  pool         WarmupPool?  @relation(fields: [poolId], references: [id], onDelete: Cascade)
   numberAId    String       @map("number_a_id") @db.Uuid
   numberA      WarmupNumber @relation("WarmupConversationNumberA", fields: [numberAId], references: [id], onDelete: Cascade)
   numberBId    String       @map("number_b_id") @db.Uuid
@@ -1893,10 +1929,20 @@ model WarmupConversation {
   isActive     Boolean      @default(true) @map("is_active")
   createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
 
+  // Aquecimento simples (0070): a conversa segue um roteiro curto, linha a
+  // linha, com a próxima resposta agendada (1–5 min) para parecer gente.
+  // proximaRespostaEm = null significa conversa encerrada / sem roteiro.
+  proximaRespostaEm  DateTime? @map("proxima_resposta_em") @db.Timestamptz
+  proximoRemetenteId String?   @map("proximo_remetente_id") @db.Uuid
+  roteiro            Json?     // string[] — as linhas do roteiro sorteado
+  passo              Int       @default(0) // próxima linha a enviar
+  ultimoMsgId        String?   @map("ultimo_msg_id") @db.VarChar(255) // evolutionMsgId da última msg (para marcar lida)
+
   messages WarmupMessage[]
 
   @@unique([numberAId, numberBId])
   @@index([poolId, isActive])
+  @@index([proximaRespostaEm])
   @@map("warmup_conversations")
 }
 
@@ -2355,4 +2401,84 @@ model Call {
   @@index([contactId])
   @@index([userId])
   @@map("calls")
+}
+
+// ============================================
+// ETAPA D — DISPAROS (motor único com fila no banco)
+// ============================================
+// Disparo = a campanha. DisparoEnvio = a fila: uma linha por contato com o
+// número (inbox) e o horário mínimo já decididos na criação. O worker
+// (disparo.worker.ts) só pega o que venceu, em ordem, com SKIP LOCKED.
+model Disparo {
+  id              String    @id @default(uuid()) @db.Uuid
+  accountId       String    @map("account_id") @db.Uuid
+  account         Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  nome            String    @db.VarChar(120)
+  texto           String    @db.Text
+  /// Textos alternativos (até 3). O envio N usa [texto, ...variantes][N % total].
+  variantes       Json      @default("[]")
+  /// {tipo:'imagem'|'pdf'|'audio', path, nome, mime, tamanho} — vai 3–8 s depois do texto.
+  anexo           Json?
+  /// {tipo:'publico',audienceId} | {tipo:'leads',etapaTagId?,tagIds?} | {tipo:'numeros',quantidade} (+ descricao)
+  lista           Json
+  inboxIds        String[]  @map("inbox_ids") @db.Uuid
+  /// 'agente' (IA do inbox, com contexto do disparo) | 'humano' (fila humana; IA não responde)
+  atendeRespostas String    @default("agente") @map("atende_respostas") @db.VarChar(10)
+  /// agendado | enviando | pausado | concluido | cancelado
+  status          String    @db.VarChar(20)
+  pausadoMotivo   String?   @map("pausado_motivo") @db.Text
+  /// {inboxId: n} — falhas de NÚMERO seguidas por inbox. 5 pausam só aquele número.
+  falhasSeguidas  Json      @default("{}") @map("falhas_seguidas")
+  agendadoPara    DateTime? @map("agendado_para") @db.Timestamptz
+  iniciadoEm      DateTime? @map("iniciado_em") @db.Timestamptz
+  concluidoEm     DateTime? @map("concluido_em") @db.Timestamptz
+  total           Int       @default(0)
+  enviadas        Int       @default(0)
+  falhas          Int       @default(0)
+  respondidas     Int       @default(0)
+  optout          Int       @default(0)
+  pulados         Int       @default(0)
+  criadoPor       String?   @map("criado_por") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  envios        DisparoEnvio[]
+  conversations Conversation[]
+
+  @@index([accountId, status])
+  @@index([status, agendadoPara])
+  @@map("disparos")
+}
+
+model DisparoEnvio {
+  id             String    @id @default(uuid()) @db.Uuid
+  disparoId      String    @map("disparo_id") @db.Uuid
+  disparo        Disparo   @relation(fields: [disparoId], references: [id], onDelete: Cascade)
+  accountId      String    @map("account_id") @db.Uuid
+  contactId      String?   @map("contact_id") @db.Uuid
+  /// E.164 sem "+", sempre com 55 (utils/telefone.ts).
+  telefone       String    @db.VarChar(20)
+  nome           String?   @db.VarChar(255)
+  /// {nome, primeiro_nome, empresa} — o que o render usa.
+  variaveis      Json?
+  inboxId        String    @map("inbox_id") @db.Uuid
+  variante       Int       @default(0)
+  naoAntesDe     DateTime  @map("nao_antes_de") @db.Timestamptz
+  /// pendente | enviando | enviada | entregue | lida | respondeu | falhou | pulado_optout | pulado_invalido | pulado_duplicado | cancelado
+  status         String    @db.VarChar(24)
+  erro           String?   @db.Text
+  tentativas     Int       @default(0)
+  evolutionMsgId String?   @map("evolution_msg_id") @db.VarChar(255)
+  conversationId String?   @map("conversation_id") @db.Uuid
+  enviadoEm      DateTime? @map("enviado_em") @db.Timestamptz
+  respondidoEm   DateTime? @map("respondido_em") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([status, naoAntesDe])
+  @@index([disparoId, status])
+  @@index([evolutionMsgId])
+  @@index([conversationId])
+  @@index([accountId, telefone])
+  @@map("disparo_envios")
 }

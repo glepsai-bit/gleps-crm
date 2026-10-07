@@ -50,8 +50,8 @@ import AdminFinancePage from "./pages/admin/AdminFinancePage";
 import AdminAgendaPage from "./pages/admin/AdminAgendaPage";
 import AdminExtracaoPage from "./pages/admin/AdminExtracaoPage";
 import AdminEmailsPage from "./pages/admin/AdminEmailsPage";
-import AdminWhatsappTemplatesPage from "./pages/admin/AdminWhatsappTemplatesPage";
-import AdminWarmupPage from "./pages/admin/AdminWarmupPage";
+import AdminDisparosPage from "./pages/admin/AdminDisparosPage";
+import AdminAquecimentoPage from "./pages/admin/AdminAquecimentoPage";
 import AdminIntegracoesPage from "./pages/admin/AdminIntegracoesPage";
 import AdminOptOutsPage from "./pages/admin/AdminOptOutsPage";
 
@@ -145,8 +145,9 @@ const App = () => (
             <Route path="/admin/agenda" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminAgendaPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/prospeccao" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><RotaDeModulo modulo="extracao"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminExtracaoPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
             <Route path="/admin/emails" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><RotaDeModulo modulo="emails"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminEmailsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
-            <Route path="/admin/whatsapp-templates" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><RotaDeModulo modulo="disparos"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminWhatsappTemplatesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
-            <Route path="/admin/warmup" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><RotaDeModulo modulo="aquecimento"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminWarmupPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
+            <Route path="/admin/disparos" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><RotaDeModulo modulo="disparos"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminDisparosPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
+            <Route path="/admin/whatsapp-templates" element={<Navigate to="/admin/disparos" replace />} />
+            <Route path="/admin/warmup" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><RotaDeModulo modulo="aquecimento"><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminAquecimentoPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></RotaDeModulo></ProtectedRoute>} />
             <Route path="/admin/integracoes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIntegracoesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/opt-outs" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminOptOutsPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
 

@@ -31,7 +31,8 @@ import { metricsCollector } from './services/metrics-collector';
 import { emailService } from './services/email.service';
 import { whatsappCampaignService } from './services/whatsapp-campaign.service';
 import { whatsappRateLimitService } from './services/whatsapp-rate-limit.service';
-import { whatsappWarmupService } from './services/whatsapp-warmup.service';
+import { aquecimentoService } from './services/aquecimento.service';
+import { iniciarWorkerDeDisparos } from './services/disparo.worker';
 import { webhookOutboundService } from './services/webhook-outbound.service';
 import { slaService } from './services/sla.service';
 import { csatService } from './services/csat.service';
@@ -151,34 +152,38 @@ async function bootstrap() {
     logger.info(`📲 WhatsApp campaign cron started (interval: ${WA_CRON_INTERVAL_MS / 1000}s)`);
   }
 
-  // T-023 — cron de aquecimento de chips WhatsApp (tick 60s).
-  // CRON-WARMUP-001: mutex isWarmingChips evita overlap se um tick demorar
-  // mais que o intervalo (rede lenta + muitos numbers em pool). Idempotencia
-  // por number eh garantida pelos increments atomicos em recordSend.
+  // ETAPA W — cron do aquecimento de números WhatsApp (tick 60s).
+  // O mutex evita sobreposição no processo quando uma rodada demora (cada
+  // resposta "digita" por 3–8 s); entre réplicas quem garante é o advisory
+  // lock dentro do tick. O motor antigo (whatsapp-warmup.service) não roda mais.
   {
-    const WARMUP_CRON_INTERVAL_MS = 60 * 1000;
-    let isWarmingChips = false;
+    const AQUECIMENTO_CRON_INTERVAL_MS = 60 * 1000;
+    let rodandoAquecimento = false;
     setInterval(async () => {
-      if (isWarmingChips) {
-        logger.warn('[warmup] previous tick still running, skipping');
+      if (rodandoAquecimento) {
+        logger.warn('[aquecimento] rodada anterior ainda em andamento, pulando');
         return;
       }
-      isWarmingChips = true;
+      rodandoAquecimento = true;
       try {
-        const result = await whatsappWarmupService.tick();
-        if (result.sent > 0 || result.failed > 0) {
+        const r = await aquecimentoService.tick();
+        if (!r.pulado && r.respostas + r.novas + r.falhas + r.infra > 0) {
           logger.info(
-            `🔥 Warmup tick: ${result.sent} sent, ${result.failed} failed, ${result.skipped} skipped (checked ${result.checked})`
+            `🔥 Aquecimento: ${r.novas} conversas novas, ${r.respostas} respostas, ${r.falhas} falhas de número, ${r.infra} de infra (${r.contas} contas)`
           );
         }
       } catch (err) {
-        logger.error('Warmup cron error:', err);
+        logger.error('Aquecimento cron error:', err);
       } finally {
-        isWarmingChips = false;
+        rodandoAquecimento = false;
       }
-    }, WARMUP_CRON_INTERVAL_MS);
-    logger.info(`🔥 Warmup cron started (60s tick)`);
+    }, AQUECIMENTO_CRON_INTERVAL_MS);
+    logger.info(`🔥 Aquecimento cron started (60s tick)`);
   }
+
+  // Disparos — worker da fila no banco (15 s, advisory lock: seguro com réplicas).
+  iniciarWorkerDeDisparos();
+  logger.info('📨 Disparos worker started (15s)');
 
   // BUG-038 — cron de cleanup das janelas de rate-limit do WhatsApp (5 min)
   {

@@ -116,6 +116,22 @@ export interface SendStickerInput {
   instance?: string | null;
 }
 
+/** Marcar como lida uma mensagem recebida (aquecimento: o parceiro "leu"). */
+export interface MarkMessageAsReadInput {
+  instance: string;
+  remoteJid: string;
+  id: string;
+  fromMe?: boolean;
+}
+
+/** Mostrar "digitando..." / "gravando áudio..." por `delayMs` antes de responder. */
+export interface SendPresenceInput {
+  instance: string;
+  number: string;
+  presence: 'composing' | 'recording' | 'paused';
+  delayMs: number;
+}
+
 export interface SendReactionInput {
   number: string;
   /**
@@ -897,6 +913,73 @@ class EvolutionService {
       : 'unknown';
 
     return { state, raw };
+  }
+
+  /**
+   * Marca uma mensagem recebida como lida (`POST /chat/markMessageAsRead/{instance}`).
+   *
+   * Usado pelo aquecimento para a conversa parecer gente: o parceiro "lê"
+   * antes de responder. Fail-soft: devolve false e loga — erro aqui NÃO é
+   * falha de envio e não pode punir o número nem pausar a conta.
+   */
+  async markMessageAsRead(
+    accountId: string,
+    input: MarkMessageAsReadInput
+  ): Promise<boolean> {
+    try {
+      const config = await this.getAccountConfig(accountId, input.instance);
+      await this.makeRequest<unknown>(
+        config,
+        `/chat/markMessageAsRead/${encodeURIComponent(config.instance)}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            readMessages: [
+              { remoteJid: input.remoteJid, fromMe: input.fromMe ?? false, id: input.id },
+            ],
+          }),
+        }
+      );
+      return true;
+    } catch (err) {
+      logger.warn('[evolution] markMessageAsRead falhou (ignorado)', {
+        accountId,
+        instance: input.instance,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Mostra presença ("digitando...") por `delayMs` (`POST /chat/sendPresence/{instance}`).
+   * A Evolution segura a requisição enquanto exibe a presença, então quem chama
+   * não precisa dormir por conta própria. Fail-soft, como o markMessageAsRead.
+   */
+  async sendPresence(accountId: string, input: SendPresenceInput): Promise<boolean> {
+    try {
+      const config = await this.getAccountConfig(accountId, input.instance);
+      const number = this.normalizeNumber(input.number);
+      const delay = Math.max(0, Math.round(input.delayMs));
+      await this.makeRequest<unknown>(
+        config,
+        `/chat/sendPresence/${encodeURIComponent(config.instance)}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ number, presence: input.presence, delay }),
+        },
+        // A chamada só volta depois do delay; o timeout precisa cobrir isso.
+        delay + 15000
+      );
+      return true;
+    } catch (err) {
+      logger.warn('[evolution] sendPresence falhou (ignorado)', {
+        accountId,
+        instance: input.instance,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
   }
 
   /**

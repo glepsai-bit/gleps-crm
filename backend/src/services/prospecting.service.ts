@@ -4,8 +4,7 @@ import { evolutionService } from './evolution.service';
 import { systemSettingsService } from './system-settings.service';
 import { whatsappConsentService } from './whatsapp-consent.service';
 import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
-import { conversationService } from './conversation.service';
-import { messageService } from './message.service';
+import { conversaSaidaService } from './conversa-saida.service';
 import { AppError, NotFoundError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -1344,12 +1343,9 @@ class ProspectingService {
    * BUG-CHAT-001 — Persiste Conversation + Message no CRM para que dispatches
    * outbound-only apareçam no /admin/chat.
    *
-   * Resolve inbox UUID a partir de: (a) inboxKey ja UUID; (b) inboxKey =
-   * Inbox.name (path resume); (c) skip se nada bater.
-   *
-   * externalId eh construido no mesmo formato do webhook inbound
-   * ('<phone>@s.whatsapp.net') para garantir que resposta do cliente reuse
-   * a mesma Conversation via findOrCreateForCustomer.
+   * ETAPA D: a lógica (resolver inbox por UUID/nome/fallback, externalId no
+   * formato do webhook, status 'sent'|'failed') vive em
+   * conversa-saida.service — o motor de disparos usa a mesma. Aqui só delega.
    */
   private async persistOutboundConversation(args: {
     accountId: string;
@@ -1357,90 +1353,18 @@ class ProspectingService {
     inboxKey: string;
     content: string;
     evolutionMsgId?: string;
-    /**
-     * BUG-DISPATCH-CHAT-002: status da Message no CRM. 'sent' quando Evolution
-     * aceitou; 'failed' quando Evolution retornou erro (400/timeout/etc).
-     * Default 'sent' pra retrocompat.
-     */
     status?: 'sent' | 'failed';
     errorMessage?: string;
   }): Promise<void> {
-    const { accountId, contact, inboxKey, content, evolutionMsgId, status = 'sent', errorMessage } = args;
-
-    if (!contact?.telefone) return;
-
-    // Resolve o UUID do Inbox no CRM. inboxKey pode ser UUID direto ou nome.
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    let inbox: { id: string } | null = null;
-    if (uuidRegex.test(inboxKey)) {
-      inbox = await prisma.inbox.findFirst({
-        where: { id: inboxKey, accountId },
-        select: { id: true },
-      });
-    }
-    if (!inbox && inboxKey) {
-      inbox = await prisma.inbox.findFirst({
-        where: { accountId, name: inboxKey },
-        select: { id: true },
-      });
-    }
-    if (!inbox) {
-      // Fallback: pega primeiro Inbox ativo com Evolution — dispatch legacy
-      // que usa inbox_id numerico cai aqui. Melhor persistir sob QUALQUER
-      // inbox valido do que perder a conversa.
-      inbox = await prisma.inbox.findFirst({
-        where: { accountId, active: true, evolutionInstance: { not: null } },
-        orderBy: { createdAt: 'asc' },
-        select: { id: true },
-      });
-    }
-    if (!inbox) {
-      logger.debug('[dispatch] sem Inbox valida para persistir conversa outbound', {
-        accountId,
-        inboxKey,
-      });
-      return;
-    }
-
-    // Normaliza telefone pro mesmo formato usado no webhook Evolution
-    // (so digitos, sem +/mask). remoteJid = '<digits>@s.whatsapp.net'.
-    let normalizedPhone: string;
-    try {
-      normalizedPhone = whatsappConsentService.normalizePhone(contact.telefone);
-    } catch {
-      // Telefone invalido — dispatch ja saiu, mas nao da pra persistir sem phone valido.
-      return;
-    }
-    const externalId = `${normalizedPhone}@s.whatsapp.net`;
-
-    // Cria/reusa a conversa. findOrCreateForCustomer eh idempotente por
-    // (accountId, inboxId, externalId) — proximo dispatch pro mesmo contato
-    // no mesmo inbox reusa a Conversation. Se o cliente responder, o webhook
-    // Evolution tambem casa aqui.
-    const conversation = await conversationService.findOrCreateForCustomer(
-      accountId,
-      inbox.id,
-      {
-        externalId,
-        contactPhone: normalizedPhone,
-        contactName: contact.nome ?? null,
-      }
-    );
-
-    // Persiste a Message outbound (senderType='agent'). O messageService.create
-    // cuida do increment de contadores + first response cycle.
-    // BUG-DISPATCH-CHAT-002: status refletindo sucesso/falha do envio Evolution.
-    await messageService.create(accountId, {
-      conversationId: conversation.id,
-      senderType: 'agent',
-      content,
-      contentType: 'text',
-      externalId: evolutionMsgId ?? null,
-      status,
-      metadata: {
-        source: 'dispatch',
-        ...(errorMessage ? { error: errorMessage } : {}),
-      },
+    await conversaSaidaService.persistir({
+      accountId: args.accountId,
+      contato: { nome: args.contact?.nome ?? null, telefone: args.contact?.telefone },
+      inboxKey: args.inboxKey,
+      content: args.content,
+      evolutionMsgId: args.evolutionMsgId ?? null,
+      status: args.status ?? 'sent',
+      errorMessage: args.errorMessage,
+      origem: 'dispatch',
     });
   }
 

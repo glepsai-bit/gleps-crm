@@ -24,10 +24,14 @@ interface Props {
   /** Origem opcional para descrição padrão (ex: "CSV: arquivo.csv", "CRM — Etapa X") */
   defaultDescription?: string;
   onSaved?: () => void;
+  /** Recebe o id do público recém-criado (a Extração usa para abrir o Novo disparo). */
+  onSavedWithId?: (audienceId: string) => void;
+  /** Texto do fluxo "Disparar": o público é salvo e a pessoa segue para a tela Disparos. */
+  modoDisparar?: boolean;
 }
 
 export function SaveAudienceDialog({
-  open, onOpenChange, leads, keyword, location, defaultDescription, onSaved,
+  open, onOpenChange, leads, keyword, location, defaultDescription, onSaved, onSavedWithId, modoDisparar,
 }: Props) {
   const { toast } = useToast();
   const { account, user } = useAuth();
@@ -64,8 +68,10 @@ export function SaveAudienceDialog({
         })),
       };
 
+      let audienceId: string | undefined;
       if (useBackend) {
-        await apiClient.post(API_ENDPOINTS.PROSPECTING.AUDIENCES, payload);
+        const criado: any = await apiClient.post(API_ENDPOINTS.PROSPECTING.AUDIENCES, payload);
+        audienceId = criado?.data?.id ?? criado?.id ?? criado?.audience?.id;
       } else {
         const accountId = account?.id;
         if (!accountId) throw new Error('Conta não identificada');
@@ -85,7 +91,7 @@ export function SaveAudienceDialog({
           .single();
         if (audErr) throw audErr;
 
-        const audienceId = (aud as any).id;
+        audienceId = (aud as any).id;
         const rows = payload.leads.map((l) => ({
           audience_id: audienceId,
           name: l.name,
@@ -110,6 +116,7 @@ export function SaveAudienceDialog({
       setDescription('');
       onOpenChange(false);
       onSaved?.();
+      if (audienceId) onSavedWithId?.(audienceId);
     } catch (err: any) {
       console.error('Save audience error:', err);
       toast({
@@ -126,7 +133,7 @@ export function SaveAudienceDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Salvar como público</DialogTitle>
+          <DialogTitle>{modoDisparar ? 'Salvar e disparar' : 'Salvar como público'}</DialogTitle>
           <DialogDescription>
             Salve estes {leads.length} leads para reutilizar depois sem gastar nova requisição da API.
           </DialogDescription>
@@ -175,7 +182,7 @@ export function SaveAudienceDialog({
             {saving ? (
               <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Salvando...</>
             ) : (
-              <><Save className="w-4 h-4 mr-2" /> Salvar público</>
+              <><Save className="w-4 h-4 mr-2" /> {modoDisparar ? 'Salvar e continuar' : 'Salvar público'}</>
             )}
           </Button>
         </DialogFooter>

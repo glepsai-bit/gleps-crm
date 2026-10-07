@@ -54,6 +54,7 @@ import {
   type CatalogoDoAgente,
 } from './agenda/ferramentas';
 import { agoraPorExtenso } from './agenda/horarios';
+import { contextoDoDisparoParaAgente } from './disparo/contexto';
 
 export type AgentRole = 'classifier' | 'responder' | 'custom';
 
@@ -484,6 +485,22 @@ class AiAgentService {
     const timezone = await this.timezoneDaConta(input.accountId);
     const agora = agoraPorExtenso(new Date(), timezone);
 
+    // CONTEXTO DO DISPARO (ETAPA D): se a conversa nasceu de um disparo, o
+    // agente precisa saber o que foi mandado e quando — senão trata "sim,
+    // quero" como se fosse a primeira frase da história. Best-effort: nunca
+    // trava o atendimento.
+    let contextoDoDisparo: string | null = null;
+    if (input.conversationId) {
+      try {
+        contextoDoDisparo = await contextoDoDisparoParaAgente(input.conversationId);
+      } catch (err) {
+        logger.warn('[ai-agent] contexto do disparo indisponível; seguindo sem', {
+          conversationId: input.conversationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     // A AGENDA COMO HABILIDADE: ligada, as seis ferramentas entram sozinhas —
     // não passam pela whitelist `tools`, porque não são opcionais uma a uma.
     const agenda = lerAgendaDoAgente(agent.agenda);
@@ -512,6 +529,7 @@ class AiAgentService {
       overview,
       etapas,
       contato: input.contato,
+      contextoDoDisparo,
       variables: input.variables,
       memory,
       // Só o que é de todos, mais o que é privado DESTE agente. O rascunho de
@@ -873,6 +891,8 @@ class AiAgentService {
     etapas?: EtapaDoFunil[];
     /** Cadastro e histórico do contato — o bloco "QUEM É ESTA PESSOA". */
     contato?: ContatoResumo | null;
+    /** A conversa nasceu de um disparo: o que foi mandado e quando (ETAPA D). */
+    contextoDoDisparo?: string | null;
     variables?: Record<string, string>;
     memory?: Record<string, unknown>;
     session?: Record<string, unknown>;
@@ -928,6 +948,16 @@ class AiAgentService {
     // volta em março ser recebido como quem volta.
     const quem = formatContatoBlock(p.contato);
     if (quem) blocos.push(quem);
+
+    // Logo depois de quem é a pessoa: POR QUE ela está falando com a gente.
+    // A primeira mensagem dela é resposta a algo que nós mandamos.
+    if (p.contextoDoDisparo && p.contextoDoDisparo.trim()) {
+      blocos.push(
+        'CONTEXTO DO DISPARO\n\n' +
+          p.contextoDoDisparo.trim() +
+          ' Responda como quem continua essa conversa — não se apresente do zero nem repita a oferta inteira.'
+      );
+    }
 
     const longo = formatMemoryBlock(
       memory,

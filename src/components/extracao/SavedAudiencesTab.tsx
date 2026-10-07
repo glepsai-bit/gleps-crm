@@ -10,16 +10,13 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { Send, Trash2, Users, Loader2, Inbox, Upload, UserPlus } from 'lucide-react';
+import { Send, Trash2, Users, Loader2, Inbox } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useBackend } from '@/config/backend.config';
 import { apiClient } from '@/api/client';
 import { API_ENDPOINTS } from '@/api/endpoints';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-import { DispatchDialog } from './DispatchDialog';
-import { CsvImportDialog } from './CsvImportDialog';
-import { CrmContactsPickerDialog } from './CrmContactsPickerDialog';
-import type { ExtractedLead } from './types';
 
 interface Audience {
   id: string;
@@ -28,30 +25,16 @@ interface Audience {
   keyword?: string | null;
   location?: string | null;
   total_leads: number;
+  totalLeads?: number; // backend Express devolve camelCase
   created_at: string;
+  createdAt?: string; // backend Express devolve camelCase
 }
 
-interface Props {
-  accountId: string;
-  onDispatchStarted?: (batchId: string) => void;
-}
-
-export function SavedAudiencesTab({ accountId, onDispatchStarted }: Props) {
+export function SavedAudiencesTab() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [audiences, setAudiences] = useState<Audience[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingLeads, setLoadingLeads] = useState<string | null>(null);
-  const [dispatchOpen, setDispatchOpen] = useState(false);
-  const [dispatchLeads, setDispatchLeads] = useState<ExtractedLead[]>([]);
-  const [csvOpen, setCsvOpen] = useState(false);
-  const [crmOpen, setCrmOpen] = useState(false);
-
-  const openDispatchWith = (leads: ExtractedLead[]) => {
-    setDispatchLeads(leads);
-    setCsvOpen(false);
-    setCrmOpen(false);
-    setDispatchOpen(true);
-  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -81,53 +64,8 @@ export function SavedAudiencesTab({ accountId, onDispatchStarted }: Props) {
     load();
   }, [load]);
 
-  const handleDispatch = async (audience: Audience) => {
-    setLoadingLeads(audience.id);
-    try {
-      let leads: any[];
-      if (useBackend) {
-        const res = await apiClient.get<any>(API_ENDPOINTS.PROSPECTING.AUDIENCE(audience.id));
-        const payload = (res as any).data || res;
-        leads = payload.leads || [];
-      } else {
-        const { data: rows, error } = await supabase
-          .from('prospecting_audience_leads' as any)
-          .select('*')
-          .eq('audience_id', audience.id);
-        if (error) throw error;
-        leads = (rows as any) || [];
-      }
-
-      const extracted: ExtractedLead[] = leads
-        .filter((l: any) => l.phone)
-        .map((l: any, idx: number) => ({
-          id: l.id || `${audience.id}-${idx}`,
-          nome: l.name,
-          cidade: l.category || '',
-          endereco: l.address || '',
-          telefone: l.phone,
-          site: l.website,
-          avaliacao: l.rating != null ? Number(l.rating) : null,
-        }));
-
-      if (extracted.length === 0) {
-        toast({
-          title: 'Sem leads válidos',
-          description: 'Nenhum lead deste público possui telefone.',
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      setDispatchLeads(extracted);
-      setDispatchOpen(true);
-    } catch (err: any) {
-      console.error('Load leads error:', err);
-      toast({ title: 'Erro ao carregar leads', description: err?.message, variant: 'destructive' });
-    } finally {
-      setLoadingLeads(null);
-    }
-  };
+  // O disparo em si vive na tela Disparos; aqui só se escolhe o público.
+  const handleDispatch = (audience: Audience) => navigate(`/admin/disparos?publico=${audience.id}`);
 
   const handleDelete = async (audience: Audience) => {
     try {
@@ -149,39 +87,6 @@ export function SavedAudiencesTab({ accountId, onDispatchStarted }: Props) {
 
   return (
     <>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-        <button
-          type="button"
-          onClick={() => setCsvOpen(true)}
-          className="flex items-start gap-3 p-4 border rounded-lg hover:border-primary hover:bg-muted/30 transition text-left"
-        >
-          <div className="p-2 rounded-md bg-primary/10 text-primary">
-            <Upload className="w-5 h-5" />
-          </div>
-          <div className="flex-1">
-            <p className="font-medium text-sm">Importar planilha (CSV)</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Envie uma lista de contatos para disparar mensagens
-            </p>
-          </div>
-        </button>
-        <button
-          type="button"
-          onClick={() => setCrmOpen(true)}
-          className="flex items-start gap-3 p-4 border rounded-lg hover:border-primary hover:bg-muted/30 transition text-left"
-        >
-          <div className="p-2 rounded-md bg-primary/10 text-primary">
-            <UserPlus className="w-5 h-5" />
-          </div>
-          <div className="flex-1">
-            <p className="font-medium text-sm">Selecionar contatos do CRM</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Dispare para contatos já cadastrados no sistema
-            </p>
-          </div>
-        </button>
-      </div>
-
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
@@ -236,10 +141,10 @@ export function SavedAudiencesTab({ accountId, onDispatchStarted }: Props) {
                         {a.location && <span> · {a.location}</span>}
                       </TableCell>
                       <TableCell className="text-center">
-                        <Badge variant="outline">{a.total_leads}</Badge>
+                        <Badge variant="outline">{a.totalLeads ?? a.total_leads ?? 0}</Badge>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {new Date(a.created_at).toLocaleDateString('pt-BR')}
+                        {new Date(a.createdAt ?? a.created_at).toLocaleDateString('pt-BR')}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
@@ -247,13 +152,8 @@ export function SavedAudiencesTab({ accountId, onDispatchStarted }: Props) {
                             variant="ghost"
                             size="sm"
                             onClick={() => handleDispatch(a)}
-                            disabled={loadingLeads === a.id}
                           >
-                            {loadingLeads === a.id ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <><Send className="w-4 h-4 mr-1" /> Disparar</>
-                            )}
+                            <Send className="w-4 h-4 mr-1" /> Disparar
                           </Button>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
@@ -265,7 +165,7 @@ export function SavedAudiencesTab({ accountId, onDispatchStarted }: Props) {
                               <AlertDialogHeader>
                                 <AlertDialogTitle>Excluir público?</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  Tem certeza que deseja excluir "{a.name}"? Os {a.total_leads} leads salvos serão removidos.
+                                  Tem certeza que deseja excluir "{a.name}"? Os {a.totalLeads ?? a.total_leads ?? 0} leads salvos serão removidos.
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
@@ -287,30 +187,6 @@ export function SavedAudiencesTab({ accountId, onDispatchStarted }: Props) {
         </CardContent>
       </Card>
 
-      <DispatchDialog
-        open={dispatchOpen}
-        onOpenChange={setDispatchOpen}
-        leads={dispatchLeads}
-        accountId={accountId}
-        onDispatchStarted={(batchId) => {
-          setDispatchOpen(false);
-          onDispatchStarted?.(batchId);
-        }}
-      />
-
-      <CsvImportDialog
-        open={csvOpen}
-        onOpenChange={setCsvOpen}
-        onConfirm={openDispatchWith}
-        onSaved={load}
-      />
-
-      <CrmContactsPickerDialog
-        open={crmOpen}
-        onOpenChange={setCrmOpen}
-        onConfirm={openDispatchWith}
-        onSaved={load}
-      />
     </>
   );
 }

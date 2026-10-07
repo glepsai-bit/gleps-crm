@@ -218,7 +218,8 @@ class WhatsappWarmupService {
       throw new ValidationError('Numero ja esta em aquecimento');
     }
 
-    const strategy = (number.pool.strategy as WarmupStrategy) ?? 'moderate';
+    // 0070: poolId virou opcional (aquecimento simples). Número sem pool usa a moderada.
+    const strategy = (number.pool?.strategy as WarmupStrategy | undefined) ?? 'moderate';
     const curve = STRATEGY_CURVES[strategy] ?? STRATEGY_CURVES.moderate;
 
     return prisma.warmupNumber.update({
@@ -384,6 +385,12 @@ class WhatsappWarmupService {
         }
 
         // 7) Gerar conteudo (template ou IA, decidido pela pool via generator)
+        // 0070: número sem pool (aquecimento simples) não é deste motor — pula.
+        if (!num.pool) {
+          skipped++;
+          bump('sem-pool');
+          continue;
+        }
         const generated = await warmupContentGenerator.pick(
           num.pool,
           conv,

@@ -43,7 +43,7 @@ export const MODULOS: Record<ModuloChave, ModuloInfo> = {
     chave: 'disparos',
     rotulo: 'Disparos',
     descricao: 'Templates e campanhas em massa no WhatsApp. Ligado por padrão.',
-    rotas: ['/admin/whatsapp-templates'],
+    rotas: ['/admin/disparos'],
   },
   vendas: {
     chave: 'vendas',

@@ -146,7 +146,7 @@ const adminNavItems: ItemDoMenu[] = [
   { title: 'Tracking Ads', href: '/admin/tracking', icon: Radar, grupo: 'principal' },
   // Captação (ligados por padrão, mas desligáveis por conta)
   { title: 'Extração', href: '/admin/prospeccao', icon: Crosshair, grupo: 'captacao', modulo: 'extracao' },
-  { title: 'Disparos', href: '/admin/whatsapp-templates', icon: MessageSquare, grupo: 'captacao', modulo: 'disparos' },
+  { title: 'Disparos', href: '/admin/disparos', icon: MessageSquare, grupo: 'captacao', modulo: 'disparos' },
   // Opcionais: só aparecem onde o super admin ligou
   { title: 'E-mails', href: '/admin/emails', icon: Mail, grupo: 'opcionais', modulo: 'emails' },
   { title: 'Discador', href: '/admin/discador', icon: PhoneCall, grupo: 'opcionais', modulo: 'discador' },
