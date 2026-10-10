@@ -13,7 +13,10 @@ export class AppError extends Error {
     this.statusCode = statusCode;
     this.code = code;
     this.details = details;
-    Object.setPrototypeOf(this, AppError.prototype);
+    // `new.target`, não `AppError`: com AppError.prototype fixo, toda subclasse
+    // perdia o próprio protótipo e `err instanceof ValidationError` nunca
+    // batia (os catches por tipo nos controllers ficavam mortos).
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 

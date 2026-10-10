@@ -24,6 +24,15 @@ import { lerValorEmReais } from '@/utils/valorEmReais';
 /** Radix Select não aceita item com valor vazio. */
 const SEM_SERVICO = '__sem_servico__';
 
+const formatarReais = (v: number) =>
+  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+
+function formatarData(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+}
+
 interface FechamentoDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -31,6 +40,8 @@ interface FechamentoDialogProps {
   nomeDoLead?: string | null;
   /** Serviços/produtos ativos oferecidos como atalho de valor. */
   servicos: Product[];
+  /** Venda já registrada antes: o diálogo vira "venda nova". */
+  vendaAnterior?: { valor: number; em: string } | null;
   /** "Registrar": deve lançar erro se falhar (o diálogo continua aberto). */
   onRegistrar: (dados: { valor: number; productId?: string }) => Promise<void>;
   /** "Fechou sem valor": a venda fica pendente; nada é enviado. */
@@ -42,6 +53,7 @@ export function FechamentoDialog({
   onOpenChange,
   nomeDoLead,
   servicos,
+  vendaAnterior,
   onRegistrar,
   onSemValor,
 }: FechamentoDialogProps) {
@@ -92,8 +104,9 @@ export function FechamentoDialog({
         <DialogHeader>
           <DialogTitle>Quanto fechou?</DialogTitle>
           <DialogDescription>
-            {nomeDoLead ? `${nomeDoLead} entrou em Fechado.` : 'O lead entrou em Fechado.'} Informe o
-            valor para a receita entrar no Dashboard.
+            {vendaAnterior
+              ? `${nomeDoLead || 'O lead'} já tem uma venda registrada (${formatarReais(vendaAnterior.valor)} em ${formatarData(vendaAnterior.em)}). Esta é uma venda nova — informe o valor.`
+              : `${nomeDoLead ? `${nomeDoLead} entrou em Fechado.` : 'O lead entrou em Fechado.'} Informe o valor para a receita entrar no Dashboard.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -157,7 +170,7 @@ export function FechamentoDialog({
               disabled={salvando}
               onClick={onSemValor}
             >
-              Fechou sem valor
+              {vendaAnterior ? 'Registrar sem valor por enquanto' : 'Fechou sem valor'}
             </Button>
             <Button type="submit" disabled={!podeRegistrar}>
               {salvando && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}

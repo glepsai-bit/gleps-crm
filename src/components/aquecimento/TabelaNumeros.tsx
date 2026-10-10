@@ -2,6 +2,7 @@ import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
+import { useIsMobile } from '@/hooks/use-mobile';
 import type { NumeroAquecimento } from '@/services/aquecimento.backend.service';
 import { formatarTelefone, horaCurta, iniciais } from './aquecimentoFormat';
 
@@ -89,6 +90,8 @@ function Hoje({ n }: { n: NumeroAquecimento }) {
 }
 
 export function TabelaNumeros({ numeros, carregando, onAdicionar, onAbrir, onPausar, onRetomar, onRemover, ocupadoId }: Props) {
+  // Abaixo de md: cartões empilhados, sem rolagem horizontal.
+  const cartoes = useIsMobile();
   return (
     <section aria-label="Seus números" className="rounded-xl border bg-card p-5 flex flex-col gap-3.5">
       <div>
@@ -108,6 +111,43 @@ export function TabelaNumeros({ numeros, carregando, onAdicionar, onAbrir, onPau
           </p>
           <Button onClick={onAdicionar}><Plus className="h-4 w-4" />Aquecer um número</Button>
         </div>
+      ) : cartoes ? (
+        <ul className="flex flex-col gap-3" data-testid="numeros-cartoes">
+          {numeros.map((n) => {
+            const saude = SAUDE[n.saude];
+            const ocupado = ocupadoId === n.id;
+            return (
+              <li key={n.id} className="flex flex-col gap-3 rounded-lg border bg-background p-4 text-[13.5px]">
+                <button
+                  type="button"
+                  onClick={() => onAbrir(n)}
+                  className="flex items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                  aria-label={`Ver histórico de ${n.inboxNome}`}
+                >
+                  <span className="inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px] bg-muted text-xs font-semibold text-foreground/80">{iniciais(n.inboxNome)}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-semibold text-foreground">{n.inboxNome}</span>
+                    <span className="block text-[12.5px] text-muted-foreground tabular-nums">{formatarTelefone(n.telefone)}</span>
+                  </span>
+                  <span className="inline-flex shrink-0 items-center gap-2 text-[12.5px]"><span className={cn('h-2 w-2 rounded-full', saude.ponto)} aria-hidden="true" />{saude.rotulo}</span>
+                </button>
+                <Etapa n={n} />
+                <div><Hoje n={n} /></div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {n.status === 'pausado' ? (
+                    <Button size="sm" variant="outline" disabled={ocupado} onClick={() => onRetomar(n)}>Retomar</Button>
+                  ) : n.status !== 'pronto' ? (
+                    <Button size="sm" variant="outline" disabled={ocupado} onClick={() => onPausar(n)}>Pausar</Button>
+                  ) : null}
+                  <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={ocupado} onClick={() => onRemover(n)}>Tirar do aquecimento</Button>
+                </div>
+                {n.status === 'pausado' && (
+                  <span className="text-[11px] text-muted-foreground">zera as falhas e continua do dia {n.dia}</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[860px] border-collapse">

@@ -100,6 +100,8 @@ export function LeadProfileSheet({ contact, open, onOpenChange }: LeadProfileShe
         return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20 gap-1"><AlertCircle className="w-3 h-3" />Pendente</Badge>;
       case 'refunded':
         return <Badge className="bg-red-500/10 text-red-500 border-red-500/20 gap-1"><XCircle className="w-3 h-3" />Estornada</Badge>;
+      case 'cancelled':
+        return <Badge className="bg-muted text-muted-foreground border-border gap-1"><XCircle className="w-3 h-3" />Cancelada</Badge>;
       default:
         return <Badge variant="secondary">{status}</Badge>;
     }

@@ -153,6 +153,11 @@ export const financeBackendService = {
             // Decimal do Prisma pode chegar como string
             valor: c.fechamento.valor == null ? null : Number(c.fechamento.valor),
             em: c.fechamento.em,
+            // Venda paga anterior: faz o card dizer "nova venda" e o diálogo
+            // mostrar "já tem uma venda registrada".
+            anterior: c.fechamento.anterior
+              ? { valor: Number(c.fechamento.anterior.valor), em: c.fechamento.anterior.em }
+              : null,
           }
         : null,
       created_at: c.createdAt || c.created_at,

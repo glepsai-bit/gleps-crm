@@ -164,6 +164,7 @@ export default function AdminSalesPage() {
                 <SelectItem value="paid">Pagos</SelectItem>
                 <SelectItem value="pending">Pendentes</SelectItem>
                 <SelectItem value="refunded">Estornados</SelectItem>
+                <SelectItem value="cancelled">Canceladas</SelectItem>
               </SelectContent>
             </Select>
             

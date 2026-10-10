@@ -468,6 +468,39 @@ describe('agendar, pausar, cancelar', () => {
     expect(lista.concluidos.map((x) => x.id)).toContain(d.id);
   });
 
+  it('ETAPA E — agendado de números colados guarda as linhas cruas e devolve em listar/detalhe; reenvio não as carrega', async () => {
+    const { account, inboxes } = await montarConta();
+    const amanha = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const d = await disparoService.criar(account.id, null, {
+      texto: 'oi',
+      lista: { tipo: 'numeros', linhas: [...LINHAS, '', '   '] },
+      inboxIds: [inboxes[0].id],
+      agendadoPara: amanha.toISOString(),
+    });
+    expect(d.status).toBe('agendado');
+    expect(d.lista).toMatchObject({ tipo: 'numeros', quantidade: 3, linhas: LINHAS });
+
+    const lista = await disparoService.listar(account.id);
+    expect(lista.emAndamento.find((x) => x.id === d.id)?.lista.linhas).toEqual(LINHAS);
+    const det = await disparoService.detalhe(account.id, d.id);
+    expect(det.disparo.lista.linhas).toEqual(LINHAS);
+
+    // Linha-objeto (API de integração) vira "Nome;telefone".
+    const api = await disparoService.criar(account.id, null, {
+      texto: 'oi',
+      lista: { tipo: 'numeros', linhas: [{ telefone: '5511987654321', nome: 'Ana' }, { telefone: '5521998765432' }] },
+      inboxIds: [inboxes[0].id],
+    });
+    expect(api.lista.linhas).toEqual(['Ana;5511987654321', '5521998765432']);
+
+    // Reenvio dos não respondidos nasce sem as linhas do original.
+    await vencerPendentes(api.id);
+    await rodadaDeDisparos();
+    const reenvio = await disparoService.reenviarNaoRespondidos(account.id, api.id, null);
+    expect(reenvio.lista).toMatchObject({ tipo: 'reenvio', origemId: api.id });
+    expect(reenvio.lista.linhas).toBeUndefined();
+  });
+
   it('pausar segura o worker; cancelar derruba os pendentes', async () => {
     const { account, inboxes } = await montarConta();
     const d = await disparoService.criar(account.id, null, { texto: 'oi', lista: { tipo: 'numeros', linhas: LINHAS }, inboxIds: [inboxes[0].id] });

@@ -163,7 +163,7 @@ interface ListaMontada {
   destinatarios: Destinatario[];
   pulados: Pulado[];
   rotulo: string;
-  /** O que vai gravado em disparos.lista (sem as linhas coladas). */
+  /** O que vai gravado em disparos.lista (números colados guardam as `linhas` cruas, até 2000). */
   gravada: Record<string, unknown>;
 }
 
@@ -352,21 +352,27 @@ class DisparoService {
       contactId: string | null;
       variaveis?: Record<string, string> | null;
     }> = [];
+    // ETAPA E — as linhas como vieram, pra "Editar" um agendado trazer o
+    // textarea preenchido. Linha-objeto (API) vira "Nome;telefone".
+    const linhasCruas: string[] = [];
     for (const bruta of linhas) {
       if (bruta && typeof bruta === 'object') {
         const telefoneBruto = (bruta.telefone ?? '').toString().trim() || null;
         if (!telefoneBruto && !bruta.nome) continue;
+        const nome = (bruta.nome ?? '').toString().trim() || null;
         itens.push({
           telefoneBruto,
-          nome: (bruta.nome ?? '').toString().trim() || null,
+          nome,
           empresa: null,
           contactId: bruta.contactId ?? null,
           variaveis: bruta.variaveis ?? null,
         });
+        linhasCruas.push(nome ? `${nome};${telefoneBruto ?? ''}` : (telefoneBruto ?? ''));
         continue;
       }
       const linha = (bruta ?? '').toString().trim();
       if (linha === '') continue;
+      linhasCruas.push(linha);
       if (linha.includes(';')) {
         const partes = linha.split(';').map((p) => p.trim());
         const telefoneBruto = partes[partes.length - 1] || null;
@@ -379,7 +385,7 @@ class DisparoService {
     return {
       itens,
       rotulo: 'Números colados',
-      gravada: { tipo: 'numeros', quantidade: itens.length },
+      gravada: { tipo: 'numeros', quantidade: itens.length, linhas: linhasCruas },
     };
   }
 
@@ -867,7 +873,8 @@ class DisparoService {
       .map((x) => ({ telefone: x.telefone, nome: x.nome, motivo: 'pulado_optout' as const }));
     if (ficam.length === 0) throw new ValidationError('Ninguém para reenviar: todos pediram para sair.');
 
-    const listaOriginal = (d.lista as Record<string, unknown> | null) ?? {};
+    // As linhas coladas do original não descrevem o reenvio (que é "quem não respondeu").
+    const { linhas: _linhasDoOriginal, ...listaOriginal } = (d.lista as Record<string, unknown> | null) ?? {};
     return this.criarComDestinatarios(accountId, userId, {
       nome: `${d.nome} · reenvio`.slice(0, 120),
       texto: d.texto,

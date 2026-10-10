@@ -166,8 +166,16 @@ describe('metaCapiService.checkConnection', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('aponta o ativo exato que falhou, com o motivo da Meta', async () => {
+  /** O check de token sempre roda primeiro: /me + /debug_token. */
+  const mockTokenOk = (scopes = ['ads_read', 'ads_management', 'business_management']) =>
     fetchMock
+      .mockResolvedValueOnce(okJson({ id: 'su1', name: 'Sistema GLEPS' }))
+      .mockResolvedValueOnce(
+        okJson({ data: { application: 'CRM', expires_at: 0, scopes, is_valid: true } })
+      );
+
+  it('aponta o ativo exato que falhou, com o motivo da Meta', async () => {
+    mockTokenOk()
       // pixel OK
       .mockResolvedValueOnce(okJson({ id: 'px1', name: 'Dataset WhatsApp' }))
       // conta de anúncios sem permissão
@@ -175,22 +183,74 @@ describe('metaCapiService.checkConnection', () => {
 
     const checks = await metaCapiService.checkConnection('tok', 'px1', 'act_1');
 
-    expect(checks).toHaveLength(2);
-    expect(checks[0]).toMatchObject({ key: 'pixel', ok: true });
-    expect(checks[0].detail).toContain('Dataset WhatsApp');
-    expect(checks[1]).toMatchObject({ key: 'adAccount', ok: false });
-    expect(checks[1].detail).toContain('ads_management');
-    expect(checks[1].hint).toBeTruthy();
+    expect(checks).toHaveLength(3);
+    expect(checks[0]).toMatchObject({ key: 'token', ok: true });
+    expect(checks[1]).toMatchObject({ key: 'pixel', ok: true });
+    expect(checks[1].detail).toContain('Dataset WhatsApp');
+    expect(checks[2]).toMatchObject({ key: 'adAccount', ok: false });
+    expect(checks[2].detail).toContain('ads_management');
+    expect(checks[2].hint).toBeTruthy();
   });
 
-  it('sem pixel informado reprova sem chamar a API', async () => {
+  it('token válido mostra app, validade e escopos reais', async () => {
+    mockTokenOk();
     const checks = await metaCapiService.checkConnection('tok', null, null);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(checks.map((c) => c.ok)).toEqual([false, false]);
+
+    expect(checks[0].detail).toContain('Sistema GLEPS');
+    expect(checks[0].detail).toContain('não expira');
+    expect(checks[0].detail).toContain('ads_read');
+    expect(checks[0].hint).toBeNull();
+  });
+
+  it('token sem ads_read é sinalizado mesmo com o app tendo a permissão', async () => {
+    mockTokenOk(['business_management', 'pages_show_list']);
+    const checks = await metaCapiService.checkConnection('tok', null, null);
+
+    expect(checks[0].ok).toBe(true);
+    expect(checks[0].hint).toContain('ads_read');
+  });
+
+  it('token que nem faz /me reprova sem culpar os ativos', async () => {
+    fetchMock.mockResolvedValueOnce(errJson(400, 'Error validating access token: session has expired'));
+
+    const checks = await metaCapiService.checkConnection('tok', null, null);
+
+    expect(checks[0]).toMatchObject({ key: 'token', ok: false });
+    expect(checks[0].hint).toContain('novo token');
+    // /debug_token não é chamado quando /me já falhou
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('app bloqueado manda resolver o app, não atribuir o ativo', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({
+        error: { message: 'API access blocked.', code: 10, error_subcode: 2332002, fbtrace_id: 'Ax1' },
+      }),
+    });
+
+    const checks = await metaCapiService.checkConnection('tok', 'px1', 'act_1');
+
+    expect(checks[0]).toMatchObject({ key: 'token', ok: false });
+    expect(checks[0].detail).toContain('código 10');
+    expect(checks[0].detail).toContain('trace Ax1');
+    for (const c of checks) {
+      expect(c.hint).toContain('Ações necessárias');
+      expect(c.hint).not.toContain('atribua essa fonte de dados');
+    }
+  });
+
+  it('sem pixel nem conta informados, os ativos reprovam sem chamar a API', async () => {
+    mockTokenOk();
+    const checks = await metaCapiService.checkConnection('tok', null, null);
+    // só as 2 chamadas do check de token
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(checks.map((c) => c.ok)).toEqual([true, false, false]);
   });
 
   it('com período, inclui o check de leitura de investimento', async () => {
-    fetchMock
+    mockTokenOk()
       .mockResolvedValueOnce(okJson({ id: 'px1', name: 'DS' }))
       .mockResolvedValueOnce(okJson({ id: 'act_1', name: 'Conta', currency: 'BRL' }))
       .mockResolvedValueOnce(okJson({ data: [{ ad_id: 'a1', spend: '10' }] }));
@@ -200,14 +260,14 @@ describe('metaCapiService.checkConnection', () => {
       until: '2026-08-10',
     });
 
-    expect(checks).toHaveLength(3);
-    expect(checks[1].detail).toContain('BRL');
-    expect(checks[2]).toMatchObject({ key: 'insights', ok: true });
-    expect(checks[2].detail).toContain('1 anúncio');
+    expect(checks).toHaveLength(4);
+    expect(checks[2].detail).toContain('BRL');
+    expect(checks[3]).toMatchObject({ key: 'insights', ok: true });
+    expect(checks[3].detail).toContain('1 anúncio');
   });
 
   it('acesso OK mas sem veiculação não é reportado como erro', async () => {
-    fetchMock
+    mockTokenOk()
       .mockResolvedValueOnce(okJson({ id: 'px1', name: 'DS' }))
       .mockResolvedValueOnce(okJson({ id: 'act_1', name: 'Conta', currency: 'BRL' }))
       .mockResolvedValueOnce(okJson({ data: [] }));
@@ -217,7 +277,7 @@ describe('metaCapiService.checkConnection', () => {
       until: '2026-08-10',
     });
 
-    expect(checks[2].ok).toBe(true);
-    expect(checks[2].detail).toContain('nenhum anúncio');
+    expect(checks[3].ok).toBe(true);
+    expect(checks[3].detail).toContain('nenhum anúncio');
   });
 });

@@ -11,25 +11,41 @@ import { ORIGEM_FECHAMENTO } from './sale.service';
 /**
  * ETAPA B — o que o Kanban mostra no card: a última venda nascida do
  * fechamento. `valor: null` = fechou sem informar valor (pendente).
+ *
+ * ETAPA E — traz as últimas 5 (não só 1) porque o resumo também olha pra
+ * trás: `anterior` é a venda paga mais recente antes da última, pra o card
+ * distinguir "informe o valor" de "nova venda: informe o valor". Última
+ * `cancelled` (lead foi pra Perdido) = sem fechamento.
  */
 const ULTIMO_FECHAMENTO_INCLUDE = {
   where: { origem: ORIGEM_FECHAMENTO },
   orderBy: { createdAt: 'desc' as const },
-  take: 1,
+  take: 5,
   select: { valor: true, status: true, createdAt: true },
 };
 
 type VendaDoFechamento = { valor: unknown; status: string; createdAt: Date };
 
+export interface ResumoDoFechamento {
+  /** null = pendente (fechou sem informar o valor). */
+  valor: number | null;
+  em: string;
+  /** Venda paga mais recente ANTES da última, se houver. */
+  anterior?: { valor: number; em: string };
+}
+
 export function resumoDoFechamento(
   vendas: VendaDoFechamento[] | undefined
-): { valor: number | null; em: string } | null {
+): ResumoDoFechamento | null {
   const ultima = vendas?.[0];
-  if (!ultima) return null;
-  return {
+  if (!ultima || ultima.status === 'cancelled') return null;
+  const resumo: ResumoDoFechamento = {
     valor: ultima.status === 'pending' ? null : Number(ultima.valor),
     em: ultima.createdAt.toISOString(),
   };
+  const anterior = vendas!.slice(1).find((v) => v.status === 'paid');
+  if (anterior) resumo.anterior = { valor: Number(anterior.valor), em: anterior.createdAt.toISOString() };
+  return resumo;
 }
 
 export interface CreateContactInput {

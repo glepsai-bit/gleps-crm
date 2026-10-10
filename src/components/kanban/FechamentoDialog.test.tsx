@@ -86,4 +86,18 @@ describe('FechamentoDialog', () => {
     abrir({ servicos: [] });
     expect(screen.queryByText('Serviço (opcional)')).not.toBeInTheDocument();
   });
+
+  it('com vendaAnterior, explica que é venda nova e troca o rótulo do botão', () => {
+    const { onSemValor } = abrir({ vendaAnterior: { valor: 350, em: '2026-09-15T12:00:00Z' } });
+    expect(screen.getByText(/já tem uma venda registrada/)).toHaveTextContent(/350,00 em 15\/09\).*venda nova/);
+    expect(screen.queryByRole('button', { name: 'Fechou sem valor' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar sem valor por enquanto' }));
+    expect(onSemValor).toHaveBeenCalledTimes(1);
+  });
+
+  it('sem vendaAnterior, mantém o texto de sempre', () => {
+    abrir();
+    expect(screen.getByText(/Maria entrou em Fechado/)).toBeInTheDocument();
+    expect(screen.queryByText(/venda nova/)).not.toBeInTheDocument();
+  });
 });

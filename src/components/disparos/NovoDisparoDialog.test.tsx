@@ -154,4 +154,19 @@ describe('NovoDisparoDialog', () => {
     // 09:00 em America/Sao_Paulo (UTC-3) = 12:00Z
     expect(vi.mocked(disparosService.criar).mock.calls[0][0].agendadoPara).toBe('2999-10-08T12:00:00.000Z');
   });
+
+  it('editar agendado de números colados: o textarea vem com as linhas', async () => {
+    montar({
+      editando: {
+        id: 'd9', nome: 'Antigo', texto: 'Oi {nome}', variantes: [], anexo: null,
+        lista: { tipo: 'numeros', quantidade: 2, linhas: ['Maria;34988119078', '34991234567'] },
+        listaRotulo: null, inboxIds: ['i1'], atendeRespostas: 'ia', status: 'agendado',
+        pausadoMotivo: null, agendadoPara: new Date(Date.now() + 3600_000).toISOString(),
+        iniciadoEm: null, concluidoEm: null, previsaoTerminoEm: null,
+        total: 2, enviadas: 0, falhas: 0, respondidas: 0, optout: 0, pulados: 0,
+      } as unknown as React.ComponentProps<typeof NovoDisparoDialog>['editando'],
+    });
+    const area = (await screen.findByLabelText('Números')) as HTMLTextAreaElement;
+    expect(area.value).toBe('Maria;34988119078\n34991234567');
+  });
 });

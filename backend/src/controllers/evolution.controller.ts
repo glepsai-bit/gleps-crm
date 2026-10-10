@@ -3,7 +3,11 @@ import * as crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../config/database';
 import { evolutionService } from '../services/evolution.service';
-import { whatsappConsentService } from '../services/whatsapp-consent.service';
+import {
+  whatsappConsentService,
+  type PalavraChaveProcessada,
+} from '../services/whatsapp-consent.service';
+import { whatsappSendService } from '../services/whatsapp-send.service';
 import { inboxChannelService } from '../services/inbox.service';
 import { conversationService } from '../services/conversation.service';
 import { csatService } from '../services/csat.service';
@@ -441,6 +445,9 @@ export class EvolutionController {
         return;
       }
 
+      // ETAPA E: SAIR/VOLTAR. O resultado segue pro processNewMessage, que
+      // manda a confirmação pela mesma inbox e NÃO aciona o fluxo de IA.
+      let palavraChave: PalavraChaveProcessada | null = null;
       if (normalizedEvent === 'messages.upsert') {
         try {
           const body: any = req.body || {};
@@ -460,7 +467,11 @@ export class EvolutionController {
               phone &&
               !(await aquecimentoService.ehNumeroDeAquecimento(accountId, phone))
             ) {
-              await whatsappConsentService.handleInboundOptOut(accountId, phone, messageText);
+              palavraChave = await whatsappConsentService.processarPalavraChave(
+                accountId,
+                phone,
+                messageText
+              );
             }
           }
         } catch (err: any) {
@@ -477,7 +488,7 @@ export class EvolutionController {
       // T-022 Sprint 4 — dispatcher de eventos Evolution → motor de conversas
       // ============================================
       try {
-        await this.dispatchEvolutionEvent(accountId, event, req.body);
+        await this.dispatchEvolutionEvent(accountId, event, req.body, palavraChave);
       } catch (err: any) {
         // Falha de dispatcher NÃO derruba o webhook — Evolution faz retry caso 5xx,
         // o que pode causar reprocesso e duplicar dados se a idempotência tropeçar.
@@ -518,13 +529,14 @@ export class EvolutionController {
   private async dispatchEvolutionEvent(
     accountId: string,
     event: string,
-    body: any
+    body: any,
+    palavraChave: PalavraChaveProcessada | null = null
   ): Promise<void> {
     const normalized =
       typeof event === 'string' ? event.toLowerCase().replace(/_/g, '.') : event;
     switch (normalized) {
       case 'messages.upsert':
-        await this.processNewMessage(accountId, body);
+        await this.processNewMessage(accountId, body, palavraChave);
         return;
       case 'messages.update':
         await this.processMessageUpdate(accountId, body);
@@ -830,7 +842,11 @@ export class EvolutionController {
    * abrindo/reabrindo a Conversation conforme necessário.
    * Idempotente: se já existe Message com o mesmo externalId na conversa, faz skip.
    */
-  private async processNewMessage(accountId: string, body: any): Promise<void> {
+  private async processNewMessage(
+    accountId: string,
+    body: any,
+    palavraChave: PalavraChaveProcessada | null = null
+  ): Promise<void> {
     const data: any = body?.data ?? body ?? {};
     const instance: string | undefined = body?.instance || body?.instanceName;
     const remoteJid: string | undefined = data?.key?.remoteJid;
@@ -1167,9 +1183,17 @@ export class EvolutionController {
       // Disparos: a primeira resposta do lead conta como "respondeu" no envio.
       void disparoService.registrarRespostaDeDisparo(conversation.id).catch(() => undefined);
 
+      // ETAPA E — SAIR/VOLTAR: confirma UMA vez (só quando o status mudou),
+      // pela mesma inbox, como mensagem de sistema na conversa. Best-effort:
+      // falha no envio não desfaz o opt-out — fica no log.
+      if (palavraChave?.mudou) {
+        await this.confirmarConsentimento(accountId, conversation.id, palavraChave);
+      }
+
       // Disparo com "quem atende: fila humana" marca a conversa como humana
-      // (customAttributes.human_active) — a IA não entra nela.
-      if (!disparoService.atendimentoHumano(conversation)) {
+      // (customAttributes.human_active) — a IA não entra nela. E palavra-chave
+      // de consentimento é conversa com o sistema, não com o agente.
+      if (!disparoService.atendimentoHumano(conversation) && !palavraChave) {
         void flowService
           .onInboundMessage({
             accountId,
@@ -1187,6 +1211,44 @@ export class EvolutionController {
             });
           });
       }
+    }
+  }
+
+  /**
+   * ETAPA E — a resposta ao SAIR/VOLTAR. Sai pelo mesmo caminho do Chat
+   * (whatsappSendService → inbox da conversa) com `confirmacaoDeConsentimento`,
+   * que pula a checagem de opt-out (o lead acabou de sair) e o rate-limit.
+   * Nunca lança: a mudança de consentimento já está gravada.
+   */
+  private async confirmarConsentimento(
+    accountId: string,
+    conversationId: string,
+    palavraChave: PalavraChaveProcessada
+  ): Promise<void> {
+    try {
+      const r = await whatsappSendService.send(accountId, {
+        conversationId,
+        type: 'text',
+        content: palavraChave.resposta,
+        sender_type: 'system',
+        confirmacaoDeConsentimento: true,
+        metadata: { source: 'consentimento', acao: palavraChave.acao },
+      });
+      if (r.status === 'failed') {
+        logger.warn('[evolution-webhook] confirmação de consentimento não entregue', {
+          accountId,
+          conversationId,
+          acao: palavraChave.acao,
+          error: r.error ?? null,
+        });
+      }
+    } catch (err) {
+      logger.warn('[evolution-webhook] confirmação de consentimento falhou', {
+        accountId,
+        conversationId,
+        acao: palavraChave.acao,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

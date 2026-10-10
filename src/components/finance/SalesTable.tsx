@@ -75,6 +75,8 @@ export function SalesTable({ isLoading = false }: SalesTableProps) {
         return <Badge className="bg-warning/10 text-warning border-warning/20">Pendente</Badge>;
       case 'refunded':
         return <Badge className="bg-primary/10 text-primary border-primary/20">Estornado</Badge>;
+      case 'cancelled':
+        return <Badge className="bg-muted text-muted-foreground border-border">Cancelada</Badge>;
       default:
         return <Badge variant="outline">-</Badge>;
     }
@@ -160,6 +162,7 @@ export function SalesTable({ isLoading = false }: SalesTableProps) {
                   <SelectItem value="paid">Pago</SelectItem>
                   <SelectItem value="pending">Pendente</SelectItem>
                   <SelectItem value="refunded">Estornado</SelectItem>
+                  <SelectItem value="cancelled">Cancelada</SelectItem>
                 </SelectContent>
               </Select>
             </div>

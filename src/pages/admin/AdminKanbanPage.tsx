@@ -119,6 +119,8 @@ export default function AdminKanbanPage() {
   const [isCreatingTemplate, setIsCreatingTemplate] = useState(false);
   // Lead cujo valor de fechamento está sendo informado ("Quanto fechou?").
   const [fechamentoContactId, setFechamentoContactId] = useState<string | null>(null);
+  // Venda já registrada do lead antes desta (texto de "venda nova" no diálogo).
+  const [vendaAnterior, setVendaAnterior] = useState<{ valor: number; em: string } | null>(null);
   const [etapaEmEdicao, setEtapaEmEdicao] = useState<CloudTag | null>(null);
 
   const isFirstTagsLoad = useRef(true);
@@ -371,6 +373,9 @@ export default function AdminKanbanPage() {
       // Gesto de núcleo (não depende do módulo Vendas): entrou no fechamento,
       // pergunta quanto foi. O backend já criou a venda pendente ao aplicar a etapa.
       if (stage?.papel === 'fechamento') {
+        // `lead` é o contato de antes do drop: se já tinha valor, esta é uma venda nova.
+        const antes = lead?.fechamento;
+        setVendaAnterior(antes && antes.valor != null ? { valor: antes.valor, em: antes.em } : null);
         setFechamentoContactId(draggedLead);
       }
       // Light refresh to reconcile temp IDs with real ones from backend (silent)
@@ -802,7 +807,10 @@ export default function AdminKanbanPage() {
                             onClick={() => setSelectedLead(lead)}
                             onDragStart={() => handleDragStart(lead.id)}
                             onDragEnd={handleDragEnd}
-                            onInformarValor={() => setFechamentoContactId(lead.id)}
+                            onInformarValor={() => {
+                              setVendaAnterior(lead.fechamento?.anterior ?? null);
+                              setFechamentoContactId(lead.id);
+                            }}
                           />
                         ))}
                         {stageLeads.length === 0 && (
@@ -979,6 +987,7 @@ export default function AdminKanbanPage() {
         }}
         nomeDoLead={leadDoFechamento?.nome}
         servicos={getActiveProducts()}
+        vendaAnterior={vendaAnterior}
         onRegistrar={handleRegistrarFechamento}
         onSemValor={handleFecharSemValor}
       />

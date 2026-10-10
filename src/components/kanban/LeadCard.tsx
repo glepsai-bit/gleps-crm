@@ -95,6 +95,8 @@ export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart,
         return <AlertCircle className="w-3 h-3" />;
       case 'refunded':
         return <RotateCcw className="w-3 h-3" />;
+      default:
+        return null;
     }
   };
 
@@ -183,7 +185,7 @@ export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart,
               className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-500/25 dark:text-amber-400"
             >
               <AlertCircle className="w-3 h-3" />
-              informe o valor
+              {fechamento.anterior ? 'nova venda: informe o valor' : 'informe o valor'}
             </button>
           ))}
 

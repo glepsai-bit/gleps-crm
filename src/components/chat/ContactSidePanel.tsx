@@ -755,6 +755,7 @@ export function ContactSidePanel({ conversation, onClose }: ContactSidePanelProp
                     paid: 'Paga',
                     refunded: 'Estornada',
                     partial_refund: 'Estorno parcial',
+                    cancelled: 'Cancelada',
                   };
                   const statusLabel = sale.status
                     ? STATUS_PT[sale.status] ?? sale.status

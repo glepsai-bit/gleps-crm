@@ -283,6 +283,8 @@ Receita do período        = Σ sales.valor WHERE status = 'paid' AND paid_at �
 
 Venda pendente (fechou sem informar valor) **não** entra em `receita` nem em `vendasComValor`; entra em `conversoes` (o contato entrou na etapa). Venda estornada sai de `receita` (status deixa de ser `paid`), mas o fechamento continua contado em `conversoes` — o histórico de etapas é imutável.
 
+Venda **cancelada** (`status = 'cancelled'`, migration 0073): o lead entrou em Perdido com uma venda pendente do fechamento — ela sai de `semValor` (que conta só `pending`), nunca entrou em `receita`/`vendasComValor`, e o contato aparece em `perdas` pelo histórico de etapas.
+
 ---
 
 ## Dashboard — métricas novas (06/10)

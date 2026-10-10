@@ -100,6 +100,8 @@ export function SaleDetailsSheet({
             Estornado
           </Badge>
         );
+      case 'cancelled':
+        return <Badge className="bg-muted text-muted-foreground border-border">Cancelada</Badge>;
       default:
         return <Badge variant="outline">-</Badge>;
     }

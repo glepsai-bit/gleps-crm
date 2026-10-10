@@ -92,7 +92,7 @@ export interface AddNoteRequest {
 // ============= SALE TYPES =============
 
 export interface SaleListParams extends PaginationParams, DateRangeParams {
-  status?: 'pending' | 'paid' | 'refunded';
+  status?: 'pending' | 'paid' | 'refunded' | 'cancelled';
   contactId?: string;
   responsavelId?: string;
   paymentMethod?: string;

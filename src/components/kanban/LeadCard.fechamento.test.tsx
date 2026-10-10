@@ -62,4 +62,21 @@ describe('LeadCard — fechamento', () => {
     renderizar(lead(null), 'fechamento');
     expect(screen.queryByText(/Fechou/)).not.toBeInTheDocument();
   });
+
+  it('sem valor e com venda anterior, o chip diz "nova venda: informe o valor"', () => {
+    const props = renderizar(lead({ valor: null, em: '2026-10-05T10:00:00Z', anterior: { valor: 200, em: '2026-09-01T10:00:00Z' } }), 'fechamento');
+    fireEvent.click(screen.getByRole('button', { name: /nova venda: informe o valor/ }));
+    expect(props.onInformarValor).toHaveBeenCalledTimes(1);
+  });
+
+  it('sem valor e sem venda anterior, o chip segue "informe o valor"', () => {
+    renderizar(lead({ valor: null, em: '2026-10-05T10:00:00Z' }), 'fechamento');
+    expect(screen.queryByText(/nova venda/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /informe o valor/ })).toBeInTheDocument();
+  });
+
+  it('fechamento null (venda cancelada): nenhum chip', () => {
+    renderizar(lead(null), 'fechamento');
+    expect(screen.queryByRole('button', { name: /informe o valor/ })).not.toBeInTheDocument();
+  });
 });

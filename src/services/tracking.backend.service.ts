@@ -117,7 +117,7 @@ export interface TrackingEventRow {
 }
 
 export interface TrackingConnectionCheck {
-  key: 'pixel' | 'adAccount' | 'insights';
+  key: 'token' | 'pixel' | 'adAccount' | 'insights';
   label: string;
   ok: boolean;
   detail: string;

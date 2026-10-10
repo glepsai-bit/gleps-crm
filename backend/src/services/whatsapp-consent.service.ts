@@ -54,6 +54,66 @@ const OPT_OUT_SINGLE_WORD_REGEX = /(?:^|[^\p{L}])(sair|parar|stop|cancelar|opt[\
 const OPT_OUT_PHRASE_REGEX = /\b(sair\s+(da\s+)?lista|cancelar\s+inscricao|parar\s+mensagens|descadastrar)\b/i;
 const OPT_OUT_MAX_SHORT_LEN = 30;
 
+// ETAPA E — "voltar a receber": a volta de quem pediu para sair. Mesmas
+// regras de borda e de tamanho do opt-out: palavra isolada só em mensagem
+// curta (≤ 30), frase específica em qualquer tamanho. Só vale para quem está
+// opted_out hoje — "quero receber o catálogo" de um lead normal é atendimento,
+// não opt-in, e segue para o fluxo de IA sem resposta automática.
+const OPT_IN_SINGLE_WORD_REGEX = /(?:^|[^\p{L}])(voltar|quero\s+receber|receber)(?:$|[^\p{L}])/iu;
+const OPT_IN_PHRASE_REGEX = /\bquero\s+voltar\s+a\s+receber\b/i;
+
+/** Resposta enviada UMA vez pela mesma inbox quando o opt-out é registrado. */
+export const MENSAGEM_DE_OPT_OUT =
+  'Pronto, você não vai mais receber nossas mensagens. Se mudar de ideia, é só responder VOLTAR.';
+/** Resposta enviada UMA vez quando quem tinha saído volta a receber. */
+export const MENSAGEM_DE_OPT_IN = 'Combinado, você voltou a receber nossas mensagens.';
+
+export type AcaoDeConsentimento = 'opt_out' | 'opt_in';
+
+/**
+ * O que o webhook recebe de volta quando a mensagem do lead era uma
+ * palavra-chave de consentimento. `mudou` = o status trocou agora (é quando
+ * a confirmação sai); SAIR duas vezes casa as duas, mas só a 1ª muda.
+ */
+export interface PalavraChaveProcessada {
+  acao: AcaoDeConsentimento;
+  mudou: boolean;
+  /** Texto da confirmação a enviar (fixo por enquanto). */
+  resposta: string;
+  phone: string;
+  contactId: string | null;
+}
+
+/**
+ * Classifica a mensagem: pedido de sair, pedido de voltar, ou nada. Pura —
+ * é o que os testes de regex exercitam. O opt-out vence quando os dois
+ * casam ("parar de receber" é sair, não voltar).
+ */
+export function detectarPalavraChaveDeConsentimento(messageText: string): AcaoDeConsentimento | null {
+  if (!messageText || typeof messageText !== 'string') return null;
+  const trimmed = messageText.trim();
+  if (!trimmed) return null;
+
+  // BUG-041: normaliza acentos antes do match para aceitar variações como
+  // "cancelár", "descadastrár", "não quero mais — sair" etc.
+  const sanitized = stripDiacritics(trimmed);
+  const curta = sanitized.length <= OPT_OUT_MAX_SHORT_LEN;
+
+  // BUG-045: dois caminhos de match com critérios diferentes para reduzir
+  // falsos positivos (ex.: "PARAR a aula", "vou sair do crossfit"):
+  //   - PHRASE: frase específica multi-palavra → aceita em qualquer tamanho.
+  //   - SINGLE-WORD: palavra isolada (sair, parar, stop, cancelar, opt-out,
+  //     descadastrar) só conta se a mensagem inteira for curta (≤30 chars),
+  //     intenção típica de quem está respondendo "PARAR" / "Sair" sozinho.
+  if (OPT_OUT_PHRASE_REGEX.test(sanitized) || (curta && OPT_OUT_SINGLE_WORD_REGEX.test(sanitized))) {
+    return 'opt_out';
+  }
+  if (OPT_IN_PHRASE_REGEX.test(sanitized) || (curta && OPT_IN_SINGLE_WORD_REGEX.test(sanitized))) {
+    return 'opt_in';
+  }
+  return null;
+}
+
 /**
  * Remove acentos/diacríticos de uma string usando decomposição NFD.
  * Ex: "Não quero mais, cancelár!" → "Nao quero mais, cancelar!"
@@ -586,74 +646,118 @@ class WhatsappConsentService {
    * Detecta palavras-chave de opt-out em mensagens recebidas e, se houver match,
    * registra opt-out com source='auto_keyword'.
    * Retorna true se foi processado (match), false caso contrário.
+   *
+   * ETAPA E: o webhook passou a usar `processarPalavraChave` (que também
+   * entende o VOLTAR e diz se a confirmação deve sair). Este fica como
+   * atalho só de opt-out para quem precisar.
    */
   async handleInboundOptOut(
     accountId: string,
     phone: string,
     messageText: string
   ): Promise<boolean> {
-    if (!messageText || typeof messageText !== 'string') return false;
+    if (detectarPalavraChaveDeConsentimento(messageText) !== 'opt_out') return false;
+    const r = await this.processarPalavraChave(accountId, phone, messageText);
+    return r?.acao === 'opt_out';
+  }
 
+  // ============================================
+  // processarPalavraChave (ETAPA E)
+  // ============================================
+
+  /**
+   * Mensagem do lead era SAIR/PARAR… ou VOLTAR/quero receber…? Registra a
+   * mudança de consentimento (source 'auto_keyword') e devolve o que o webhook
+   * precisa: se mudou agora (→ manda a confirmação) e o texto da confirmação.
+   *
+   * - opt-out: grava opted_out. Já estava opted_out → nada a gravar,
+   *   `mudou: false` (SAIR duas vezes confirma só na 1ª).
+   * - opt-in: só vale para quem está opted_out — reverte para opted_in.
+   *   Quem nunca saiu e escreve "quero receber" não é palavra-chave: devolve
+   *   null e a mensagem segue para o atendimento normal.
+   *
+   * Devolve null quando não há palavra-chave ou o telefone é inválido.
+   */
+  async processarPalavraChave(
+    accountId: string,
+    phone: string,
+    messageText: string
+  ): Promise<PalavraChaveProcessada | null> {
+    const acao = detectarPalavraChaveDeConsentimento(messageText);
+    if (!acao) return null;
     const trimmed = messageText.trim();
-    if (!trimmed) return false;
+    // whatsapp_consents.reason é VARCHAR(255); frase longa casa o regex de frase.
+    const reason = `Palavra-chave recebida: "${trimmed}"`.slice(0, 255);
 
-    // BUG-041: normaliza acentos antes do match para aceitar variações como
-    // "cancelár", "descadastrár", "não quero mais — sair" etc.
-    const sanitized = stripDiacritics(trimmed);
-
-    // BUG-045: dois caminhos de match com critérios diferentes para reduzir
-    // falsos positivos (ex.: "PARAR a aula", "vou sair do crossfit"):
-    //   - PHRASE: frase específica multi-palavra → aceita em qualquer tamanho.
-    //   - SINGLE-WORD: palavra isolada (sair, parar, stop, cancelar, opt-out,
-    //     descadastrar) só conta se a mensagem inteira for curta (≤30 chars),
-    //     intenção típica de quem está respondendo "PARAR" / "Sair" sozinho.
-    const phraseMatch = OPT_OUT_PHRASE_REGEX.test(sanitized);
-    const shortSingleWordMatch =
-      sanitized.length <= OPT_OUT_MAX_SHORT_LEN &&
-      OPT_OUT_SINGLE_WORD_REGEX.test(sanitized);
-
-    if (!phraseMatch && !shortSingleWordMatch) {
-      return false;
+    let normalized: string;
+    try {
+      normalized = this.normalizePhone(phone);
+    } catch {
+      normalized = '';
     }
-
-    const normalized = this.normalizePhone(phone);
     if (!normalized) {
-      logger.warn('[whatsapp-consent] inbound opt-out ignorado (telefone inválido)', {
+      logger.warn('[whatsapp-consent] palavra-chave de consentimento ignorada (telefone inválido)', {
         accountId,
         phone,
+        acao,
       });
-      return false;
+      return null;
     }
+
+    const atual = await prisma.whatsappConsent.findUnique({
+      where: { accountId_phone: { accountId, phone: normalized } },
+      select: { status: true, contactId: true },
+    });
+    const estavaFora = atual?.status === 'opted_out';
 
     // Tenta vincular contactId pelo telefone (best-effort)
-    let contactId: string | undefined;
-    try {
-      const contact = await prisma.contact.findFirst({
-        where: { accountId, telefone: normalized },
-        select: { id: true },
-      });
-      contactId = contact?.id;
-    } catch (err: any) {
-      logger.warn('[whatsapp-consent] falha ao resolver contactId para inbound opt-out', {
-        accountId,
-        phone: normalized,
-        error: err?.message ?? String(err),
-      });
+    let contactId: string | null = atual?.contactId ?? null;
+    if (!contactId) {
+      try {
+        const contact = await prisma.contact.findFirst({
+          where: { accountId, telefone: normalized },
+          select: { id: true },
+        });
+        contactId = contact?.id ?? null;
+      } catch (err: any) {
+        logger.warn('[whatsapp-consent] falha ao resolver contactId para palavra-chave', {
+          accountId,
+          phone: normalized,
+          error: err?.message ?? String(err),
+        });
+      }
     }
 
-    await this.optOut(accountId, normalized, {
-      contactId,
-      source: 'auto_keyword',
-      reason: `Palavra-chave recebida: "${trimmed}"`,
-    });
+    if (acao === 'opt_out') {
+      if (!estavaFora) {
+        await this.optOut(accountId, normalized, {
+          contactId: contactId ?? undefined,
+          source: 'auto_keyword',
+          reason,
+        });
+      }
+      logger.info('[whatsapp-consent] inbound opt-out processado por keyword', {
+        accountId,
+        phone: normalized,
+        keyword: trimmed,
+        mudou: !estavaFora,
+      });
+      return { acao, mudou: !estavaFora, resposta: MENSAGEM_DE_OPT_OUT, phone: normalized, contactId };
+    }
 
-    logger.info('[whatsapp-consent] inbound opt-out processado por keyword', {
+    // opt-in: só reverte quem saiu.
+    if (!estavaFora) return null;
+    await this.optIn(accountId, normalized, {
+      contactId: contactId ?? undefined,
+      source: 'auto_keyword',
+      reason,
+    });
+    logger.info('[whatsapp-consent] inbound opt-in processado por keyword', {
       accountId,
       phone: normalized,
       keyword: trimmed,
     });
-
-    return true;
+    return { acao, mudou: true, resposta: MENSAGEM_DE_OPT_IN, phone: normalized, contactId };
   }
 }
 

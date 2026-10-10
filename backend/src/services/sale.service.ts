@@ -541,6 +541,63 @@ class SaleService {
   }
 
   /**
+   * ETAPA E — o lead foi pra Perdido: a venda pendente do fechamento (valor 0,
+   * esperando alguém informar quanto fechou) vira `cancelled`. Só a pendente;
+   * venda paga é história e fica. Sem Purchase, sem webhook de pago — só o
+   * evento `sale.cancelled` (best-effort). Devolve quantas cancelou.
+   */
+  async cancelarFechamentoPendente(input: {
+    accountId: string;
+    contactId: string;
+    responsavelId?: string | null;
+    source: string;
+  }): Promise<{ canceladas: number }> {
+    const { accountId, contactId } = input;
+    const pendentes = await prisma.sale.findMany({
+      where: { accountId, contactId, origem: ORIGEM_FECHAMENTO, status: 'pending' },
+      select: { id: true },
+    });
+    if (pendentes.length === 0) return { canceladas: 0 };
+
+    const ids = pendentes.map((p) => p.id);
+    const r = await prisma.sale.updateMany({
+      where: { id: { in: ids }, accountId, status: 'pending' },
+      data: { status: 'cancelled' },
+    });
+
+    const ator =
+      input.responsavelId && isValidUUID(input.responsavelId)
+        ? { actorType: 'user' as const, actorId: input.responsavelId }
+        : { actorType: 'system' as const };
+    for (const id of ids) {
+      try {
+        await eventService.create({
+          eventType: 'sale.cancelled',
+          accountId,
+          ...ator,
+          entityType: 'sale',
+          entityId: id,
+          payload: { contactId, origem: ORIGEM_FECHAMENTO, source: input.source, motivo: 'perda' },
+        });
+      } catch (err) {
+        logger.warn('[sale] evento sale.cancelled não registrado', {
+          accountId,
+          saleId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    logger.info('[sale] fechamento pendente cancelado — lead foi pra Perdido', {
+      accountId,
+      contactId,
+      canceladas: r.count,
+      source: input.source,
+    });
+    return { canceladas: r.count };
+  }
+
+  /**
    * Refund entire sale
    */
   async refund(id: string, accountId: string, reason: string, refundedById: string) {

@@ -54,6 +54,8 @@ export function SaleMobileCard({
         return <Badge className="bg-destructive/10 text-destructive border-destructive/20">Estornado</Badge>;
       case 'partial_refund':
         return <Badge className="bg-warning/10 text-warning border-warning/20">Estorno Parcial</Badge>;
+      case 'cancelled':
+        return <Badge className="bg-muted text-muted-foreground border-border">Cancelada</Badge>;
       default:
         return <Badge variant="outline">-</Badge>;
     }

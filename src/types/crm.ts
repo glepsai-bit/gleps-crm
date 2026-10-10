@@ -6,7 +6,7 @@ export type AccountStatus = 'active' | 'paused' | 'cancelled';
 export type UserStatus = 'active' | 'inactive' | 'suspended';
 export type ConversationStatus = 'open' | 'pending' | 'resolved';
 export type AssigneeType = 'user' | 'agent_bot';
-export type SaleStatus = 'pending' | 'paid' | 'refunded' | 'partial_refund';
+export type SaleStatus = 'pending' | 'paid' | 'refunded' | 'partial_refund' | 'cancelled';
 export type PaymentMethod = 'pix' | 'boleto' | 'debito' | 'credito' | 'dinheiro' | 'convenio' | 'nao_informado';
 export type ActorType = 'user' | 'agent_bot' | 'system' | 'external';
 export type TransactionType = 'charge' | 'refund';
@@ -56,6 +56,8 @@ export interface AgentBot {
 export interface Fechamento {
   valor: number | null;
   em: string; // ISO
+  /** Venda paga anterior do mesmo lead (quando a atual ainda está sem valor). */
+  anterior?: { valor: number; em: string } | null;
 }
 
 export interface Contact {

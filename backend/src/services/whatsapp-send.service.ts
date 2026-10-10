@@ -24,7 +24,8 @@ import { whatsappRateLimitService } from './whatsapp-rate-limit.service';
 // ============================================
 
 export type WhatsappSendType = 'text' | 'image' | 'audio' | 'document';
-export type WhatsappSendSenderType = 'ai_bot' | 'integration';
+/** 'system' é só interno (confirmação de opt-out/opt-in) — a API externa aceita ai_bot | integration. */
+export type WhatsappSendSenderType = 'ai_bot' | 'integration' | 'system';
 
 /**
  * Input do método send(). Espelha o schema Zod do controller
@@ -54,6 +55,13 @@ export interface WhatsappSendInput {
   metadata?: Record<string, unknown>;
   /** Id da API key autora — vai no metadata da mensagem pra auditoria. */
   apiKeyId?: string | null;
+  /**
+   * ETAPA E — interno, nunca vem da API (o controller monta o input campo a
+   * campo). É a confirmação "você não vai mais receber" / "voltou a receber":
+   * a única mensagem que sai para quem acabou de pedir para sair, então pula
+   * a checagem de consentimento e o rate-limit. Uma por mudança de status.
+   */
+  confirmacaoDeConsentimento?: boolean;
 }
 
 export interface WhatsappSendResult {
@@ -164,37 +172,39 @@ class WhatsappSendService {
 
     // ----------------------------------------
     // 5) Consent (opt-out + política implicit_optin default)
-    // ----------------------------------------
-    const optedOut = await whatsappConsentService.isOptedOut(accountId, normalizedPhone);
-    if (optedOut) {
-      throw new AppError(
-        'Contato optou por não receber mensagens',
-        422,
-        'CONTACT_OPTED_OUT',
-        { phone: normalizedPhone }
-      );
-    }
-    const hasConsent = await whatsappConsentService.hasConsent(accountId, normalizedPhone);
-    if (!hasConsent) {
-      throw new AppError(
-        'Contato sem consent registrado — opt-in necessário',
-        422,
-        'CONSENT_REQUIRED',
-        { phone: normalizedPhone }
-      );
-    }
-
-    // ----------------------------------------
     // 6) Rate-limit (TOCTOU-safe in-process)
+    // ETAPA E: a confirmação do próprio opt-out/opt-in pula os dois — é a
+    // resposta ao pedido do lead, não um disparo.
     // ----------------------------------------
-    const acquired = whatsappRateLimitService.tryAcquire(accountId, normalizedPhone);
-    if (!acquired.allowed) {
-      throw new AppError(
-        'Rate-limit excedido para este número',
-        429,
-        'RATE_LIMIT_EXCEEDED',
-        { reason: acquired.reason, waitMs: acquired.waitMs }
-      );
+    if (!input.confirmacaoDeConsentimento) {
+      const optedOut = await whatsappConsentService.isOptedOut(accountId, normalizedPhone);
+      if (optedOut) {
+        throw new AppError(
+          'Contato optou por não receber mensagens',
+          422,
+          'CONTACT_OPTED_OUT',
+          { phone: normalizedPhone }
+        );
+      }
+      const hasConsent = await whatsappConsentService.hasConsent(accountId, normalizedPhone);
+      if (!hasConsent) {
+        throw new AppError(
+          'Contato sem consent registrado — opt-in necessário',
+          422,
+          'CONSENT_REQUIRED',
+          { phone: normalizedPhone }
+        );
+      }
+
+      const acquired = whatsappRateLimitService.tryAcquire(accountId, normalizedPhone);
+      if (!acquired.allowed) {
+        throw new AppError(
+          'Rate-limit excedido para este número',
+          429,
+          'RATE_LIMIT_EXCEEDED',
+          { reason: acquired.reason, waitMs: acquired.waitMs }
+        );
+      }
     }
 
     // ----------------------------------------

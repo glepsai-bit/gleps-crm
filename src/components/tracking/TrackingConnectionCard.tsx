@@ -146,7 +146,7 @@ export function TrackingConnectionCard({
         {/* Diagnóstico por ativo — sempre visível quando existe */}
         {checks && checks.length > 0 && (
           <CardContent className="pt-0 pb-3">
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {checks.map((c) => (
                 <div
                   key={c.key}

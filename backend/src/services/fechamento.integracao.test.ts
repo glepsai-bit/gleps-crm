@@ -191,6 +191,84 @@ describe('gatilho pelo agente/chat (conversation.addLabel)', () => {
   });
 });
 
+describe('ETAPA E — Perdido cancela a venda pendente', () => {
+  it('entrar em Perdido com pendente → cancelled sem Purchase; GET /contacts fechamento null; sem pendente → nada; paga fica', async () => {
+    const { account, user } = await createTestAccount();
+    const { novo, fechado, perdido } = await funilComFixas(account.id);
+    const contact = await createTestContact(account.id);
+    const purchase = vi.spyOn(trackingService, 'recordConversionEvent').mockResolvedValue(undefined);
+
+    await contactService.applyTag(contact.id, account.id, fechado.id, 'kanban', user.id);
+    expect((await contactService.getById(contact.id, account.id)).fechamento).toEqual({ valor: null, em: expect.any(String) });
+
+    await contactService.applyTag(contact.id, account.id, perdido.id, 'kanban', user.id);
+    const vendas = await vendasDoFechamento(contact.id);
+    expect(vendas).toHaveLength(1);
+    expect(vendas[0]).toMatchObject({ status: 'cancelled', paidAt: null, origem: ORIGEM_FECHAMENTO });
+    expect(Number(vendas[0].valor)).toBe(0);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(purchase).not.toHaveBeenCalled();
+
+    // O card deixa de pedir o valor: fechamento some da lista e do detalhe.
+    const lista = await contactService.list({ accountId: account.id }, { page: 1, limit: 50, offset: 0 });
+    expect(lista.data[0].fechamento).toBeNull();
+    expect((await contactService.getById(contact.id, account.id)).fechamento).toBeNull();
+
+    const eventos = await prismaTest.event.findMany({ where: { accountId: account.id, eventType: 'sale.cancelled' } });
+    expect(eventos).toHaveLength(1);
+    expect(eventos[0]).toMatchObject({ entityId: vendas[0].id, actorType: 'user', actorId: user.id });
+
+    // Dashboard: a cancelada sai de semValor; a perda conta.
+    const agora = new Date();
+    const m = await chatMetricsService.getFechamentoMetrics(
+      account.id,
+      new Date(agora.getTime() - 60_000),
+      new Date(agora.getTime() + 60_000)
+    );
+    expect(m).toMatchObject({ semValor: 0, perdas: 1, receita: 0, vendasComValor: 0 });
+
+    // Sem pendente: Perdido de novo não faz nada.
+    await contactService.applyTag(contact.id, account.id, novo.id, 'kanban', user.id);
+    await contactService.applyTag(contact.id, account.id, perdido.id, 'kanban', user.id);
+    expect(await vendasDoFechamento(contact.id)).toHaveLength(1);
+
+    // Venda paga é história: fecha com valor, vai pra Perdido → continua paga e o card mostra o valor.
+    await contactService.applyTag(contact.id, account.id, fechado.id, 'kanban', user.id);
+    await saleService.registrarFechamento({ accountId: account.id, contactId: contact.id, valor: 200, responsavelId: user.id, source: 'kanban' });
+    await contactService.applyTag(contact.id, account.id, perdido.id, 'kanban', user.id);
+    const depois = await vendasDoFechamento(contact.id);
+    expect(depois.map((v) => v.status)).toEqual(['cancelled', 'paid']);
+    expect((await contactService.getById(contact.id, account.id)).fechamento).toEqual({ valor: 200, em: depois[1].createdAt.toISOString() });
+  });
+
+  it('fechamento.anterior: pendente nova depois de uma paga traz a paga; sem paga antes, não vem', async () => {
+    const { account, user } = await createTestAccount();
+    const { novo, fechado } = await funilComFixas(account.id);
+    const contact = await createTestContact(account.id);
+    vi.spyOn(trackingService, 'recordConversionEvent').mockResolvedValue(undefined);
+
+    await contactService.applyTag(contact.id, account.id, fechado.id, 'kanban', user.id);
+    expect((await contactService.getById(contact.id, account.id)).fechamento).toEqual({ valor: null, em: expect.any(String) });
+
+    await saleService.registrarFechamento({ accountId: account.id, contactId: contact.id, valor: 500, responsavelId: user.id, source: 'kanban' });
+    const paga = (await vendasDoFechamento(contact.id))[0];
+    expect((await contactService.getById(contact.id, account.id)).fechamento).toEqual({ valor: 500, em: paga.createdAt.toISOString() });
+
+    // Sai e volta pra Fechado: venda NOVA pendente, e a paga vira `anterior`.
+    await contactService.applyTag(contact.id, account.id, novo.id, 'kanban', user.id);
+    await contactService.applyTag(contact.id, account.id, fechado.id, 'kanban', user.id);
+    const vendas = await vendasDoFechamento(contact.id);
+    expect(vendas.map((v) => v.status)).toEqual(['paid', 'pending']);
+    const lista = await contactService.list({ accountId: account.id }, { page: 1, limit: 50, offset: 0 });
+    expect(lista.data[0].fechamento).toEqual({
+      valor: null,
+      em: vendas[1].createdAt.toISOString(),
+      anterior: { valor: 500, em: paga.createdAt.toISOString() },
+    });
+    expect((await contactService.getById(contact.id, account.id)).fechamento?.anterior).toEqual({ valor: 500, em: paga.createdAt.toISOString() });
+  });
+});
+
 describe('dashboard — conversão, receita e perdas', () => {
   it('conta contatos distintos que entraram em fechamento/perda e soma as vendas pagas do período', async () => {
     const { account, user } = await createTestAccount();

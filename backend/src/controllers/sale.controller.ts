@@ -35,7 +35,7 @@ const refundSchema = z.object({
 const listSalesSchema = z
   .object({
     contactId: z.string().uuid().optional(),
-    status: z.enum(['pending', 'paid', 'refunded', 'partial_refund']).optional(),
+    status: z.enum(['pending', 'paid', 'refunded', 'partial_refund', 'cancelled']).optional(),
     responsavelId: z.string().uuid().optional(),
     // 'nao_informado' só em filtro: venda manual continua exigindo o método.
     metodoPagamento: z.enum(['pix', 'boleto', 'debito', 'credito', 'dinheiro', 'convenio', 'nao_informado']).optional(),

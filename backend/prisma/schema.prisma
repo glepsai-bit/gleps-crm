@@ -685,6 +685,8 @@ enum SaleStatus {
   paid
   refunded
   partial_refund
+  /// Etapa E — venda pendente do fechamento cancelada porque o lead foi pra Perdido.
+  cancelled
 }
 
 enum PaymentMethod {

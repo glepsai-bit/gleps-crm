@@ -82,7 +82,7 @@ export interface AdMetaRow {
 }
 
 export interface ConnectionCheck {
-  key: 'pixel' | 'adAccount' | 'insights';
+  key: 'token' | 'pixel' | 'adAccount' | 'insights';
   label: string;
   ok: boolean;
   detail: string;
@@ -96,11 +96,66 @@ function normalizeActId(adAccountId: string): string {
   return trimmed.startsWith('act_') ? trimmed : `act_${trimmed}`;
 }
 
-function graphErrorMessage(
-  body: { error?: { message?: string; code?: number } } | null,
-  status: number
-): string {
-  return body?.error?.message ?? `HTTP ${status}`;
+interface GraphError {
+  message?: string;
+  code?: number;
+  error_subcode?: number;
+  error_user_title?: string;
+  error_user_msg?: string;
+  fbtrace_id?: string;
+}
+
+/**
+ * Mensagem crua da Meta + código/subcódigo/trace. Sem os códigos o suporte
+ * fica cego: "API access blocked." sozinho não distingue app restrito de
+ * ativo não atribuído, e o fbtrace_id é o que o suporte da Meta pede.
+ */
+function graphErrorMessage(body: { error?: GraphError } | null, status: number): string {
+  const e = body?.error;
+  if (!e) return `HTTP ${status}`;
+
+  const parts = [e.message?.trim() || `HTTP ${status}`];
+  // error_user_msg é a explicação em linguagem de usuário — costuma dizer o
+  // que message esconde ("seu app está restrito porque...").
+  if (e.error_user_msg && e.error_user_msg !== e.message) parts.push(e.error_user_msg);
+
+  const codes: string[] = [];
+  if (typeof e.code === 'number') codes.push(`código ${e.code}`);
+  if (e.error_subcode) codes.push(`subcódigo ${e.error_subcode}`);
+  if (e.fbtrace_id) codes.push(`trace ${e.fbtrace_id}`);
+  if (codes.length > 0) parts.push(`(${codes.join(' · ')})`);
+
+  return parts.join(' ');
+}
+
+/**
+ * O hint certo depende do MOTIVO, não do ativo. "API access blocked." chega
+ * idêntico em todos os endpoints porque o bloqueio é do app inteiro — mandar
+ * o usuário atribuir o ativo na Business Manager nesse caso é perda de tempo.
+ * `fallback` é o hint específico do ativo (só vale para falha de permissão).
+ */
+function hintForError(errorText: string, code: number | null, fallback: string): string {
+  const msg = errorText.toLowerCase();
+
+  // Bloqueio do app: code 3 (sem capability) / 10 com "API access blocked".
+  if (msg.includes('access blocked') || msg.includes('does not have the capability')) {
+    return (
+      'O bloqueio é do app, não deste ativo — com esse token nenhuma chamada passa. ' +
+      'Abra developers.facebook.com → seu app → "Ações necessárias" e resolva as pendências ' +
+      '(verificação do negócio, Data Use Checkup, restrição de política). ' +
+      'Confira também se o app está em Modo ativo e vinculado ao portfólio comercial dono dos ativos.'
+    );
+  }
+  if (code === 190 || msg.includes('access token') || msg.includes('session has expired')) {
+    return 'Token inválido ou expirado — gere um novo token de usuário do sistema e salve aqui.';
+  }
+  if (code === 4 || code === 17 || code === 613 || msg.includes('request limit')) {
+    return 'Limite de chamadas da Meta atingido — tente de novo em alguns minutos.';
+  }
+  if (code === 2 || msg.includes('temporarily')) {
+    return 'Instabilidade temporária da Meta — tente de novo em alguns minutos.';
+  }
+  return fallback;
 }
 
 /**
@@ -315,6 +370,11 @@ class MetaCapiService {
   ): Promise<ConnectionCheck[]> {
     const checks: ConnectionCheck[] = [];
 
+    // 0. Token/app — a chamada mais barata da Graph API. Se ISTO falha, o
+    // problema não é atribuição de ativo: é o token ou o app. Sem esse check
+    // as três falhas seguintes parecem três problemas distintos de permissão.
+    checks.push(await this.checkToken(accessToken));
+
     // 1. Pixel / Dataset — o token consegue enxergar a fonte de dados?
     if (!pixelId) {
       checks.push({
@@ -335,7 +395,11 @@ class MetaCapiService {
           : r.error,
         hint: r.ok
           ? null
-          : 'Na Business Manager, atribua essa fonte de dados ao usuário do sistema com permissão de Gerenciar.',
+          : hintForError(
+              r.error,
+              r.code,
+              'Na Business Manager, atribua essa fonte de dados ao usuário do sistema com permissão de Gerenciar.'
+            ),
       });
     }
 
@@ -364,7 +428,11 @@ class MetaCapiService {
           : r.error,
         hint: r.ok
           ? null
-          : 'Atribua a conta de anúncios ao usuário do sistema (permissão Gerenciar campanhas) e gere o token com ads_read.',
+          : hintForError(
+              r.error,
+              r.code,
+              'Atribua a conta de anúncios ao usuário do sistema (permissão Gerenciar campanhas) e gere o token com ads_read.'
+            ),
       });
     }
 
@@ -386,36 +454,103 @@ class MetaCapiService {
             : rows.length > 0
               ? `${rows.length} anúncio(s) com dados no período.`
               : 'Acesso OK, mas nenhum anúncio teve veiculação no período.',
-        hint: error === null ? null : 'Confira se o token tem a permissão ads_read.',
+        hint:
+          error === null
+            ? null
+            : hintForError(error, null, 'Confira se o token tem a permissão ads_read.'),
       });
     }
 
     return checks;
   }
 
+  /**
+   * Valida o token antes dos ativos e lê os escopos REAIS dele. O app ter a
+   * permissão liberada no painel não significa que o token foi gerado com
+   * ela — é a confusão nº 1 nesse setup. `debug_token` é best-effort: quando
+   * não responde, o check ainda vale pelo /me.
+   */
+  private async checkToken(accessToken: string): Promise<ConnectionCheck> {
+    const me = await this.graphGet('/me?fields=id,name', accessToken);
+    if (!me.ok) {
+      return {
+        key: 'token',
+        label: 'Token e app',
+        ok: false,
+        detail: me.error,
+        hint: hintForError(
+          me.error,
+          me.code,
+          'O token não consegue fazer nem a chamada mais simples da Graph API — gere um novo token de usuário do sistema.'
+        ),
+      };
+    }
+
+    const who = (me.body as { name?: string })?.name || 'usuário do sistema';
+    const dbg = await this.graphGet(
+      `/debug_token?input_token=${encodeURIComponent(accessToken)}`,
+      accessToken
+    );
+    const data = (dbg.body as { data?: Record<string, unknown> } | null)?.data;
+    if (!dbg.ok || !data) {
+      return { key: 'token', label: 'Token e app', ok: true, detail: `${who} · token válido`, hint: null };
+    }
+
+    const scopes = Array.isArray(data.scopes) ? (data.scopes as string[]) : [];
+    const app = typeof data.application === 'string' ? data.application : '';
+    const expiresAt = typeof data.expires_at === 'number' ? data.expires_at : 0;
+    // expires_at 0 = token permanente de usuário do sistema (o recomendado).
+    const validade =
+      expiresAt === 0 ? 'não expira' : `expira em ${new Date(expiresAt * 1000).toLocaleDateString('pt-BR')}`;
+
+    const parts = [who];
+    if (app) parts.push(`app ${app}`);
+    parts.push(validade);
+    if (scopes.length > 0) parts.push(`escopos: ${scopes.join(', ')}`);
+
+    const faltando = ['ads_read', 'business_management'].filter(
+      (s) => scopes.length > 0 && !scopes.includes(s)
+    );
+
+    return {
+      key: 'token',
+      label: 'Token e app',
+      ok: true,
+      detail: parts.join(' · '),
+      hint:
+        faltando.length > 0
+          ? `O token foi gerado sem ${faltando.join(' e ')} — gere de novo marcando essas permissões (ter a permissão liberada no app não basta).`
+          : null,
+    };
+  }
+
   /** GET simples na Graph API com o erro já normalizado. */
   private async graphGet(
     path: string,
     accessToken: string
-  ): Promise<{ ok: boolean; body: unknown; error: string }> {
+  ): Promise<{ ok: boolean; body: unknown; error: string; code: number | null }> {
     try {
       const sep = path.includes('?') ? '&' : '?';
       const res = await fetch(
         `${GRAPH_BASE}${path}${sep}access_token=${encodeURIComponent(accessToken)}`,
         { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
       );
-      const body = (await res.json().catch(() => null)) as {
-        error?: { message?: string; code?: number };
-      } | null;
+      const body = (await res.json().catch(() => null)) as { error?: GraphError } | null;
       if (!res.ok || body?.error) {
-        return { ok: false, body, error: graphErrorMessage(body, res.status) };
+        return {
+          ok: false,
+          body,
+          error: graphErrorMessage(body, res.status),
+          code: body?.error?.code ?? null,
+        };
       }
-      return { ok: true, body, error: '' };
+      return { ok: true, body, error: '', code: null };
     } catch (err) {
       return {
         ok: false,
         body: null,
         error: err instanceof Error ? err.message : String(err),
+        code: null,
       };
     }
   }

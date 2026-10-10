@@ -113,7 +113,9 @@ export class TrackingController {
       try {
         report = await trackingService.reconcile(accountId, { days, dryRun: true });
       } catch (err) {
-        if (!(err instanceof ValidationError)) throw err;
+        // AppError redefine o protótipo (setPrototypeOf), então `instanceof
+        // ValidationError` nunca casa: compara pelo código.
+        if ((err as { code?: string })?.code !== 'VALIDATION_ERROR') throw err;
       }
 
       res.json({ data: { checks, report } });
