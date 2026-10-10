@@ -35,12 +35,6 @@ export interface Inbox {
   connection_state?: 'open' | 'connecting' | 'close' | 'unknown' | null;
 }
 
-export interface DispatchConfig {
-  inbox_id: string;
-  delay_seconds: number;
-  messages: string[]; // up to 10 variants
-}
-
 export interface ApiUsage {
   used: number;
   limit: number;

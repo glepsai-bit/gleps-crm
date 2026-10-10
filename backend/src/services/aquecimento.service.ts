@@ -20,8 +20,7 @@
  * Mensagens de aquecimento NUNCA entram no inbox nem acionam IA: o webhook da
  * Evolution consulta `ehNumeroDeAquecimento` antes de criar contato/conversa.
  *
- * O service antigo (whatsapp-warmup.service) fica no lugar sem ser chamado
- * pelo cron; a etapa C apaga.
+ * O aquecimento antigo (com IA) foi apagado na etapa C1.
  */
 
 import type { WarmupConversation, WarmupNumber } from '@prisma/client';

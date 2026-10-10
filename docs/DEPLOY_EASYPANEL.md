@@ -3,7 +3,7 @@
 > Guia completo, do zero ao primeiro login em produção. Sobrescreve qualquer
 > instrução anterior da variação FitPark (`docs/fitpark/DEPLOY_EASYPANEL.md`)
 > — a identidade visual e o branding voltam para **Gleps**, mas TODAS as
-> features novas (warmup, 18 endpoints de Integration, SLA V2, dashboards)
+> features novas (aquecimento, 18 endpoints de Integration, SLA V2, dashboards)
 > seguem ativas neste mesmo deploy.
 
 ---
@@ -18,7 +18,9 @@
   (`https://github.com/glepsai-bit/gleps-crm.git`).
 - (Opcional) Evolution API já no ar — credenciais ficam no banco, por conta,
   não em env. Ex.: `https://autevo.gleps.com.br`.
-- (Opcional) Chave OpenAI/Anthropic se quiser ativar warmup com IA.
+- (Opcional) Chave OpenAI/Anthropic global — é o fallback para contas que não
+  cadastraram a própria chave em Administração › Integrações (atendimento IA,
+  variações de texto do disparo, base de conhecimento).
 
 ---
 
@@ -84,7 +86,8 @@ GOOGLE_REDIRECT_URI=https://api.gleps.com.br/api/calendar/google/callback
 # Prospecção Google Maps (opcional)
 RAPIDAPI_KEY=
 
-# Warmup com IA (opcional — pelo menos uma se quiser usar)
+# IA global (opcional) — fallback quando a conta não tem chave própria
+# em Administração › Integrações (atendimento IA, variações de disparo, RAG)
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 
@@ -364,8 +367,8 @@ node -e "console.log(require('bcryptjs').hashSync('SUA_SENHA_FORTE', 12))"
 Ainda que o branding volte a ser Gleps, **tudo o que foi construído na
 Variação-FitPark continua disponível** neste mesmo deploy:
 
-- **Warmup automático** de instâncias Evolution (opcionalmente com IA via
-  `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
+- **Aquecimento automático** de números WhatsApp (Evolution), com roteiros
+  prontos — não usa IA (ver `docs/AQUECIMENTO.md`).
 - **18 endpoints de Integration** para n8n
   (chat, contacts, kanban, campaigns, calendar, leads, métricas etc.).
 - **SLA V2** com pausa em "aguarda cliente" e horário comercial configurável.

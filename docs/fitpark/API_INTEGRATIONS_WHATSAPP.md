@@ -296,6 +296,137 @@ para fluxos transacionais que devem ignorar essa proteção.
 
 ---
 
+## Disparos em massa — `/campaigns/*`
+
+> Contrato mantido da API antiga de campanhas (`whatsapp-campaign`, apagado em
+> 10/10/2026). Por baixo, cada `send-batch` vira um **disparo** do motor
+> único (`docs/DISPAROS.md`): rodízio entre números aquecidos, ritmo 20–60 s,
+> janela 08h–20h no fuso da conta, opt-out/duplicados/inválidos fora já na
+> criação, respostas atendidas pelo agente de IA do inbox. O que o motor decide
+> sozinho **não é mais configurável por request** — ver `delaySeconds` abaixo.
+
+| Método | Rota | Scope |
+| ------ | ---- | ----- |
+| `POST` | `/api/integrations/whatsapp/campaigns/send-batch` | `campaigns:write` |
+| `POST` | `/api/integrations/whatsapp/campaigns/send-single` | `campaigns:write` ou `messages:write` |
+| `GET`  | `/api/integrations/whatsapp/campaigns/batches` | `campaigns:read` ou `campaigns:write` |
+| `GET`  | `/api/integrations/whatsapp/campaigns/batches/:id` | `campaigns:read` ou `campaigns:write` |
+
+### `POST /campaigns/send-batch`
+
+| Campo              | Tipo                                           | Obrigatório                | Descrição                                                                                       |
+| ------------------ | ---------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------- |
+| `contactIds`       | `string[]` (até 1000)                          | XOR/AND com `phones`       | Contatos da conta. Ids de outra conta são **ignorados** (não dão erro).                        |
+| `phones`           | `(string \| {phone, name?, variables?})[]` (até 1000) | XOR/AND com `contactIds` | `phone` só dígitos (10–15). `variables` são por destinatário (`{{valor}}`, `{{dias}}`…).   |
+| `content`          | `string`                                       | XOR com `templateId`       | Texto. Aceita `{{nome}}`, `{{primeiro_nome}}`, `{{empresa}}` + as variáveis enviadas. `message` é alias. |
+| `templateId`       | `uuid`                                         | XOR com `content`          | Mensagem salva da conta (404 se não existir).                                                   |
+| `defaultVariables` | `object`                                       | Opcional                   | Variáveis para todos os destinatários (as de cada `phones[i].variables` têm prioridade).       |
+| `scheduledAt`      | ISO 8601                                       | Opcional                   | **Precisa ser futuro** (senão 400). Ausente = começa agora (dentro da janela 08h–20h).          |
+| `delaySeconds`     | `int`                                          | Opcional                   | **Aceito e IGNORADO.** O ritmo é fixo: 20–60 s entre envios, por número.                        |
+| `triggerName`      | `string` (≤120)                                | Opcional                   | Nome do disparo na tela e filtro em `GET /batches`.                                             |
+| `campaignType`     | `string` (≤80)                                 | Opcional                   | Classificação livre; volta em `metadata.campaign_type` e filtra em `GET /batches`.              |
+| `inboxId`          | `uuid`                                         | Opcional                   | Número (inbox WhatsApp) que dispara. Sem isso: a **primeira inbox WhatsApp conectada** da conta. |
+| `metadata`         | `object`                                       | Opcional                   | Qualquer JSON; volta em `metadata` do lote. `metadata.campaign_type` também vale como `campaignType`. |
+| `source`           | `'api' \| 'n8n' \| 'integration'`              | Opcional (default `api`)   | Origem gravada no disparo.                                                                      |
+
+```bash
+curl -X POST https://gleps-crm-v1k.dqnaqh.easypanel.host/api/integrations/whatsapp/campaigns/send-batch \
+  -H "x-api-key: glk_demo_xxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phones": [
+      { "phone": "5511999998888", "name": "Maria", "variables": { "dias": "3" } },
+      "5511977776666"
+    ],
+    "content": "Oi {{primeiro_nome}}, seu plano vence em {{dias}} dias. Quer renovar?",
+    "triggerName": "renovacao",
+    "campaignType": "retencao",
+    "scheduledAt": "2026-10-11T09:00:00-03:00",
+    "metadata": { "competencia": "2026-10" }
+  }'
+```
+
+**201**
+
+```json
+{ "data": { "batchId": "0d2b8a51-2e7f-4f7e-9c1a-3b9c0b6f4a11", "totalContacts": 2, "scheduled": true } }
+```
+
+`batchId` é o id do disparo (aparece em `/admin/disparos`). `totalContacts`
+conta tudo que entrou (inclusive os que o motor pulou por opt-out, repetição ou
+telefone inválido); `scheduled` é `true` quando `scheduledAt` ficou no futuro.
+
+Erros: **400** payload inválido / `scheduledAt` no passado / nenhum
+destinatário válido ("Ninguém para receber…"); **401** chave inválida;
+**403** chave sem `campaigns:write`; **404** `templateId` inexistente;
+**422 `NO_WHATSAPP_INBOX`** conta sem inbox WhatsApp conectada.
+
+### `GET /campaigns/batches`
+
+Query: `status` (`scheduled | running | paused | completed | cancelled`),
+`source`, `triggerName`, `campaignType`, `fromDate`, `toDate`, `q`,
+`limit` (≤500, default 200), `offset`. `status`/`source`/`campaignType`
+aceitam repetição (`?status=running&status=paused`). Disparos criados pela
+tela não carregam `source` (saem como `manual`) e não casam com o filtro
+`source`.
+
+```json
+{
+  "data": [
+    {
+      "id": "0d2b8a51-…",
+      "accountId": "…",
+      "keyword": null,
+      "location": null,
+      "totalContacts": 2,
+      "sentCount": 1,
+      "failedCount": 0,
+      "status": "running",
+      "delaySeconds": null,
+      "startedAt": "2026-10-11T12:00:00.000Z",
+      "completedAt": null,
+      "createdAt": "2026-10-10T20:01:11.000Z",
+      "scheduledAt": "2026-10-11T12:00:00.000Z",
+      "source": "api",
+      "triggerName": "renovacao",
+      "metadata": { "competencia": "2026-10", "campaign_type": "retencao", "name": "renovacao", "respondedCount": 0, "optOutCount": 0, "skippedCount": 0, "inboxIds": ["…"] },
+      "templateId": null,
+      "inboxId": null
+    }
+  ]
+}
+```
+
+`delaySeconds` é sempre `null` (ritmo fixo) e `inboxId` sempre `null` (os
+números do disparo estão em `metadata.inboxIds`). Status do lote:
+`agendado→scheduled`, `enviando→running`, `pausado→paused`,
+`concluido→completed`, `cancelado→cancelled`.
+
+### `GET /campaigns/batches/:id`
+
+Mesmo objeto acima + `logs`: um por destinatário (até 2000), com
+`contactName`, `phone` (normalizado `55DDD9XXXXXXXX`), `inboxName`,
+`status`, `errorMessage`, `sentAt`, `createdAt`. Status do envio:
+`pendente/enviando→pending`, `enviada/entregue/lida/respondeu→sent`,
+`falhou→failed`, `cancelado→cancelled`, `pulado_optout→blocked_optout`,
+`pulado_invalido→skipped_invalid_phone`, `pulado_duplicado→skipped_duplicate`.
+**404** quando o id é de outra conta.
+
+### `POST /campaigns/send-single`
+
+Uma mensagem de **texto, agora**, pelo mesmo caminho do `/send` (consentimento,
+limite por telefone, conversa no Chat) — não cria disparo. Body:
+`contactId` ou `phone`, `content` ou `templateId`, `variables?`,
+`contactName?`, `inboxId?`, `triggerName?`, `metadata?`.
+
+```json
+{ "data": { "batchId": null, "messageId": "…", "conversationId": "…", "contactId": "…", "status": "sent" } }
+```
+
+`status` é `sent` ou `failed` (com `error`: mensagem). Para mídia use `/send`.
+
+---
+
 ## n8n — Template pronto
 
 Um workflow exemplo (Webhook trigger → Set/normalize → HTTP Request) está

@@ -1,15 +1,13 @@
 /**
- * T-023 V2 — Warmup Media Loader
- *
- * Helper para resolver o payload de midia que vai ser enviado pra Evolution:
- *  - Se template.mediaUrl preenchido (URL absoluta, ex: CDN/S3), retorna a URL.
- *  - Caso contrario, le do disco (uploads/<accountId>/warmup/<type>/<file>) e
- *    converte pra base64 inline (Evolution aceita base64 raw OU URL http(s)).
+ * Leitura de mídia de `backend/uploads` em base64 pra mandar à Evolution
+ * (usado pelo anexo de disparo — disparo-anexo.service).
  *
  * Anti-traversal: validamos que o path resolvido nao escapa de UPLOADS_ROOT.
- *
  * Padrao seguido: attachment-storage.service.ts (mesma raiz UPLOADS_ROOT).
  * NAO servimos uploads/ via express.static — o que vai pra Evolution eh inline.
+ *
+ * (O nome do arquivo vem do aquecimento antigo, que saiu na etapa C1; a
+ * função ficou porque o motor de disparos a usa.)
  */
 
 import fs from 'node:fs/promises';
@@ -17,14 +15,9 @@ import path from 'node:path';
 
 const UPLOADS_ROOT = path.resolve(process.cwd(), 'uploads');
 
-export interface MediaTemplateRef {
-  mediaUrl?: string | null;
-  mediaPath?: string | null;
-}
-
 /**
  * Le um arquivo dentro de UPLOADS_ROOT e devolve seu conteudo em base64.
- * `relativePath` deve ser relativo a UPLOADS_ROOT (ex: 'acc-id/warmup/audio/abc.ogg').
+ * `relativePath` deve ser relativo a UPLOADS_ROOT (ex: 'disparos/<conta>/abc.ogg').
  *
  * Lanca Error('Path traversal detectado') se o path tentar escapar de UPLOADS_ROOT.
  */
@@ -47,22 +40,4 @@ export async function readMediaAsBase64(relativePath: string): Promise<string> {
 
   const buf = await fs.readFile(fullPath);
   return buf.toString('base64');
-}
-
-/**
- * Resolve o payload de midia a enviar pra Evolution.
- *
- * Prioridade:
- *  1. template.mediaUrl absoluta (http(s)://...) -> retorna como esta.
- *  2. template.mediaPath -> le do disco e devolve base64.
- *  3. erro: 'Template sem media' (caller deve cair em fallback).
- */
-export async function resolveMediaPayload(template: MediaTemplateRef): Promise<string> {
-  if (template.mediaUrl && /^https?:\/\//i.test(template.mediaUrl)) {
-    return template.mediaUrl;
-  }
-  if (template.mediaPath) {
-    return readMediaAsBase64(template.mediaPath);
-  }
-  throw new Error('Template sem media');
 }

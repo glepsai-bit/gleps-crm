@@ -57,6 +57,15 @@ describe('render de variáveis e variantes', () => {
   it('variaveisUsadas lista as chaves do texto', () => {
     expect(Array.from(variaveisUsadas('Oi {{ nome }}, da {{empresa}}')).sort()).toEqual(['empresa', 'nome']);
   });
+
+  it('variáveis extras (API de integração) são trocadas só quando existem; desconhecida fica literal', () => {
+    const v = { ...variaveisDoContato('Ana Lima'), valor: 'R$ 99', dias: '3' };
+    expect(renderizarTexto('Oi {{primeiro_nome}}, {{valor}} em {dias} dias. {{cupom}}', v)).toBe(
+      'Oi Ana, R$ 99 em 3 dias. {{cupom}}'
+    );
+    // Sem extras, nada muda em relação ao comportamento de sempre.
+    expect(renderizarTexto('Oi {{nome}}, {{valor}}', variaveisDoContato('Ana'))).toBe('Oi Ana, {{valor}}');
+  });
 });
 
 describe('rodízio ponderado entre números', () => {

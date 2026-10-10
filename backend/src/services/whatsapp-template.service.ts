@@ -26,8 +26,8 @@ export interface UpdateWhatsappTemplateInput {
  * templates malformados fossem renderizados parcialmente. A versão estrita
  * abaixo exige par completo `{{}}` e rejeita qualquer outra forma.
  *
- * Compartilhada entre whatsapp-template.service e whatsapp-campaign.service
- * para garantir que extração e renderização usem exatamente o mesmo padrão.
+ * Compartilhada entre extração e renderização (e o send-single da API de
+ * integração) para garantir que usem exatamente o mesmo padrão.
  */
 export const TEMPLATE_VAR_REGEX = /\{\{\s*([\w.]+)\s*\}\}/g;
 
@@ -196,7 +196,7 @@ class WhatsappTemplateService {
    * valores fornecidos. Variáveis sem valor correspondente viram string vazia.
    *
    * Delega para o helper `renderTemplate` para garantir consistência com
-   * `whatsapp-campaign.service` e `extractTemplateVariables`.
+   * `extractTemplateVariables`.
    */
   render(content: string, variables: Record<string, string>): string {
     return renderTemplate(content, variables);

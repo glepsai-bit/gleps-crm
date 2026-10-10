@@ -561,36 +561,37 @@ describe('Multi-tenant isolation — cross-tenant 404', () => {
   });
 
   // ============================================
-  // WHATSAPP CAMPAIGN BATCHES
+  // DISPAROS (motor único — o /whatsapp/campaigns antigo saiu na etapa C1)
   // ============================================
-  it('DELETE /api/whatsapp/campaigns/batches/:id — JWT-B nao cancela batch da conta A (404)', async () => {
+  it('POST /api/disparos/:id/cancelar — JWT-B nao cancela disparo da conta A (404)', async () => {
     const A = await createTenant('Conta A');
     const B = await createTenant('Conta B');
 
-    const batchA = await withRetry(() =>
-      prismaSingleton.dispatchBatch.create({
+    const disparoA = await withRetry(() =>
+      prismaSingleton.disparo.create({
         data: {
           accountId: A.account.id,
-          status: 'scheduled',
-          totalContacts: 0,
-          scheduledAt: new Date(Date.now() + 60 * 60 * 1000),
-          source: 'manual_scheduled',
+          nome: 'Agendado da A',
+          texto: 'oi',
+          lista: { tipo: 'numeros', quantidade: 0 },
+          inboxIds: [],
+          status: 'agendado',
+          agendadoPara: new Date(Date.now() + 60 * 60 * 1000),
         },
       })
     );
 
-    const delRes = await request(app)
-      .delete(`/api/whatsapp/campaigns/batches/${batchA.id}`)
-      .set(authHeader(B.jwt));
+    const res = await request(app)
+      .post(`/api/disparos/${disparoA.id}/cancelar`)
+      .set(authHeader(B.jwt))
+      .send({});
 
-    expect(delRes.status).toBe(404);
-    expect(delRes.body?.error?.code).toBe('NOT_FOUND');
+    expect(res.status).toBe(404);
+    expect(res.body?.error?.code).toBe('NOT_FOUND');
 
-    // Guarantee: batch NAO foi cancelado
-    const stillA = await prismaTest.dispatchBatch.findUnique({
-      where: { id: batchA.id },
-    });
-    expect(stillA?.status).toBe('scheduled');
+    // Guarantee: disparo NAO foi cancelado
+    const stillA = await prismaTest.disparo.findUnique({ where: { id: disparoA.id } });
+    expect(stillA?.status).toBe('agendado');
   });
 
   // ============================================
@@ -818,14 +819,13 @@ describe('Multi-tenant isolation — cross-tenant 404', () => {
   });
 
   // ============================================
-  // WARMUP — START IDEMPOTENTE (vazamento de leitura)
+  // AQUECIMENTO — vazamento de leitura entre contas
   //
-  // Achado de auditoria: o claim era escopado por conta, mas quando ele não
-  // casava o código caía num `findUnique({ where: { id } })` sem conta e
-  // devolvia 200 com os dados. Um id de outro tenant não batia no claim e
-  // saía pela porta de trás — status, dia atual e plano de disparo do vizinho.
+  // Achado de auditoria no motor antigo (/warmup, apagado na etapa C1): o
+  // claim era escopado por conta, mas o fallback lia sem conta e devolvia
+  // 200 com os dados do vizinho. O motor novo tem que responder 404.
   // ============================================
-  it('POST /api/warmup/numbers/:id/start — B nao le o aquecimento da conta A', async () => {
+  it('POST /api/aquecimento/numeros/:id/pausar — B nao le o aquecimento da conta A', async () => {
     const A = await createTenant('Conta A');
     const B = await createTenant('Conta B');
 
@@ -848,7 +848,7 @@ describe('Multi-tenant isolation — cross-tenant 404', () => {
     );
 
     const res = await request(app)
-      .post(`/api/warmup/numbers/${numeroA.id}/start`)
+      .post(`/api/aquecimento/numeros/${numeroA.id}/pausar`)
       .set(authHeader(B.jwt))
       .send({});
 

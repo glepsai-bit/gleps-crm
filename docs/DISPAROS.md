@@ -72,8 +72,24 @@
 
 `lista`: `{tipo:'publico', audienceId}` · `{tipo:'leads', etapaTagId?, tagIds?}`
 · `{tipo:'numeros', linhas: string[]}` (cada linha `Nome;telefone` ou só o
-telefone, até 2000). Anexo: imagem jpg/png/webp ≤ 2 MB, PDF ≤ 5 MB, áudio
-ogg/mp3/m4a ≤ 2 MB, validado por magic bytes, em `uploads/disparos/<conta>/`.
+telefone, até 2000) · `{tipo:'contatos', contactIds: string[]}` (só pela API
+de integração; ids de outra conta são ignorados). Anexo: imagem jpg/png/webp
+≤ 2 MB, PDF ≤ 5 MB, áudio ogg/mp3/m4a ≤ 2 MB, validado por magic bytes, em
+`uploads/disparos/<conta>/`.
+
+## API de integração (chave de API)
+
+`POST /api/integrations/whatsapp/campaigns/send-batch` (e os GETs irmãos
+`/batches`, `/batches/:id`) é o contrato antigo do `whatsapp-campaign`,
+apagado na etapa C1, reapontado para este motor em
+`services/disparo/compat-campanhas.ts`: `batchId` = id do disparo, `status`
+volta nos nomes antigos (scheduled/running/paused/completed/cancelled), os
+envios viram "logs". `triggerName`/`campaignType`/`source`/`metadata` ficam
+em `disparos.lista` (rótulo e filtros). Uma linha de "números" pode vir como
+objeto `{telefone, nome, variaveis, contactId}` — as `variaveis` extras
+(`{{valor}}`, `{{dias}}`…) são substituídas no envio quando existem; placeholder
+desconhecido continua literal. `delaySeconds` é aceito e ignorado (ritmo fixo).
+Detalhes e exemplos: `docs/fitpark/API_INTEGRATIONS_WHATSAPP.md`.
 
 ## Pontos de ligação (o lead liga)
 

@@ -21,7 +21,6 @@ if (env.SENTRY_DSN) {
 }
 
 import http from 'http';
-import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -29,7 +28,6 @@ import rateLimit from 'express-rate-limit';
 import { connectDatabase, prisma } from './config/database';
 import { metricsCollector } from './services/metrics-collector';
 import { emailService } from './services/email.service';
-import { whatsappCampaignService } from './services/whatsapp-campaign.service';
 import { whatsappRateLimitService } from './services/whatsapp-rate-limit.service';
 import { aquecimentoService } from './services/aquecimento.service';
 import { iniciarWorkerDeDisparos } from './services/disparo.worker';
@@ -47,16 +45,6 @@ import { initSocket } from './socket';
 async function bootstrap() {
   // Connect to database
   await connectDatabase();
-
-  // H-DISP-B: recupera batches WhatsApp em 'running' orfaos de restart anterior
-  // (processBatchInBackground vive em memoria, nao sobrevive a reboot). Volta
-  // para 'scheduled' para o cron de WhatsApp reprocessar. Roda ANTES do cron
-  // subir para evitar race com novos ticks.
-  try {
-    await whatsappCampaignService.recoverOrphanRunningBatches();
-  } catch (err) {
-    logger.error('[wa-campaign] recoverOrphanRunningBatches failed at bootstrap', err);
-  }
 
   // Start metrics collector
   metricsCollector.start();
@@ -129,33 +117,10 @@ async function bootstrap() {
     logger.info(`🔀 Flow engine cron started (interval: ${FLOW_CRON_INTERVAL_MS / 1000}s)`);
   }
 
-  // T-022 Sprint 2 — cron de campanhas WhatsApp agendadas
-  // BUG-034: mutex global previne sobreposição de execuções caso a anterior
-  // ainda esteja em andamento quando o próximo tick disparar.
-  {
-    const WA_CRON_INTERVAL_MS = 5 * 60 * 1000;
-    let isProcessingWa = false;
-    setInterval(async () => {
-      if (isProcessingWa) return;
-      isProcessingWa = true;
-      try {
-        const result = await whatsappCampaignService.processScheduledQueue();
-        if (result.processed > 0 || result.failed > 0) {
-          logger.info(`📲 WhatsApp scheduled cron: ${result.processed} processed, ${result.failed} failed`);
-        }
-      } catch (err) {
-        logger.error('WhatsApp scheduled cron error:', err);
-      } finally {
-        isProcessingWa = false;
-      }
-    }, WA_CRON_INTERVAL_MS);
-    logger.info(`📲 WhatsApp campaign cron started (interval: ${WA_CRON_INTERVAL_MS / 1000}s)`);
-  }
-
   // ETAPA W — cron do aquecimento de números WhatsApp (tick 60s).
   // O mutex evita sobreposição no processo quando uma rodada demora (cada
   // resposta "digita" por 3–8 s); entre réplicas quem garante é o advisory
-  // lock dentro do tick. O motor antigo (whatsapp-warmup.service) não roda mais.
+  // lock dentro do tick.
   {
     const AQUECIMENTO_CRON_INTERVAL_MS = 60 * 1000;
     let rodandoAquecimento = false;
@@ -474,18 +439,10 @@ async function bootstrap() {
     });
   }
 
-  // Servir arquivos estaticos de upload (warmup media: audio/sticker/image,
-  // e qualquer outro modulo que grave em backend/uploads). Caminho casado
-  // com mediaPath persistido em WarmupTemplate.mediaPath (relativo a
-  // backend/uploads). CORS ja configurado acima; cache curto pra permitir
-  // hot-reload de stickers.
-  app.use(
-    '/uploads',
-    express.static(path.resolve(process.cwd(), 'uploads'), {
-      maxAge: '1h',
-      fallthrough: true,
-    })
-  );
+  // Nada em backend/uploads é servido como estático: anexos do Chat saem pelo
+  // proxy /api/attachments/:id e anexos de disparo vão pra Evolution em base64
+  // lidos do disco (disparo-anexo.service). O /uploads público era só do
+  // aquecimento antigo e saiu na etapa C1.
 
   // Health endpoint with build version
   // BUG-014: antes nao pingava Postgres — Docker/EasyPanel nunca restartava

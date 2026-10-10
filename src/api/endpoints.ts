@@ -165,22 +165,8 @@ export const API_ENDPOINTS = {
   PROSPECTING: {
     EXTRACT: '/api/prospecting/extract',
     USAGE: '/api/prospecting/usage',
-    INBOXES: '/api/prospecting/inboxes',
-    DISPATCH: '/api/prospecting/dispatch',
-    CANCEL: '/api/prospecting/cancel',
-    RESUME: '/api/prospecting/resume',
-    BATCHES: '/api/prospecting/batches',
-    BATCH_LOGS: (batchId: string) => `/api/prospecting/batches/${batchId}/logs`,
     AUDIENCES: '/api/prospecting/audiences',
     AUDIENCE: (id: string) => `/api/prospecting/audiences/${id}`,
-    BATCHES_SCHEDULED: '/api/prospecting/batches/scheduled',
-    // T-022 — agregação / dropdown de campaign_types (vide prospecting.controller.ts)
-    BATCHES_AGGREGATE: '/api/prospecting/batches/aggregate',
-    BATCH_CAMPAIGN_TYPES: '/api/prospecting/batches/campaign-types',
-    DISPATCH_START: '/api/dispatch/send-batch',
-    BATCH_CANCEL: (id: string) => `/api/prospecting/batches/${id}`,
-    BATCH_PAUSE: (id: string) => `/api/prospecting/batches/${id}/pause`,
-    BATCH_RESUME: (id: string) => `/api/prospecting/batches/${id}/resume`,
   },
 
   // ============= WHATSAPP TEMPLATES =============
@@ -190,22 +176,6 @@ export const API_ENDPOINTS = {
     CREATE: '/api/whatsapp-templates',
     UPDATE: (id: string) => `/api/whatsapp-templates/${id}`,
     DELETE: (id: string) => `/api/whatsapp-templates/${id}`,
-  },
-
-  // ============= WHATSAPP CAMPAIGNS (canônico) =============
-  // BUG-082: paths canônicos para campanhas de WhatsApp — alguns serviços
-  // ainda referenciam variantes em PROSPECTING; novos consumidores devem
-  // usar esses constantes.
-  WHATSAPP_CAMPAIGNS: {
-    LIST: '/api/whatsapp/campaigns',
-    GET: (id: string) => `/api/whatsapp/campaigns/${id}`,
-    CREATE: '/api/whatsapp/campaigns',
-    UPDATE: (id: string) => `/api/whatsapp/campaigns/${id}`,
-    DELETE: (id: string) => `/api/whatsapp/campaigns/${id}`,
-    DISPATCH: (id: string) => `/api/whatsapp/campaigns/${id}/dispatch`,
-    CANCEL: (id: string) => `/api/whatsapp/campaigns/${id}/cancel`,
-    METRICS: (id: string) => `/api/whatsapp/campaigns/${id}/metrics`,
-    LOGS: (id: string) => `/api/whatsapp/campaigns/${id}/logs`,
   },
 
   // ============= EVOLUTION API (WhatsApp instance) =============
@@ -399,27 +369,6 @@ export const API_ENDPOINTS = {
     CREATE: '/api/custom-attributes',
     UPDATE: (id: string) => `/api/custom-attributes/${id}`,
     DELETE: (id: string) => `/api/custom-attributes/${id}`,
-  },
-
-  // ============= WARMUP (T-022 FitPark — aquecimento de chips WhatsApp) =============
-  // Pools de chips em aquecimento + números individuais com curva de envio
-  // diária (D1..D21+). Acesso restrito a admin/super_admin (server valida).
-  // Stats devolve últimos 30 dias de WarmupDailyStats (planned vs actual).
-  WARMUP: {
-    POOLS: '/api/warmup/pools',
-    POOL: (id: string) => `/api/warmup/pools/${id}`,
-    NUMBERS: '/api/warmup/numbers',
-    NUMBER: (id: string) => `/api/warmup/numbers/${id}`,
-    NUMBER_START: (id: string) => `/api/warmup/numbers/${id}/start`,
-    NUMBER_PAUSE: (id: string) => `/api/warmup/numbers/${id}/pause`,
-    NUMBER_RESUME: (id: string) => `/api/warmup/numbers/${id}/resume`,
-    NUMBER_STATS: (id: string) => `/api/warmup/numbers/${id}/stats`,
-    AI_PROVIDERS: '/api/warmup/ai/providers',
-    // T-023 V2 (Phase 4) — biblioteca de midias (audio/sticker/image) usadas
-    // como conteudo nao-texto nas conversas de aquecimento.
-    MEDIA: '/api/warmup/media',
-    MEDIA_UPLOAD: '/api/warmup/media/upload',
-    MEDIA_DELETE: (id: string) => `/api/warmup/media/${id}`,
   },
 
   // ============= CHAT METRICS (T-022 — métricas do chat interno) =============

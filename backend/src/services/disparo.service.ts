@@ -44,10 +44,22 @@ import { logger } from '../utils/logger';
 // Tipos
 // ============================================
 
+/** Linha de "números": a UI manda string ("Nome;telefone"); a API de integração manda objeto. */
+export interface LinhaDeNumero {
+  telefone: string;
+  nome?: string | null;
+  /** Variáveis extras deste destinatário ({{valor}}, {{dias}}…). */
+  variaveis?: Record<string, string> | null;
+  /** Contato do CRM de onde o telefone veio (mantém o vínculo no envio). */
+  contactId?: string | null;
+}
+
 export type ListaDeDisparo =
   | { tipo: 'publico'; audienceId: string }
   | { tipo: 'leads'; etapaTagId?: string | null; tagIds?: string[] | null }
-  | { tipo: 'numeros'; linhas: string[]; quantidade?: number };
+  | { tipo: 'numeros'; linhas: Array<string | LinhaDeNumero>; quantidade?: number }
+  /** Contatos da conta por id (API de integração: `contactIds`). Ids de outra conta são ignorados. */
+  | { tipo: 'contatos'; contactIds: string[] };
 
 export type AtendeRespostas = 'agente' | 'humano';
 
@@ -61,6 +73,10 @@ export interface CriarDisparoInput {
   atendeRespostas?: AtendeRespostas;
   /** ISO. Ausente ou no passado = agora. */
   agendadoPara?: string | Date | null;
+  /** Vai junto em `disparos.lista` (ex.: source/triggerName/campaignType da API). */
+  extrasDaLista?: Record<string, unknown> | null;
+  /** Variáveis aplicadas a todos os envios (abaixo das do contato e das de cada linha). */
+  variaveisPadrao?: Record<string, string> | null;
 }
 
 export interface PreviewDaLista {
@@ -108,6 +124,7 @@ export interface EnvioSerializado {
   enviadoEm: string | null;
   respondidoEm: string | null;
   naoAntesDe: string;
+  createdAt: string;
 }
 
 export interface NumeroDisponivel {
@@ -129,6 +146,8 @@ interface Destinatario {
   nome: string | null;
   empresa: string | null;
   contactId: string | null;
+  /** Extras por destinatário (API de integração); somam-se às do contato. */
+  variaveis?: Record<string, string> | null;
 }
 
 type MotivoDePulo = 'pulado_optout' | 'pulado_invalido' | 'pulado_duplicado';
@@ -214,7 +233,7 @@ class DisparoService {
         continue;
       }
       vistos.add(telefone);
-      destinatarios.push({ telefone, nome: b.nome, empresa: b.empresa, contactId: b.contactId });
+      destinatarios.push({ telefone, nome: b.nome, empresa: b.empresa, contactId: b.contactId, variaveis: b.variaveis ?? null });
     }
 
     // Opt-out numa consulta só (política implícita: só 'opted_out' bloqueia —
@@ -243,7 +262,13 @@ class DisparoService {
     accountId: string,
     lista: ListaDeDisparo
   ): Promise<{
-    itens: Array<{ telefoneBruto: string | null; nome: string | null; empresa: string | null; contactId: string | null }>;
+    itens: Array<{
+      telefoneBruto: string | null;
+      nome: string | null;
+      empresa: string | null;
+      contactId: string | null;
+      variaveis?: Record<string, string> | null;
+    }>;
     rotulo: string;
     gravada: Record<string, unknown>;
   }> {
@@ -294,35 +319,75 @@ class DisparoService {
       if (tagIds.length > 0) partes.push(`com tag ${tagIds.map((t) => `"${nomeDaTag.get(t) ?? 'tag'}"`).join(', ')}`);
       const rotulo = partes.length > 0 ? `Leads ${partes.join(' ')}` : 'Leads do CRM';
       return {
-        itens: contatos.map((c) => {
-          const attrs = (c.customAttributes as Record<string, unknown> | null) ?? {};
-          const empresa = typeof attrs.empresa === 'string' ? attrs.empresa : typeof attrs.company === 'string' ? attrs.company : null;
-          return { telefoneBruto: c.telefone, nome: c.nome, empresa, contactId: c.id };
-        }),
+        itens: contatos.map((c) => ({ telefoneBruto: c.telefone, nome: c.nome, empresa: this.empresaDoContato(c.customAttributes), contactId: c.id })),
         rotulo,
         gravada: { tipo: 'leads', etapaTagId, tagIds, rotulo },
       };
     }
 
-    // Números colados: "Nome;telefone" ou só "telefone", uma por linha.
+    if (lista.tipo === 'contatos') {
+      const ids = Array.from(new Set((lista.contactIds ?? []).filter(Boolean))).slice(0, MAX_LINHAS_COLADAS);
+      const contatos =
+        ids.length > 0
+          ? await prisma.contact.findMany({
+              where: { accountId, id: { in: ids } },
+              select: { id: true, nome: true, telefone: true, customAttributes: true },
+              orderBy: { createdAt: 'asc' },
+            })
+          : [];
+      return {
+        itens: contatos.map((c) => ({ telefoneBruto: c.telefone, nome: c.nome, empresa: this.empresaDoContato(c.customAttributes), contactId: c.id })),
+        rotulo: `Contatos (${contatos.length})`,
+        gravada: { tipo: 'contatos', quantidade: contatos.length },
+      };
+    }
+
+    // Números colados: "Nome;telefone" ou só "telefone", uma por linha — ou
+    // objeto {telefone, nome, variaveis} quando vem da API de integração.
     const linhas = (lista.linhas ?? []).slice(0, MAX_LINHAS_COLADAS);
-    const itens = linhas
-      .map((linha) => (linha ?? '').trim())
-      .filter((linha) => linha !== '')
-      .map((linha) => {
-        if (linha.includes(';')) {
-          const partes = linha.split(';').map((p) => p.trim());
-          const telefoneBruto = partes[partes.length - 1] || null;
-          const nome = partes.slice(0, -1).join(' ').trim() || null;
-          return { telefoneBruto, nome, empresa: null, contactId: null };
-        }
-        return { telefoneBruto: linha, nome: null, empresa: null, contactId: null };
-      });
+    const itens: Array<{
+      telefoneBruto: string | null;
+      nome: string | null;
+      empresa: string | null;
+      contactId: string | null;
+      variaveis?: Record<string, string> | null;
+    }> = [];
+    for (const bruta of linhas) {
+      if (bruta && typeof bruta === 'object') {
+        const telefoneBruto = (bruta.telefone ?? '').toString().trim() || null;
+        if (!telefoneBruto && !bruta.nome) continue;
+        itens.push({
+          telefoneBruto,
+          nome: (bruta.nome ?? '').toString().trim() || null,
+          empresa: null,
+          contactId: bruta.contactId ?? null,
+          variaveis: bruta.variaveis ?? null,
+        });
+        continue;
+      }
+      const linha = (bruta ?? '').toString().trim();
+      if (linha === '') continue;
+      if (linha.includes(';')) {
+        const partes = linha.split(';').map((p) => p.trim());
+        const telefoneBruto = partes[partes.length - 1] || null;
+        const nome = partes.slice(0, -1).join(' ').trim() || null;
+        itens.push({ telefoneBruto, nome, empresa: null, contactId: null });
+      } else {
+        itens.push({ telefoneBruto: linha, nome: null, empresa: null, contactId: null });
+      }
+    }
     return {
       itens,
       rotulo: 'Números colados',
       gravada: { tipo: 'numeros', quantidade: itens.length },
     };
+  }
+
+  private empresaDoContato(customAttributes: unknown): string | null {
+    const attrs = (customAttributes as Record<string, unknown> | null) ?? {};
+    if (typeof attrs.empresa === 'string') return attrs.empresa;
+    if (typeof attrs.company === 'string') return attrs.company;
+    return null;
   }
 
   // --------------------------------------------
@@ -355,12 +420,13 @@ class DisparoService {
       texto,
       variantes,
       anexo,
-      lista: { ...montada.gravada, rotulo: montada.rotulo },
+      lista: { ...montada.gravada, ...(input.extrasDaLista ?? {}), rotulo: montada.rotulo },
       inboxIds: input.inboxIds,
       atendeRespostas: input.atendeRespostas === 'humano' ? 'humano' : 'agente',
       quando,
       destinatarios: montada.destinatarios,
       pulados: montada.pulados,
+      variaveisPadrao: input.variaveisPadrao ?? null,
     });
   }
 
@@ -391,6 +457,7 @@ class DisparoService {
       quando: { data: Date; agendado: boolean };
       destinatarios: Destinatario[];
       pulados: Pulado[];
+      variaveisPadrao?: Record<string, string> | null;
     }
   ): Promise<DisparoSerializado> {
     const inboxIds = Array.from(new Set(p.inboxIds.filter(Boolean)));
@@ -462,7 +529,12 @@ class DisparoService {
         contactId: d.contactId,
         telefone: d.telefone,
         nome: d.nome,
-        variaveis: variaveisDoContato(d.nome, d.empresa) as unknown as Prisma.InputJsonValue,
+        // Prioridade: padrão da lista < o que sabemos do contato < extras da linha.
+        variaveis: {
+          ...(p.variaveisPadrao ?? {}),
+          ...variaveisDoContato(d.nome, d.empresa),
+          ...(d.variaveis ?? {}),
+        } as unknown as Prisma.InputJsonValue,
         inboxId: inboxPorEnvio[k],
         variante: k % totalVariantes,
         naoAntesDe: horarios[k],
@@ -770,12 +842,19 @@ class DisparoService {
     });
     if (envios.length === 0) throw new ValidationError('Ninguém para reenviar: todos responderam ou nada foi entregue.');
 
-    const destinatarios: Destinatario[] = envios.map((e) => ({
-      telefone: e.telefone,
-      nome: e.nome,
-      empresa: ((e.variaveis as VariaveisDoEnvio | null)?.empresa ?? null) || null,
-      contactId: e.contactId,
-    }));
+    const destinatarios: Destinatario[] = envios.map((e) => {
+      const v = (e.variaveis as VariaveisDoEnvio | null) ?? {};
+      const extras: Record<string, string> = {};
+      for (const [k, val] of Object.entries(v)) if (typeof val === 'string') extras[k] = val;
+      return {
+        telefone: e.telefone,
+        nome: e.nome,
+        empresa: (v.empresa ?? null) || null,
+        contactId: e.contactId,
+        // Reenvio mantém as variáveis extras do original (API de integração).
+        variaveis: extras,
+      };
+    });
     // Quem pediu para sair DEPOIS do original fica de fora do reenvio.
     const optados = await prisma.whatsappConsent.findMany({
       where: { accountId, status: 'opted_out', phone: { in: destinatarios.map((x) => x.telefone) } },
@@ -1028,6 +1107,7 @@ class DisparoService {
   private rotuloPadrao(lista: Record<string, unknown>): string {
     if (lista.tipo === 'publico') return 'Público salvo';
     if (lista.tipo === 'leads') return 'Leads do CRM';
+    if (lista.tipo === 'contatos') return 'Contatos do CRM';
     if (lista.tipo === 'reenvio') return 'Reenvio';
     return 'Números colados';
   }
@@ -1044,6 +1124,7 @@ class DisparoService {
       enviadoEm: e.enviadoEm?.toISOString() ?? null,
       respondidoEm: e.respondidoEm?.toISOString() ?? null,
       naoAntesDe: e.naoAntesDe.toISOString(),
+      createdAt: e.createdAt.toISOString(),
     };
   }
 }

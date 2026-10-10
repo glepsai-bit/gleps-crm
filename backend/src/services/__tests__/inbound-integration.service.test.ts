@@ -33,8 +33,8 @@ const contactServiceMock = vi.hoisted(() => ({
   removeTag: vi.fn(),
 }));
 
-const whatsappCampaignServiceMock = vi.hoisted(() => ({
-  sendBatch: vi.fn(),
+const compatCampanhasMock = vi.hoisted(() => ({
+  criarCampanha: vi.fn(),
 }));
 
 const eventServiceMock = vi.hoisted(() => ({
@@ -49,9 +49,7 @@ vi.mock('../contact.service', () => ({
   contactService: contactServiceMock,
 }));
 
-vi.mock('../whatsapp-campaign.service', () => ({
-  whatsappCampaignService: whatsappCampaignServiceMock,
-}));
+vi.mock('../disparo/compat-campanhas', () => compatCampanhasMock);
 
 vi.mock('../event.service', () => ({
   eventService: eventServiceMock,

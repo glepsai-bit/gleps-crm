@@ -82,7 +82,7 @@ describe('API_ENDPOINTS', () => {
 
     it('has PROSPECTING endpoints', () => {
       expect(API_ENDPOINTS.PROSPECTING.EXTRACT).toBeDefined();
-      expect(API_ENDPOINTS.PROSPECTING.DISPATCH).toBeDefined();
+      expect(API_ENDPOINTS.PROSPECTING.AUDIENCES).toBeDefined();
     });
   });
 });

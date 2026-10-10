@@ -26,7 +26,7 @@ vi.mock('../utils/logger', () => ({
   logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 vi.mock('./contact.service', () => ({ contactService: {} }));
-vi.mock('./whatsapp-campaign.service', () => ({ whatsappCampaignService: {} }));
+vi.mock('./disparo/compat-campanhas', () => ({ criarCampanha: vi.fn() }));
 vi.mock('./event.service', () => ({ eventService: { create: vi.fn() } }));
 
 const findOrCreateMock = vi.hoisted(() => vi.fn());

@@ -1,7 +1,6 @@
 /**
- * ETAPA D — /api/disparos. Mesma guarda das rotas de dispatch antigas
- * (/dispatch, /whatsapp/campaigns): JWT + módulo "disparos" + admin/super_admin
- * + conta.
+ * ETAPA D — /api/disparos. Guarda: JWT + módulo "disparos" + admin/super_admin
+ * + conta. (Os motores antigos /dispatch e /whatsapp/campaigns saíram na C1.)
  */
 import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';

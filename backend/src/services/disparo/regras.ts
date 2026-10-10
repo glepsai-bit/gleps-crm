@@ -29,7 +29,15 @@ export interface VariaveisDoEnvio {
   nome?: string | null;
   primeiro_nome?: string | null;
   empresa?: string | null;
+  /**
+   * Extras por envio (API de integração: `variables`/`defaultVariables`).
+   * `{{chave}}` só é trocada quando a chave existe aqui — placeholder
+   * desconhecido continua literal, como sempre foi.
+   */
+  [extra: string]: string | null | undefined;
 }
+
+const VARIAVEIS_DO_CONTATO = new Set(['nome', 'primeiro_nome', 'empresa']);
 
 /** Monta as variáveis a partir do que a lista sabe do contato. */
 export function variaveisDoContato(nome: string | null | undefined, empresa?: string | null): VariaveisDoEnvio {
@@ -54,9 +62,19 @@ export function renderizarTexto(texto: string, variaveis: VariaveisDoEnvio | nul
     primeiro_nome: (v.primeiro_nome ?? primeiroNome(v.nome)).toString(),
     empresa: (v.empresa ?? '').toString(),
   };
-  const saida = texto
+  let saida = texto
     .replace(/\{\{\s*(nome|primeiro_nome|empresa)\s*\}\}/gi, (_m, chave: string) => valores[chave.toLowerCase()] ?? '')
     .replace(/\{\s*(nome|primeiro_nome|empresa)\s*\}/gi, (_m, chave: string) => valores[chave.toLowerCase()] ?? '');
+
+  const extras: Record<string, string> = {};
+  for (const [chave, valor] of Object.entries(v)) {
+    if (VARIAVEIS_DO_CONTATO.has(chave) || typeof valor !== 'string') continue;
+    extras[chave.toLowerCase()] = valor;
+  }
+  if (Object.keys(extras).length > 0) {
+    const troca = (m: string, chave: string) => extras[chave.toLowerCase()] ?? m;
+    saida = saida.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi, troca).replace(/\{\s*([a-z0-9_]+)\s*\}/gi, troca);
+  }
   return saida.replace(/[ \t]{2,}/g, ' ').replace(/ ([,.!?;:])/g, '$1').trim();
 }
 

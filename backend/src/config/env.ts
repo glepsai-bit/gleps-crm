@@ -69,14 +69,13 @@ const envSchema = z.object({
   // funcionando normalmente sem coleta de erros.
   SENTRY_DSN: z.string().optional(),
 
-  // Warmup AI providers (T-023 Fase 2) — TODAS opcionais.
-  // Se a chave de um provider estiver vazia, o provider eh marcado disabled
-  // e o registry ignora ele; a geracao cai pra template automaticamente.
+  // Chaves de IA globais — opcionais. São o fallback do ai/client-factory
+  // quando a conta não tem chave própria (Administração › Integrações):
+  // atendimento IA, variações de disparo, embeddings da base de conhecimento.
   OPENAI_API_KEY: z.string().optional(),
-  OPENAI_MODEL: z.string().default('gpt-4o-mini'),
   ANTHROPIC_API_KEY: z.string().optional(),
+  // Modelo usado só no "testar conexão" da chave Anthropic (1 token).
   ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
-  WARMUP_AI_TIMEOUT_MS: z.string().transform(Number).default('5000'),
 
   // Web Push (VAPID) — opcional. Se ausente, push service loga warn e no-op.
   // Gerar par com: npx web-push generate-vapid-keys

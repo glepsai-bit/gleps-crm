@@ -5,7 +5,8 @@
  * Cobre:
  *  - render(): substituição de variáveis, variável ausente → string vazia, edge cases
  *  - A discrepância de regex entre whatsapp-template.service ({nome})
- *    e whatsapp-campaign.service ({{nome}} e {nome}) é registrada aqui como teste de documentação.
+ *    e o motor de campanhas antigo ({{nome}} e {nome}, apagado na etapa C1)
+ *    é registrada aqui como teste de documentação.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -35,7 +36,7 @@ function extractVariables(content: string): string[] {
   return ordered;
 }
 
-// ── regex do whatsapp-campaign.service (diferente!) ──────────────────────
+// ── regex do motor de campanhas antigo (diferente!) ──────────────────────
 const CAMPAIGN_REGEX = /\{\{?\s*([\w.]+)\s*\}?\}/g;
 
 function renderCampaign(content: string, variables: Record<string, string> = {}): string {
@@ -108,7 +109,7 @@ describe('DIVERGÊNCIA DE REGEX — template.service vs campaign.service', () =>
   /**
    * BUG-1 (MÉDIA): renderTemplate do whatsapp-template.service usa regex /\{(\w+)\}/g
    * que captura apenas {variavel}.
-   * renderTemplate do whatsapp-campaign.service usa /\{\{?\s*([\w.]+)\s*\}?\}/g
+   * renderTemplate do motor de campanhas antigo usava /\{\{?\s*([\w.]+)\s*\}?\}/g
    * que aceita {{variavel}}, { variavel }, e {variavel.subchave}.
    *
    * Isso significa que:
@@ -116,7 +117,7 @@ describe('DIVERGÊNCIA DE REGEX — template.service vs campaign.service', () =>
    * - Um template criado com {{nome}} (Handlebars-style) funcionará apenas no campaign service.
    * - A UI de preview (AdminWhatsappTemplatesPage) usa o método render() do backend
    *   via endpoint de renderização — que usa a regex do template.service.
-   * - O send real (whatsapp-campaign.service) usa a regex do campaign.service.
+   * - O send real (motor de campanhas antigo) usava a regex do campaign.service.
    * - Resultado: preview pode mostrar resultado diferente do que será enviado.
    *
    * Recomendação: unificar a regex nos dois services.

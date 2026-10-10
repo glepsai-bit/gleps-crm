@@ -8,8 +8,6 @@
  *   POST   /numeros/:id/retomar     zera falhas, mantém o dia
  *   DELETE /numeros/:id
  *   GET    /numeros/:id/historico   30 dias (planejado × enviado × falhas)
- *
- * As rotas antigas /api/warmup continuam montadas até a etapa C.
  */
 
 import { Router } from 'express';

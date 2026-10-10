@@ -50,7 +50,7 @@ const ROTA_POR_MODULO: Record<string, string> = {
   emails: '/api/email/cadences',
   discador: '/api/voice/sip-credentials',
   vendas: '/api/sales',
-  aquecimento: '/api/warmup/pools',
+  aquecimento: '/api/aquecimento',
 };
 
 describe('módulos por conta — montagem nas rotas', () => {
@@ -69,9 +69,9 @@ describe('módulos por conta — montagem nas rotas', () => {
     }
   });
 
-  it('/dispatch e /whatsapp/campaigns (mesmo router) respondem MODULO_DESLIGADO sem "disparos"', async () => {
+  it('/disparos (lista e números) responde MODULO_DESLIGADO sem "disparos"', async () => {
     const { token } = await contaComJwt(['extracao']);
-    for (const rota of ['/api/dispatch/batches', '/api/whatsapp/campaigns/batches']) {
+    for (const rota of ['/api/disparos', '/api/disparos/numeros']) {
       const res = await request(app).get(rota).set(authHeader(token));
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe('MODULO_DESLIGADO');

@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Prisma, type InboundIntegration } from '@prisma/client';
 import { prisma } from '../config/database';
 import { contactService } from './contact.service';
-import { whatsappCampaignService } from './whatsapp-campaign.service';
+import { criarCampanha } from './disparo/compat-campanhas';
 import { conversationService } from './conversation.service';
 import { parseGraph } from './flow/engine';
 import { eventService } from './event.service';
@@ -71,7 +71,10 @@ interface CampaignTriggerPayload {
   templateId?: string;
   content?: string;
   triggerName?: string;
+  campaignType?: string;
+  inboxId?: string;
   defaultVariables?: Record<string, string>;
+  /** Aceito e ignorado: o motor de disparos tem ritmo fixo. */
   delaySeconds?: number;
   scheduledAt?: string | Date;
   metadata?: Record<string, any>;
@@ -777,25 +780,20 @@ class InboundIntegrationService {
       }
     }
 
-    // Normaliza phones: aceita string[] ou objeto rico
-    let phonesParam: { phone: string; name?: string; variables?: Record<string, string> }[] | undefined;
-    if (payload.phones && payload.phones.length > 0) {
-      phonesParam = payload.phones.map(p => {
-        if (typeof p === 'string') return { phone: p };
-        return { phone: p.phone, name: p.name, variables: p.variables };
-      });
-    }
-
     const scheduledAt =
       payload.scheduledAt
         ? payload.scheduledAt instanceof Date
           ? payload.scheduledAt
           : new Date(payload.scheduledAt)
         : undefined;
+    if (scheduledAt && Number.isNaN(scheduledAt.getTime())) {
+      throw new ValidationError('scheduledAt inválido');
+    }
 
-    const result = await whatsappCampaignService.sendBatch(accountId, {
+    // Motor único de disparos (etapa C1): mesma forma de resposta de antes.
+    return criarCampanha(accountId, {
       contactIds: payload.contactIds,
-      phones: phonesParam,
+      phones: payload.phones,
       templateId: payload.templateId,
       content: payload.content,
       defaultVariables: payload.defaultVariables,
@@ -803,10 +801,10 @@ class InboundIntegrationService {
       scheduledAt,
       source: 'integration',
       triggerName: payload.triggerName,
+      campaignType: payload.campaignType,
+      inboxId: payload.inboxId,
       metadata: payload.metadata,
     });
-
-    return result;
   }
 
   // ----------------------------------------

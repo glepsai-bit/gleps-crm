@@ -10,11 +10,11 @@
  *
  * Mapa rota → módulo (aplicado via requireModulo em cada router):
  *   extracao    → /prospecting
- *   disparos    → /whatsapp-templates, /whatsapp/campaigns, /dispatch
+ *   disparos    → /whatsapp-templates, /disparos
  *   emails      → /email, /email/audiences
  *   discador    → /voice (só o router JWT; webhooks da operadora são públicos)
  *   vendas      → /sales, /finance
- *   aquecimento → /warmup
+ *   aquecimento → /aquecimento
  */
 export const MODULOS_OPCIONAIS = [
   'extracao',

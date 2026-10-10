@@ -22,7 +22,6 @@ import evolutionRoutes from './evolution.routes';
 import apiKeyRoutes from './api-key.routes';
 import systemSettingsRoutes from './system-settings.routes';
 import whatsappTemplateRoutes from './whatsapp-template.routes';
-import whatsappCampaignJwtRoutes, { apiKeyRouter as whatsappCampaignApiKeyRoutes } from './whatsapp-campaign.routes';
 import integrationWhatsappRoutes from './integration-whatsapp.routes';
 import integrationKanbanRoutes from './integration-kanban.routes';
 import integrationContactsRoutes from './integration-contacts.routes';
@@ -49,7 +48,6 @@ import slaRoutes, { conversationsRouter as slaConversationsRouter, slaDashboardR
 import chatMetricsRoutes from './chat-metrics.routes';
 import agentAvailabilityRoutes from './agent-availability.routes';
 import attachmentRoutes from './attachment.routes';
-import warmupRoutes from './warmup.routes';
 import aquecimentoRoutes from './aquecimento.routes';
 import disparoRoutes from './disparo.routes';
 import aiRoutes from './ai.routes';
@@ -103,13 +101,13 @@ router.use('/v1', (req, res) => {
 // /email, Twilio em /voice) que não pode tomar 401 por falta de conta.
 // Mapa:
 //   extracao    → /prospecting
-//   disparos    → /whatsapp-templates, /whatsapp/campaigns, /dispatch
+//   disparos    → /whatsapp-templates, /disparos
 //                 (NÃO os routers por API key em /integrations/*)
 //   emails      → /email (emailRoutes + emailExtendedRoutes), /email/audiences
 //                 (NÃO /email/inbound nem /email/webhook/sendgrid)
 //   discador    → /voice (voiceRoutes; NÃO voicePublicRoutes)
 //   vendas      → /sales, /finance  (/products é núcleo: vira Serviços)
-//   aquecimento → /warmup
+//   aquecimento → /aquecimento
 
 // API routes
 router.use('/auth', authRoutes);
@@ -154,12 +152,11 @@ router.use('/evolution', evolutionRoutes);
 router.use('/api-keys', apiKeyRoutes);
 router.use('/system-settings', systemSettingsRoutes);
 router.use('/whatsapp-templates', whatsappTemplateRoutes);
-// ETAPA D — motor único de disparos (fila no banco). Os mounts antigos
-// (/whatsapp/campaigns, /dispatch) continuam até a etapa C apagar.
+// ETAPA D — motor único de disparos (fila no banco). Os motores antigos
+// (campanhas, dispatch e o disparo da prospecção) saíram na etapa C1.
 router.use('/disparos', disparoRoutes);
-router.use('/whatsapp/campaigns', whatsappCampaignJwtRoutes);
-router.use('/dispatch', whatsappCampaignJwtRoutes); // alias canonical para o frontend (DispatchDialog, aba Agendadas, Dashboard)
-router.use('/integrations/whatsapp/campaigns', whatsappCampaignApiKeyRoutes);
+// API por chave: /send (mensagem avulsa) e /campaigns/* (disparo em massa,
+// contrato antigo reapontado pro motor novo — ver integration-whatsapp.routes.ts).
 router.use('/integrations/whatsapp', integrationWhatsappRoutes);
 router.use('/integrations/kanban', integrationKanbanRoutes);
 // T-LOOKUP-API: discovery endpoints (teams + users) pra agentes IA
@@ -223,9 +220,7 @@ router.use('/attachments', attachmentRoutes);
 // T-022 Sprint 4 — histórico de menções (hidrata o sino do AdminLayout)
 router.use('/mentions', mentionRoutes);
 
-// T-023 — WhatsApp Warmup (aquecimento de chips Evolution)
-router.use('/warmup', warmupRoutes);
-// ETAPA W — aquecimento simples (substitui /warmup na tela; o antigo sai na etapa C)
+// ETAPA W — aquecimento de números WhatsApp (o /warmup antigo saiu na etapa C1)
 router.use('/aquecimento', aquecimentoRoutes);
 
 // T-027 — Atendimento IA nativo: agentes, prompt e base de conhecimento (RAG).
