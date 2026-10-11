@@ -14,6 +14,7 @@ import {
   proximaAbertura,
   renderizarMensagem,
   renderizarTexto,
+  separarLinhaColada,
   variaveisDoContato,
   variaveisUsadas,
   type CapacidadeDoNumero,
@@ -227,5 +228,30 @@ describe('classificação de erro da Evolution', () => {
     expect(classificarErroEvolution(new Error('number is not on whatsapp'))).toBe('numero');
     expect(classificarErroEvolution(new Error('{"exists": false}'))).toBe('numero');
     expect(classificarErroEvolution(new Error('invalid jid'))).toBe('numero');
+  });
+});
+
+describe('linha colada: ";", "," ou TAB separam nome e telefone', () => {
+  it('ponto e vírgula', () => {
+    expect(separarLinhaColada('Maria Souza;(34) 98811-9078')).toEqual({ nome: 'Maria Souza', telefone: '(34) 98811-9078' });
+  });
+
+  it('vírgula', () => {
+    expect(separarLinhaColada('Maria Souza, 34988119078')).toEqual({ nome: 'Maria Souza', telefone: '34988119078' });
+  });
+
+  it('TAB (colado de planilha)', () => {
+    expect(separarLinhaColada('Maria Souza\t34988119078')).toEqual({ nome: 'Maria Souza', telefone: '34988119078' });
+  });
+
+  it('sem separador é só o telefone — espaço e hífen não quebram "11 99999-0001"', () => {
+    expect(separarLinhaColada('11 99999-0001')).toEqual({ nome: null, telefone: '11 99999-0001' });
+    expect(separarLinhaColada('+55 (11) 99999-0001')).toEqual({ nome: null, telefone: '+55 (11) 99999-0001' });
+  });
+
+  it('separa no PRIMEIRO separador: parte 1 = nome, parte 2 = telefone; nome vazio vira null', () => {
+    expect(separarLinhaColada('Maria,11999990001;extra')).toEqual({ nome: 'Maria', telefone: '11999990001' });
+    expect(separarLinhaColada(';11999990001')).toEqual({ nome: null, telefone: '11999990001' });
+    expect(separarLinhaColada('Maria Souza;')).toEqual({ nome: 'Maria Souza', telefone: null });
   });
 });

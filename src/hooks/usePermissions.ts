@@ -14,6 +14,8 @@ export type AgentPermission =
 // Map routes to required permissions
 const routePermissionMap: Record<string, AgentPermission> = {
   '/admin': 'dashboard',
+  // O item "Dashboard" do menu aponta pra cá: quem tem a permissão `dashboard` vê.
+  '/admin/chat/dashboard': 'dashboard',
   '/admin/kanban': 'kanban',
   '/admin/leads': 'leads',
   '/admin/agenda': 'agenda',
@@ -45,7 +47,8 @@ const adminOnlyRoutes = new Set<string>([
   // libera a rota (requireRole inclui 'agent') e escopa as conversas por
   // agente (assigneeId/team/participant em conversation.service). O que fica
   // admin-only sao as telas de GESTAO/CONFIG do atendimento, abaixo.
-  '/admin/chat/dashboard', // metricas de atendimento (visao gerencial)
+  // /admin/chat/dashboard NAO e admin-only: e liberado pela permissao
+  // `dashboard` (routePermissionMap acima).
   '/admin/inboxes',
   '/admin/teams',
   '/admin/canned-responses',

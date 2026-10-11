@@ -1,9 +1,8 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useFinance } from '@/contexts/FinanceContext';
 import { LeadProfileSheet } from '@/components/leads/LeadProfileSheet';
 import { CreateLeadDialog } from '@/components/kanban/CreateLeadDialog';
-import { mockFunnelStages, mockUsers } from '@/data/mockData';
 import { Contact, ContactOrigin } from '@/types/crm';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -70,16 +69,31 @@ import { safeFormatDateBR } from '@/utils/dateUtils';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
 import { useBackend } from '@/config/backend.config';
-import type { Tag as CloudTag } from '@/services/tags.cloud.service';
+import { apiClient } from '@/api/client';
+import type { Tag as CloudTag, LeadTag } from '@/services/tags.cloud.service';
 import { tagsBackendService } from '@/services/tags.backend.service';
 import { contactsCloudService } from '@/services/contacts.cloud.service';
 import { contactsBackendService } from '@/services/contacts.backend.service';
+
+/** Nome da etapa com a bolinha da cor; "—" quando o lead não tem etapa. */
+function EtapaDoLead({ stage }: { stage: CloudTag | undefined }) {
+  if (!stage) return <span className="text-muted-foreground text-sm">—</span>;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-sm">
+      <span
+        className="h-2.5 w-2.5 rounded-full shrink-0"
+        style={{ backgroundColor: stage.color || '#0EA5E9' }}
+        aria-hidden="true"
+      />
+      {stage.name}
+    </span>
+  );
+}
 
 export default function AdminLeadsPage() {
   const { account } = useAuth();
   const {
     contacts,
-    leadFunnelStates,
     updateContact,
     refetchContacts,
     isLoadingContacts,
@@ -93,49 +107,62 @@ export default function AdminLeadsPage() {
   const [deletingContact, setDeletingContact] = useState<Contact | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   
-  // Kanban stages for CreateLeadDialog
+  // Kanban stages for CreateLeadDialog e para a coluna "Etapa"
   const [stages, setStages] = useState<CloudTag[]>([]);
+  // Mesma fonte do Kanban: a etapa do lead é a tag de type=stage aplicada a ele.
+  const [leadTags, setLeadTags] = useState<LeadTag[]>([]);
 
-  // Load stages
-  useEffect(() => {
+  // Load stages + lead_tags
+  const loadData = useCallback(async () => {
     if (!accountId) return;
 
-    const loadData = async () => {
-      if (useBackend) {
-        // Backend: fetch stage tags via backend service
-        try {
-          const tags = await tagsBackendService.listStageTags(accountId);
-          if (tags) setStages(tags as CloudTag[]);
-        } catch (err) {
-          console.error('Error loading stages via backend:', err);
-        }
-      } else {
-        // Cloud: use Supabase directly
-        const { data: funnelData } = await supabase
-          .from('funnels')
-          .select('id')
-          .eq('account_id', accountId)
-          .eq('is_default', true)
-          .maybeSingle();
+    if (useBackend) {
+      // Backend: fetch stage tags via backend service
+      try {
+        const tags = await tagsBackendService.listStageTags(accountId);
+        if (tags) setStages(tags as CloudTag[]);
+      } catch (err) {
+        console.error('Error loading stages via backend:', err);
+      }
+      try {
+        const response = await apiClient.get<LeadTag[] | { data?: LeadTag[] }>('/api/lead-tags', {
+          params: { accountId },
+        });
+        const incoming = Array.isArray(response) ? response : response?.data || [];
+        setLeadTags(Array.isArray(incoming) ? incoming : []);
+      } catch {
+        setLeadTags([]);
+      }
+    } else {
+      // Cloud: use Supabase directly
+      const { data: funnelData } = await supabase
+        .from('funnels')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('is_default', true)
+        .maybeSingle();
 
-        if (funnelData?.id) {
-          const { data: tagsData } = await supabase
-            .from('tags')
-            .select('*')
-            .eq('funnel_id', funnelData.id)
-            .eq('type', 'stage')
-            .eq('ativo', true)
-            .order('ordem', { ascending: true });
+      if (funnelData?.id) {
+        const { data: tagsData } = await supabase
+          .from('tags')
+          .select('*')
+          .eq('funnel_id', funnelData.id)
+          .eq('type', 'stage')
+          .eq('ativo', true)
+          .order('ordem', { ascending: true });
 
-          if (tagsData) {
-            setStages(tagsData as CloudTag[]);
-          }
+        if (tagsData) {
+          setStages(tagsData as CloudTag[]);
         }
       }
-    };
+      const { data: leadTagsData } = await supabase.from('lead_tags').select('*');
+      setLeadTags((leadTagsData as LeadTag[] | null) || []);
+    }
+  }, [accountId]);
 
+  useEffect(() => {
     loadData();
-  }, [accountId, account]);
+  }, [loadData]);
 
   // Filtro de busca e origem
   const filteredContacts = useMemo(() => {
@@ -150,10 +177,11 @@ export default function AdminLeadsPage() {
     });
   }, [contacts, searchTerm, originFilter]);
 
-  const getStage = (contactId: string) => {
-    const state = leadFunnelStates.find((lfs) => lfs.contact_id === contactId);
-    if (!state?.funnel_stage_id) return null;
-    return mockFunnelStages.find((s) => s.id === state.funnel_stage_id);
+  // Etapa real do lead (igual ao Kanban): entre as tags aplicadas, a que é etapa.
+  const getStage = (contactId: string): CloudTag | undefined => {
+    const idsDoLead = leadTags.filter((lt) => lt.contact_id === contactId).map((lt) => lt.tag_id);
+    if (idsDoLead.length === 0) return undefined;
+    return stages.find((s) => idsDoLead.includes(s.id));
   };
 
   const getInitials = (name: string | null) => {
@@ -180,8 +208,9 @@ export default function AdminLeadsPage() {
   };
 
   const handleLeadCreated = async () => {
-    // Reload contacts list after creation
+    // Reload contacts list after creation (e a etapa com que o lead nasceu)
     await refetchContacts();
+    await loadData();
   };
 
   const hasActiveFilters =
@@ -459,19 +488,7 @@ export default function AdminLeadsPage() {
                           </TableCell>
                           <TableCell>{getOriginBadge(contact.origem)}</TableCell>
                           <TableCell>
-                            {stage ? (
-                              <Badge
-                                variant="outline"
-                                style={{
-                                  borderColor: stage.cor || '#0EA5E9',
-                                  color: stage.cor || '#0EA5E9',
-                                }}
-                              >
-                                {stage.nome}
-                              </Badge>
-                            ) : (
-                              <span className="text-muted-foreground text-sm">-</span>
-                            )}
+                            <EtapaDoLead stage={stage} />
                           </TableCell>
                           <TableCell className="text-muted-foreground">
                             {safeFormatDateBR(contact.created_at, 'dd/MM/yyyy')}
@@ -582,19 +599,7 @@ export default function AdminLeadsPage() {
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-muted-foreground">Etapa</span>
-                      {stage ? (
-                        <Badge
-                          variant="outline"
-                          style={{
-                            borderColor: stage.cor || '#0EA5E9',
-                            color: stage.cor || '#0EA5E9',
-                          }}
-                        >
-                          {stage.nome}
-                        </Badge>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
+                      <EtapaDoLead stage={stage} />
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-muted-foreground">Criado em</span>

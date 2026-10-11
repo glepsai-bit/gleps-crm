@@ -71,8 +71,8 @@
 | POST | `/:id/pausar` · `/retomar` · `/cancelar` · `/reenviar-nao-respondidos` | — | `{ disparo }` |
 
 `lista`: `{tipo:'publico', audienceId}` · `{tipo:'leads', etapaTagId?, tagIds?}`
-· `{tipo:'numeros', linhas: string[]}` (cada linha `Nome;telefone` ou só o
-telefone, até 2000) · `{tipo:'contatos', contactIds: string[]}` (só pela API
+· `{tipo:'numeros', linhas: string[]}` (cada linha `Nome;telefone` — vírgula
+ou TAB também separam, no primeiro que aparecer — ou só o telefone, até 2000) · `{tipo:'contatos', contactIds: string[]}` (só pela API
 de integração; ids de outra conta são ignorados). Anexo: imagem jpg/png/webp
 ≤ 2 MB, PDF ≤ 5 MB, áudio ogg/mp3/m4a ≤ 2 MB, validado por magic bytes, em
 `uploads/disparos/<conta>/`.

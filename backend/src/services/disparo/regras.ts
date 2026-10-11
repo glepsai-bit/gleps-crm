@@ -106,6 +106,24 @@ export function variaveisUsadas(texto: string): Set<string> {
 }
 
 // ============================================
+// Números colados
+// ============================================
+
+/**
+ * Uma linha colada: "Nome;telefone", "Nome,telefone" ou "Nome<TAB>telefone".
+ * Separa no PRIMEIRO desses separadores — parte 1 = nome, parte 2 = telefone.
+ * Sem separador, a linha inteira é o telefone ("11 99999-0001" não quebra:
+ * espaço e hífen não separam).
+ */
+export function separarLinhaColada(linha: string): { nome: string | null; telefone: string | null } {
+  const partes = linha.split(/[;,\t]/);
+  if (partes.length === 1) {
+    return { nome: null, telefone: linha.trim() || null };
+  }
+  return { nome: partes[0].trim() || null, telefone: partes[1].trim() || null };
+}
+
+// ============================================
 // Rodízio entre números
 // ============================================
 

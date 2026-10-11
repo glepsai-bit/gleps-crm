@@ -228,13 +228,13 @@ export default function AdminIaAgentesPage() {
     !!form.model && NO_TEMPERATURE_PREFIXES.some((p) => form.model!.startsWith(p));
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold flex items-center gap-2">
+    <div className="page-container">
+      <div className="page-header">
+        <div className="min-w-0">
+          <h1 className="title-responsive text-foreground flex items-center gap-2">
             <Bot className="w-6 h-6" /> Agentes de IA
           </h1>
-          <p className="text-muted-foreground text-sm mt-1">
+          <p className="text-responsive-sm text-muted-foreground">
             O prompt, o modelo e a base de conhecimento do seu atendimento — sem depender de
             ferramenta externa.
           </p>

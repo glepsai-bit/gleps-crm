@@ -277,8 +277,9 @@ export function NovoDisparoDialog({ open, onOpenChange, publicoInicial, textoIni
 
   const primeiroContato = useMemo(() => {
     if (tipoLista === 'numeros') {
+      // Mesma regra do backend: separa no primeiro ";", "," ou TAB; sem separador é só telefone.
       const l = linhasDe(colados)[0];
-      if (l && l.includes(';')) return l.split(';')[0].trim() || 'Maria';
+      if (l && /[;,\t]/.test(l)) return l.split(/[;,\t]/)[0].trim() || 'Maria';
     }
     return 'Maria';
   }, [tipoLista, colados]);
@@ -413,7 +414,7 @@ export function NovoDisparoDialog({ open, onOpenChange, publicoInicial, textoIni
                 rows={5}
                 value={colados}
                 onChange={(e) => setColados(e.target.value)}
-                placeholder={'Um por linha: Nome;telefone ou só o telefone\nMaria Souza;(34) 98811-9078\n34988119078'}
+                placeholder={'Um por linha: Nome;telefone (vírgula ou TAB também valem) ou só o telefone\nMaria Souza;(34) 98811-9078\n34988119078'}
               />
             </div>
           )}

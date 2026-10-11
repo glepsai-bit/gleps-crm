@@ -104,7 +104,9 @@ const PERMISSION_AREAS = [
   { id: 'kanban', label: 'Kanban', icon: Kanban },
   { id: 'leads', label: 'Leads', icon: Users },
   { id: 'agenda', label: 'Agenda', icon: Calendar },
-  { id: 'sales', label: 'Vendas', icon: DollarSign },
+  // 'sales' continua existindo (product.routes e contact.routes a usam); Vendas
+  // como tela saiu — hoje a chave libera serviços e o histórico de vendas.
+  { id: 'sales', label: 'Serviços e histórico de vendas', icon: DollarSign },
   { id: 'products', label: 'Produtos', icon: Package },
   { id: 'events', label: 'Eventos', icon: Activity },
   { id: 'extracao', label: 'Prospecção', icon: Crosshair },

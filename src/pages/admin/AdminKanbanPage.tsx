@@ -369,8 +369,12 @@ export default function AdminKanbanPage() {
       // pergunta quanto foi. O backend já criou a venda pendente ao aplicar a etapa.
       if (stage?.papel === 'fechamento') {
         // `lead` é o contato de antes do drop: se já tinha valor, esta é uma venda nova.
+        // Se a última ficou pendente (sem valor) mas havia uma paga antes dela,
+        // a paga é a "anterior" — o diálogo também vira "venda nova".
         const antes = lead?.fechamento;
-        setVendaAnterior(antes && antes.valor != null ? { valor: antes.valor, em: antes.em } : null);
+        setVendaAnterior(
+          antes?.valor != null ? { valor: antes.valor, em: antes.em } : antes?.anterior ?? null
+        );
         setFechamentoContactId(draggedLead);
       }
       // Light refresh to reconcile temp IDs with real ones from backend (silent)

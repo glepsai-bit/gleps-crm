@@ -153,7 +153,8 @@ const App = () => (
                 fino (agente so ve suas conversas) e feito por canAccessRoute
                 no ProtectedRoute + escopo do backend por conversa. */}
             <Route path="/admin/chat" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminChatPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
-            <Route path="/admin/chat/dashboard" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminChatDashboardPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
+            {/* Dashboard: agente entra com a permissão `dashboard` (canAccessRoute no ProtectedRoute). */}
+            <Route path="/admin/chat/dashboard" element={<ProtectedRoute allowedRoles={['admin', 'super_admin', 'agent']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminChatDashboardPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             <Route path="/admin/tracking" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminTrackingPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />
             {/* T-027 — Atendimento IA: agentes + base de conhecimento (admin-only: consome a chave de IA da conta) */}
             <Route path="/admin/ia/agentes" element={<ProtectedRoute allowedRoles={['admin', 'super_admin']}><AdminFinanceWrapper><AdminLayout><ErrorBoundary><AdminIaAgentesPage /></ErrorBoundary></AdminLayout></AdminFinanceWrapper></ProtectedRoute>} />

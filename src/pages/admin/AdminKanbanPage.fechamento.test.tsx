@@ -28,6 +28,18 @@ const contatos: Contact[] = [
     created_at: '2026-10-01T10:00:00Z',
     updated_at: '2026-10-01T10:00:00Z',
   },
+  // João: a última venda ficou pendente (sem valor), mas antes dela houve uma paga.
+  {
+    id: 'c2',
+    account_id: 'acc1',
+    nome: 'João Lima',
+    telefone: '11988880000',
+    email: null,
+    origem: 'site',
+    created_at: '2026-10-01T10:00:00Z',
+    updated_at: '2026-10-01T10:00:00Z',
+    fechamento: { valor: null, em: '2026-10-05T10:00:00Z', anterior: { valor: 350, em: '2026-09-15T12:00:00Z' } },
+  },
 ];
 
 vi.mock('@/contexts/FinanceContext', () => ({
@@ -62,7 +74,10 @@ vi.mock('@/contexts/ProductContext', () => ({
 vi.mock('@/api/client', () => ({
   apiClient: {
     get: vi.fn().mockResolvedValue({
-      data: [{ id: 'lt1', contact_id: 'c1', tag_id: 'e-novo', source: 'kanban', created_at: '' }],
+      data: [
+        { id: 'lt1', contact_id: 'c1', tag_id: 'e-novo', source: 'kanban', created_at: '' },
+        { id: 'lt2', contact_id: 'c2', tag_id: 'e-novo', source: 'kanban', created_at: '' },
+      ],
     }),
   },
 }));
@@ -129,9 +144,9 @@ beforeEach(() => {
   contatosApi.registrarFechamento.mockResolvedValue(undefined);
 });
 
-/** Arrasta o card da Maria até a coluna cujo título é `titulo`. */
-async function arrastarParaColuna(titulo: string) {
-  const card = (await screen.findByText('Maria Souza')).closest('[draggable="true"]') as HTMLElement;
+/** Arrasta o card do lead `nome` (Maria por padrão) até a coluna cujo título é `titulo`. */
+async function arrastarParaColuna(titulo: string, nome = 'Maria Souza') {
+  const card = (await screen.findByText(nome)).closest('[draggable="true"]') as HTMLElement;
   const coluna = screen.getByText(titulo, { selector: 'h3, div, span, p' }).closest('.kanban-column') as HTMLElement;
   const dataTransfer = { setData: vi.fn(), getData: vi.fn(), effectAllowed: '', dropEffect: '' };
   fireEvent.dragStart(card, { dataTransfer });
@@ -172,6 +187,25 @@ describe('Kanban — Quanto fechou?', () => {
     await waitFor(() =>
       expect(contatosApi.registrarFechamento).toHaveBeenCalledWith('c1', { valor: 450 })
     );
+  });
+
+  it('venda pendente com uma paga antes: o diálogo explica que é venda nova', async () => {
+    render(<AdminKanbanPage />);
+    await arrastarParaColuna('Fechado', 'João Lima');
+    await waitFor(() => expect(tagsApi.applyStageTag).toHaveBeenCalledWith('c2', 'e-fechado', 'kanban'));
+    expect(await screen.findByText(/já tem uma venda registrada/)).toHaveTextContent(/350,00 em 15\/09\).*venda nova/);
+  });
+
+  it('venda pendente sem nenhuma paga antes: diálogo simples', async () => {
+    contatos[1].fechamento = { valor: null, em: '2026-10-05T10:00:00Z', anterior: null };
+    try {
+      render(<AdminKanbanPage />);
+      await arrastarParaColuna('Fechado', 'João Lima');
+      expect(await screen.findByText('Quanto fechou?')).toBeInTheDocument();
+      expect(screen.queryByText(/venda nova/)).not.toBeInTheDocument();
+    } finally {
+      contatos[1].fechamento = { valor: null, em: '2026-10-05T10:00:00Z', anterior: { valor: 350, em: '2026-09-15T12:00:00Z' } };
+    }
   });
 
   it('soltar na etapa Perdido (papel perda) não pergunta valor', async () => {

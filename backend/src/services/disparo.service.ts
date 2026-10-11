@@ -30,6 +30,7 @@ import {
   estimarDias,
   FUSO_PADRAO,
   LIMITE_NAO_AQUECIDO,
+  separarLinhaColada,
   variaveisDoContato,
   variaveisUsadas,
   type CapacidadeDoNumero,
@@ -44,7 +45,7 @@ import { logger } from '../utils/logger';
 // Tipos
 // ============================================
 
-/** Linha de "números": a UI manda string ("Nome;telefone"); a API de integração manda objeto. */
+/** Linha de "números": a UI manda string ("Nome;telefone", vírgula ou TAB também separam); a API de integração manda objeto. */
 export interface LinhaDeNumero {
   telefone: string;
   nome?: string | null;
@@ -342,8 +343,8 @@ class DisparoService {
       };
     }
 
-    // Números colados: "Nome;telefone" ou só "telefone", uma por linha — ou
-    // objeto {telefone, nome, variaveis} quando vem da API de integração.
+    // Números colados: "Nome;telefone" (ou vírgula/TAB) ou só "telefone", uma
+    // por linha — ou objeto {telefone, nome, variaveis} quando vem da API de integração.
     const linhas = (lista.linhas ?? []).slice(0, MAX_LINHAS_COLADAS);
     const itens: Array<{
       telefoneBruto: string | null;
@@ -373,14 +374,9 @@ class DisparoService {
       const linha = (bruta ?? '').toString().trim();
       if (linha === '') continue;
       linhasCruas.push(linha);
-      if (linha.includes(';')) {
-        const partes = linha.split(';').map((p) => p.trim());
-        const telefoneBruto = partes[partes.length - 1] || null;
-        const nome = partes.slice(0, -1).join(' ').trim() || null;
-        itens.push({ telefoneBruto, nome, empresa: null, contactId: null });
-      } else {
-        itens.push({ telefoneBruto: linha, nome: null, empresa: null, contactId: null });
-      }
+      // "Nome;telefone", "Nome,telefone", "Nome<TAB>telefone" ou só o telefone.
+      const { nome, telefone } = separarLinhaColada(linha);
+      itens.push({ telefoneBruto: telefone, nome, empresa: null, contactId: null });
     }
     return {
       itens,

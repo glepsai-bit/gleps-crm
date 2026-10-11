@@ -1,17 +1,17 @@
 /**
  * CHAT METRICS ROUTES — T-022 Sprint 4 (Chat interno)
  *
- * Métricas só para super_admin / admin. Agentes individuais consultam o próprio
- * desempenho via `/dashboard` (ou rota dedicada futura).
+ * Métricas para super_admin / admin e para o agente que tem a permissão
+ * `dashboard` (é o que o item "Dashboard" do menu exige no front).
  */
 
 import { Router } from 'express';
 import { chatMetricsController } from '../controllers/chat-metrics.controller';
-import { authenticate, requireRole } from '../middlewares/auth.middleware';
+import { authenticate, requirePermission, requireRole } from '../middlewares/auth.middleware';
 
 const router = Router();
 
-router.use(authenticate, requireRole('super_admin', 'admin'));
+router.use(authenticate, requireRole('super_admin', 'admin', 'agent'), requirePermission('dashboard'));
 
 router.get('/metrics', (req, res, next) =>
   chatMetricsController.getMetrics(req, res, next)

@@ -27,6 +27,7 @@ export const ROUTES = {
   // ============= ADMIN ROUTES =============
   ADMIN: {
     DASHBOARD: '/admin',
+    CHAT_DASHBOARD: '/admin/chat/dashboard',
     KANBAN: '/admin/kanban',
     LEADS: '/admin/leads',
     PRODUCTS: '/admin/products',
@@ -50,6 +51,7 @@ export const ROUTES = {
 // Route to permission mapping
 export const ROUTE_PERMISSIONS: Record<string, string> = {
   [ROUTES.ADMIN.DASHBOARD]: 'dashboard',
+  [ROUTES.ADMIN.CHAT_DASHBOARD]: 'dashboard',
   [ROUTES.ADMIN.KANBAN]: 'kanban',
   [ROUTES.ADMIN.LEADS]: 'leads',
   [ROUTES.ADMIN.PRODUCTS]: 'products',
