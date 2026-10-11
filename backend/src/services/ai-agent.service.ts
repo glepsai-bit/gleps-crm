@@ -1032,11 +1032,15 @@ class AiAgentService {
     agent: AiAgent,
     preloaded?: ChatMessage[] | null
   ): Promise<{ messages: ChatMessage[]; summary: string | null }> {
-    if (!conversationId || limit <= 0) return { messages: [], summary: null };
-
     // Já veio pronto de quem chamou: nada a buscar. O resumo vem junto, pela
     // mesma via (`historySummary`), então não há o que recalcular aqui.
+    //
+    // Vem ANTES da checagem de conversa: a simulação em lote do provisionamento
+    // roda o agente sem conversa nenhuma no banco, acumulando o histórico em
+    // memória — e esse histórico precisa valer.
     if (preloaded) return { messages: preloaded, summary: null };
+
+    if (!conversationId || limit <= 0) return { messages: [], summary: null };
 
     const conversation = await prisma.conversation.findFirst({
       where: { id: conversationId, accountId },

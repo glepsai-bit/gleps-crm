@@ -2236,13 +2236,41 @@ model AiAgent {
   /// Ligada, as seis ferramentas de agenda entram sozinhas na chamada.
   /// NULL = desligada (todo agente que já existe).
   agenda          Json?
+  /// PROVISIONAMENTO (migration 0075) — a especificação (briefing estruturado)
+  /// de onde este agente foi montado. NULL = agente criado à mão na tela.
+  spec            Json?
+  /// Quantas vezes o spec foi aplicado. 0 = nunca provisionado.
+  specVersao      Int            @default(0) @map("spec_versao")
   active          Boolean        @default(true)
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
+  specVersions AgentSpecVersion[]
+
   @@unique([accountId, name])
   @@index([accountId, active])
   @@map("ai_agents")
+}
+
+/// PROVISIONAMENTO — uma linha por aplicação do spec. É o que permite "voltar
+/// para a versão 3": reverter aplica o spec guardado aqui e gera uma versão
+/// nova (cópia), nunca apaga histórico.
+model AgentSpecVersion {
+  id        String   @id @default(uuid()) @db.Uuid
+  agentId   String   @map("agent_id") @db.Uuid
+  agent     AiAgent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  accountId String   @map("account_id") @db.Uuid
+  versao    Int
+  spec      Json
+  /// O fluxo "Atendimento — <agente>" que esta versão montou/atualizou.
+  flowId    String?  @map("flow_id") @db.Uuid
+  /// Super admin que provisionou. Sem FK: o usuário pode ser apagado.
+  criadoPor String?  @map("criado_por") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([agentId, versao])
+  @@index([accountId])
+  @@map("agent_spec_versions")
 }
 
 // ============================================

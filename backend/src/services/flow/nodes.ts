@@ -396,6 +396,9 @@ const aiAgentNode: NodeDefinition = {
       session: (ctx.vars.sessao ?? {}) as Record<string, unknown>,
       contactId: (ctx.vars.__contactId ?? null) as string | null,
       contato: (ctx.vars.__contato ?? null) as ContatoResumo | null,
+      // Mesmo em sombra o agente de um toque de follow-up pode ter a agenda
+      // ligada: sem repassar o modo, uma marcação feita aqui seria real.
+      shadow: ctx.shadow,
       variables: {
         ...Object.fromEntries(
           Object.entries(ctx.vars)

@@ -54,6 +54,7 @@ import agendaRoutes from './agenda.routes';
 import voiceRoutes, { voicePublicRoutes } from './voice.routes';
 import mentionRoutes from './mention.routes';
 import pushRoutes from './push.routes';
+import provisionarRoutes from './provisionar.routes';
 import { Router as LeadTagRouter } from 'express';
 import { contactController } from '../controllers/contact.controller';
 import { authenticate, requirePermission, requireAccountId } from '../middlewares/auth.middleware';
@@ -128,6 +129,9 @@ router.use('/admin/users', adminUserRoutes);
 // de /admin (adminRouter do dashboard) para evitar que o catch-all engula
 // /admin/integrations/*.
 router.use('/admin/integrations', accountIntegrationsRoutes);
+// PROVISIONAMENTO DE AGENTE (super admin). Antes de /admin pelo mesmo motivo
+// dos dois acima.
+router.use('/admin/provisionar', provisionarRoutes);
 router.use('/admin', adminRouter);
 router.use('/insights', insightsRoutes);
 router.use('/calendar', calendarRoutes);
