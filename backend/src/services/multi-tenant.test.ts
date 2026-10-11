@@ -102,7 +102,7 @@ async function createTenant(name: string): Promise<Tenant> {
   // visibilidade no singleton.
   const { account, user } = await withRetry(() =>
     prismaSingleton.$transaction(async (tx) => {
-      // Todos os módulos ligados: este arquivo bate em /sales e /finance, e o
+      // Todos os módulos ligados: este arquivo bate em /email, /voice etc., e o
       // que está em teste é o isolamento entre contas, não o módulo desligado.
       const account = await tx.account.create({
         data: { nome: name, modulos: [...MODULOS_OPCIONAIS] },
@@ -122,7 +122,6 @@ async function createTenant(name: string): Promise<Tenant> {
             'emails',
             'whatsapp_templates',
             'sales',
-            'finance',
             'agenda',
           ],
         },
@@ -305,38 +304,30 @@ describe('Multi-tenant isolation — cross-tenant 404', () => {
   });
 
   // ============================================
-  // SALES (precisa contato + produto na conta A)
+  // SALES — desde a etapa C2-V a venda só existe via Kanban:
+  // PATCH /contacts/:id/fechamento grava, GET /contacts/:id/sales lê.
   // ============================================
-  it('GET /api/sales/:id — JWT-B nao ve venda da conta A (404)', async () => {
+  it('GET /api/contacts/:id/sales — JWT-B nao ve as vendas do contato da conta A (404)', async () => {
     const A = await createTenant('Conta A');
     const B = await createTenant('Conta B');
 
     const contactA = await createContactRetry(A.account.id);
-    const productA = await withRetry(() =>
-      prismaSingleton.product.create({
-        data: {
-          accountId: A.account.id,
-          nome: 'Produto A',
-          valorPadrao: 100.0,
-          ativo: true,
-        },
-      })
-    );
 
-    const createRes = await request(app)
-      .post('/api/sales')
+    const fechou = await request(app)
+      .patch(`/api/contacts/${contactA.id}/fechamento`)
       .set(authHeader(A.jwt))
-      .send({
-        contactId: contactA.id,
-        metodoPagamento: 'pix',
-        items: [{ productId: productA.id, quantidade: 1, valorUnitario: 100 }],
-      });
+      .send({ valor: 100 });
+    expect(fechou.status).toBe(200);
 
-    expect(createRes.status).toBe(201);
-    const saleId = createRes.body.data.id;
+    const mine = await request(app)
+      .get(`/api/contacts/${contactA.id}/sales`)
+      .set(authHeader(A.jwt));
+    expect(mine.status).toBe(200);
+    expect(mine.body.data).toHaveLength(1);
+    expect(Number(mine.body.data[0].valor)).toBe(100);
 
     const getRes = await request(app)
-      .get(`/api/sales/${saleId}`)
+      .get(`/api/contacts/${contactA.id}/sales`)
       .set(authHeader(B.jwt));
 
     expect(getRes.status).toBe(404);
@@ -641,7 +632,7 @@ describe('Multi-tenant isolation — cross-tenant 404', () => {
     const superJwt = await createSuperAdminSemConta();
 
     // Uma rota de cada família auditada.
-    const rotas = ['/api/tags', '/api/insights/kpis', '/api/finance/kpis'];
+    const rotas = ['/api/tags', '/api/insights/kpis'];
 
     for (const rota of rotas) {
       const res = await request(app).get(rota).set(authHeader(superJwt));

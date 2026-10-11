@@ -70,10 +70,8 @@ import {
   Users,
   Calendar,
   DollarSign,
-  Wallet,
   Package,
   Activity,
-  RotateCcw,
   Loader2,
   Crosshair,
   Mail,
@@ -151,16 +149,10 @@ export default function SuperAdminUsersPage() {
     { id: 'leads', label: 'Leads', icon: Users },
     { id: 'agenda', label: 'Agenda', icon: Calendar },
     { id: 'sales', label: 'Vendas', icon: DollarSign },
-    { id: 'finance', label: 'Financeiro', icon: Wallet },
     { id: 'products', label: 'Produtos', icon: Package },
     { id: 'events', label: 'Eventos', icon: Activity },
     { id: 'extracao', label: 'Prospecção', icon: Crosshair },
     { id: 'emails', label: 'E-mails', icon: Mail },
-  ];
-
-  // Special action permissions
-  const agentActionPermissions = [
-    { id: 'refunds', label: 'Realizar Estornos', icon: RotateCcw },
   ];
 
   const [formData, setFormData] = useState({
@@ -551,38 +543,7 @@ export default function SuperAdminUsersPage() {
                     </div>
                   </div>
 
-                  {/* Action permissions */}
-                  <div className="space-y-2 pt-2 border-t">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Ações Especiais</p>
-                    <div className="grid grid-cols-1 xs:grid-cols-2 gap-2">
-                      {agentActionPermissions.map((action) => (
-                        <div 
-                          key={action.id} 
-                          className={cn(
-                            "flex items-center gap-2 p-2 rounded-md border cursor-pointer transition-colors",
-                            formData.permissions.includes(action.id) 
-                              ? "bg-primary/10 border-primary" 
-                              : "bg-background hover:bg-muted"
-                          )}
-                          onClick={() => togglePermission(action.id)}
-                        >
-                          <Checkbox
-                            id={`perm-${action.id}`}
-                            checked={formData.permissions.includes(action.id)}
-                            onCheckedChange={() => togglePermission(action.id)}
-                            className="pointer-events-none"
-                          />
-                          <action.icon className="w-4 h-4 text-muted-foreground" />
-                          <label
-                            htmlFor={`perm-${action.id}`}
-                            className="text-sm font-medium leading-none cursor-pointer flex-1"
-                          >
-                            {action.label}
-                          </label>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+
 
                   {!formData.permissions.includes('dashboard') && (
                     <p className="text-sm text-warning">
@@ -955,38 +916,7 @@ export default function SuperAdminUsersPage() {
                     </div>
                   </div>
 
-                  {/* Action permissions */}
-                  <div className="space-y-2 pt-2 border-t">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Ações Especiais</p>
-                    <div className="grid grid-cols-1 xs:grid-cols-2 gap-2">
-                      {agentActionPermissions.map((action) => (
-                        <div 
-                          key={action.id} 
-                          className={cn(
-                            "flex items-center gap-2 p-2 rounded-md border cursor-pointer transition-colors",
-                            editFormData.permissions.includes(action.id) 
-                              ? "bg-primary/10 border-primary" 
-                              : "bg-background hover:bg-muted"
-                          )}
-                          onClick={() => toggleEditPermission(action.id)}
-                        >
-                          <Checkbox
-                            id={`edit-perm-${action.id}`}
-                            checked={editFormData.permissions.includes(action.id)}
-                            onCheckedChange={() => toggleEditPermission(action.id)}
-                            className="pointer-events-none"
-                          />
-                          <action.icon className="w-4 h-4 text-muted-foreground" />
-                          <label
-                            htmlFor={`edit-perm-${action.id}`}
-                            className="text-sm font-medium leading-none cursor-pointer flex-1"
-                          >
-                            {action.label}
-                          </label>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+
 
                   {!editFormData.permissions.includes('dashboard') && (
                     <p className="text-sm text-warning">

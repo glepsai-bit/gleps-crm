@@ -3,10 +3,6 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { LeadCard } from './LeadCard';
 import type { Contact, Tag } from '@/types/crm';
 
-vi.mock('@/contexts/FinanceContext', () => ({
-  useFinance: () => ({ getContactSales: () => [] }),
-}));
-
 const etapa = (papel: Tag['papel']): Tag => ({
   id: 't1',
   account_id: 'a',

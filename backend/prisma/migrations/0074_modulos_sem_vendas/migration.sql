@@ -1,0 +1,12 @@
+-- 0074 — Etapa C2-V: o módulo "vendas" deixou de existir. Vendas e Financeiro
+-- saíram do produto; a venda continua sendo registrada pelo Kanban (etapa
+-- Fechado → "Quanto fechou?"), que é núcleo e não depende de módulo.
+--
+-- Contas que tinham a chave gravada perdem só a chave: validarModulos recusa
+-- chave desconhecida, então sem isto o PUT /accounts/:id de uma conta antiga
+-- quebraria e o front mostraria um módulo que não existe mais.
+--
+-- Nada de tabela, coluna ou enum é tocado. Idempotente: o WHERE só casa quem
+-- ainda tem a chave (start.sh reaplica no boot). Fora de DO/transação, como
+-- as anteriores.
+UPDATE accounts SET modulos = array_remove(modulos, 'vendas') WHERE 'vendas' = ANY(modulos);

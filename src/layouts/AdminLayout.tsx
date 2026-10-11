@@ -38,8 +38,6 @@ import {
   X,
   ArrowLeftRight,
   Kanban,
-  DollarSign,
-  Wallet,
   Calendar,
   Crosshair,
   Mail,
@@ -150,8 +148,6 @@ const adminNavItems: ItemDoMenu[] = [
   // Opcionais: só aparecem onde o super admin ligou
   { title: 'E-mails', href: '/admin/emails', icon: Mail, grupo: 'opcionais', modulo: 'emails' },
   { title: 'Discador', href: '/admin/discador', icon: PhoneCall, grupo: 'opcionais', modulo: 'discador' },
-  { title: 'Vendas', href: '/admin/sales', icon: DollarSign, grupo: 'opcionais', modulo: 'vendas' },
-  { title: 'Financeiro', href: '/admin/finance', icon: Wallet, grupo: 'opcionais', modulo: 'vendas' },
   { title: 'Aquecimento', href: '/admin/warmup', icon: Flame, grupo: 'opcionais', modulo: 'aquecimento' },
   // Configurações (uso ocasional; grupo recolhível)
   { title: 'Inboxes', href: '/admin/inboxes', icon: Inbox, grupo: 'configuracoes' },

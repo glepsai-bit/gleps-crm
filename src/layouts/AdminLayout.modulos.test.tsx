@@ -83,6 +83,7 @@ describe('AdminLayout — módulos', () => {
     expect(nav.queryByText('E-mails')).toBeNull();
     expect(nav.queryByText('Discador')).toBeNull();
     expect(nav.queryByText('Vendas')).toBeNull();
+    expect(nav.queryByText('Financeiro')).toBeNull();
     expect(nav.getByText('Extração')).toBeTruthy();
     expect(nav.getByText('Disparos')).toBeTruthy();
     expect(nav.getByText('Dashboard')).toBeTruthy();
@@ -101,7 +102,7 @@ describe('AdminLayout — módulos', () => {
     estado.account = { id: 'a1', nome: 'C', status: 'active' };
     renderizar();
     const nav = sidebarDesktop();
-    for (const t of ['E-mails', 'Discador', 'Vendas', 'Financeiro', 'Aquecimento', 'Extração', 'Disparos']) {
+    for (const t of ['E-mails', 'Discador', 'Aquecimento', 'Extração', 'Disparos']) {
       expect(nav.getByText(t)).toBeTruthy();
     }
   });

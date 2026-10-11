@@ -5,11 +5,9 @@ import userRoutes from './user.routes';
 import contactRoutes from './contact.routes';
 import productRoutes from './product.routes';
 import tagRoutes, { funnelRouter } from './tag.routes';
-import saleRoutes from './sale.routes';
 import dashboardRoutes, { adminRouter } from './dashboard.routes';
 import adminUserRoutes from './admin-user.routes';
 import accountIntegrationsRoutes from './account-integrations.routes';
-import financeRoutes from './finance.routes';
 import insightsRoutes from './insights.routes';
 import calendarRoutes from './calendar.routes';
 import trackingRoutes from './tracking.routes';
@@ -106,8 +104,10 @@ router.use('/v1', (req, res) => {
 //   emails      → /email (emailRoutes + emailExtendedRoutes), /email/audiences
 //                 (NÃO /email/inbound nem /email/webhook/sendgrid)
 //   discador    → /voice (voiceRoutes; NÃO voicePublicRoutes)
-//   vendas      → /sales, /finance  (/products é núcleo: vira Serviços)
 //   aquecimento → /aquecimento
+// (Vendas/Financeiro saíram na etapa C2-V: a venda nasce no Kanban via
+//  PATCH /contacts/:id/fechamento e é lida em GET /contacts/:id/sales.
+//  /products é núcleo: são os Serviços.)
 
 // API routes
 router.use('/auth', authRoutes);
@@ -117,7 +117,6 @@ router.use('/contacts', contactRoutes);
 router.use('/products', productRoutes);
 router.use('/tags', tagRoutes);
 router.use('/funnels', funnelRouter);
-router.use('/sales', saleRoutes);
 router.use('/dashboard', dashboardRoutes);
 // TRACKING (Meta Ads / CTWA)
 router.use('/tracking', trackingRoutes);
@@ -130,7 +129,6 @@ router.use('/admin/users', adminUserRoutes);
 // /admin/integrations/*.
 router.use('/admin/integrations', accountIntegrationsRoutes);
 router.use('/admin', adminRouter);
-router.use('/finance', financeRoutes);
 router.use('/insights', insightsRoutes);
 router.use('/calendar', calendarRoutes);
 router.use('/events', eventRoutes);

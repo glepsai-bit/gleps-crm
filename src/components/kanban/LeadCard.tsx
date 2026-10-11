@@ -1,6 +1,4 @@
-import { useMemo } from 'react';
-import { useFinance } from '@/contexts/FinanceContext';
-import { Contact, Tag, SaleStatus } from '@/types/crm';
+import { Contact, Tag } from '@/types/crm';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
@@ -13,10 +11,7 @@ import {
   GripVertical,
   Phone,
   Clock,
-  DollarSign,
   AlertCircle,
-  Check,
-  RotateCcw,
   MessageSquare,
 } from 'lucide-react';
 import { safeFormatDateBR } from '@/utils/dateUtils';
@@ -40,24 +35,6 @@ interface LeadCardProps {
 }
 
 export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart, onDragEnd, onInformarValor }: LeadCardProps) {
-  const { getContactSales } = useFinance();
-
-  const sales = useMemo(() => getContactSales(lead.id), [lead.id, getContactSales]);
-
-  const saleIndicator = useMemo(() => {
-    if (sales.length === 0) return null;
-
-    const hasPaid = sales.some((s) => s.status === 'paid');
-    const hasPending = sales.some((s) => s.status === 'pending');
-    const hasRefunded = sales.some((s) => s.status === 'refunded');
-
-    if (hasPaid) return { status: 'paid' as SaleStatus, label: 'Paga', color: 'bg-green-500' };
-    if (hasPending) return { status: 'pending' as SaleStatus, label: 'Pendente', color: 'bg-yellow-500' };
-    if (hasRefunded) return { status: 'refunded' as SaleStatus, label: 'Estornada', color: 'bg-red-500' };
-
-    return null;
-  }, [sales]);
-
   // Só faz sentido na própria etapa de fechamento: se o lead saiu de lá, o card
   // volta a ser um card comum.
   const fechamento = stage.papel === 'fechamento' ? lead.fechamento : null;
@@ -84,19 +61,6 @@ export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart,
         return <Badge variant="secondary" className="text-xs bg-blue-500/10 text-blue-500">Site</Badge>;
       default:
         return <Badge variant="secondary" className="text-xs">Manual</Badge>;
-    }
-  };
-
-  const getSaleStatusIcon = (status: SaleStatus) => {
-    switch (status) {
-      case 'paid':
-        return <Check className="w-3 h-3" />;
-      case 'pending':
-        return <AlertCircle className="w-3 h-3" />;
-      case 'refunded':
-        return <RotateCcw className="w-3 h-3" />;
-      default:
-        return null;
     }
   };
 
@@ -134,18 +98,6 @@ export function LeadCard({ lead, stage, isDragging, isNew, onClick, onDragStart,
         <div className="flex-1 min-w-0 overflow-hidden">
           <div className="flex items-start gap-1.5 flex-wrap">
             <span className="font-medium text-sm leading-snug break-words">{lead.nome || 'Sem nome'}</span>
-            {saleIndicator && (
-              <div
-                className={cn(
-                  'flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-medium text-white flex-shrink-0',
-                  saleIndicator.color
-                )}
-                title={`Venda: ${saleIndicator.label}`}
-              >
-                {getSaleStatusIcon(saleIndicator.status)}
-                <DollarSign className="w-2.5 h-2.5" />
-              </div>
-            )}
             {(lead.followup_count ?? 0) > 0 && (
               <TooltipProvider delayDuration={200}>
                 <Tooltip>

@@ -22,13 +22,11 @@ function getSmartDefaultRoute(user: { role: string; permissions?: string[] }): s
     'kanban': '/admin/kanban',
     'leads': '/admin/leads',
     'agenda': '/admin/agenda',
-    'sales': '/admin/sales',
-    'finance': '/admin/finance',
     'products': '/admin/products',
     'events': '/admin/events',
   };
 
-  const routeOrder = ['dashboard', 'kanban', 'leads', 'agenda', 'sales', 'finance', 'products', 'events'];
+  const routeOrder = ['dashboard', 'kanban', 'leads', 'agenda', 'products', 'events'];
   
   for (const perm of routeOrder) {
     if (user.permissions?.includes(perm)) {

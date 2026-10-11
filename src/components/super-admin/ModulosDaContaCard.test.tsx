@@ -33,7 +33,7 @@ describe('ModulosDaContaCard', () => {
   it('o núcleo não tem interruptor', () => {
     render(<ModulosDaContaCard accountId="c1" modulos={[]} />);
     expect(screen.getByText('núcleo · sempre ligado')).toBeTruthy();
-    expect(screen.getAllByRole('switch')).toHaveLength(6);
+    expect(screen.getAllByRole('switch')).toHaveLength(5);
   });
 
   it('conta sem `modulos` (servidor antigo) aparece com tudo ligado', () => {

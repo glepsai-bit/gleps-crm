@@ -1,7 +1,7 @@
 /**
  * Finance Backend Service
  * 
- * Handles sales, products, contacts, and finance operations
+ * Handles products, contacts and notes
  * via the Express backend API when VITE_USE_BACKEND=true.
  */
 
@@ -24,7 +24,7 @@ function mapSaleItemFromApi(raw: any): SaleItem {
   };
 }
 
-function mapSaleFromApi(raw: any): Sale {
+export function mapSaleFromApi(raw: any): Sale {
   const items = (raw.items || raw.saleItems || raw.sale_items || []).map(mapSaleItemFromApi);
   return {
     id: raw.id,
@@ -45,77 +45,7 @@ function mapSaleFromApi(raw: any): Sale {
   };
 }
 
-// ============= SALES =============
-
-export interface CreateSaleBackendData {
-  contactId: string;
-  items: { productId: string; quantidade: number; valorUnitario: number }[];
-  metodoPagamento: PaymentMethod;
-  responsavelId: string;
-  convenioNome?: string;
-}
-
 export const financeBackendService = {
-  // --- Sales ---
-
-  fetchSales: async (accountId: string): Promise<Sale[]> => {
-    const res = await apiClient.get<any>(API_ENDPOINTS.SALES.LIST);
-    const payload = res?.data ?? res;
-    const rawSales = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload?.data)
-        ? payload.data
-        : [];
-
-    return rawSales.map(mapSaleFromApi);
-  },
-
-  createSale: async (data: CreateSaleBackendData): Promise<Sale> => {
-    const res = await apiClient.post<ApiResponse<any>>(API_ENDPOINTS.SALES.CREATE, data);
-    return mapSaleFromApi(res.data);
-  },
-
-  markAsPaid: async (saleId: string): Promise<Sale> => {
-    const res = await apiClient.patch<ApiResponse<any>>(API_ENDPOINTS.SALES.MARK_PAID(saleId));
-    return mapSaleFromApi(res.data);
-  },
-
-  refundSale: async (saleId: string, reason: string, password?: string): Promise<Sale> => {
-    const headers: Record<string, string> = {};
-    if (password) {
-      headers['x-confirm-password'] = password;
-    }
-    const res = await apiClient.post<ApiResponse<any>>(
-      API_ENDPOINTS.SALES.REFUND(saleId),
-      { reason },
-      { headers }
-    );
-    return mapSaleFromApi(res.data);
-  },
-
-  refundSaleItem: async (saleId: string, itemId: string, reason: string, password?: string): Promise<Sale> => {
-    const headers: Record<string, string> = {};
-    if (password) {
-      headers['x-confirm-password'] = password;
-    }
-    const res = await apiClient.post<ApiResponse<any>>(
-      API_ENDPOINTS.SALES.REFUND_ITEM(saleId, itemId),
-      { reason },
-      { headers }
-    );
-    return mapSaleFromApi(res.data);
-  },
-
-  getSaleKPIs: async (params?: { startDate?: string; endDate?: string }) => {
-    const res = await apiClient.get<ApiResponse<any>>(API_ENDPOINTS.SALES.STATS, { params });
-    return res.data;
-  },
-
-  getAuditLog: async (saleId: string) => {
-    const res = await apiClient.get<ApiResponse<any[]>>(API_ENDPOINTS.SALES.TRANSACTIONS(saleId));
-    return res.data || [];
-  },
-
   // --- Products ---
 
   fetchProducts: async (accountId: string): Promise<Product[]> => {
@@ -204,28 +134,4 @@ export const financeBackendService = {
     });
     return res.data;
   },
-
-  // --- Finance KPIs ---
-
-  getFinanceKPIs: async (params?: { startDate?: string; endDate?: string }) => {
-    const res = await apiClient.get<ApiResponse<any>>('/api/finance/kpis', { params });
-    return res.data;
-  },
-
-  getRevenueChart: async (params?: { startDate?: string; endDate?: string; granularity?: string }) => {
-    const res = await apiClient.get<ApiResponse<any>>('/api/finance/revenue-chart', { params });
-    return res.data;
-  },
-
-  getPaymentMethods: async (params?: { startDate?: string; endDate?: string }) => {
-    const res = await apiClient.get<ApiResponse<any>>('/api/finance/payment-methods', { params });
-    return res.data;
-  },
-
-  getFunnelConversion: async (params?: { startDate?: string; endDate?: string }) => {
-    const res = await apiClient.get<ApiResponse<any>>('/api/finance/funnel-conversion', { params });
-    return res.data;
-  },
 };
-
-export default financeBackendService;

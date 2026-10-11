@@ -18,9 +18,7 @@ export const PERMISSIONS = {
   
   // Sales & Finance
   SALES: 'sales',
-  FINANCE: 'finance',
   PRODUCTS: 'products',
-  REFUNDS: 'refunds',
   
   // Calendar
   AGENDA: 'agenda',
@@ -57,7 +55,7 @@ export const PERMISSION_GROUPS = {
   },
   VENDAS: {
     label: 'Vendas',
-    permissions: [PERMISSIONS.SALES, PERMISSIONS.FINANCE, PERMISSIONS.PRODUCTS],
+    permissions: [PERMISSIONS.SALES, PERMISSIONS.PRODUCTS],
   },
   RELATORIOS: {
     label: 'Relatórios',
@@ -87,8 +85,6 @@ export const PERMISSION_GROUPS = {
 
 // Required permissions for specific actions
 export const ACTION_PERMISSIONS = {
-  createSale: [PERMISSIONS.SALES],
-  refundSale: [PERMISSIONS.SALES, PERMISSIONS.REFUNDS],
   moveLead: [PERMISSIONS.KANBAN],
   manageUsers: [PERMISSIONS.USERS],
   manageFunnel: [PERMISSIONS.FUNNEL],

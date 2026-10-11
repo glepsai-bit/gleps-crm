@@ -13,15 +13,17 @@
  *   disparos    → /whatsapp-templates, /disparos
  *   emails      → /email, /email/audiences
  *   discador    → /voice (só o router JWT; webhooks da operadora são públicos)
- *   vendas      → /sales, /finance
  *   aquecimento → /aquecimento
+ *
+ * A chave 'vendas' existiu até a etapa C2-V (10/10/2026): Vendas e Financeiro
+ * saíram do produto; a venda é registrada pelo Kanban (etapa Fechado), que é
+ * núcleo. A migration 0074 tira a chave das contas que a tinham gravada.
  */
 export const MODULOS_OPCIONAIS = [
   'extracao',
   'disparos',
   'emails',
   'discador',
-  'vendas',
   'aquecimento',
 ] as const;
 

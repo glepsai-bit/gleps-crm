@@ -97,8 +97,6 @@ export const ErrorCodes = {
   CONTACT_HAS_SALES: 'Contato possui vendas e não pode ser excluído',
   TAG_HAS_LEADS: 'Tag possui leads e não pode ser excluída',
   PRODUCT_HAS_SALES: 'Produto possui vendas e não pode ser excluído',
-  SALE_ALREADY_REFUNDED: 'Venda já foi estornada',
-  ITEM_ALREADY_REFUNDED: 'Item já foi estornado',
 
   // Permissions
   PERMISSION_DENIED: 'Permissão negada',

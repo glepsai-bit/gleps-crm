@@ -1,8 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef, type DragEvent } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { useModulos } from '@/hooks/useModulos';
 import { useFinance } from '@/contexts/FinanceContext';
-import { CreateSaleDialog } from '@/components/finance/CreateSaleDialog';
 import { LeadCard, CreateStageDialog, SyncIndicator, CreateLeadDialog, FechamentoDialog } from '@/components/kanban';
 import { EditStageDialog } from '@/components/kanban/EditStageDialog';
 import { useProduct } from '@/contexts/ProductContext';
@@ -53,7 +51,6 @@ import {
   Mail,
   MessageSquare,
   Clock,
-  DollarSign,
   Plus,
   MoreVertical,
   ChevronLeft,
@@ -97,7 +94,6 @@ function ordenarEtapas(etapas: CloudTag[]): CloudTag[] {
 
 export default function AdminKanbanPage() {
   const { user, account } = useAuth();
-  const { ligado: moduloLigado } = useModulos();
   const { getActiveProducts, refreshProducts } = useProduct();
   const { contacts, refetchContacts, isLoadingContacts, isSyncingContacts, lastContactsSync, newContactIds } = useFinance();
 
@@ -111,7 +107,6 @@ export default function AdminKanbanPage() {
   const [selectedLead, setSelectedLead] = useState<KanbanLead | null>(null);
   const [draggedLead, setDraggedLead] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<string | null>(null);
-  const [saleContactId, setSaleContactId] = useState<string | null>(null);
   const [deleteConfirmStage, setDeleteConfirmStage] = useState<CloudTag | null>(null);
   const [deleteHasLeads, setDeleteHasLeads] = useState(false);
   const [deleteMigrateToId, setDeleteMigrateToId] = useState<string>('');
@@ -505,11 +500,6 @@ export default function AdminKanbanPage() {
     refetchContacts();
   };
 
-  const handleOpenSaleDialog = (leadId: string) => {
-    setSaleContactId(leadId);
-    setSelectedLead(null);
-  };
-
   // Check if initial loading (skeleton only on first load)
   const isInitialLoading = isLoadingTags && isLoadingContacts;
 
@@ -877,15 +867,6 @@ export default function AdminKanbanPage() {
                   </div>
                 </div>
               </div>
-
-              {moduloLigado('vendas') && (
-                <div className="pt-4 border-t space-y-2">
-                  <Button className="w-full gap-2" onClick={() => handleOpenSaleDialog(selectedLead.id)}>
-                    <DollarSign className="w-4 h-4" />
-                    Registrar Venda
-                  </Button>
-                </div>
-              )}
             </div>
           )}
         </DialogContent>
@@ -1000,9 +981,6 @@ export default function AdminKanbanPage() {
         onSalvar={handleSalvarEtapa}
       />
 
-      {saleContactId && (
-        <CreateSaleDialog preSelectedContactId={saleContactId} onClose={() => setSaleContactId(null)} />
-      )}
     </div>
   );
 }

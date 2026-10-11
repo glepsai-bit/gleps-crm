@@ -47,10 +47,8 @@ import {
   Users,
   Calendar,
   DollarSign,
-  Wallet,
   Package,
   Activity,
-  RotateCcw,
   Crosshair,
   Mail,
 } from 'lucide-react';
@@ -107,15 +105,10 @@ const PERMISSION_AREAS = [
   { id: 'leads', label: 'Leads', icon: Users },
   { id: 'agenda', label: 'Agenda', icon: Calendar },
   { id: 'sales', label: 'Vendas', icon: DollarSign },
-  { id: 'finance', label: 'Financeiro', icon: Wallet },
   { id: 'products', label: 'Produtos', icon: Package },
   { id: 'events', label: 'Eventos', icon: Activity },
   { id: 'extracao', label: 'Prospecção', icon: Crosshair },
   { id: 'emails', label: 'E-mails', icon: Mail },
-];
-
-const ACTION_PERMISSIONS = [
-  { id: 'refunds', label: 'Realizar Estornos', icon: RotateCcw },
 ];
 
 // Permissões de supervisão — agente vê TODAS as conversas da conta sem virar
@@ -482,39 +475,7 @@ export function AgenteFormDialog({
               </div>
             </div>
 
-            <div className="space-y-2 pt-2 border-t">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Ações Especiais
-              </p>
-              {/* BUG-T024-01: mesmo fix do grid de Paginas — so label+Checkbox. */}
-              <div className="grid grid-cols-1 xs:grid-cols-2 gap-2">
-                {ACTION_PERMISSIONS.map((action) => {
-                  const checked = (currentPermissions ?? []).includes(action.id);
-                  return (
-                    <label
-                      key={action.id}
-                      htmlFor={`perm-${action.id}`}
-                      className={cn(
-                        'flex items-center gap-2 p-2 rounded-md border cursor-pointer transition-colors',
-                        checked
-                          ? 'bg-primary/10 border-primary'
-                          : 'bg-background hover:bg-muted'
-                      )}
-                    >
-                      <Checkbox
-                        id={`perm-${action.id}`}
-                        checked={checked}
-                        onCheckedChange={() => togglePermission(action.id)}
-                      />
-                      <action.icon className="w-4 h-4 text-muted-foreground" />
-                      <span className="text-sm font-medium leading-none flex-1">
-                        {action.label}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
+
 
             <div className="space-y-2 pt-2 border-t">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">

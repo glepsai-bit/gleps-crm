@@ -1,10 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useAuth, useRoleAccess } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useFinance } from '@/contexts/FinanceContext';
-import { CreateSaleDialog } from '@/components/finance/CreateSaleDialog';
 import { LeadProfileSheet } from '@/components/leads/LeadProfileSheet';
 import { CreateLeadDialog } from '@/components/kanban/CreateLeadDialog';
-import { AgentFilter } from '@/components/dashboard/AgentFilter';
 import { mockFunnelStages, mockUsers } from '@/data/mockData';
 import { Contact, ContactOrigin } from '@/types/crm';
 import { Card, CardContent } from '@/components/ui/card';
@@ -64,7 +62,6 @@ import {
   Trash2,
   Phone,
   Mail,
-  DollarSign,
   Eye,
   Users,
   SearchX,
@@ -79,14 +76,11 @@ import { contactsCloudService } from '@/services/contacts.cloud.service';
 import { contactsBackendService } from '@/services/contacts.backend.service';
 
 export default function AdminLeadsPage() {
-  const { account, user } = useAuth();
-  const { isAdmin } = useRoleAccess();
+  const { account } = useAuth();
   const {
     contacts,
     leadFunnelStates,
     updateContact,
-    getContactFunnelStageOrder,
-    getContactSales,
     refetchContacts,
     isLoadingContacts,
   } = useFinance();
@@ -94,9 +88,7 @@ export default function AdminLeadsPage() {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [originFilter, setOriginFilter] = useState<string>('all');
-  const [selectedAgent, setSelectedAgent] = useState<string>('all');
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
-  const [saleContactId, setSaleContactId] = useState<string | null>(null);
   const [profileContact, setProfileContact] = useState<Contact | null>(null);
   const [deletingContact, setDeletingContact] = useState<Contact | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -145,7 +137,7 @@ export default function AdminLeadsPage() {
     loadData();
   }, [accountId, account]);
 
-  // Filter by agent if selected (based on sales association)
+  // Filtro de busca e origem
   const filteredContacts = useMemo(() => {
     return contacts.filter((contact) => {
       const matchesSearch =
@@ -154,16 +146,9 @@ export default function AdminLeadsPage() {
         contact.email?.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesOrigin = originFilter === 'all' || contact.origem === originFilter;
       
-      // Filter by agent - leads are associated via sales they handled
-      let matchesAgent = true;
-      if (selectedAgent !== 'all' && isAdmin) {
-        const contactSales = getContactSales(contact.id);
-        matchesAgent = contactSales.some(sale => sale.responsavel_id === selectedAgent);
-      }
-      
-      return matchesSearch && matchesOrigin && matchesAgent;
+      return matchesSearch && matchesOrigin;
     });
-  }, [contacts, searchTerm, originFilter, selectedAgent, isAdmin, getContactSales]);
+  }, [contacts, searchTerm, originFilter]);
 
   const getStage = (contactId: string) => {
     const state = leadFunnelStates.find((lfs) => lfs.contact_id === contactId);
@@ -194,12 +179,6 @@ export default function AdminLeadsPage() {
     }
   };
 
-  // Check if lead is eligible for sale (ordem >= 3)
-  const canCreateSaleForLead = (leadId: string) => {
-    const stageOrder = getContactFunnelStageOrder(leadId);
-    return stageOrder >= 3;
-  };
-
   const handleLeadCreated = async () => {
     // Reload contacts list after creation
     await refetchContacts();
@@ -207,13 +186,11 @@ export default function AdminLeadsPage() {
 
   const hasActiveFilters =
     searchTerm.trim().length > 0 ||
-    originFilter !== 'all' ||
-    selectedAgent !== 'all';
+    originFilter !== 'all';
 
   const handleClearFilters = () => {
     setSearchTerm('');
     setOriginFilter('all');
-    setSelectedAgent('all');
   };
 
   const handleUpdate = () => {
@@ -235,11 +212,6 @@ export default function AdminLeadsPage() {
   };
 
   const handleRequestDelete = (contact: Contact) => {
-    const contactSales = getContactSales(contact.id);
-    if (contactSales.length > 0) {
-      toast.error('Não é possível remover lead com vendas registradas');
-      return;
-    }
     setDeletingContact(contact);
   };
 
@@ -324,10 +296,6 @@ export default function AdminLeadsPage() {
               </SelectContent>
             </Select>
             
-            {/* Agent Filter - Only for Admins */}
-            {isAdmin && user?.role === 'admin' && (
-              <AgentFilter value={selectedAgent} onChange={setSelectedAgent} />
-            )}
           </div>
         </CardContent>
       </Card>
@@ -461,7 +429,6 @@ export default function AdminLeadsPage() {
                   <TableBody>
                     {filteredContacts.map((contact) => {
                       const stage = getStage(contact.id);
-                      const canSell = canCreateSaleForLead(contact.id);
                       return (
                         <TableRow key={contact.id}>
                           <TableCell>
@@ -523,12 +490,6 @@ export default function AdminLeadsPage() {
                                   <Eye className="w-4 h-4 mr-2" />
                                   Ver Ficha do Cliente
                                 </DropdownMenuItem>
-                                {canSell && (
-                                  <DropdownMenuItem onClick={() => setSaleContactId(contact.id)}>
-                                    <DollarSign className="w-4 h-4 mr-2" />
-                                    Criar Venda
-                                  </DropdownMenuItem>
-                                )}
                                 <DropdownMenuItem onClick={() => setEditingContact(contact)}>
                                   <Edit className="w-4 h-4 mr-2" />
                                   Editar
@@ -557,7 +518,6 @@ export default function AdminLeadsPage() {
           <div className="md:hidden space-y-2">
             {filteredContacts.map((contact) => {
               const stage = getStage(contact.id);
-              const canSell = canCreateSaleForLead(contact.id);
               return (
                 <Card key={contact.id} className="p-3">
                   <div className="flex items-start justify-between gap-2">
@@ -582,12 +542,6 @@ export default function AdminLeadsPage() {
                           <Eye className="w-4 h-4 mr-2" />
                           Ver Ficha do Cliente
                         </DropdownMenuItem>
-                        {canSell && (
-                          <DropdownMenuItem onClick={() => setSaleContactId(contact.id)}>
-                            <DollarSign className="w-4 h-4 mr-2" />
-                            Criar Venda
-                          </DropdownMenuItem>
-                        )}
                         <DropdownMenuItem onClick={() => setEditingContact(contact)}>
                           <Edit className="w-4 h-4 mr-2" />
                           Editar
@@ -732,14 +686,6 @@ export default function AdminLeadsPage() {
         open={!!profileContact}
         onOpenChange={(open) => !open && setProfileContact(null)}
       />
-
-      {/* Sale Dialog (controlled externally) */}
-      {saleContactId && (
-        <CreateSaleDialog
-          preSelectedContactId={saleContactId}
-          onClose={() => setSaleContactId(null)}
-        />
-      )}
 
       {/* AlertDialog excluir lead */}
       <AlertDialog

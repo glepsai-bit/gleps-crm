@@ -112,11 +112,18 @@ describe('accountService.create — módulos padrão', () => {
 
 describe('accountService.update — modulos', () => {
   it('aceita lista válida e grava a lista inteira (substitui, não mescla)', async () => {
-    const atualizada = await accountService.update('acc-1', { modulos: ['emails', 'vendas'] }, 'super-1');
+    const atualizada = await accountService.update('acc-1', { modulos: ['emails', 'aquecimento'] }, 'super-1');
 
     const data = prismaMock.account.update.mock.calls[0][0].data;
-    expect(data.modulos).toEqual(['emails', 'vendas']);
-    expect(atualizada.modulos).toEqual(['emails', 'vendas']);
+    expect(data.modulos).toEqual(['emails', 'aquecimento']);
+    expect(atualizada.modulos).toEqual(['emails', 'aquecimento']);
+  });
+
+  it('a chave antiga "vendas" (etapa C2-V) é recusada como qualquer desconhecida', async () => {
+    await expect(
+      accountService.update('acc-1', { modulos: ['emails', 'vendas'] })
+    ).rejects.toMatchObject({ statusCode: 400, details: { invalidas: ['vendas'] } });
+    expect(prismaMock.account.update).not.toHaveBeenCalled();
   });
 
   it('lista vazia é válida: desliga tudo', async () => {
@@ -181,7 +188,7 @@ describe('PUT /accounts/:id — zod do controller', () => {
   });
 
   it('chave repetida também é recusada pelo zod', async () => {
-    const { next } = await chama({ modulos: ['vendas', 'vendas'] });
+    const { next } = await chama({ modulos: ['emails', 'emails'] });
     expect(next.mock.calls[0][0]?.name).toBe('ZodError');
     expect(prismaMock.account.update).not.toHaveBeenCalled();
   });

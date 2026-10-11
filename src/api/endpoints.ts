@@ -79,19 +79,9 @@ export const API_ENDPOINTS = {
     FECHAMENTO: (id: string) => `/api/contacts/${id}/fechamento`,
   },
 
-  // ============= SALES SERVICE =============
+  // ============= SALES SERVICE (histórico somente leitura) =============
   SALES: {
-    LIST: '/api/sales',
-    GET: (id: string) => `/api/sales/${id}`,
-    CREATE: '/api/sales',
-    UPDATE: (id: string) => `/api/sales/${id}`,
-    DELETE: (id: string) => `/api/sales/${id}`,
-    MARK_PAID: (id: string) => `/api/sales/${id}/pay`,
-    REFUND: (id: string) => `/api/sales/${id}/refund`,
-    REFUND_ITEM: (saleId: string, itemId: string) => `/api/sales/${saleId}/items/${itemId}/refund`,
     BY_CONTACT: (contactId: string) => `/api/contacts/${contactId}/sales`,
-    TRANSACTIONS: (id: string) => `/api/sales/${id}/transactions`,
-    STATS: '/api/sales/kpis',
   },
 
   // ============= PRODUCTS SERVICE =============

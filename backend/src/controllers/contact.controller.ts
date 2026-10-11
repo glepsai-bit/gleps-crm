@@ -266,7 +266,7 @@ export class ContactController {
    *
    * Completa a venda pendente criada quando o lead entrou na etapa de
    * fechamento (ou cria uma já paga se não houver) e dispara o Purchase.
-   * Rota de núcleo: funciona com o módulo `vendas` desligado.
+   * Rota de núcleo: é o único caminho que registra venda desde a etapa C2-V.
    */
   async registrarFechamento(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {

@@ -6,12 +6,10 @@ export type AgentPermission =
   | 'leads'
   | 'agenda'
   | 'sales'
-  | 'finance'
   | 'products'
   | 'events'
   | 'extracao'
-  | 'emails'
-  | 'refunds';
+  | 'emails';
 
 // Map routes to required permissions
 const routePermissionMap: Record<string, AgentPermission> = {
@@ -19,8 +17,6 @@ const routePermissionMap: Record<string, AgentPermission> = {
   '/admin/kanban': 'kanban',
   '/admin/leads': 'leads',
   '/admin/agenda': 'agenda',
-  '/admin/sales': 'sales',
-  '/admin/finance': 'finance',
   '/admin/products': 'products',
   '/admin/events': 'events',
   '/admin/extracao': 'extracao',
@@ -141,8 +137,6 @@ export function usePermissions() {
       '/admin/kanban',
       '/admin/leads',
       '/admin/agenda',
-      '/admin/sales',
-      '/admin/finance',
       '/admin/products',
       '/admin/events',
       '/admin/extracao',

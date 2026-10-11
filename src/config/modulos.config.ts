@@ -15,7 +15,6 @@ export const MODULOS_OPCIONAIS = [
   'disparos',
   'emails',
   'discador',
-  'vendas',
   'aquecimento',
 ] as const;
 
@@ -45,13 +44,6 @@ export const MODULOS: Record<ModuloChave, ModuloInfo> = {
     descricao: 'Templates e campanhas em massa no WhatsApp. Ligado por padrão.',
     rotas: ['/admin/disparos'],
   },
-  vendas: {
-    chave: 'vendas',
-    rotulo: 'Vendas',
-    descricao:
-      'Lista de vendas, estornos, formas de pagamento e Financeiro. O fechamento no Kanban funciona sem isto.',
-    rotas: ['/admin/sales', '/admin/finance'],
-  },
   emails: {
     chave: 'emails',
     rotulo: 'E-mails',
@@ -76,7 +68,6 @@ export const MODULOS: Record<ModuloChave, ModuloInfo> = {
 export const MODULOS_ORDEM_CARD: ModuloChave[] = [
   'extracao',
   'disparos',
-  'vendas',
   'emails',
   'discador',
   'aquecimento',

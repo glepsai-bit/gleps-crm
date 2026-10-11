@@ -36,7 +36,7 @@ export async function createTestAccount(overrides?: {
   const userName = overrides?.userName ?? 'Test Admin';
 
   // Conta de teste nasce com TODOS os módulos (como uma conta que já existia
-  // antes da ETAPA A): os testes de /email, /sales, /warmup etc. exercitam o
+  // antes da ETAPA A): os testes de /email, /voice, /aquecimento etc. exercitam o
   // módulo, não o bloqueio. O bloqueio tem teste próprio (auth.middleware.modulos).
   const account = await prismaTest.account.create({
     data: { nome: accountName, modulos: [...MODULOS_OPCIONAIS] },

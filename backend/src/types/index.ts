@@ -84,11 +84,9 @@ export type Permission =
   | 'leads'
   | 'agenda'
   | 'sales'
-  | 'finance'
   | 'products'
   | 'events'
   | 'insights'
-  | 'refunds'
   | 'emails'
   | 'extracao'
   | 'conversations_all';
@@ -99,11 +97,9 @@ export const ALL_PERMISSIONS: Permission[] = [
   'leads',
   'agenda',
   'sales',
-  'finance',
   'products',
   'events',
   'insights',
-  'refunds',
   'emails',
   'extracao',
   'conversations_all',

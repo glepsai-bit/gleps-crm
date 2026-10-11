@@ -26,10 +26,10 @@ class DashboardService {
     }
 
     // L-VEN-1: SOURCE OF TRUTH — `totalSales` em todos os KPIs de venda
-    // (dashboard.getAdminKPIs e finance.getKPIs) conta apenas vendas com
-    // status='paid'. Vendas em `pending` / `refunded` / `partial_refund` NÃO
-    // entram em totalSales para evitar divergência entre widgets do dashboard
-    // e do financeiro (ex.: dashboard.totalSales=13 vs finance.totalSales=11).
+    // conta apenas vendas com status='paid'. Vendas em `pending` / `cancelled`
+    // / `refunded` / `partial_refund` NÃO entram em totalSales, para que
+    // nenhum widget divirja de outro (o Financeiro saiu na etapa C2-V, mas a
+    // regra continua valendo entre dashboard e chat-metrics).
     // Quem precisar do total bruto (todas as vendas independente de status)
     // deve usar `allSales` (vide abaixo) ou contagens dedicadas.
     const [

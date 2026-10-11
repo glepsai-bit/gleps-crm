@@ -38,7 +38,6 @@ vi.mock('@/contexts/FinanceContext', () => ({
     isSyncingContacts: false,
     lastContactsSync: null,
     newContactIds: new Set<string>(),
-    getContactSales: () => [],
   }),
 }));
 

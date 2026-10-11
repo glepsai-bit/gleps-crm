@@ -89,46 +89,6 @@ export interface AddNoteRequest {
   content: string;
 }
 
-// ============= SALE TYPES =============
-
-export interface SaleListParams extends PaginationParams, DateRangeParams {
-  status?: 'pending' | 'paid' | 'refunded' | 'cancelled';
-  contactId?: string;
-  responsavelId?: string;
-  paymentMethod?: string;
-}
-
-export interface CreateSaleRequest {
-  contactId: string;
-  items: {
-    productId: string;
-    quantidade: number;
-    valorUnitario: number;
-  }[];
-  metodoPagamento: 'pix' | 'boleto' | 'debito' | 'credito' | 'dinheiro' | 'convenio';
-  convenioNome?: string;
-  responsavelId: string;
-  isRecurring?: boolean;
-}
-
-export interface RefundSaleRequest {
-  reason: string;
-}
-
-export interface RefundItemRequest {
-  reason: string;
-  quantity?: number;
-}
-
-export interface SaleStatsResponse {
-  totalRevenue: number;
-  totalSales: number;
-  pendingAmount: number;
-  refundedAmount: number;
-  avgTicket: number;
-  byPaymentMethod: Record<string, { count: number; total: number }>;
-}
-
 // ============= PRODUCT TYPES =============
 
 export interface ProductListParams extends PaginationParams {

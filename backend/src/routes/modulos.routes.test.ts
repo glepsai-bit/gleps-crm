@@ -49,7 +49,6 @@ const ROTA_POR_MODULO: Record<string, string> = {
   disparos: '/api/whatsapp-templates',
   emails: '/api/email/cadences',
   discador: '/api/voice/sip-credentials',
-  vendas: '/api/sales',
   aquecimento: '/api/aquecimento',
 };
 
@@ -78,14 +77,22 @@ describe('módulos por conta — montagem nas rotas', () => {
     }
   });
 
-  it('/finance e /email/audiences seguem vendas e emails', async () => {
-    const { token } = await contaComJwt(['vendas']);
-    const fin = await request(app).get('/api/finance/kpis').set(authHeader(token));
-    expect(fin.body?.error?.code).not.toBe('MODULO_DESLIGADO');
-
+  it('/email/audiences segue emails; ligar um módulo não destrava outro', async () => {
+    const { token } = await contaComJwt(['emails']);
     const aud = await request(app).get('/api/email/audiences').set(authHeader(token));
-    expect(aud.status).toBe(403);
-    expect(aud.body.error.code).toBe('MODULO_DESLIGADO');
+    expect(aud.body?.error?.code).not.toBe('MODULO_DESLIGADO');
+
+    const aq = await request(app).get('/api/aquecimento').set(authHeader(token));
+    expect(aq.status).toBe(403);
+    expect(aq.body.error.code).toBe('MODULO_DESLIGADO');
+  });
+
+  it('a chave antiga "vendas" não existe mais: /sales e /finance são 404, não módulo', async () => {
+    const { token } = await contaComJwt([...MODULOS_OPCIONAIS]);
+    for (const rota of ['/api/sales', '/api/finance/kpis']) {
+      const res = await request(app).get(rota).set(authHeader(token));
+      expect(res.status, rota).toBe(404);
+    }
   });
 
   it('conta com o módulo ligado NÃO recebe MODULO_DESLIGADO (o que vier depois é da rota)', async () => {
