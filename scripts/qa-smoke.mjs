@@ -103,18 +103,12 @@ async function main() {
 
   // ---- CRM CORE ----
   await get('GET /api/contacts', '/api/contacts');
-  await get('GET /api/sales', '/api/sales');
-  await get('GET /api/sales/kpis', '/api/sales/kpis');
   await get('GET /api/products', '/api/products');
   await get('GET /api/tags', '/api/tags');
   await get('GET /api/funnels', '/api/funnels');
   await get('GET /api/users', '/api/users');
   await get('GET /api/calendar/events', '/api/calendar/events');
   await get('GET /api/events', '/api/events');
-
-  // ---- FINANCE (rotas reais usadas pelo front) ----
-  await get('GET /api/finance/revenue-chart', `/api/finance/revenue-chart?${RANGE}`);
-  await get('GET /api/finance/funnel-conversion', `/api/finance/funnel-conversion?${RANGE}`);
 
   // ---- INSIGHTS ----
   for (const p of ['kpis', 'products', 'temporal', 'marketing', 'payment-methods', 'automatic', 'agents-ranking']) {
@@ -146,12 +140,8 @@ async function main() {
   const noTok = await (async () => { const t = token; token = null; const r = await call('GET', '/api/contacts'); token = t; return r; })();
   record('AUTHZ sem token → /api/contacts (401)', noTok.status, 401);
 
-  // ---- ANOMALIAS CONHECIDAS (não derrubam o run) ----
-  // T-004 já corrigido no front (passou a usar /api/sales/kpis, validado acima). O path
-  // literal /api/sales/stats não é endpoint real: casa com /:id → 500. Mantido só como
-  // documentação de que esse caminho não deve ser usado.
-  await get('CONHECIDA /api/sales/stats não é endpoint (500)', '/api/sales/stats', 500, 'sales-stats-naoexiste');
-  // (Constants mortos DASHBOARD.REVENUE/CONVERSION_FUNNEL/INSIGHTS.OVERVIEW removidos do front em 2026-06-01.)
+  // (Constants mortos DASHBOARD.REVENUE/CONVERSION_FUNNEL/INSIGHTS.OVERVIEW removidos do front em 2026-06-01;
+  //  /api/sales* e /api/finance/* saíram na etapa C2-V — a venda vive em /api/contacts/:id/sales.)
 
   // ---- WRITE round-trip (opcional) ----
   if (DO_WRITE) {
