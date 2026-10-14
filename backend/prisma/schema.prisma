@@ -2241,6 +2241,10 @@ model AiAgent {
   spec            Json?
   /// Quantas vezes o spec foi aplicado. 0 = nunca provisionado.
   specVersao      Int            @default(0) @map("spec_versao")
+  /// ETAPA G (migration 0076) — esforço de raciocínio pros modelos que o
+  /// aceitam (gpt-5*, o1*, o3*, o4*): 'minimal' | 'low' | 'medium' | 'high'.
+  /// NULL = padrão do provider. Ignorado por modelo que não raciocina.
+  raciocinio      String?        @map("reasoning_effort") @db.VarChar(10)
   active          Boolean        @default(true)
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

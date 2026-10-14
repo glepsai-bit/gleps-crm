@@ -18,6 +18,10 @@ router.use(authenticate, requireSuperAdmin);
 // Literal antes da paramétrica.
 router.get('/conversas-teste/:segmento', (req, res, next) => provisionarController.conversasTeste(req, res, next));
 
+// ETAPA G — leituras/escrita por conta, para o kit não precisar logar com usuário da conta.
+router.get('/conta/:accountId', (req, res, next) => provisionarController.conta(req, res, next));
+router.put('/conta/:accountId/ia', (req, res, next) => provisionarController.salvarIa(req, res, next));
+
 router.post('/agente', (req, res, next) => provisionarController.criar(req, res, next));
 router.get('/agente/:agentId', (req, res, next) => provisionarController.obter(req, res, next));
 router.put('/agente/:agentId', (req, res, next) => provisionarController.atualizar(req, res, next));

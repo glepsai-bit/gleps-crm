@@ -60,3 +60,51 @@ export const SPEC_CLINICA: SpecV1Entrada = {
     ],
   },
 };
+
+/**
+ * v1.1 — agente de pré-venda (papel sdr) com bloco de vendas, catálogo com
+ * unidade e item não agendável, follow-up por intervalos e raciocínio.
+ */
+export const SPEC_SDR: SpecV1Entrada = {
+  versao: 1.1,
+  negocio: { nome: 'Studio Luz', segmento: 'estetica', sobre: 'Estúdio de estética facial e corporal. Avaliação gratuita antes de qualquer procedimento.' },
+  agente: {
+    nome: 'Sofia',
+    tom: 'descontraido',
+    papel: 'sdr',
+    apresentacao: 'Oi! Aqui é a Sofia, do Studio Luz.',
+    model: 'gpt-5-mini',
+    raciocinio: 'low',
+  },
+  vendas: {
+    objetivo: 'agendar avaliacao',
+    roteiro: ['Descobrir o que incomoda a pessoa', 'Mostrar o tratamento certo para isso', 'Oferecer a avaliação gratuita'],
+    objecoes: [
+      { objecao: 'Está caro', resposta: 'A avaliação é gratuita e o plano cabe em 10x.' },
+      { objecao: 'Vou pensar', resposta: 'Sem pressa; a agenda da semana tem poucas vagas, posso reservar uma?' },
+    ],
+    gatilhos: ['Perguntou preço', 'Falou de evento próximo'],
+    fechamento: 'Proponha o horário mais próximo e confirme.',
+  },
+  servicos: [
+    { nome: 'Avaliação', duracaoMinutos: 30, unidade: 'avaliacao' },
+    { nome: 'Limpeza de pele', duracaoMinutos: 60, valorPadrao: 180, unidade: 'sessao' },
+    { nome: 'Plano mensal', valorPadrao: 390, unidade: 'mes', agendavel: false, descricao: '4 sessões por mês' },
+    { nome: 'Pacote 10 sessões', valorPadrao: 1500, unidade: 'pacote', duracaoMinutos: 60, agendavel: false },
+  ],
+  agenda: {
+    ativo: true,
+    horarios: [{ dias: [2, 3, 4, 5, 6], inicio: '10:00', fim: '19:00' }],
+    profissionais: [{ email: 'marina@studioluz.com' }],
+  },
+  followup: {
+    ativo: true,
+    tentativas: ['2h', '1d', '3d'],
+    janela: { inicio: '09:00', fim: '19:00' },
+    mensagens: [
+      'Oi {{nome}}, ficou alguma dúvida sobre a avaliação?',
+      'Passando pra lembrar que a avaliação é gratuita.',
+      'Se preferir, retomo em outro momento — me avisa.',
+    ],
+  },
+};

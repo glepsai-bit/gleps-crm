@@ -28,6 +28,8 @@ import {
   ehFerramentaDeAgenda,
   type ContextoDeAgenda,
 } from './ferramentas';
+import { resolverDia } from './horarios';
+import { calendarioSombra } from './sombra';
 
 const AGENDA = { ativo: true as const, profissionalIds: ['u-marina', 'u-ana'], produtoIds: ['p-botox'] };
 
@@ -52,6 +54,7 @@ const ctx = (over: Partial<ContextoDeAgenda> = {}): ContextoDeAgenda => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  calendarioSombra.__limparTudo();
   agendaMock.catalogoDoAgente.mockResolvedValue(catalogo());
 });
 
@@ -89,6 +92,19 @@ describe('as definições', () => {
     expect(tools[2].description).toContain('depois de o lead confirmar');
     expect(ehFerramentaDeAgenda('agendar')).toBe(true);
     expect(ehFerramentaDeAgenda('lembrar')).toBe(false);
+  });
+
+  it('ETAPA G: consultar_horarios pede dia/período/horário desejado; agendar não exige id e explica a reserva pendente', async () => {
+    const { tools } = await definicoesDasFerramentasDeAgenda('acc-1', AGENDA);
+    const consultar = tools[0].parameters as { properties: Record<string, { enum?: string[] }>; required: string[] };
+    expect(Object.keys(consultar.properties)).toEqual(['servico', 'profissional', 'dia', 'periodo', 'horario_desejado', 'a_partir_de']);
+    expect(consultar.properties.periodo.enum).toEqual(['manha', 'tarde', 'noite', 'qualquer']);
+    expect(consultar.required).toEqual(['servico']);
+
+    const agendar = tools[2].parameters as { properties: Record<string, unknown>; required?: string[] };
+    expect(agendar.required).toBeUndefined();
+    expect(tools[2].description).toContain('SEM id, marca a reserva pendente desta conversa');
+    expect(tools[1].description).toContain('fica guardada NESTA CONVERSA');
   });
 
   it('sem profissional ou serviço ativo nas regras, nenhuma ferramenta entra', async () => {
@@ -135,6 +151,38 @@ describe('consultar_horarios', () => {
     const saida = await executarFerramentaDeAgenda('consultar_horarios', { servico: 'Botox', periodo: 'manha' }, ctx(), AGENDA, cat);
     expect(saida).toMatch(/Nenhum horário livre à manhã/);
   });
+
+  it('ETAPA G: "amanhã" vira data civil; dia que não entende devolve frase sem consultar', async () => {
+    agendaMock.consultarHorarios.mockResolvedValue({ horarios: [], avisos: [] });
+    const { catalogo: cat } = await definicoesDasFerramentasDeAgenda('acc-1', AGENDA);
+    await executarFerramentaDeAgenda('consultar_horarios', { servico: 'Botox', dia: 'amanhã' }, ctx(), AGENDA, cat);
+    expect(agendaMock.consultarHorarios.mock.calls[0][0].dia).toBe(resolverDia('amanhã', new Date(), 'America/Sao_Paulo'));
+
+    const saida = await executarFerramentaDeAgenda('consultar_horarios', { servico: 'Botox', dia: 'quando der' }, ctx(), AGENDA, cat);
+    expect(saida).toMatch(/Não entendi o dia "quando der"/);
+    expect(agendaMock.consultarHorarios).toHaveBeenCalledTimes(1);
+  });
+
+  it('ETAPA G: "15h" vira 15:00, "qualquer" vira sem período, e a_partir_de é ignorado quando há dia', async () => {
+    agendaMock.consultarHorarios.mockResolvedValue({
+      horarios: [{ id: 'h1', profissionalId: 'u-marina', profissional: 'Dra. Marina', inicio: new Date(), fim: new Date(), rotulo: 'terça-feira, 20/10 às 15:00' }],
+      avisos: [],
+    });
+    const { catalogo: cat } = await definicoesDasFerramentasDeAgenda('acc-1', AGENDA);
+    const saida = await executarFerramentaDeAgenda(
+      'consultar_horarios',
+      { servico: 'Botox', periodo: 'qualquer', horario_desejado: '15h', dia: '2026-10-20', a_partir_de: '2026-10-05' },
+      ctx(),
+      AGENDA,
+      cat
+    );
+    expect(agendaMock.consultarHorarios.mock.calls[0][0]).toMatchObject({ periodo: null, horarioDesejado: '15:00', dia: '2026-10-20', de: null });
+    expect(saida).toContain('pedido: dia 2026-10-20, perto das 15:00');
+    expect(saida).toContain('se ele já disser "sim" a um deles, chame agendar com o id direto');
+
+    const ruim = await executarFerramentaDeAgenda('consultar_horarios', { servico: 'Botox', horario_desejado: 'de tardinha' }, ctx(), AGENDA, cat);
+    expect(ruim).toMatch(/Não entendi o horário/);
+  });
 });
 
 describe('agendar', () => {
@@ -168,9 +216,54 @@ describe('agendar', () => {
       avisos: [],
     });
     const { catalogo: cat } = await definicoesDasFerramentasDeAgenda('acc-1', AGENDA);
-    const saida = await executarFerramentaDeAgenda('agendar', { id: 'h1' }, ctx({ shadow: true }), AGENDA, cat);
-    expect(agendaMock.agendar.mock.calls[0][0].shadow).toBe(true);
+    const saida = await executarFerramentaDeAgenda('agendar', { id: 'h1' }, ctx({ shadow: true, chaveDeSombra: 'sim:c1' }), AGENDA, cat);
+    expect(agendaMock.agendar.mock.calls[0][0]).toMatchObject({ shadow: true, chaveDeSombra: 'sim:c1' });
     expect(saida).toContain('[simulação');
+  });
+
+  it('ETAPA G: sem id, a ref vai vazia — é a reserva pendente da conversa que marca', async () => {
+    agendaMock.agendar.mockResolvedValue({
+      ok: true,
+      reuniao: { eventoId: 'ev-1', rotulo: 'quinta-feira, 01/10 às 14:00', profissional: 'Dra. Marina', servico: 'Botox' },
+      avisos: ['a reserva tinha vencido, mas o horário continuava livre'],
+    });
+    const { catalogo: cat } = await definicoesDasFerramentasDeAgenda('acc-1', AGENDA);
+    const saida = await executarFerramentaDeAgenda('agendar', {}, ctx(), AGENDA, cat);
+    expect(agendaMock.agendar.mock.calls[0][0]).toMatchObject({ ref: null, conversationId: 'conv-1' });
+    expect(saida).toContain('Aviso interno: a reserva tinha vencido');
+  });
+});
+
+describe('ETAPA G — sombra com calendário em memória', () => {
+  it('minha_reuniao, remarcar e cancelar leem a reunião fingida da conversa, sem ir ao banco', async () => {
+    calendarioSombra.confirmar('sim:c1', {
+      horarioId: 'h-old',
+      profissionalId: 'u-marina',
+      produtoId: 'p-botox',
+      inicio: new Date(),
+      fim: new Date(),
+      rotulo: 'quinta-feira, 01/10 às 14:00',
+      profissional: 'Dra. Marina',
+      servico: 'Botox',
+    });
+    const c = ctx({ shadow: true, chaveDeSombra: 'sim:c1', contactId: null, conversationId: null });
+    const { catalogo: cat } = await definicoesDasFerramentasDeAgenda('acc-1', AGENDA);
+
+    expect(await executarFerramentaDeAgenda('minha_reuniao', {}, c, AGENDA, cat)).toBe('Reunião marcada: quinta-feira, 01/10 às 14:00 com Dra. Marina — Botox. [simulação]');
+    expect(agendaMock.minhaReuniao).not.toHaveBeenCalled();
+
+    agendaMock.agendar.mockResolvedValue({
+      ok: true,
+      reuniao: { eventoId: 'sim:h2', rotulo: 'sexta-feira, 02/10 às 09:00', profissional: 'Dra. Marina', servico: 'Botox', simulado: true },
+      avisos: [],
+    });
+    expect(await executarFerramentaDeAgenda('remarcar', { horario_id: 'h2' }, c, AGENDA, cat)).toContain('Remarcado: de quinta-feira, 01/10 às 14:00 para sexta-feira, 02/10 às 09:00');
+    expect(agendaMock.remarcar).not.toHaveBeenCalled();
+    expect(c.efeitos.remarcou).toBeDefined();
+
+    expect(await executarFerramentaDeAgenda('cancelar', {}, c, AGENDA, cat)).toContain('Cancelado:');
+    expect(agendaMock.cancelar).not.toHaveBeenCalled();
+    expect(calendarioSombra.marcada('sim:c1')).toBeNull();
   });
 });
 
@@ -186,7 +279,9 @@ describe('reservar, minha_reuniao, remarcar, cancelar', () => {
     });
     const { catalogo: cat } = await definicoesDasFerramentasDeAgenda('acc-1', AGENDA);
     const saida = await executarFerramentaDeAgenda('reservar', { horario_id: 'h1' }, ctx(), AGENDA, cat);
-    expect(saida).toContain('chame agendar com o id res-1');
+    expect(saida).toContain('Reservado por 5 min: quinta-feira, 01/10 às 14:00 com Dra. Marina (Botox)');
+    // A ref não precisa mais ser carregada pelo modelo: a reserva é da conversa.
+    expect(saida).toContain('quando ele confirmar, chame agendar (sem id)');
   });
 
   it('minha_reuniao confere no Google fora da sombra', async () => {

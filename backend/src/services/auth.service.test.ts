@@ -5,10 +5,12 @@
  * e logout (com/sem refreshToken específico).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { randomUUID } from 'crypto';
 import { prismaTest } from '../test/setup';
 import { createTestAccount } from '../test/helpers';
 import { authService } from './auth.service';
+import { logger } from '../utils/logger';
 
 /**
  * Helper: valida que o erro lancado eh um UnauthorizedError "compatível".
@@ -27,6 +29,29 @@ function expectUnauthorized(err: unknown, expectedMessage?: string) {
 }
 
 describe('AuthService.login', () => {
+  it('[G] senha igual ao e-mail: loga warn pedindo a troca, mas NÃO bloqueia', async () => {
+    const email = `igual-${randomUUID().slice(0, 8)}@test.com`;
+    await createTestAccount({ userEmail: email, password: email });
+    const warn = vi.spyOn(logger, 'warn');
+    try {
+      const result = await authService.login({ email, password: email });
+      expect(result.token).toBeTruthy();
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('senha igual ao e-mail'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Senha diferente do e-mail: nada no log.
+    const { user, password } = await createTestAccount();
+    const warn2 = vi.spyOn(logger, 'warn');
+    try {
+      await authService.login({ email: user.email, password });
+      expect(warn2.mock.calls.some((c) => String(c[0]).includes('senha igual ao e-mail'))).toBe(false);
+    } finally {
+      warn2.mockRestore();
+    }
+  });
+
   it('login com credenciais válidas: 200 + retorna token + refreshToken', async () => {
     const { user, password } = await createTestAccount();
 

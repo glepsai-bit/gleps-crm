@@ -80,10 +80,191 @@ function diaCivil(instante: Date, tz: string): { data: string; diaDaSemana: numb
 }
 
 /** O instante em que uma hora civil ("2026-10-02" + 570 minutos) acontece no fuso. */
-function instanteNoFuso(dataCivil: string, minutos: number, tz: string): Date {
+export function instanteNoFuso(dataCivil: string, minutos: number, tz: string): Date {
   const hh = String(Math.floor(minutos / 60)).padStart(2, '0');
   const mm = String(minutos % 60).padStart(2, '0');
   return fromZonedTime(`${dataCivil}T${hh}:${mm}:00`, tz);
+}
+
+/** "2026-10-02" + n dias, em data civil — sem passar por fuso (não há hora envolvida). */
+export function somarDiasCivis(dataCivil: string, dias: number): string {
+  const [y, m, d] = dataCivil.split('-').map(Number);
+  const utc = new Date(Date.UTC(y, m - 1, d + dias));
+  return utc.toISOString().slice(0, 10);
+}
+
+/** [início, fim) de um dia civil no fuso — o fim é o início do dia seguinte. */
+export function janelaDoDiaCivil(dataCivil: string, tz: string): { inicio: Date; fim: Date } {
+  return {
+    inicio: instanteNoFuso(dataCivil, 0, tz),
+    fim: instanteNoFuso(somarDiasCivis(dataCivil, 1), 0, tz),
+  };
+}
+
+const DIAS_DA_SEMANA: Record<string, number> = {
+  domingo: 0,
+  segunda: 1,
+  terca: 2,
+  terça: 2,
+  quarta: 3,
+  quinta: 4,
+  sexta: 5,
+  sabado: 6,
+  sábado: 6,
+};
+
+/**
+ * O dia que o lead pediu → data civil no fuso da conta. Aceita ISO
+ * ("2026-10-14"), "dd/mm", "hoje", "amanhã", "depois de amanhã" e nome de dia
+ * ("terça", "terça-feira", "sexta"). Nome de dia é o PRÓXIMO: "terça" numa
+ * terça é a da semana que vem — pra hoje existe "hoje". Lixo → null.
+ */
+export function resolverDia(texto: string, agora: Date, tz: string): string | null {
+  const t = String(texto ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/-feira$/, '')
+    .replace(/\s+/g, ' ');
+  if (!t) return null;
+  const hoje = formatInTimeZone(agora, tz, 'yyyy-MM-dd');
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+    // "2026-02-31" vira 3 de março (ou data inválida): se não sobreviveu, não era data.
+    const d = instanteNoFuso(t, 0, tz);
+    if (Number.isNaN(d.getTime())) return null;
+    return formatInTimeZone(d, tz, 'yyyy-MM-dd') === t ? t : null;
+  }
+  const ddmm = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?$/.exec(t);
+  if (ddmm) {
+    const ano = ddmm[3] ? Number(ddmm[3]) : Number(hoje.slice(0, 4));
+    const data = `${ano}-${ddmm[2].padStart(2, '0')}-${ddmm[1].padStart(2, '0')}`;
+    const valida = resolverDia(data, agora, tz);
+    if (!valida) return null;
+    // Sem ano e já passou: é do ano que vem.
+    return !ddmm[3] && valida < hoje ? resolverDia(`${ano + 1}${data.slice(4)}`, agora, tz) : valida;
+  }
+  if (t === 'hoje') return hoje;
+  if (t === 'amanha' || t === 'amanhã') return somarDiasCivis(hoje, 1);
+  if (t === 'depois de amanha' || t === 'depois de amanhã') return somarDiasCivis(hoje, 2);
+
+  const alvo = DIAS_DA_SEMANA[t];
+  if (alvo === undefined) return null;
+  const hojeDia = Number(formatInTimeZone(agora, tz, 'i')) % 7;
+  const delta = ((alvo - hojeDia + 7) % 7) || 7;
+  return somarDiasCivis(hoje, delta);
+}
+
+export type Periodo = 'manha' | 'meio_dia' | 'tarde' | 'noite';
+
+const NOMES_DOS_PERIODOS: Record<Periodo, string> = { manha: 'manhã', meio_dia: 'meio-dia', tarde: 'tarde', noite: 'noite' };
+
+/** Como o agente fala do período: "manhã", "tarde"… */
+export function nomeDoPeriodo(p: Periodo): string {
+  return NOMES_DOS_PERIODOS[p];
+}
+
+/**
+ * Até `n` itens ESPALHADOS pela lista: o primeiro, o último e o que couber
+ * no meio em passos iguais. "09:00, 09:30, 10:00" não ajuda quem só pode no
+ * fim da tarde — "09:00, 13:00, 17:30" dá a ideia do dia inteiro.
+ */
+export function espacados<T>(lista: T[], n: number): T[] {
+  if (n <= 0) return [];
+  if (lista.length <= n) return lista;
+  if (n === 1) return [lista[0]];
+  const saida: T[] = [];
+  const vistos = new Set<number>();
+  for (let i = 0; i < n; i++) {
+    const idx = Math.round((i * (lista.length - 1)) / (n - 1));
+    if (vistos.has(idx)) continue;
+    vistos.add(idx);
+    saida.push(lista[idx]);
+  }
+  return saida;
+}
+
+export interface OpcoesDeSelecao {
+  tz: string;
+  /** Teto total. */
+  limite: number;
+  /** Só este período do dia. Ausente = todos. */
+  periodo?: Periodo | null;
+  /** Em minutos do dia ("15:00" = 900): os mais próximos vencem, por dia. */
+  horarioDesejadoMinutos?: number | null;
+  /** Quantos por dia. Padrão 3. */
+  porDia?: number;
+  /**
+   * Modo "sem pedido": N por período em cada dia (ex.: { manha: 2, tarde: 2 }); período sem vaga não
+   * rende nada. Se `porDia` vier junto, o dia é aparado a esse tamanho ESPALHANDO (não cortando o
+   * fim) — quando manhã, meio-dia e tarde têm vaga, o dia ainda mostra o começo e o fim.
+   */
+  quotaPorPeriodo?: Partial<Record<Periodo, number>> | null;
+  /** Quantos dias distintos no máximo. Ausente = o limite manda. */
+  diasMaximos?: number | null;
+}
+
+/**
+ * Seleciona o que OFERECER dentre todos os horários livres.
+ *
+ * Por dia, nunca os primeiros da grade: espalhados pelo período (ou os mais
+ * próximos do horário pedido). Entre dias, em rodadas — um de cada dia antes
+ * do segundo de qualquer dia — pra quem só pode na sexta ver a sexta. Saída
+ * em ordem cronológica.
+ */
+export function selecionarHorarios<T extends { inicio: Date }>(horarios: T[], o: OpcoesDeSelecao): T[] {
+  const limite = Math.max(0, o.limite);
+  if (limite === 0 || horarios.length === 0) return [];
+  const porDia = Math.max(1, o.porDia ?? 3);
+
+  const minutosDe = (h: T) => Number(formatInTimeZone(h.inicio, o.tz, 'H')) * 60 + Number(formatInTimeZone(h.inicio, o.tz, 'm'));
+
+  // Agrupa por dia civil, em ordem.
+  const dias = new Map<string, T[]>();
+  for (const h of [...horarios].sort((a, b) => a.inicio.getTime() - b.inicio.getTime())) {
+    if (o.periodo && periodoDoDia(h.inicio, o.tz) !== o.periodo) continue;
+    const dia = formatInTimeZone(h.inicio, o.tz, 'yyyy-MM-dd');
+    if (!dias.has(dia)) dias.set(dia, []);
+    dias.get(dia)!.push(h);
+  }
+
+  // O que cada dia tem a oferecer, já na ordem em que entra nas rodadas.
+  const filas: T[][] = [];
+  for (const lista of dias.values()) {
+    let escolhidos: T[];
+    if (o.horarioDesejadoMinutos !== null && o.horarioDesejadoMinutos !== undefined) {
+      const alvo = o.horarioDesejadoMinutos;
+      escolhidos = [...lista]
+        .sort((a, b) => Math.abs(minutosDe(a) - alvo) - Math.abs(minutosDe(b) - alvo) || a.inicio.getTime() - b.inicio.getTime())
+        .slice(0, porDia);
+    } else if (o.quotaPorPeriodo) {
+      escolhidos = [];
+      for (const [periodo, n] of Object.entries(o.quotaPorPeriodo) as [Periodo, number][]) {
+        escolhidos.push(...espacados(lista.filter((h) => periodoDoDia(h.inicio, o.tz) === periodo), n));
+      }
+      escolhidos.sort((a, b) => a.inicio.getTime() - b.inicio.getTime());
+      if (o.porDia !== undefined) escolhidos = espacados(escolhidos, porDia);
+    } else {
+      escolhidos = espacados(lista, porDia);
+    }
+    if (escolhidos.length > 0) filas.push(escolhidos);
+    if (o.diasMaximos && filas.length >= o.diasMaximos) break;
+  }
+
+  // Rodadas entre os dias.
+  const resultado: T[] = [];
+  for (let rodada = 0; resultado.length < limite; rodada++) {
+    let pegou = false;
+    for (const fila of filas) {
+      if (resultado.length >= limite) break;
+      const h = fila[rodada];
+      if (h) {
+        resultado.push(h);
+        pegou = true;
+      }
+    }
+    if (!pegou) break;
+  }
+  return resultado.sort((a, b) => a.inicio.getTime() - b.inicio.getTime());
 }
 
 /**
@@ -165,10 +346,16 @@ export function horarioValido(p: Omit<ParametrosDeCalculo, 'de' | 'ate'>, inicio
   return candidatos.some((c) => c.inicio.getTime() === inicio.getTime());
 }
 
-/** Período do dia de um instante, no fuso: manhã (< 12h), tarde (< 18h), noite. */
-export function periodoDoDia(instante: Date, tz: string): 'manha' | 'tarde' | 'noite' {
+/**
+ * Período do dia de um instante, no fuso: manhã (< 12h), meio-dia (12h–13h),
+ * tarde (13h–18h), noite. O meio-dia é período próprio de propósito: "de
+ * tarde" pra um lead é depois do almoço — oferecer 12:00 a quem pediu tarde
+ * é o tipo de resposta que faz a pessoa achar que o agente não entendeu.
+ */
+export function periodoDoDia(instante: Date, tz: string): Periodo {
   const hora = Number(formatInTimeZone(instante, tz, 'H'));
   if (hora < 12) return 'manha';
+  if (hora < 13) return 'meio_dia';
   if (hora < 18) return 'tarde';
   return 'noite';
 }

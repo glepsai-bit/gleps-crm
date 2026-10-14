@@ -7,7 +7,7 @@
  * silêncio. Quase todo caso aqui verifica que a mensagem NÃO sai.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const prismaMock = vi.hoisted(() => ({
   conversation: { findFirst: vi.fn() },
@@ -24,6 +24,9 @@ vi.mock('../../utils/logger', () => ({
 import { NODE_CATALOG, proximaJanelaUtil } from './nodes';
 import { executeRun } from './engine';
 import type { FlowGraph, FlowNode, NodeContext } from './types';
+import { montarGrafo, NOS } from '../provisionar/template-fluxo';
+import { validarSpec } from '../provisionar/spec';
+import { SPEC_CLINICA } from '../provisionar/fixtures.test-util';
 
 const espera = NODE_CATALOG['flow.aguardar'];
 const guarda = NODE_CATALOG['guard.conditions'];
@@ -108,6 +111,23 @@ describe('janela comercial', () => {
     const quarta = new Date('2026-06-10T14:00:00Z');
     expect(proximaJanelaUtil(quarta, JANELA).getTime()).toBe(quarta.getTime());
   });
+
+  it('a dispersão entra ANTES de encaixar na janela: o toque marcado para o fim do expediente não sai dele (a guarda o descartaria)', async () => {
+    // Quarta 17:50 UTC, janela 09–18: +5 min = 17:55 (dentro). Com a dispersão máxima (~12 min) somada
+    // DEPOIS do encaixe virava 18:07 — fora do horário.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-06-10T17:50:00Z'));
+    const sorteio = vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    try {
+      const r = await espera.execute(no({ valor: 5, unidade: 'minutos', dispersaoMinutos: 12, horarioComercial: JANELA }), ctx());
+      const ate = r.sleep!.until;
+      expect(ate.getTime()).toBeGreaterThan(Date.now());
+      expect(proximaJanelaUtil(ate, JANELA).getTime()).toBe(ate.getTime()); // já está dentro: nada a empurrar
+    } finally {
+      sorteio.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ============================================
@@ -151,15 +171,17 @@ describe('quando NÃO falar', () => {
   });
 
   it('para no teto de toques — o quarto só marca o número como incômodo', async () => {
-    const r = await guarda.execute(config(), ctx({ __toque: 3, __edges: [] }));
+    const r = await guarda.execute(config(), ctx({ __toque: 4, __edges: [] }));
     expect(r.stop).toBe(true);
     expect(r.stopReason).toContain('teto_de_toques');
   });
 
-  it('ainda dentro do teto, segue', async () => {
-    const r = await guarda.execute(config(), ctx({ __toque: 2, __edges: [] }));
-    expect(r.stop).toBeFalsy();
-    expect(r.output).toMatchObject({ bloqueado: false });
+  it('ainda dentro do teto, segue — inclusive o ÚLTIMO toque (o terceiro, com teto 3)', async () => {
+    for (const toque of [1, 2, 3]) {
+      const r = await guarda.execute(config(), ctx({ __toque: toque, __edges: [] }));
+      expect(r.stop, `toque ${toque}`).toBeFalsy();
+      expect(r.output).toMatchObject({ bloqueado: false });
+    }
   });
 
   it('atendente assumiu: a IA cala', async () => {
@@ -195,6 +217,61 @@ describe('quando NÃO falar', () => {
       ctx({ __toque: 9, __edges: [] })
     );
     expect(r.stop).toBeFalsy();
+  });
+});
+
+// ============================================
+// O follow-up do provisionamento: quantos toques SAEM
+// ============================================
+describe('follow-up provisionado — um toque por intervalo, e todos saem', () => {
+  const ETAPAS = { atender: 'em-atendimento', agendar: 'agendado', transferir: 'com-humano', terminais: ['fechado', 'perdido'] };
+  const AGENT = '11111111-1111-4111-8111-111111111111';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Quarta 14:00 em São Paulo: dentro da janela do template (09–19, dias da agenda).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-06-10T17:00:00Z'));
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      status: 'open',
+      assigneeId: null,
+      customAttributes: {},
+      labels: [],
+      messages: [{ senderType: 'ai_bot' }],
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Quais despertares passam na guarda do toque: o run acorda pela i-ésima vez com `__toque = i`
+   * (flow.service incrementa `wakeCount` ao reclamar). Passou na guarda = o toque é escrito e enviado.
+   */
+  const toquesQueSaem = async (tentativas: string[]): Promise<number[]> => {
+    const spec = validarSpec({ ...SPEC_CLINICA, followup: { ...SPEC_CLINICA.followup, tentativas, mensagens: [] } });
+    const g = montarGrafo({ agentId: AGENT, spec, etapas: ETAPAS });
+    const saem: number[] = [];
+    for (let toque = 1; toque <= tentativas.length + 1; toque++) {
+      // O grafo só tem as guardas dos toques 1..N; o N+1 testa o teto na última.
+      const nodeGuarda = g.nodes.find((n) => n.id === NOS.followup(Math.min(toque, tentativas.length)).guarda)!;
+      const r = await guarda.execute(nodeGuarda, ctx({ __toque: toque, __edges: [] }));
+      if (!r.stop) saem.push(toque);
+    }
+    return saem;
+  };
+
+  it('tentativas ["2h"]: o ÚNICO toque sai (antes, nenhum)', async () => {
+    expect(await toquesQueSaem(['2h'])).toEqual([1]);
+  });
+
+  it('tentativas ["2h","1d"]: os DOIS toques saem, e um terceiro não existe', async () => {
+    expect(await toquesQueSaem(['2h', '1d'])).toEqual([1, 2]);
+  });
+
+  it('três intervalos: os três saem — inclusive a "saída digna" (antes, o último nunca saía)', async () => {
+    expect(await toquesQueSaem(['2h', '1d', '3d'])).toEqual([1, 2, 3]);
   });
 });
 

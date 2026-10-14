@@ -4,6 +4,7 @@ import { accountService } from '../services/account.service';
 import { AuthenticatedRequest } from '../types';
 import { getPaginationParams } from '../utils/helpers';
 import { MODULOS_OPCIONAIS } from '../config/modulos';
+import { semValoresMascarados } from '../utils/segredos';
 
 // Validation schemas
 // Pré-trata strings vazias como undefined antes da validação de URL,
@@ -108,7 +109,10 @@ export class AccountController {
   async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = req.params.id as string;
-      const body = updateAccountSchema.parse(req.body);
+      // ETAPA G (P0-6): valor mascarado (`••••abcd` / `***SET***`) devolvido
+      // pelo formulário sai ANTES do zod — senão a máscara de 8 caracteres
+      // esbarra no min(16) do webhook secret e vira 400 em vez de no-op.
+      const body = updateAccountSchema.parse(semValoresMascarados(req.body ?? {}));
       const result = await accountService.update(id, body, req.user!.id);
 
       res.json({ data: result });

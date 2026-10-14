@@ -16,15 +16,35 @@ import { fromZonedTime, formatInTimeZone } from 'date-fns-tz';
 
 const chatMock = vi.hoisted(() => vi.fn());
 vi.mock('./ai/chat', async (orig) => ({ ...(await orig<typeof import('./ai/chat')>()), chat: chatMock }));
+// ETAPA G: a validação de modelo (GET /v1/models do provider) é mockada —
+// sem isto a chave fake "sk-teste" bateria na OpenAI real e voltaria 401.
+const exigirModeloValidoMock = vi.hoisted(() => vi.fn());
+vi.mock('./ai/modelos', async (orig) => ({
+  ...(await orig<typeof import('./ai/modelos')>()),
+  exigirModeloValido: exigirModeloValidoMock,
+}));
+
+// A chave NOVA é testada no provedor antes de gravar (PUT /conta/:id/ia) — mockado, sem rede.
+const testarChaveMock = vi.hoisted(() => vi.fn());
+vi.mock('./ai/openai-provider', async (orig) => ({
+  ...(await orig<typeof import('./ai/openai-provider')>()),
+  openaiProvider: { name: 'openai', testConnection: testarChaveMock },
+}));
+vi.mock('./ai/anthropic-provider', async (orig) => ({
+  ...(await orig<typeof import('./ai/anthropic-provider')>()),
+  anthropicProvider: { name: 'anthropic', testConnection: testarChaveMock },
+}));
 
 import { prismaTest } from '../test/setup';
 import { authHeader } from '../test/helpers';
 import { createTestApp } from '../test/app';
 import { prisma } from '../config/database';
+import { ValidationError } from '../utils/errors';
 import { criarEtapasFixas } from './tag.service';
 import { codificarHorario } from './agenda.service';
 import { __clearKeyCache } from './ai/client-factory';
-import { SPEC_CLINICA, SPEC_MINIMO } from './provisionar/fixtures.test-util';
+import { mensagemDeModeloInvalido } from './ai/modelos';
+import { SPEC_CLINICA, SPEC_MINIMO, SPEC_SDR } from './provisionar/fixtures.test-util';
 import { NOS } from './provisionar/template-fluxo';
 
 const app = createTestApp();
@@ -148,6 +168,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   __clearKeyCache();
   chatMock.mockResolvedValue(respostaChat(JSON.stringify({ mensagem_de_resposta: 'ok', rota: 'respondeu' })));
+  exigirModeloValidoMock.mockImplementation(async (p: { model?: string | null }) => ({ ok: true, model: p.model ?? '', verificado: true }));
+  testarChaveMock.mockResolvedValue({ ok: true, message: 'Conexao OK' });
 });
 
 describe('POST /admin/provisionar/agente', () => {
@@ -198,9 +220,10 @@ describe('POST /admin/provisionar/agente', () => {
       '5': [{ inicio: '08:00', fim: '12:00' }, { inicio: '13:00', fim: '18:00' }],
     });
 
-    // Agente.
+    // Agente — modelo padrão do provisionamento (gpt-4.1), conferido ANTES de criar.
     const agente = await prismaTest.aiAgent.findUnique({ where: { id: d.agentId } });
-    expect(agente).toMatchObject({ name: 'Bia', role: 'responder', provider: 'openai', knowledgeBaseId: d.knowledgeBaseId, specVersao: 1 });
+    expect(agente).toMatchObject({ name: 'Bia', role: 'responder', provider: 'openai', model: 'gpt-4.1', knowledgeBaseId: d.knowledgeBaseId, specVersao: 1 });
+    expect(exigirModeloValidoMock).toHaveBeenCalledWith({ accountId: account.id, provider: 'openai', model: 'gpt-4.1' });
     expect(Number(agente!.temperature)).toBe(0.4);
     expect(agente!.systemPrompt).toContain('IDENTIDADE');
     expect(agente!.systemPrompt).toContain('AGENDA');
@@ -307,6 +330,64 @@ describe('POST /admin/provisionar/agente', () => {
     expect(await request(app).get(`${ROTA}/conversas-teste/clinica`).set(authHeader(tokenAdmin)).then((r) => r.status)).toBe(403);
   });
 
+  it('[G] modelo inexistente (ou chave sem acesso) → 400 ANTES de criar qualquer coisa', async () => {
+    const { token } = await superAdmin();
+    const { account } = await contaCliente();
+    exigirModeloValidoMock.mockRejectedValueOnce(new ValidationError(mensagemDeModeloInvalido('gpt-9')));
+
+    const res = await request(app)
+      .post(`${ROTA}/agente`)
+      .set(authHeader(token))
+      .send({ accountId: account.id, spec: { ...SPEC_MINIMO, agente: { ...SPEC_MINIMO.agente, model: 'gpt-9' } } });
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toContain('Modelo "gpt-9" não existe ou a chave não tem acesso');
+    expect(exigirModeloValidoMock).toHaveBeenCalledWith({ accountId: account.id, provider: 'openai', model: 'gpt-9' });
+    expect(await prismaTest.aiAgent.count()).toBe(0);
+    expect(await prismaTest.knowledgeBase.count()).toBe(0);
+    expect(await prismaTest.flow.count()).toBe(0);
+    expect(await prismaTest.product.count()).toBe(0);
+  });
+
+  it('[G] spec v1.1 (sdr): só o item agendável vira Product; prompt com COMO VENDER e CATÁLOGO; 3 toques; modelo/raciocinio do spec', async () => {
+    const { token } = await superAdmin();
+    const { account } = await contaCliente();
+    const res = await request(app).post(`${ROTA}/agente`).set(authHeader(token)).send({ accountId: account.id, spec: SPEC_SDR });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const d = res.body.data;
+
+    expect(d.productIds).toHaveLength(2);
+    const produtos = await prismaTest.product.findMany({ where: { accountId: account.id }, orderBy: { nome: 'asc' } });
+    expect(produtos.map((p) => [p.nome, p.duracaoMinutos, Number(p.valorPadrao)])).toEqual([
+      ['Avaliação', 30, 0],
+      ['Limpeza de pele', 60, 180],
+    ]);
+
+    const agente = await prismaTest.aiAgent.findUnique({ where: { id: d.agentId } });
+    expect(agente).toMatchObject({ name: 'Sofia', provider: 'openai', model: 'gpt-5-mini' });
+    expect(exigirModeloValidoMock).toHaveBeenCalledWith({ accountId: account.id, provider: 'openai', model: 'gpt-5-mini' });
+    expect(agente!.systemPrompt).toContain('COMO VENDER');
+    expect(agente!.systemPrompt).toContain('| Está caro | A avaliação é gratuita e o plano cabe em 10x. |');
+    expect(agente!.systemPrompt).toContain('- Plano mensal — R$ 390,00 por mês — 4 sessões por mês');
+    expect(agente!.systemPrompt).not.toContain('atendente virtual');
+
+    const sobre = await prismaTest.knowledgeDoc.findFirst({ where: { baseId: d.knowledgeBaseId, title: 'Sobre o negócio' } });
+    expect(sobre?.content).toContain('- Limpeza de pele — R$ 180,00 por sessão (duração 60 min)');
+
+    const flow = await prismaTest.flow.findUnique({ where: { id: d.flowId } });
+    const graph = flow!.graph as { nodes: { id: string; type: string; config: Record<string, unknown> }[] };
+    expect(graph.nodes.find((n) => n.id === NOS.atender)?.config).toMatchObject({
+      enviarTextoAoTransferir: true,
+      mensagemAoTransferir: 'Vou chamar alguém da equipe para te ajudar, um instante.',
+    });
+    expect(graph.nodes.find((n) => n.id === 'avisar_transferencia')).toBeUndefined();
+    expect(graph.nodes.filter((n) => n.type === 'flow.aguardar' && n.id.startsWith('fu')).map((n) => n.config.valor)).toEqual([2, 24, 72]);
+
+    // O spec gravado é o normalizado (v1.1 com derivados) e passa de novo na validação (reverter revalida).
+    expect(agente!.spec).toMatchObject({ versao: 1.1, agente: { papel: 'sdr', raciocinio: 'low' }, followup: { tentativas: ['2h', '1d', '3d'], aposHoras: 2, maxTentativas: 3 } });
+    // Sem profissional na conta (marina): aviso, agenda do agente desligada.
+    expect(d.avisos.join(' ')).toContain('marina@studioluz.com não tem usuário ativo');
+  });
+
   it('profissional sem usuário na conta → aviso (não erro) e agenda do agente desligada', async () => {
     const { token } = await superAdmin();
     const { account } = await contaCliente({ comCarlos: false });
@@ -371,6 +452,27 @@ describe('GET / PUT / reverter / publicar', () => {
     expect(naoProvisionado.status).toBe(404);
   });
 
+  it('GET normaliza na LEITURA o spec gravado em v1 cru (agente provisionado antes da v1.1) — e não grava nada', async () => {
+    const { token } = await superAdmin();
+    const { account } = await contaCliente();
+    const criado = await request(app).post(`${ROTA}/agente`).set(authHeader(token)).send({ accountId: account.id, spec: SPEC_CLINICA });
+    const agentId = criado.body.data.agentId as string;
+
+    // Como um agente antigo: o spec guardado é o v1 do operador, sem tentativas/agendavel/defaults.
+    const cru = JSON.parse(JSON.stringify(SPEC_CLINICA));
+    await prismaTest.aiAgent.update({ where: { id: agentId }, data: { spec: cru } });
+
+    const get = await request(app).get(`${ROTA}/agente/${agentId}`).set(authHeader(token));
+    expect(get.status, JSON.stringify(get.body)).toBe(200);
+    const spec = get.body.data.spec;
+    expect(spec.followup.tentativas).toEqual(['24h', '24h']); // aposHoras 24 × maxTentativas 2
+    expect(spec.followup.janela).toEqual({ inicio: '08:00', fim: '20:00' });
+    expect(spec.servicos[0]).toMatchObject({ nome: 'Consulta clínica', agendavel: true });
+
+    // Só a leitura foi normalizada: a coluna continua como estava.
+    expect((await prismaTest.aiAgent.findUnique({ where: { id: agentId } }))?.spec).toEqual(cru);
+  });
+
   it('publicar: active demove outro fluxo ativo; shadow volta; sem chave de IA → 409', async () => {
     const { token } = await superAdmin();
     const { account } = await contaCliente();
@@ -398,6 +500,115 @@ describe('GET / PUT / reverter / publicar', () => {
     const invalido = await request(app).post(`${ROTA}/agente/${agentId}/publicar`).set(authHeader(token)).send({ status: 'ligado' });
     expect(invalido.status).toBe(400);
     expect(invalido.body.error.message).toContain('status precisa ser draft, shadow ou active');
+  });
+});
+
+describe('[G] leituras para o kit: GET agente enriquecido, GET conta, PUT ia', () => {
+  it('GET /agente/:id traz prompt, agenda (configuração + profissionais), serviços, usuários, inboxes e ia', async () => {
+    const { token } = await superAdmin();
+    const { account, carlos, inbox } = await contaCliente();
+    const criado = await request(app).post(`${ROTA}/agente`).set(authHeader(token)).send({ accountId: account.id, spec: SPEC_CLINICA });
+    expect(criado.status).toBe(201);
+    const agentId = criado.body.data.agentId as string;
+
+    const get = await request(app).get(`${ROTA}/agente/${agentId}`).set(authHeader(token));
+    expect(get.status, JSON.stringify(get.body)).toBe(200);
+    const d = get.body.data;
+    expect(d.prompt).toContain('IDENTIDADE');
+    expect(d.prompt).toContain('CATÁLOGO');
+    expect(d.agenda).toMatchObject({
+      ativo: true,
+      configuracao: { antecedenciaMinimaMinutos: 120, etapaAoAgendar: 'agendado' },
+      profissionais: [{ userId: carlos!.id, nome: 'Dr. Carlos', email: 'carlos@clinicavidaplena.com' }],
+    });
+    expect(d.servicos).toEqual([
+      { id: criado.body.data.productIds[0], nome: 'Consulta clínica', valorPadrao: 250, unidade: null, duracaoMinutos: 30, agendavel: true, ativo: true },
+      { id: criado.body.data.productIds[1], nome: 'Avaliação', valorPadrao: null, unidade: null, duracaoMinutos: 20, agendavel: true, ativo: true },
+    ]);
+    expect(d.usuarios.map((u: { email: string; role: string; ativo: boolean }) => [u.email, u.role, u.ativo])).toContainEqual([
+      'carlos@clinicavidaplena.com',
+      'admin',
+      true,
+    ]);
+    expect(d.inboxes).toEqual([{ id: inbox.id, nome: 'WhatsApp', canal: 'whatsapp', ativa: true, conectada: false, estado: null }]);
+    expect(d.ia).toEqual({ provider: 'openai', model: 'gpt-4.1', raciocinio: null, temChave: true });
+    expect(JSON.stringify(get.body)).not.toContain('sk-teste');
+  });
+
+  it('GET /conta/:accountId: conta mascarada + usuários + inboxes + ia + agentes; PUT /conta/:accountId/ia grava a chave e confere o modelo', async () => {
+    const { token } = await superAdmin();
+    const { account, tokenAdmin } = await contaCliente();
+    const criado = await request(app).post(`${ROTA}/agente`).set(authHeader(token)).send({ accountId: account.id, spec: SPEC_MINIMO });
+    expect(criado.status).toBe(201);
+
+    const get = await request(app).get(`${ROTA}/conta/${account.id}`).set(authHeader(token));
+    expect(get.status, JSON.stringify(get.body)).toBe(200);
+    expect(get.body.data.conta).toMatchObject({ id: account.id, nome: 'Clínica Vida Plena', openaiApiKey: '••••', temChaveOpenai: true, temChaveAnthropic: false }); // 'sk-teste' tem 8 caracteres: a máscara não mostra o fim
+    expect(JSON.stringify(get.body)).not.toContain('sk-teste');
+    expect(get.body.data.ia).toEqual({ provider: 'openai', model: 'gpt-4.1', temChave: true, temChaveOpenai: true, temChaveAnthropic: false });
+    expect(get.body.data.agentes).toEqual([{ id: criado.body.data.agentId, nome: 'Léo', versao: 1, flowStatus: 'shadow' }]);
+    expect(get.body.data.usuarios.length).toBeGreaterThanOrEqual(2);
+    expect(get.body.data.inboxes).toHaveLength(1);
+
+    // PUT ia: grava a chave Anthropic (cache de chave derrubado: hasProvider vê na hora), modelo conferido com a chave nova.
+    const put = await request(app)
+      .put(`${ROTA}/conta/${account.id}/ia`)
+      .set(authHeader(token))
+      .send({ provider: 'anthropic', apiKey: 'sk-ant-nova-chave-12345', model: 'claude-sonnet-4-5' });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    expect(put.body.data.ia).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-4-5', temChaveAnthropic: true, temChaveOpenai: true, verificado: true });
+    expect(JSON.stringify(put.body)).not.toContain('sk-ant-nova');
+    expect((await prismaTest.account.findUnique({ where: { id: account.id } }))?.anthropicApiKey).toBe('sk-ant-nova-chave-12345');
+    expect(exigirModeloValidoMock).toHaveBeenCalledWith({ accountId: account.id, provider: 'anthropic', model: 'claude-sonnet-4-5' });
+    expect(await prismaTest.event.count({ where: { accountId: account.id, eventType: 'account.integrations_updated' } })).toBe(1);
+
+    // Chave RECUSADA pelo provedor (401): 400 e NADA muda — a chave que funcionava continua lá.
+    const chaveAntes = (await prismaTest.account.findUnique({ where: { id: account.id } }))?.openaiApiKey;
+    expect(chaveAntes).toBe('sk-teste');
+    const modeloChamadas = exigirModeloValidoMock.mock.calls.length;
+    testarChaveMock.mockResolvedValueOnce({ ok: false, status: 401, message: 'Chave invalida (401)' });
+    const recusada = await request(app)
+      .put(`${ROTA}/conta/${account.id}/ia`)
+      .set(authHeader(token))
+      .send({ provider: 'openai', apiKey: '  sk-chave-ruim-000000  ', model: 'gpt-4.1' });
+    expect(recusada.status).toBe(400);
+    expect(recusada.body.error.message).toContain('Chave recusada pelo provedor; nada foi alterado');
+    expect(testarChaveMock).toHaveBeenLastCalledWith('sk-chave-ruim-000000'); // a NOVA, já aparada
+    expect((await prismaTest.account.findUnique({ where: { id: account.id } }))?.openaiApiKey).toBe(chaveAntes);
+    expect(exigirModeloValidoMock.mock.calls.length).toBe(modeloChamadas); // nem chegou a conferir o modelo
+    expect(await prismaTest.event.count({ where: { accountId: account.id, eventType: 'account.integrations_updated' } })).toBe(1);
+
+    // Falha do teste que NÃO é 401 (chave restrita sem permissão de listar, 429, rede): grava, com aviso.
+    testarChaveMock.mockResolvedValueOnce({ ok: false, status: 403, message: 'Chave sem permissao (403)' });
+    const restrita = await request(app)
+      .put(`${ROTA}/conta/${account.id}/ia`)
+      .set(authHeader(token))
+      .send({ provider: 'openai', apiKey: 'sk-chave-restrita-111111' });
+    expect(restrita.status, JSON.stringify(restrita.body)).toBe(200);
+    expect(restrita.body.data.ia.aviso).toContain('Não deu para validar a chave agora (Chave sem permissao (403))');
+    expect((await prismaTest.account.findUnique({ where: { id: account.id } }))?.openaiApiKey).toBe('sk-chave-restrita-111111');
+
+    // Modelo inválido: a chave fica gravada, mas o 400 avisa.
+    exigirModeloValidoMock.mockRejectedValueOnce(new ValidationError(mensagemDeModeloInvalido('gpt-9')));
+    const ruim = await request(app)
+      .put(`${ROTA}/conta/${account.id}/ia`)
+      .set(authHeader(token))
+      .send({ provider: 'openai', apiKey: 'sk-openai-outra-chave-999', model: 'gpt-9' });
+    expect(ruim.status).toBe(400);
+    expect(ruim.body.error.message).toContain('A chave foi gravada, mas: Modelo "gpt-9" não existe');
+    expect((await prismaTest.account.findUnique({ where: { id: account.id } }))?.openaiApiKey).toBe('sk-openai-outra-chave-999');
+
+    // Chave mascarada, provider inválido, conta inexistente, admin comum.
+    const mascarada = await request(app).put(`${ROTA}/conta/${account.id}/ia`).set(authHeader(token)).send({ provider: 'openai', apiKey: '••••1234' });
+    expect(mascarada.status).toBe(400);
+    expect(mascarada.body.error.message).toContain('apiKey veio mascarada');
+    const provider = await request(app).put(`${ROTA}/conta/${account.id}/ia`).set(authHeader(token)).send({ provider: 'gemini', apiKey: 'x'.repeat(20) });
+    expect(provider.status).toBe(400);
+    expect(provider.body.error.message).toContain('provider precisa ser openai ou anthropic');
+    expect((await request(app).get(`${ROTA}/conta/${randomUUID()}`).set(authHeader(token))).status).toBe(404);
+    expect((await request(app).get(`${ROTA}/conta/nao-uuid`).set(authHeader(token))).status).toBe(400);
+    expect((await request(app).get(`${ROTA}/conta/${account.id}`).set(authHeader(tokenAdmin))).status).toBe(403);
+    expect((await request(app).put(`${ROTA}/conta/${account.id}/ia`).set(authHeader(tokenAdmin)).send({ provider: 'openai', apiKey: 'x'.repeat(20) })).status).toBe(403);
   });
 });
 
@@ -449,7 +660,10 @@ describe('POST /agente/:id/simular (sombra, nada grava)', () => {
 
     const agenda = conversas[1];
     expect(agenda.agendou).toBe(true);
-    expect(agenda.turnos[1].toolCalls).toEqual(['agendar']);
+    // ETAPA G — o relatório traz os argumentos e o resultado de cada ferramenta.
+    expect(agenda.turnos[1].toolCalls).toEqual([
+      { nome: 'agendar', argumentos: { id: horarioId }, resultadoResumo: expect.stringContaining('Marcado:') },
+    ]);
     expect(agenda.turnos[1].efeitos.agendou).toMatchObject({ simulado: true, servico: 'Consulta clínica', profissional: 'Dr. Carlos' });
     expect(agenda.turnos[1].resposta).toBe('Marcado! Você recebe um lembrete.');
 
@@ -469,6 +683,66 @@ describe('POST /agente/:id/simular (sombra, nada grava)', () => {
     expect(await prismaTest.message.count()).toBe(0);
     expect(await prismaTest.calendarEvent.count()).toBe(0);
     expect(await prismaTest.flowRun.count()).toBe(0);
+  });
+
+  it('[G1] duas conversas reservam o MESMO horário e confirmam SEM id no turno seguinte: as duas agendam, em sequência, e calendar_events = 0', async () => {
+    const { token } = await superAdmin();
+    const { account, carlos } = await contaCliente();
+    const criado = await request(app).post(`${ROTA}/agente`).set(authHeader(token)).send({ accountId: account.id, spec: SPEC_CLINICA });
+    expect(criado.status, JSON.stringify(criado.body)).toBe(201);
+    const agentId = criado.body.data.agentId as string;
+    const horarioId = horarioValidoPara(carlos!.id, criado.body.data.productIds[0] as string);
+
+    chatMock.mockImplementation(async (req: { messages: { role: string; content: string }[] }) => {
+      const ultima = [...req.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+      const ultimaFerramenta = [...req.messages].reverse().find((m) => m.role === 'tool')?.content ?? '';
+      if (ultimaFerramenta.startsWith('Reservado')) {
+        return respostaChat(JSON.stringify({ mensagem_de_resposta: 'Reservei. Confirma?', rota: 'respondeu', resumo: 'reservou' }));
+      }
+      if (ultimaFerramenta.startsWith('Marcado')) {
+        return respostaChat(JSON.stringify({ mensagem_de_resposta: 'Marcado!', rota: 'respondeu', resumo: 'agendou' }));
+      }
+      if (/confirmo/i.test(ultima)) return respostaChat('', [{ id: 't2', name: 'agendar', arguments: {} }]);
+      return respostaChat('', [{ id: 't1', name: 'reservar', arguments: { horario_id: horarioId } }]);
+    });
+
+    const res = await request(app)
+      .post(`${ROTA}/agente/${agentId}/simular`)
+      .set(authHeader(token))
+      .send({
+        conversas: [
+          { nome: 'Conversa A', mensagens: ['quero marcar', 'sim, confirmo'] },
+          { nome: 'Conversa B', mensagens: ['quero marcar', 'sim, confirmo'] },
+        ],
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const { resumo, conversas } = res.body.data;
+    expect(resumo).toMatchObject({ conversas: 2, agendadas: 2, comErro: 0 });
+
+    for (const c of conversas) {
+      expect(c.agendou).toBe(true);
+      expect(c.turnos[0].toolCalls).toEqual([{ nome: 'reservar', argumentos: { horario_id: horarioId }, resultadoResumo: expect.stringContaining('Reservado por') }]);
+      expect(c.turnos[1].toolCalls).toEqual([{ nome: 'agendar', argumentos: {}, resultadoResumo: expect.stringContaining('Marcado:') }]);
+      expect(c.turnos[1].efeitos.agendou).toMatchObject({ simulado: true, profissional: 'Dr. Carlos' });
+    }
+
+    // No turno do "confirmo", o prompt lembrava a reserva — sem o modelo carregar a ref.
+    // (O run muta o mesmo array `messages` entre as rodadas de ferramenta, então o
+    // turno é identificado pela mensagem do lead em qualquer posição, não pela última.)
+    const chamadas = chatMock.mock.calls.map((c) => c[0] as { system: string; messages: { role: string; content: string }[] });
+    const confirmoDaA = chamadas.find(
+      (c) => c.system.includes('nome: Conversa A') && c.messages.some((m) => m.role === 'user' && m.content === 'sim, confirmo')
+    );
+    expect(confirmoDaA?.system).toContain('RESERVA PENDENTE nesta conversa');
+    expect(confirmoDaA?.system).toContain('chame agendar (sem id)');
+
+    // Sequencial: toda chamada da A vem antes de qualquer chamada da B.
+    const ultimaDaA = chamadas.map((c, i) => (c.system.includes('nome: Conversa A') ? i : -1)).filter((i) => i >= 0).pop()!;
+    const primeiraDaB = chamadas.findIndex((c) => c.system.includes('nome: Conversa B'));
+    expect(ultimaDaA).toBeLessThan(primeiraDaB);
+
+    // Nada no banco: nem held, nem scheduled.
+    expect(await prismaTest.calendarEvent.count()).toBe(0);
   });
 
   it('erro de um turno não derruba o lote; limites do corpo em português', async () => {

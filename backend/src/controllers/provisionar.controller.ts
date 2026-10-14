@@ -41,6 +41,25 @@ const publicarSchema = z.object({
   }),
 });
 
+/** PUT /admin/provisionar/conta/:accountId/ia — ETAPA G (P2-14). */
+const iaSchema = z.object({
+  provider: z.enum(['openai', 'anthropic'], {
+    errorMap: () => ({ message: 'provider precisa ser openai ou anthropic' }),
+  }),
+  apiKey: z
+    .string({ required_error: 'apiKey é obrigatória', invalid_type_error: 'apiKey precisa ser texto' })
+    .trim()
+    .min(8, 'apiKey curta demais')
+    .max(500, 'apiKey passa de 500 caracteres')
+    .refine((v) => !v.startsWith('••••') && v !== '***SET***', 'apiKey veio mascarada — mande a chave real'),
+  model: z
+    .string({ invalid_type_error: 'model precisa ser texto' })
+    .trim()
+    .max(80, 'model passa de 80 caracteres')
+    .optional()
+    .nullable(),
+});
+
 const simularSchema = z.object({
   conversas: z
     .array(
@@ -92,7 +111,7 @@ export class ProvisionarController {
   async atualizar(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const body = parseEmPortugues(atualizarSchema, req.body);
-      const agente = await provisionarService.obter(req.params.agentId as string);
+      const agente = await provisionarService.contaDoAgente(req.params.agentId as string);
       const { resposta } = await provisionarService.provisionar({
         accountId: agente.accountId,
         spec: body.spec,
@@ -133,6 +152,27 @@ export class ProvisionarController {
       const body = parseEmPortugues(simularSchema, req.body);
       const relatorio = await provisionarService.simular(req.params.agentId as string, body.conversas, body.maxTurnos);
       res.json({ data: relatorio });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** GET /admin/provisionar/conta/:accountId — conta (mascarada), usuários, inboxes, IA, agentes. */
+  async conta(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const accountId = parseEmPortugues(uuid('accountId'), req.params.accountId);
+      res.json({ data: await provisionarService.conta(accountId) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** PUT /admin/provisionar/conta/:accountId/ia — body { provider, apiKey, model? }. */
+  async salvarIa(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const accountId = parseEmPortugues(uuid('accountId'), req.params.accountId);
+      const body = parseEmPortugues(iaSchema, req.body);
+      res.json({ data: await provisionarService.salvarChaveIa(accountId, body, req.user!.id) });
     } catch (error) {
       next(error);
     }

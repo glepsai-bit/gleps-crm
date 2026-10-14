@@ -19,7 +19,9 @@
  */
 
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { prisma } from '../config/database';
+import { calendarioSombra } from './agenda/sombra';
 import { logger } from '../utils/logger';
 import { AppError, ErrorCodes, NotFoundError, ValidationError } from '../utils/errors';
 import { aiAgentService } from './ai-agent.service';
@@ -35,9 +37,22 @@ import { eventService } from './event.service';
 import { validateGraph } from './flow/engine';
 import type { FlowStatus } from './flow/types';
 import type { HorariosSemanais } from './agenda/horarios';
-import { validarSpec, etapasDoSpec, type SpecV1 } from './provisionar/spec';
-import { montarPrompt, schemaDeSaida, moeda, PromptLongoDemaisError } from './provisionar/prompt';
+import { exigirModeloValido, invalidarCacheDeModelos } from './ai/modelos';
+import { accountService } from './account.service';
+import { accountIntegrationsService } from './account-integrations.service';
+import { openaiProvider } from './ai/openai-provider';
+import { anthropicProvider } from './ai/anthropic-provider';
+import { inboxChannelService } from './inbox.service';
+import { validarSpec, etapasDoSpec, servicosAgendaveis, type SpecV1 } from './provisionar/spec';
+import { montarPrompt, schemaDeSaida, linhaDoCatalogo, PromptLongoDemaisError } from './provisionar/prompt';
 import { montarGrafo, nomeDoFluxo, type EtapasDoFluxo } from './provisionar/template-fluxo';
+
+/**
+ * ETAPA G — modelo padrão do provisionamento (venda): `gpt-4.1`. O PATCH
+ * manual do agente continua caindo no padrão do provider (gpt-4o-mini).
+ * Anthropic sem modelo no spec fica no padrão do provider (chat.ts).
+ */
+export const MODELO_PADRAO_OPENAI = 'gpt-4.1';
 
 /** Marca dos documentos que o provisionamento mantém — os outros são do admin. */
 const ORIGEM_DOC = 'provisionamento';
@@ -49,9 +64,10 @@ const MAX_CONTEXTO_BASE = 4000;
 export const MAX_CONVERSAS_SIMULADAS = 30;
 export const MAX_TURNOS_SIMULADOS = 12;
 const TIMEOUT_POR_TURNO_MS = 60_000;
-const CONVERSAS_EM_PARALELO = 4;
 /** Mensagens de histórico que a simulação repassa ao agente por turno. */
 const MAX_HISTORICO_SIMULADO = 40;
+/** Até onde vai o resultado de cada ferramenta no relatório. */
+const MAX_RESULTADO_NO_RELATORIO = 400;
 
 export type MotivoDoProvisionamento = 'provisionado' | 'atualizado' | 'revertido';
 
@@ -71,12 +87,20 @@ export interface ConversaSimulada {
   mensagens: string[];
 }
 
+/** Uma ferramenta chamada num turno: o que o modelo pediu e o que recebeu. */
+export interface ChamadaSimulada {
+  nome: string;
+  argumentos: Record<string, unknown>;
+  /** O começo do que a ferramenta devolveu ao modelo (uma linha). */
+  resultadoResumo: string | null;
+}
+
 export interface TurnoSimulado {
   lead: string;
   resposta: string | null;
   rota: string | null;
   resumo: string | null;
-  toolCalls: string[];
+  toolCalls: ChamadaSimulada[];
   efeitos: Record<string, unknown>;
   custoUsd: number;
   tokens: number;
@@ -119,6 +143,11 @@ class ProvisionarService {
     // ---- Chave de IA: sem ela não há agente que rode ----
     const provider = await this.resolverProvider(accountId, spec.agente.provider ?? null);
 
+    // ---- Modelo: existe e a chave alcança? (ETAPA G) — ANTES de criar qualquer coisa ----
+    const model = spec.agente.model?.trim() || (provider === 'openai' ? MODELO_PADRAO_OPENAI : null);
+    const modelo = await exigirModeloValido({ accountId, provider, model });
+    if (modelo.aviso) avisos.push(modelo.aviso);
+
     // ---- Prompt (puro; falha aqui é do briefing, 400) ----
     let prompt: string;
     try {
@@ -158,7 +187,8 @@ class ProvisionarService {
       role: 'responder' as const,
       systemPrompt: prompt,
       provider,
-      model: spec.agente.model?.trim() || null,
+      model,
+      raciocinio: spec.agente.raciocinio ?? null,
       temperature: spec.agente.temperatura ?? 0.5,
       knowledgeBaseId: baseId,
       tools: ['lembrar', 'buscar_conhecimento'],
@@ -228,27 +258,240 @@ class ProvisionarService {
   // Consulta, reverter, publicar
   // ============================================
 
+  /**
+   * O que ficou gravado — e, desde a ETAPA G, tudo que o kit precisa para
+   * conferir sem logar na conta: prompt gerado, agenda (regras +
+   * profissionais), catálogo, usuários, inboxes e o estado da IA.
+   */
   async obter(agentId: string) {
     const agente = await prisma.aiAgent.findUnique({
       where: { id: agentId },
       include: { specVersions: { orderBy: { versao: 'desc' } } },
     });
     if (!agente || agente.specVersao === 0) throw new NotFoundError('Agente provisionado');
+    const accountId = agente.accountId;
 
-    const flow = await this.fluxoDoAgente(agente.accountId, agente.id);
+    const agendaDoAgente = (agente.agenda ?? null) as { ativo?: boolean; profissionalIds?: string[]; produtoIds?: string[] } | null;
+    const profissionalIds = agendaDoAgente?.profissionalIds ?? [];
+
+    const [flow, configuracao, profissionais, usuarios, inboxes, temChave] = await Promise.all([
+      this.fluxoDoAgente(accountId, agente.id),
+      agendaService.configuracaoDaConta(accountId),
+      profissionalIds.length > 0
+        ? prisma.user.findMany({
+            where: { accountId, id: { in: profissionalIds } },
+            select: { id: true, nome: true, email: true },
+            orderBy: { nome: 'asc' },
+          })
+        : Promise.resolve([]),
+      this.usuariosDaConta(accountId),
+      this.inboxesDaConta(accountId),
+      hasProvider(accountId, agente.provider as AiProviderName),
+    ]);
+
     return {
       agentId: agente.id,
-      accountId: agente.accountId,
+      accountId,
       nome: agente.name,
       versao: agente.specVersao,
-      spec: agente.spec,
+      // O doc promete o spec NORMALIZADO (v1.1: tentativas, agendavel, defaults): o que está
+      // gravado pode ser um v1 cru (versões antigas). Normaliza na leitura, sem gravar.
+      spec: this.specNormalizado(agente.spec),
+      prompt: agente.systemPrompt,
       flow: flow ? { id: flow.id, status: flow.status as FlowStatus, inboxIds: flow.inboxIds } : null,
+      agenda: {
+        ativo: agendaDoAgente?.ativo === true,
+        configuracao,
+        profissionais: profissionais.map((u) => ({ userId: u.id, nome: u.nome, email: u.email })),
+      },
+      servicos: await this.servicosDoSpec(accountId, agente.spec),
+      usuarios,
+      inboxes,
+      ia: {
+        provider: agente.provider,
+        model: agente.model,
+        raciocinio: (agente as { raciocinio?: string | null }).raciocinio ?? null,
+        temChave,
+      },
       versoes: agente.specVersions.map((v) => ({
         versao: v.versao,
         createdAt: v.createdAt,
         criadoPor: v.criadoPor,
       })),
     };
+  }
+
+  /**
+   * Só a conta do agente provisionado — para quem precisa dela e de mais nada (o PUT). O `obter`
+   * completo lê prompt, agenda, usuários e a conexão Evolution de cada inbox: pesado demais
+   * para descobrir um `accountId`.
+   */
+  async contaDoAgente(agentId: string): Promise<{ agentId: string; accountId: string }> {
+    const agente = await prisma.aiAgent.findUnique({
+      where: { id: agentId },
+      select: { id: true, accountId: true, specVersao: true },
+    });
+    if (!agente || agente.specVersao === 0) throw new NotFoundError('Agente provisionado');
+    return { agentId: agente.id, accountId: agente.accountId };
+  }
+
+  // ============================================
+  // Leituras por conta (super admin, sem logar na conta) — ETAPA G
+  // ============================================
+
+  async conta(accountId: string) {
+    const conta = await accountService.getById(accountId); // mascarada
+    const [usuarios, inboxes, agentes] = await Promise.all([
+      this.usuariosDaConta(accountId),
+      this.inboxesDaConta(accountId),
+      prisma.aiAgent.findMany({
+        where: { accountId, specVersao: { gt: 0 } },
+        select: { id: true, name: true, specVersao: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+    const comFluxo = await Promise.all(
+      agentes.map(async (a) => {
+        const flow = await this.fluxoDoAgente(accountId, a.id);
+        return { id: a.id, nome: a.name, versao: a.specVersao, flowStatus: (flow?.status as FlowStatus | undefined) ?? null };
+      })
+    );
+    return {
+      conta,
+      usuarios,
+      inboxes,
+      ia: await this.estadoDaIa(accountId, conta.temChaveOpenai, conta.temChaveAnthropic),
+      agentes: comFluxo,
+    };
+  }
+
+  /**
+   * Grava a chave de IA da conta (o que o admin faria em Integrações) e
+   * derruba os caches (chave: 60 s; modelos: 10 min). `model` é opcional e só
+   * é CONFERIDO com a chave nova — não há coluna de modelo na conta; o modelo
+   * de cada agente vem do spec.
+   *
+   * A chave NOVA é testada no provedor ANTES de gravar: recusada (401) = 400 e nada muda — uma
+   * chave errada não pode substituir a que funcionava. Outras falhas do teste (403 de chave
+   * restrita, 429, rede) não provam que a chave é ruim: grava, com aviso.
+   */
+  async salvarChaveIa(
+    accountId: string,
+    p: { provider: AiProviderName; apiKey: string; model?: string | null },
+    atorId: string | null
+  ) {
+    const campo = p.provider === 'openai' ? 'openaiApiKey' : 'anthropicApiKey';
+    const apiKey = p.apiKey.trim();
+
+    const teste = await (p.provider === 'openai' ? openaiProvider : anthropicProvider).testConnection(apiKey);
+    if (!teste.ok && teste.status === 401) {
+      throw new ValidationError('Chave recusada pelo provedor; nada foi alterado.');
+    }
+    let aviso: string | undefined = teste.ok
+      ? undefined
+      : `Não deu para validar a chave agora (${teste.message}); ela foi gravada mesmo assim.`;
+
+    await accountIntegrationsService.update(accountId, { [campo]: apiKey }, atorId ?? undefined);
+    invalidarCacheDeModelos(accountId);
+
+    const model = p.model?.trim() || null;
+    let verificado: boolean | null = null;
+    if (model) {
+      try {
+        const r = await exigirModeloValido({ accountId, provider: p.provider, model });
+        verificado = r.verificado;
+        aviso = [aviso, r.aviso].filter(Boolean).join(' ') || undefined;
+      } catch (err) {
+        if (err instanceof AppError && err.statusCode === 400) {
+          throw new ValidationError(`A chave foi gravada, mas: ${err.message}`);
+        }
+        throw err;
+      }
+    }
+    const conta = await accountService.getById(accountId);
+    return {
+      ia: {
+        ...(await this.estadoDaIa(accountId, conta.temChaveOpenai, conta.temChaveAnthropic)),
+        provider: p.provider,
+        model,
+        verificado,
+        ...(aviso ? { aviso } : {}),
+      },
+    };
+  }
+
+  private async estadoDaIa(accountId: string, temChaveOpenai: boolean, temChaveAnthropic: boolean) {
+    // O provider que o provisionamento escolheria sem `agente.provider` no spec.
+    const provider: AiProviderName | null = (await hasProvider(accountId, 'openai'))
+      ? 'openai'
+      : (await hasProvider(accountId, 'anthropic'))
+        ? 'anthropic'
+        : null;
+    return {
+      provider,
+      model: provider === 'openai' ? MODELO_PADRAO_OPENAI : null,
+      temChave: provider !== null,
+      // Só a chave DA CONTA (a do env é fallback da plataforma, não conta aqui).
+      temChaveOpenai,
+      temChaveAnthropic,
+    };
+  }
+
+  private async usuariosDaConta(accountId: string) {
+    const usuarios = await prisma.user.findMany({
+      where: { accountId, role: { in: ['admin', 'agent'] } },
+      select: { id: true, nome: true, email: true, role: true, status: true },
+      orderBy: { nome: 'asc' },
+    });
+    return usuarios.map((u) => ({ id: u.id, nome: u.nome, email: u.email, role: u.role, ativo: u.status === 'active' }));
+  }
+
+  private async inboxesDaConta(accountId: string) {
+    const inboxes = await inboxChannelService.listWithConnectionStatus(accountId);
+    return inboxes.map((i) => ({
+      id: i.id,
+      nome: i.name,
+      canal: i.channelType,
+      ativa: i.active,
+      conectada: i.connectionState === 'open',
+      estado: i.connectionState,
+    }));
+  }
+
+  /** O spec como o motor o entende (mesmo parse e defaults de `validarSpec`). Que não valida mais, volta como está. */
+  private specNormalizado(bruto: unknown): unknown {
+    try {
+      return validarSpec(bruto);
+    } catch {
+      return bruto;
+    }
+  }
+
+  /** O catálogo do spec com o id do Product de cada item agendável. */
+  private async servicosDoSpec(accountId: string, specBruto: unknown) {
+    let spec: SpecV1;
+    try {
+      spec = validarSpec(specBruto);
+    } catch {
+      return [];
+    }
+    const produtos = await prisma.product.findMany({
+      where: { accountId },
+      select: { id: true, nome: true, ativo: true },
+    });
+    const porNome = new Map(produtos.map((p) => [p.nome.toLowerCase(), p]));
+    return spec.servicos.map((s) => {
+      const produto = s.agendavel ? porNome.get(s.nome.trim().toLowerCase()) : undefined;
+      return {
+        id: produto?.id ?? null,
+        nome: s.nome.trim(),
+        valorPadrao: s.valorPadrao,
+        unidade: s.unidade ?? null,
+        duracaoMinutos: s.duracaoMinutos ?? null,
+        agendavel: s.agendavel,
+        ativo: produto?.ativo ?? null,
+      };
+    });
   }
 
   async reverter(agentId: string, versao: number, atorId: string | null) {
@@ -300,15 +543,13 @@ class ProvisionarService {
     const teto = Math.max(1, Math.min(maxTurnos, MAX_TURNOS_SIMULADOS));
     const lote = conversas.slice(0, MAX_CONVERSAS_SIMULADAS);
 
-    const resultados: RelatorioDaSimulacao['conversas'] = new Array(lote.length);
-    let proxima = 0;
-    const trabalhador = async () => {
-      while (proxima < lote.length) {
-        const i = proxima++;
-        resultados[i] = await this.simularConversa(agente.accountId, agente.id, lote[i], teto);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(CONVERSAS_EM_PARALELO, lote.length) }, trabalhador));
+    // SEQUENCIAL de propósito. Em paralelo, quatro conversas disputavam o
+    // mesmo rate limit do provider e a mesma agenda — e o relatório de uma
+    // dependia da sorte da outra. Mais lento, e por isso previsível.
+    const resultados: RelatorioDaSimulacao['conversas'] = [];
+    for (const conversa of lote) {
+      resultados.push(await this.simularConversa(agente.accountId, agente.id, conversa, teto));
+    }
 
     const resumo = { conversas: lote.length, transferidas: 0, agendadas: 0, comErro: 0, custoUsd: 0, tokens: 0 };
     for (const c of resultados) {
@@ -335,60 +576,73 @@ class ProvisionarService {
     let transferiu = false;
     let agendou = false;
     let erro: string | null = null;
+    // O calendário em memória DESTA conversa: a reserva fingida de um turno
+    // existe no seguinte, e duas conversas no mesmo horário não se bloqueiam.
+    const chaveDeSombra = `sim:${randomUUID()}`;
 
-    for (const lead of conversa.mensagens.slice(0, maxTurnos)) {
-      try {
-        const r = await comTimeout(
-          aiAgentService.run({
-            accountId,
-            agentId,
-            userMessage: lead,
-            preloadedHistory: historia.slice(-MAX_HISTORICO_SIMULADO),
-            // Sombra: ferramentas de agenda consultam mas não reservam; `lembrar`
-            // sem contato não grava. Nada toca Conversation/Message/CalendarEvent.
-            shadow: true,
-            contactId: null,
-            contato: { nome: conversa.nome, conversasAnteriores: 0 },
-            memory: {},
-            session: {},
-          }),
-          TIMEOUT_POR_TURNO_MS
-        );
-        const saida = (r.structured ?? {}) as Record<string, unknown>;
-        const rota = typeof saida.rota === 'string' ? saida.rota : r.text ? 'respondeu' : null;
-        const resposta =
-          typeof saida.mensagem_de_resposta === 'string' && saida.mensagem_de_resposta.trim()
-            ? saida.mensagem_de_resposta.trim()
-            : r.structured
-              ? null
-              : r.text.trim() || null;
+    try {
+      for (const lead of conversa.mensagens.slice(0, maxTurnos)) {
+        try {
+          const r = await comTimeout(
+            aiAgentService.run({
+              accountId,
+              agentId,
+              userMessage: lead,
+              preloadedHistory: historia.slice(-MAX_HISTORICO_SIMULADO),
+              // Sombra: ferramentas de agenda consultam de verdade mas reservam
+              // e marcam só em memória; `lembrar` sem contato não grava. Nada
+              // toca Conversation/Message/CalendarEvent.
+              shadow: true,
+              chaveDeSombra,
+              contactId: null,
+              contato: { nome: conversa.nome, conversasAnteriores: 0 },
+              memory: {},
+              session: {},
+            }),
+            TIMEOUT_POR_TURNO_MS
+          );
+          const saida = (r.structured ?? {}) as Record<string, unknown>;
+          const rota = typeof saida.rota === 'string' ? saida.rota : r.text ? 'respondeu' : null;
+          const resposta =
+            typeof saida.mensagem_de_resposta === 'string' && saida.mensagem_de_resposta.trim()
+              ? saida.mensagem_de_resposta.trim()
+              : r.structured
+                ? null
+                : r.text.trim() || null;
 
-        turnos.push({
-          lead,
-          resposta,
-          rota,
-          resumo: typeof saida.resumo === 'string' ? saida.resumo : null,
-          toolCalls: r.toolCalls.map((t) => t.name),
-          efeitos: r.efeitos,
-          custoUsd: Number(r.usage.usdEstimate.toFixed(6)),
-          tokens: r.usage.inputTokens + r.usage.outputTokens,
-        });
-        if (r.efeitos.agendou) agendou = true;
+          turnos.push({
+            lead,
+            resposta,
+            rota,
+            resumo: typeof saida.resumo === 'string' ? saida.resumo : null,
+            toolCalls: r.execucoesDeFerramentas.map((e) => ({
+              nome: e.nome,
+              argumentos: e.argumentos,
+              resultadoResumo: resumirResultado(e.resultado),
+            })),
+            efeitos: r.efeitos,
+            custoUsd: Number(r.usage.usdEstimate.toFixed(6)),
+            tokens: r.usage.inputTokens + r.usage.outputTokens,
+          });
+          if (r.efeitos.agendou) agendou = true;
 
-        historia.push({ role: 'user', content: lead });
-        if (resposta) historia.push({ role: 'assistant', content: resposta });
+          historia.push({ role: 'user', content: lead });
+          if (resposta) historia.push({ role: 'assistant', content: resposta });
 
-        // Transferiu: em produção a próxima mensagem seria de um humano, não
-        // do agente — não faz sentido continuar o roteiro.
-        if (rota === 'humano') {
-          transferiu = true;
+          // Transferiu: em produção a próxima mensagem seria de um humano, não
+          // do agente — não faz sentido continuar o roteiro.
+          if (rota === 'humano') {
+            transferiu = true;
+            break;
+          }
+        } catch (err) {
+          erro = err instanceof Error ? err.message : String(err);
+          turnos.push({ lead, resposta: null, rota: null, resumo: null, toolCalls: [], efeitos: {}, custoUsd: 0, tokens: 0, erro });
           break;
         }
-      } catch (err) {
-        erro = err instanceof Error ? err.message : String(err);
-        turnos.push({ lead, resposta: null, rota: null, resumo: null, toolCalls: [], efeitos: {}, custoUsd: 0, tokens: 0, erro });
-        break;
       }
+    } finally {
+      calendarioSombra.limpar(chaveDeSombra);
     }
 
     return { nome: conversa.nome, turnos, transferiu, agendou, erro };
@@ -543,11 +797,8 @@ class ProvisionarService {
     if (n.contato?.trim()) partes.push(`Contato: ${n.contato.trim()}`);
     if (n.diferenciais.length > 0) partes.push('', 'Diferenciais:', ...n.diferenciais.map((d) => `- ${d.trim()}`));
     if (spec.servicos.length > 0) {
-      partes.push('', 'Serviços:');
-      for (const s of spec.servicos) {
-        const preco = s.valorPadrao > 0 ? ` — ${moeda(s.valorPadrao)}` : '';
-        partes.push(`- ${s.nome.trim()} (${s.duracaoMinutos} min)${preco}${s.descricao?.trim() ? `: ${s.descricao.trim()}` : ''}`);
-      }
+      partes.push('', 'Catálogo (valor com a unidade informada; "valor sob consulta" = a equipe passa o valor):');
+      for (const s of spec.servicos) partes.push(`- ${linhaDoCatalogo(s)}`);
     }
     if (spec.regras.linksUteis.length > 0) {
       partes.push('', 'Links úteis:', ...spec.regras.linksUteis.map((l) => `- ${l.rotulo.trim()}: ${l.url}`));
@@ -568,9 +819,14 @@ class ProvisionarService {
 
   // ---- 2. Serviços ----
 
+  /**
+   * Só o item AGENDÁVEL (tem duração) vira Product/serviço de agenda. Plano
+   * mensal, pacote, item "sob consulta" sem duração ficam só no catálogo do
+   * prompt — não há o que marcar para eles.
+   */
   private async sincronizarServicos(accountId: string, spec: SpecV1, atorId: string | null): Promise<string[]> {
     const ids: string[] = [];
-    for (const s of spec.servicos) {
+    for (const s of servicosAgendaveis(spec)) {
       const nome = s.nome.trim();
       const existente = await prisma.product.findFirst({
         where: { accountId, nome: { equals: nome, mode: 'insensitive' } },
@@ -579,14 +835,14 @@ class ProvisionarService {
       if (existente) {
         await productService.update(
           existente.id,
-          { nome, valorPadrao: s.valorPadrao, duracaoMinutos: s.duracaoMinutos, ativo: true },
+          { nome, valorPadrao: s.valorPadrao ?? 0, duracaoMinutos: s.duracaoMinutos, ativo: true },
           accountId,
           atorId ?? undefined
         );
         ids.push(existente.id);
       } else {
         const criado = await productService.create(
-          { accountId, nome, valorPadrao: s.valorPadrao, duracaoMinutos: s.duracaoMinutos },
+          { accountId, nome, valorPadrao: s.valorPadrao ?? 0, duracaoMinutos: s.duracaoMinutos },
           atorId ?? undefined
         );
         ids.push(criado.id);
@@ -697,7 +953,7 @@ class ProvisionarService {
       return { agendaDoAgente: null, profissionais };
     }
     if (productIds.length === 0) {
-      avisos.push('Agenda desligada no agente: nenhum serviço no spec. Informe `servicos[]` com duração.');
+      avisos.push('Agenda desligada no agente: nenhum serviço agendável no spec. Informe em `servicos[]` ao menos um item com `duracaoMinutos` (e `agendavel` não falso).');
       return { agendaDoAgente: null, profissionais };
     }
     if (spec.agenda.horarios.length === 0) {
@@ -757,6 +1013,13 @@ class ProvisionarService {
     }
     return ids;
   }
+}
+
+/** O resultado da ferramenta numa linha, do tamanho que cabe num relatório. */
+function resumirResultado(texto: string): string | null {
+  const limpo = String(texto ?? '').replace(/\s+/g, ' ').trim();
+  if (!limpo) return null;
+  return limpo.length > MAX_RESULTADO_NO_RELATORIO ? `${limpo.slice(0, MAX_RESULTADO_NO_RELATORIO)}…` : limpo;
 }
 
 function fusoValido(tz: string): boolean {

@@ -15,6 +15,11 @@ import {
   rotuloDoHorario,
   validarHorarios,
   agoraPorExtenso,
+  espacados,
+  selecionarHorarios,
+  resolverDia,
+  janelaDoDiaCivil,
+  somarDiasCivis,
 } from './horarios';
 
 const TZ = 'America/Sao_Paulo';
@@ -116,6 +121,10 @@ describe('rótulos e períodos', () => {
   it('fala o horário como o lead lê, no fuso da conta', () => {
     expect(rotuloDoHorario(sp('2026-10-01T14:00:00'), TZ)).toBe('quinta-feira, 01/10 às 14:00');
     expect(periodoDoDia(sp('2026-10-01T11:59:00'), TZ)).toBe('manha');
+    // Meio-dia é período próprio: "de tarde" pro lead é depois do almoço.
+    expect(periodoDoDia(sp('2026-10-01T12:00:00'), TZ)).toBe('meio_dia');
+    expect(periodoDoDia(sp('2026-10-01T12:30:00'), TZ)).toBe('meio_dia');
+    expect(periodoDoDia(sp('2026-10-01T13:00:00'), TZ)).toBe('tarde');
     expect(periodoDoDia(sp('2026-10-01T14:00:00'), TZ)).toBe('tarde');
     expect(periodoDoDia(sp('2026-10-01T18:00:00'), TZ)).toBe('noite');
     expect(agoraPorExtenso(AGORA, TZ)).toBe('quarta-feira, 30/09/2026, 10:00 (America/Sao_Paulo)');
@@ -126,6 +135,125 @@ describe('rótulos e períodos', () => {
     expect(minutosDoDia('9:05')).toBe(545);
     expect(minutosDoDia('25:00')).toBeNull();
     expect(minutosDoDia('abc')).toBeNull();
+  });
+});
+
+/*
+  ETAPA G — o que OFERECER dentre os livres.
+
+  O piloto devolvia 08:00, 08:30 e 09:00 pra quem pediu "de tarde". Agora a
+  seleção espalha pelo período pedido, aproxima do horário desejado, e sem
+  pedido traz 2 de manhã + 2 à tarde dos próximos dias.
+*/
+describe('selecionarHorarios', () => {
+  // Quinta 01/10 e sexta 02/10, 08:00–18:00 de 30 em 30 (20 por dia).
+  const grade = (dia: string) =>
+    Array.from({ length: 20 }, (_, i) => {
+      const h = 8 + Math.floor(i / 2);
+      const m = i % 2 === 0 ? '00' : '30';
+      return { inicio: sp(`${dia}T${String(h).padStart(2, '0')}:${m}:00`) };
+    });
+  const todos = [...grade('2026-10-01'), ...grade('2026-10-02'), ...grade('2026-10-05')];
+  const hora = (h: { inicio: Date }) => rotuloDoHorario(h.inicio, TZ).slice(-5);
+
+  it('espacados: primeiro, último e o meio — nunca só os primeiros', () => {
+    expect(espacados([1, 2, 3, 4, 5, 6, 7, 8, 9], 3)).toEqual([1, 5, 9]);
+    expect(espacados([1, 2, 3], 5)).toEqual([1, 2, 3]);
+    expect(espacados([1, 2, 3], 1)).toEqual([1]);
+    expect(espacados([], 3)).toEqual([]);
+  });
+
+  it('período "tarde" com janela 08–18: tudo ≥ 13:00, espalhado, até 8, em rodadas por dia', () => {
+    const r = selecionarHorarios(todos, { tz: TZ, limite: 8, periodo: 'tarde', porDia: 3 });
+    expect(r).toHaveLength(8);
+    expect(r.every((h) => Number(hora(h).slice(0, 2)) >= 13)).toBe(true);
+    // 3 por dia espalhados (13:00, o meio 15:30, 17:30), 3 dias → 9, cortado em 8 por rodadas.
+    const porDia = new Map<string, string[]>();
+    for (const h of r) {
+      const d = rotuloDoHorario(h.inicio, TZ).slice(0, 20);
+      porDia.set(d, [...(porDia.get(d) ?? []), hora(h)]);
+    }
+    expect(Array.from(porDia.values())[0]).toEqual(['13:00', '15:30', '17:30']);
+    expect(porDia.size).toBe(3);
+  });
+
+  it('"manhã" exclui o meio-dia', () => {
+    const r = selecionarHorarios(todos, { tz: TZ, limite: 20, periodo: 'manha', porDia: 20 });
+    expect(r.every((h) => Number(hora(h).slice(0, 2)) < 12)).toBe(true);
+  });
+
+  it('horário desejado 15:00: o mais próximo de cada dia primeiro (rodadas), depois o segundo; saída cronológica', () => {
+    const r = selecionarHorarios(todos, { tz: TZ, limite: 4, horarioDesejadoMinutos: 15 * 60, porDia: 2 });
+    // Rodada 1: 15:00 dos 3 dias; rodada 2: 14:30 do primeiro dia. Ordenado no tempo.
+    expect(r.map(hora)).toEqual(['14:30', '15:00', '15:00', '15:00']);
+    expect(r[0].inicio < r[1].inicio && r[1].inicio < r[2].inicio).toBe(true);
+  });
+
+  it('sem pedido: 2 de manhã + 2 à tarde de cada um dos 3 próximos dias', () => {
+    const r = selecionarHorarios([...todos, ...grade('2026-10-06')], { tz: TZ, limite: 12, quotaPorPeriodo: { manha: 2, tarde: 2 }, diasMaximos: 3 });
+    expect(r).toHaveLength(12);
+    const dias = new Set(r.map((h) => rotuloDoHorario(h.inicio, TZ).slice(0, 20)));
+    expect(dias.size).toBe(3);
+    expect(r.slice(0, 4).map(hora)).toEqual(['08:00', '11:30', '13:00', '17:30']);
+  });
+
+  it('sem pedido com os 4 períodos: quem só atende à noite (ou só ao meio-dia) também recebe opções', () => {
+    const quota = { manha: 2, meio_dia: 1, tarde: 2, noite: 2 };
+    const faixa = (dia: string, de: number, ate: number) =>
+      Array.from({ length: (ate - de) * 2 }, (_, i) => {
+        const h = de + Math.floor(i / 2);
+        return { inicio: sp(`${dia}T${String(h).padStart(2, '0')}:${i % 2 === 0 ? '00' : '30'}:00`) };
+      });
+    const dias = ['2026-10-01', '2026-10-02', '2026-10-05', '2026-10-06'];
+
+    const noite = selecionarHorarios(dias.flatMap((d) => faixa(d, 19, 22)), { tz: TZ, limite: 12, quotaPorPeriodo: quota, porDia: 4, diasMaximos: 3 });
+    expect(noite.map(hora)).toEqual(['19:00', '21:30', '19:00', '21:30', '19:00', '21:30']);
+
+    const meioDia = selecionarHorarios(dias.flatMap((d) => faixa(d, 12, 13)), { tz: TZ, limite: 12, quotaPorPeriodo: quota, porDia: 4, diasMaximos: 3 });
+    expect(meioDia.map(hora)).toEqual(['12:00', '12:00', '12:00']);
+  });
+
+  it('sem pedido: com manhã, meio-dia e tarde o dia é aparado ESPALHANDO — o fim da tarde não some', () => {
+    const quota = { manha: 2, meio_dia: 1, tarde: 2, noite: 2 };
+    const r = selecionarHorarios(todos, { tz: TZ, limite: 12, quotaPorPeriodo: quota, porDia: 4, diasMaximos: 3 });
+    expect(r).toHaveLength(12);
+    expect(r.slice(0, 4).map(hora)).toEqual(['08:00', '11:30', '13:00', '17:30']);
+  });
+
+  it('limite corta em rodadas: um de cada dia antes do segundo de qualquer dia', () => {
+    const r = selecionarHorarios(todos, { tz: TZ, limite: 3, porDia: 3 });
+    expect(r.map((h) => rotuloDoHorario(h.inicio, TZ))).toEqual([
+      'quinta-feira, 01/10 às 08:00',
+      'sexta-feira, 02/10 às 08:00',
+      'segunda-feira, 05/10 às 08:00',
+    ]);
+  });
+});
+
+describe('resolverDia e janela do dia', () => {
+  // AGORA = quarta 30/09/2026 10:00 em São Paulo.
+  it('entende ISO, dd/mm, hoje, amanhã, depois de amanhã e nome do dia (o PRÓXIMO)', () => {
+    expect(resolverDia('2026-10-14', AGORA, TZ)).toBe('2026-10-14');
+    expect(resolverDia('2026-02-31', AGORA, TZ)).toBeNull();
+    expect(resolverDia('14/10', AGORA, TZ)).toBe('2026-10-14');
+    expect(resolverDia('05/01', AGORA, TZ)).toBe('2027-01-05'); // já passou neste ano
+    expect(resolverDia('hoje', AGORA, TZ)).toBe('2026-09-30');
+    expect(resolverDia('amanhã', AGORA, TZ)).toBe('2026-10-01');
+    expect(resolverDia('Amanha', AGORA, TZ)).toBe('2026-10-01');
+    expect(resolverDia('depois de amanhã', AGORA, TZ)).toBe('2026-10-02');
+    expect(resolverDia('quinta', AGORA, TZ)).toBe('2026-10-01');
+    expect(resolverDia('terça-feira', AGORA, TZ)).toBe('2026-10-06');
+    expect(resolverDia('quarta', AGORA, TZ)).toBe('2026-10-07'); // hoje é quarta: a próxima
+    expect(resolverDia('sabado', AGORA, TZ)).toBe('2026-10-03');
+    expect(resolverDia('lixo', AGORA, TZ)).toBeNull();
+    expect(resolverDia('', AGORA, TZ)).toBeNull();
+  });
+
+  it('a janela do dia civil começa à meia-noite do fuso e termina na do dia seguinte', () => {
+    const j = janelaDoDiaCivil('2026-10-01', TZ);
+    expect(j.inicio.toISOString()).toBe('2026-10-01T03:00:00.000Z');
+    expect(j.fim.toISOString()).toBe('2026-10-02T03:00:00.000Z');
+    expect(somarDiasCivis('2026-12-31', 1)).toBe('2027-01-01');
   });
 });
 

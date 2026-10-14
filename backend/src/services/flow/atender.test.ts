@@ -395,6 +395,43 @@ describe('transferir para humano, por time', () => {
     expect(assignToTeamMock).not.toHaveBeenCalled();
     expect(r.output).toMatchObject({ simulado: true, teamNome: 'Financeiro', assigneeId: 'bia' });
   });
+
+  // O bloco "Avisar o lead" saiu do desenho e era ele quem conferia se um humano tinha assumido
+  // durante o turno. Sem esta guarda a transferência tirava a conversa do atendente que já estava nela.
+  it('humano assumiu durante o turno: NÃO sobrescreve o atendente (nem com time) — só a etapa, aplicada antes, fica', async () => {
+    prismaMock.conversation.findFirst.mockResolvedValue({ assigneeId: 'ana', customAttributes: {} });
+    listOnlineMock.mockResolvedValue([u('carlos')]);
+
+    for (const config of [{}, { teamId: 'time-fin' }]) {
+      const r = await transferir.execute(noTime(config), ctx());
+      expect(r.branch).toBeUndefined();
+      expect(r.output).toEqual({ transferido: false, motivo: 'humano_ja_assumiu', atendenteId: 'ana' });
+    }
+    expect(assignMock).not.toHaveBeenCalled();
+    expect(assignToTeamMock).not.toHaveBeenCalled();
+    expect(updateStatusMock).not.toHaveBeenCalled();
+    expect(listOnlineMock).not.toHaveBeenCalled();
+  });
+
+  it('atividade humana recente (human_active_at) sem atendente atribuído também protege; antiga, não', async () => {
+    listOnlineMock.mockResolvedValue([u('carlos')]);
+
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      assigneeId: null,
+      customAttributes: { human_active_at: new Date(Date.now() - 5 * 60_000).toISOString() },
+    });
+    const protegida = await transferir.execute(noTime(), ctx());
+    expect(protegida.output).toMatchObject({ transferido: false, motivo: 'humano_ja_assumiu', atendenteId: null });
+    expect(assignMock).not.toHaveBeenCalled();
+
+    prismaMock.conversation.findFirst.mockResolvedValue({
+      assigneeId: null,
+      customAttributes: { human_active_at: new Date(Date.now() - 3 * 3_600_000).toISOString() },
+    });
+    const antiga = await transferir.execute(noTime(), ctx());
+    expect(assignMock).toHaveBeenCalledWith('conv-1', 'acc-1', 'carlos', 'flow:flow-1');
+    expect(antiga.output).toMatchObject({ assigneeId: 'carlos' });
+  });
 });
 
 // ============================================
@@ -529,6 +566,79 @@ describe('trava de assunto sempre-humano', () => {
     await atender.execute(comTrava(), ctx());
     // A classificação do agente não vale quando a decisão dele foi vetada.
     expect(addLabelMock).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+/*
+  ETAPA G — O TEXTO DO AGENTE ANTES DA TRANSFERÊNCIA.
+
+  "Isso é urgência: procure o pronto atendimento; estou te passando pra
+  equipe" é orientação que o lead precisa receber. Com
+  `enviarTextoAoTransferir` ligado, o texto do agente sai; a frase fixa só
+  sai quando ele não escreveu nada. Desligado (padrão), vale a regra de
+  sempre: texto descartado, só o aviso.
+*/
+describe('enviarTextoAoTransferir', () => {
+  const comTexto = () =>
+    respostaAgente({ mensagem_de_resposta: 'Isso é urgência: procure o pronto atendimento. Estou te passando pra equipe.', rota: 'humano' });
+  const noG = (extra: Record<string, unknown> = {}) =>
+    no({ rotasSempreHumano: ['humano'], mensagemAoTransferir: 'Um instante, vou te passar para a equipe.', enviarTextoAoTransferir: true, ...extra });
+
+  it('ligado: o texto do agente sai, a frase fixa não, e o passo diz quem falou', async () => {
+    runAgentMock.mockResolvedValue(comTexto());
+    const r = await atender.execute(noG(), ctx());
+
+    expect(r.branch).toBe('humano');
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(sendMock.mock.calls[0][1].content).toBe('Isso é urgência: procure o pronto atendimento. Estou te passando pra equipe.');
+    expect(r.output).toMatchObject({ motivo: 'assunto_sempre_humano', textoDoAgenteEnviado: true, texto: 'Isso é urgência: procure o pronto atendimento. Estou te passando pra equipe.' });
+    expect((r.output as Record<string, unknown>).respostaDescartada).toBeUndefined();
+    expect((r.vars as Record<string, unknown>).transferencia).toEqual({ textoDoAgenteEnviado: true });
+  });
+
+  it('ligado, mas o agente não escreveu nada: sai a frase fixa', async () => {
+    runAgentMock.mockResolvedValue(respostaAgente({ mensagem_de_resposta: '', rota: 'humano' }));
+    const r = await atender.execute(noG(), ctx());
+    expect(sendMock.mock.calls[0][1].content).toBe('Um instante, vou te passar para a equipe.');
+    expect(r.output).toMatchObject({ textoDoAgenteEnviado: false, texto: 'Um instante, vou te passar para a equipe.' });
+    expect((r.vars as Record<string, unknown>).transferencia).toEqual({ textoDoAgenteEnviado: false });
+  });
+
+  it('a frase fixa é interpolada com as variáveis do fluxo, como o "Responder no WhatsApp" fazia', async () => {
+    runAgentMock.mockResolvedValue(respostaAgente({ mensagem_de_resposta: '', rota: 'humano' }));
+    await atender.execute(
+      noG({ mensagemAoTransferir: 'Certo, {{memoria.nome}}, vou chamar a equipe.' }),
+      ctx({ vars: { mensagens: [{ content: 'oi' }], memoria: { nome: 'Carla' } } })
+    );
+    expect(sendMock.mock.calls[0][1].content).toBe('Certo, Carla, vou chamar a equipe.');
+  });
+
+  it('desligado (padrão): o texto é descartado e só o aviso sai — como sempre foi', async () => {
+    runAgentMock.mockResolvedValue(comTexto());
+    const r = await atender.execute(noG({ enviarTextoAoTransferir: false }), ctx());
+    expect(sendMock.mock.calls[0][1].content).toBe('Um instante, vou te passar para a equipe.');
+    expect(r.output).toMatchObject({ textoDoAgenteEnviado: false, respostaDescartada: expect.stringContaining('urgência') });
+  });
+
+  it('em sombra nada sai, mas o passo registra o que TERIA saído', async () => {
+    runAgentMock.mockResolvedValue(comTexto());
+    const r = await atender.execute(noG(), ctx({ shadow: true }));
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(r.output).toMatchObject({ textoDoAgenteEnviado: true, texto: expect.stringContaining('urgência') });
+  });
+
+  it('"Responder no WhatsApp" com soSeAgenteNaoFalou pula quando o agente já avisou', async () => {
+    const responder = NODE_CATALOG['chat.reply'];
+    const bloco = { id: 'avisar', type: 'chat.reply', config: { texto: 'Um instante.', soSeAgenteNaoFalou: true } };
+
+    const pulou = await responder.execute(bloco, ctx({ vars: { transferencia: { textoDoAgenteEnviado: true } } }));
+    expect(pulou.output).toEqual({ pulado: 'agente_ja_avisou' });
+    expect(sendMock).not.toHaveBeenCalled();
+
+    const enviou = await responder.execute(bloco, ctx({ vars: { transferencia: { textoDoAgenteEnviado: false } } }));
+    expect(enviou.output).toMatchObject({ texto: 'Um instante.' });
+    expect(sendMock).toHaveBeenCalledTimes(1);
   });
 });
 

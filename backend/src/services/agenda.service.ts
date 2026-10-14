@@ -22,13 +22,20 @@ import { agendaGoogleService, type EstadoGoogle } from './agenda-google.service'
 import {
   calcularHorarios,
   horarioValido,
-  periodoDoDia,
   rotuloDoHorario,
   partesDoHorario,
   validarHorarios,
+  selecionarHorarios,
+  janelaDoDiaCivil,
+  minutosDoDia,
+  nomeDoPeriodo,
   type HorariosSemanais,
   type Ocupacao,
+  type Periodo,
 } from './agenda/horarios';
+import { calendarioSombra } from './agenda/sombra';
+import { formatInTimeZone } from 'date-fns-tz';
+import { ptBR } from 'date-fns/locale';
 
 export interface ConfiguracaoDaAgenda {
   antecedenciaMinimaMinutos: number;
@@ -93,7 +100,23 @@ export interface ReuniaoMarcada {
   simulado?: true;
 }
 
-type Periodo = 'manha' | 'tarde' | 'noite';
+/**
+ * A reserva que esta CONVERSA tem em aberto — é o que o agente lê no bloco
+ * AGORA a cada mensagem e o que `agendar` sem ref confirma.
+ */
+export interface ReservaPendente {
+  /** Id da reserva (CalendarEvent held) ou `sim:<horarioId>` em sombra. */
+  reservaId: string;
+  horarioId: string;
+  inicio: Date;
+  fim: Date;
+  rotulo: string;
+  profissional: string;
+  servico: string;
+  expiraEm: Date;
+  /** Passou do hold. Ainda pode virar reunião se o horário continuar livre. */
+  vencida: boolean;
+}
 
 interface RegrasDoProfissional {
   userId: string;
@@ -115,6 +138,26 @@ const DIA = 24 * 60 * MINUTO;
 const DIAS_DA_PRIMEIRA_CONSULTA = 7;
 /** Reserva de simulador: nada é gravado, e o id diz isso. */
 const PREFIXO_SIMULADO = 'sim:';
+/** Teto de opções que uma consulta devolve ao agente. */
+const LIMITE_PADRAO_DE_OPCOES = 8;
+/**
+ * Sem pedido nenhum: cada período do dia QUE TEM vaga rende até N opções (o meio-dia é uma hora só:
+ * 1). Quem atende só à noite (ou só ao meio-dia) também recebe horários — antes só manhã e tarde
+ * contavam e esse caso voltava "nenhum horário livre".
+ */
+const QUOTA_SEM_PEDIDO = { manha: 2, meio_dia: 1, tarde: 2, noite: 2 } as const;
+/** Dias COM vaga que a consulta sem pedido oferece (dia sem vaga não conta, segue para o próximo). */
+const DIAS_SEM_PEDIDO = 3;
+/** Teto de opções da consulta sem pedido, e o quanto cabe por dia (12 / 3). */
+const TETO_SEM_PEDIDO = 12;
+const POR_DIA_SEM_PEDIDO = TETO_SEM_PEDIDO / DIAS_SEM_PEDIDO;
+/**
+ * Por quanto tempo uma reserva VENCIDA ainda conta como "a reserva desta
+ * conversa". O lead que responde "sim" uma hora depois do hold de 5 min
+ * não perdeu o horário se ele continua livre — é o que uma recepcionista
+ * faria. Mais que isso, a conversa é outra.
+ */
+const JANELA_DA_RESERVA_VENCIDA_MS = 24 * 60 * MINUTO;
 
 // ============================================
 // Ids de horário
@@ -420,6 +463,14 @@ class AgendaService {
   // Consulta
   // ============================================
 
+  /**
+   * O que oferecer. Três pedidos possíveis, combináveis: um DIA ("terça",
+   * "amanhã" → data civil), um PERÍODO (manhã/tarde/noite) e um HORÁRIO
+   * desejado ("15:00"). O que volta é ESPALHADO — nunca só os primeiros da
+   * grade: o piloto oferecia 08:00, 08:30 e 09:00 pra quem pediu "de tarde".
+   * Sem pedido nenhum: ~2 por período que tenha vaga (manhã, meio-dia, tarde, noite) dos próximos
+   * 3 dias com vaga, no máximo 12.
+   */
   async consultarHorarios(params: {
     accountId: string;
     agenda: { profissionalIds: string[]; produtoIds: string[] };
@@ -427,6 +478,10 @@ class AgendaService {
     /** Restringe a um profissional. Ausente = todos os que o agente pode marcar. */
     profissionalId?: string | null;
     periodo?: Periodo | null;
+    /** Data civil (AAAA-MM-DD) no fuso da conta: só esse dia (com fallback pros seguintes). */
+    dia?: string | null;
+    /** "15:00": os mais próximos vencem. */
+    horarioDesejado?: string | null;
     de?: Date | null;
     limite?: number;
     agora?: Date;
@@ -443,11 +498,14 @@ class AgendaService {
       throw new ValidationError('Nenhum profissional disponível para este agente');
     }
 
-    const de = params.de && params.de > agora ? params.de : agora;
-    const limite = Math.max(1, Math.min(params.limite ?? 6, 20));
+    const tz = catalogo.timezone;
+    const periodo = params.periodo ?? null;
+    const desejado = params.horarioDesejado ? minutosDoDia(params.horarioDesejado) : null;
+    const diaPedido = params.dia ? janelaDoDiaCivil(params.dia, tz) : null;
+    const limite = Math.max(1, Math.min(params.limite ?? LIMITE_PADRAO_DE_OPCOES, 20));
     const avisos: string[] = [];
 
-    const buscar = async (ate: Date): Promise<HorarioOferecido[]> => {
+    const buscar = async (de: Date, ate: Date): Promise<HorarioOferecido[]> => {
       const todos: HorarioOferecido[] = [];
       for (const prof of profissionais) {
         const { ocupados, indisponivel } = await this.ocupacoesDe(
@@ -463,7 +521,7 @@ class AgendaService {
         }
         const livres = calcularHorarios({
           agora,
-          timezone: catalogo.timezone,
+          timezone: tz,
           horarios: prof.horarios,
           duracaoMinutos: servico.duracaoMinutos,
           intervaloMinutos: prof.intervaloMinutos,
@@ -475,14 +533,13 @@ class AgendaService {
           ocupados,
         });
         for (const h of livres) {
-          if (params.periodo && periodoDoDia(h.inicio, catalogo.timezone) !== params.periodo) continue;
           todos.push({
             id: codificarHorario({ profissionalId: prof.userId, produtoId: servico.id, inicio: h.inicio }),
             profissionalId: prof.userId,
             profissional: prof.nome,
             inicio: h.inicio,
             fim: h.fim,
-            rotulo: rotuloDoHorario(h.inicio, catalogo.timezone),
+            rotulo: rotuloDoHorario(h.inicio, tz),
           });
         }
       }
@@ -490,14 +547,119 @@ class AgendaService {
       return todos;
     };
 
-    // Primeiro a semana que vem; vazia, olha até onde a janela máxima deixa.
+    // Que fatia do que foi encontrado vira oferta. Sem dia pedido, no máximo
+    // 3 dias: com 5 dias na janela, as rodadas entre dias engoliam o fim da
+    // tarde (13:00 de cada dia e nada mais) — que é o "só as primeiras" de
+    // novo, só que entre dias.
+    const selecionar = (todos: HorarioOferecido[], soUmDia: boolean): HorarioOferecido[] => {
+      if (desejado !== null) {
+        return selecionarHorarios(todos, {
+          tz,
+          limite,
+          periodo,
+          horarioDesejadoMinutos: desejado,
+          porDia: soUmDia ? limite : 3,
+          diasMaximos: soUmDia ? 1 : DIAS_SEM_PEDIDO,
+        });
+      }
+      if (periodo || soUmDia) {
+        return selecionarHorarios(todos, { tz, limite, periodo, porDia: soUmDia ? limite : 3, diasMaximos: soUmDia ? 1 : DIAS_SEM_PEDIDO });
+      }
+      return selecionarHorarios(todos, {
+        tz,
+        limite: TETO_SEM_PEDIDO,
+        quotaPorPeriodo: QUOTA_SEM_PEDIDO,
+        porDia: POR_DIA_SEM_PEDIDO,
+        diasMaximos: DIAS_SEM_PEDIDO,
+      });
+    };
+
     const janelaMaxima = new Date(agora.getTime() + catalogo.configuracao.janelaMaximaDias * DIA);
-    let horarios = await buscar(new Date(Math.min(de.getTime() + DIAS_DA_PRIMEIRA_CONSULTA * DIA, janelaMaxima.getTime())));
-    if (horarios.length === 0 && de.getTime() + DIAS_DA_PRIMEIRA_CONSULTA * DIA < janelaMaxima.getTime()) {
-      horarios = await buscar(janelaMaxima);
+
+    // ---- Um dia específico: só ele; vazio, os dias seguintes com aviso ----
+    if (diaPedido) {
+      const rotuloDoDia = formatInTimeZone(diaPedido.inicio, tz, "EEEE, dd/MM", { locale: ptBR });
+      if (diaPedido.fim <= agora) {
+        avisos.push(`${rotuloDoDia} já passou`);
+        return { horarios: [], avisos };
+      }
+      const noDia = selecionar(await buscar(diaPedido.inicio, diaPedido.fim), true);
+      if (noDia.length > 0) return { horarios: noDia, avisos };
+
+      avisos.push(`nenhum horário livre em ${rotuloDoDia}${periodo ? ` (${nomeDoPeriodo(periodo)})` : ''}; estes são os mais próximos`);
+      const ate = new Date(Math.min(diaPedido.fim.getTime() + DIAS_DA_PRIMEIRA_CONSULTA * DIA, janelaMaxima.getTime()));
+      const seguintes = ate > diaPedido.fim ? await buscar(diaPedido.fim, ate) : [];
+      return { horarios: selecionar(seguintes, false), avisos };
     }
 
-    return { horarios: espalharPorDia(horarios, limite, catalogo.timezone), avisos };
+    // ---- Sem dia: a semana que vem; vazia, até onde a janela máxima deixa ----
+    const de = params.de && params.de > agora ? params.de : agora;
+    let encontrados = await buscar(de, new Date(Math.min(de.getTime() + DIAS_DA_PRIMEIRA_CONSULTA * DIA, janelaMaxima.getTime())));
+    let horarios = selecionar(encontrados, false);
+    if (horarios.length === 0 && de.getTime() + DIAS_DA_PRIMEIRA_CONSULTA * DIA < janelaMaxima.getTime()) {
+      encontrados = await buscar(de, janelaMaxima);
+      horarios = selecionar(encontrados, false);
+    }
+    return { horarios, avisos };
+  }
+
+  // ============================================
+  // A reserva pendente da conversa
+  // ============================================
+
+  /**
+   * A reserva que esta conversa tem em aberto (viva ou vencida há pouco).
+   * É o que faz "reservei num turno, confirmo no seguinte" funcionar sem o
+   * modelo precisar carregar a ref entre mensagens — que era onde o piloto
+   * perdia 13 de 15 agendamentos.
+   */
+  async reservaPendente(params: {
+    accountId: string;
+    conversationId: string | null;
+    /** Sombra: a chave do calendário em memória (a conversa simulada). */
+    chaveDeSombra?: string | null;
+    shadow: boolean;
+    agora?: Date;
+  }): Promise<ReservaPendente | null> {
+    const agora = params.agora ?? new Date();
+
+    if (params.shadow) {
+      const chave = params.chaveDeSombra ?? params.conversationId;
+      if (!chave) return null;
+      const r = calendarioSombra.pendente(chave);
+      if (!r) return null;
+      return { ...r, reservaId: PREFIXO_SIMULADO + r.horarioId, vencida: r.expiraEm <= agora };
+    }
+
+    if (!params.conversationId) return null;
+    const ev = await prisma.calendarEvent.findFirst({
+      where: {
+        accountId: params.accountId,
+        conversationId: params.conversationId,
+        status: 'held',
+        profissionalUserId: { not: null },
+        productId: { not: null },
+        holdExpiresAt: { gt: new Date(agora.getTime() - JANELA_DA_RESERVA_VENCIDA_MS) },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        profissional: { select: { nome: true } },
+        product: { select: { nome: true } },
+      },
+    });
+    if (!ev?.profissionalUserId || !ev.productId || !ev.holdExpiresAt) return null;
+    const timezone = await this.timezoneDaConta(params.accountId);
+    return {
+      reservaId: ev.id,
+      horarioId: codificarHorario({ profissionalId: ev.profissionalUserId, produtoId: ev.productId, inicio: ev.startTime }),
+      inicio: ev.startTime,
+      fim: ev.endTime,
+      rotulo: rotuloDoHorario(ev.startTime, timezone),
+      profissional: ev.profissional?.nome ?? 'profissional',
+      servico: ev.product?.nome ?? ev.title,
+      expiraEm: ev.holdExpiresAt,
+      vencida: ev.holdExpiresAt <= agora,
+    };
   }
 
   // ============================================
@@ -566,24 +728,46 @@ class AgendaService {
     contactId: string | null;
     conversationId: string | null;
     shadow: boolean;
+    /** Sombra: a chave do calendário em memória. Sem ela a reserva fingida não sobrevive ao turno. */
+    chaveDeSombra?: string | null;
     agora?: Date;
   }): Promise<{ ok: true; reservaId: string; rotulo: string; profissional: string; servico: string; expiraEm: Date; simulado?: true } | { ok: false; motivo: string }> {
     const agora = params.agora ?? new Date();
     const h = decodificarHorario(params.horarioId);
     if (!h) return { ok: false, motivo: 'esse horário não veio de consultar_horarios' };
 
-    const v = await this.validarHorario(params.accountId, params.agenda, h, agora);
+    // A reserva anterior DESTA conversa não bloqueia a nova: o lead mudou de
+    // ideia, e o horário antigo volta a ficar livre pra todo mundo.
+    const anterior = params.conversationId || params.chaveDeSombra
+      ? await this.reservaPendente({ accountId: params.accountId, conversationId: params.conversationId, chaveDeSombra: params.chaveDeSombra, shadow: params.shadow, agora })
+      : null;
+    const v = await this.validarHorario(params.accountId, params.agenda, h, agora, anterior && !params.shadow ? anterior.reservaId : undefined);
     if (!v.ok) return v;
 
     const expiraEm = new Date(agora.getTime() + v.configuracao.holdMinutos * MINUTO);
     const rotulo = rotuloDoHorario(h.inicio, v.timezone);
 
     if (params.shadow) {
+      const chave = params.chaveDeSombra ?? params.conversationId;
+      if (chave) {
+        calendarioSombra.reservar(chave, {
+          horarioId: params.horarioId,
+          profissionalId: v.prof.userId,
+          produtoId: v.servico.id,
+          inicio: h.inicio,
+          fim: v.fim,
+          rotulo,
+          profissional: v.prof.nome,
+          servico: v.servico.nome,
+          expiraEm,
+        });
+      }
       return { ok: true, reservaId: PREFIXO_SIMULADO + params.horarioId, rotulo, profissional: v.prof.nome, servico: v.servico.nome, expiraEm, simulado: true };
     }
 
     const contato = await this.nomeDoContato(params.accountId, params.contactId);
     const criado = await this.gravarComTrava(v.prof.userId, async (tx) => {
+      if (params.conversationId) await this.encerrarReservasDaConversa(tx, params.accountId, params.conversationId);
       const conflito = await this.conflitoNaTransacao(tx, params.accountId, v.prof.userId, h.inicio, v.fim, agora);
       if (conflito) return null;
       return tx.calendarEvent.create({
@@ -616,24 +800,45 @@ class AgendaService {
   async agendar(params: {
     accountId: string;
     agenda: { profissionalIds: string[]; produtoIds: string[] };
-    /** Id da reserva OU id do horário (o modelo pode pular a reserva). */
-    ref: string;
+    /**
+     * Id da reserva OU id do horário (o modelo pode pular a reserva). VAZIO =
+     * a reserva pendente desta conversa — o modelo não precisa carregar a
+     * ref entre turnos.
+     */
+    ref?: string | null;
     contactId: string | null;
     conversationId: string | null;
     shadow: boolean;
+    /** Sombra: a chave do calendário em memória. */
+    chaveDeSombra?: string | null;
     agora?: Date;
   }): Promise<{ ok: true; reuniao: ReuniaoMarcada; avisos: string[] } | { ok: false; motivo: string }> {
     const agora = params.agora ?? new Date();
     const avisos: string[] = [];
+    const chaveDeSombra = params.shadow ? (params.chaveDeSombra ?? params.conversationId) : null;
 
     // ---- De onde vem o horário ----
+    //
+    // Na ordem: ref vazia → a reserva pendente da conversa; `sim:` → sombra;
+    // UUID → a reserva; senão → id de horário. A pendente só vale com ref
+    // VAZIA: ref que não resolve (o modelo inventou, ou repassou o rótulo) é
+    // erro — antes caía na pendente e marcava o horário antigo mesmo quando o
+    // lead tinha pedido OUTRO. O erro diz as duas saídas.
     let h: HorarioDecodificado | null = null;
     let reservaId: string | null = null;
+    let viaPendente: ReservaPendente | null = null;
     const ref = String(params.ref ?? '').trim();
+    const pendente = await this.reservaPendente({
+      accountId: params.accountId,
+      conversationId: params.conversationId,
+      chaveDeSombra,
+      shadow: params.shadow,
+      agora,
+    });
 
     if (ref.startsWith(PREFIXO_SIMULADO)) {
       h = decodificarHorario(ref.slice(PREFIXO_SIMULADO.length));
-    } else if (ehUuid(ref)) {
+    } else if (ref && ehUuid(ref)) {
       // Id de reserva. Reserva vencida ainda serve: o horário é reconferido
       // logo abaixo, e se continua livre não há por que recusar.
       const reserva = await prisma.calendarEvent.findFirst({
@@ -644,14 +849,48 @@ class AgendaService {
         reservaId = reserva.id;
         h = { profissionalId: reserva.profissionalUserId, produtoId: reserva.productId, inicio: reserva.startTime };
       }
-    } else {
+    } else if (ref) {
       h = decodificarHorario(ref);
     }
-    if (!h) return { ok: false, motivo: 'esse horário não veio de consultar_horarios nem de reservar' };
+
+    if (!h && !ref && pendente) {
+      viaPendente = pendente;
+      h = decodificarHorario(pendente.horarioId);
+      // Fora da sombra a reserva pendente é uma linha do banco: vira a reunião.
+      if (!params.shadow) reservaId = pendente.reservaId;
+    }
+    if (!h) {
+      if (ref) {
+        return {
+          ok: false,
+          motivo: pendente
+            ? `Não reconheci esse horário. Se o lead confirmou a reserva de ${pendente.rotulo}, chame agendar sem id; se quer outro horário, consulte de novo.`
+            : 'Não reconheci esse horário e não há reserva pendente nesta conversa — consulte os horários de novo e chame agendar com o id do horário escolhido.',
+        };
+      }
+      return {
+        ok: false,
+        motivo: 'não há reserva pendente nesta conversa — consulte os horários, ofereça, e chame agendar com o id do horário escolhido',
+      };
+    }
+
+    // O modelo passou o id do HORÁRIO depois de ter reservado o mesmo
+    // horário: a reserva é desta conversa, não um conflito — ela vira a
+    // reunião em vez de bloqueá-la.
+    if (!reservaId && !params.shadow && pendente && mesmoHorario(h, pendente)) {
+      reservaId = pendente.reservaId;
+    }
 
     // ---- Ainda vale? (regras + local + Google, agora) ----
     const v = await this.validarHorario(params.accountId, params.agenda, h, agora, reservaId ?? undefined);
-    if (!v.ok) return v;
+    if (!v.ok) {
+      if (viaPendente?.vencida) {
+        const venceu = formatInTimeZone(viaPendente.expiraEm, await this.timezoneDaConta(params.accountId), 'HH:mm');
+        return { ok: false, motivo: `a reserva de ${viaPendente.rotulo} venceu às ${venceu} e o horário já não está livre — consulte os horários de novo e ofereça outro` };
+      }
+      return v;
+    }
+    if (viaPendente?.vencida) avisos.push('a reserva tinha vencido, mas o horário continuava livre');
 
     const contato = await this.nomeDoContato(params.accountId, params.contactId);
     const telefone = await this.telefoneDoContato(params.accountId, params.contactId);
@@ -679,7 +918,20 @@ class AgendaService {
     });
 
     if (params.shadow) {
-      return { ok: true, reuniao: montar(`sim:${codificarHorario(h)}`, null, true), avisos };
+      const reuniao = montar(`sim:${codificarHorario(h)}`, null, true);
+      if (chaveDeSombra) {
+        calendarioSombra.confirmar(chaveDeSombra, {
+          horarioId: codificarHorario(h),
+          profissionalId: v.prof.userId,
+          produtoId: v.servico.id,
+          inicio: h.inicio,
+          fim: v.fim,
+          rotulo: reuniao.rotulo,
+          profissional: v.prof.nome,
+          servico: v.servico.nome,
+        });
+      }
+      return { ok: true, reuniao, avisos };
     }
 
     // ---- Google primeiro: se não der pra gravar lá, não grava aqui ----
@@ -714,6 +966,11 @@ class AgendaService {
 
     // ---- Local, com trava por profissional ----
     const gravado = await this.gravarComTrava(v.prof.userId, async (tx) => {
+      // Outras reservas desta conversa (o lead hesitou entre dois horários)
+      // não precisam mais segurar nada.
+      if (params.conversationId) {
+        await this.encerrarReservasDaConversa(tx, params.accountId, params.conversationId, reservaId ?? undefined);
+      }
       const conflito = await this.conflitoNaTransacao(tx, params.accountId, v.prof.userId, h!.inicio, v.fim, agora, reservaId ?? undefined);
       if (conflito) return null;
       const dados = {
@@ -1015,6 +1272,27 @@ class AgendaService {
     });
   }
 
+  /**
+   * As reservas (held) desta conversa deixam de valer — menos a que está
+   * virando reunião. Ficam como `cancelled`, auditáveis.
+   */
+  private async encerrarReservasDaConversa(
+    tx: Prisma.TransactionClient,
+    accountId: string,
+    conversationId: string,
+    exceto?: string
+  ): Promise<void> {
+    await tx.calendarEvent.updateMany({
+      where: {
+        accountId,
+        conversationId,
+        status: 'held',
+        ...(exceto ? { id: { not: exceto } } : {}),
+      },
+      data: { status: 'cancelled', holdExpiresAt: null, notes: 'Reserva substituída no atendimento' },
+    });
+  }
+
   private async conflitoNaTransacao(
     tx: Prisma.TransactionClient,
     accountId: string,
@@ -1053,6 +1331,13 @@ class AgendaService {
 function ehUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 }
+
+/** O horário pedido é o mesmo da reserva pendente (mesmo profissional, mesmo instante)? */
+function mesmoHorario(h: HorarioDecodificado, r: ReservaPendente): boolean {
+  const d = decodificarHorario(r.horarioId);
+  return !!d && d.profissionalId === h.profissionalId && d.inicio.getTime() === h.inicio.getTime();
+}
+
 
 /**
  * Até `limite` horários, sem entregar seis do mesmo dia: pega os primeiros de

@@ -6,6 +6,7 @@ import { getPaginationMeta, escapeLike } from '../utils/helpers';
 import { eventService } from './event.service';
 import { criarEtapasFixas } from './tag.service';
 import { MODULOS_PADRAO_CONTA_NOVA, isModuloOpcional } from '../config/modulos';
+import { mascararSegredos, semValoresMascarados } from '../utils/segredos';
 
 /**
  * Conferência do `modulos` no service (o controller já valida com zod, mas o
@@ -122,14 +123,17 @@ class AccountService {
       prisma.account.count({ where }),
     ]);
 
+    // ETAPA G (P0-6): nenhuma leitura de conta devolve segredo em texto puro.
     return {
-      data: accounts.map(a => ({
-        ...a,
-        usersCount: a._count.users,
-        contactsCount: a._count.contacts,
-        salesCount: a._count.sales,
-        _count: undefined,
-      })),
+      data: accounts.map(a =>
+        mascararSegredos({
+          ...a,
+          usersCount: a._count.users,
+          contactsCount: a._count.contacts,
+          salesCount: a._count.sales,
+          _count: undefined,
+        })
+      ),
       meta: getPaginationMeta(total, pagination),
     };
   }
@@ -157,7 +161,7 @@ class AccountService {
       throw new NotFoundError('Conta');
     }
 
-    return {
+    return mascararSegredos({
       ...account,
       usersCount: account._count.users,
       contactsCount: account._count.contacts,
@@ -165,7 +169,7 @@ class AccountService {
       productsCount: account._count.products,
       tagsCount: account._count.tags,
       _count: undefined,
-    };
+    });
   }
 
   /**
@@ -219,14 +223,20 @@ class AccountService {
       return created;
     }, { timeout: 15_000 });
 
-    return account;
+    return mascararSegredos(account);
   }
 
   /**
    * Update an account
    */
-  async update(id: string, input: UpdateAccountInput, updatedById?: string) {
+  async update(id: string, entrada: UpdateAccountInput, updatedById?: string) {
     const existing = await this.getById(id);
+
+    // ETAPA G (P0-6): o formulário devolve a chave como a leu — mascarada.
+    // Valor mascarado não é valor novo: sai da entrada e o real fica no banco.
+    // O controller já faz isto antes do zod; aqui é a última porta (seed,
+    // scripts, outros services).
+    const input = semValoresMascarados(entrada);
 
     const modulos = input.modulos !== undefined ? validarModulos(input.modulos) : undefined;
 
@@ -266,7 +276,7 @@ class AccountService {
       payload: { changes: maskSensitiveFields(input) },
     });
 
-    return account;
+    return mascararSegredos(account);
   }
 
   /**
@@ -288,7 +298,7 @@ class AccountService {
       payload: { reason },
     });
 
-    return account;
+    return mascararSegredos(account);
   }
 
   /**
@@ -309,7 +319,7 @@ class AccountService {
       entityId: account.id,
     });
 
-    return account;
+    return mascararSegredos(account);
   }
 
   /**

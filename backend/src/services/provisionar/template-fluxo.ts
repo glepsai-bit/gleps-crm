@@ -5,7 +5,7 @@
  *
  *   [gatilho] → [guardas] → [agrupar] → [atender]
  *      ├─ respondeu → [ainda em atendimento?] → [etapa: Em atendimento] → (follow-up…)
- *      ├─ humano    → [avisar o lead] → [etapa: Com humano] → [transferir para atendente]
+ *      ├─ humano    → [etapa: Com humano] → [transferir para atendente]
  *      ├─ encerrou  → [resolver conversa]
  *      └─ agendou   → [etapa: Agendado] → [aguardar até Xh antes] → [lembrete]
  *
@@ -17,12 +17,19 @@
  *   as etapas Agendado/Fechado/Perdido como bloqueio: aplicar etapa troca a
  *   etapa atual do lead, e sem isto a segunda mensagem de quem acabou de
  *   agendar devolveria o card para "Em atendimento".
+ * - ETAPA G: o aviso de transferência sai do PRÓPRIO bloco "Atender"
+ *   (`enviarTextoAoTransferir: true`): o texto de orientação que o agente
+ *   escreveu vai antes da porta humano, e `transferencia.mensagemAoCliente`
+ *   (em `mensagemAoTransferir`) só sai se ele não escreveu nada. O bloco
+ *   "Avisar o lead" que existia aqui mandaria a mensagem fixa SEMPRE — duas
+ *   mensagens para o lead.
  * - O follow-up segue o trio da cadência existente (aguardar → conferir →
- *   agente escreve → envia), parametrizado por `followup.*` do spec.
+ *   agente escreve → envia), um trio por intervalo de `followup.tentativas`,
+ *   dentro de `followup.janela`.
  */
 
 import type { FlowGraph, FlowNode, FlowEdge } from '../flow/types';
-import type { SpecV1 } from './spec';
+import { horasDoIntervalo, type SpecV1 } from './spec';
 
 export interface EtapasDoFluxo {
   /** Slugs reais das etapas na conta (resolvidos no provisionamento). */
@@ -47,7 +54,6 @@ export const NOS = {
   atender: 'atende',
   aindaAtendendo: 'ainda_em_atendimento',
   etapaAtender: 'etapa_atender',
-  avisar: 'avisar_transferencia',
   etapaTransferir: 'etapa_transferir',
   transferir: 'transferir',
   resolver: 'resolver',
@@ -112,12 +118,14 @@ export function montarGrafo(p: ParametrosDoTemplate): FlowGraph {
     config: {
       agentId,
       salvarEm: 'agente',
-      // A rota "humano" do schema é TRAVA de código: a IA pode escrever uma
-      // resposta junto, e ela é descartada — o lead recebe só o aviso.
+      // A rota "humano" do schema é TRAVA de código: o lead vai para a
+      // porta humano mesmo que a IA tenha escrito uma resposta.
       rotasSempreHumano: ['humano'],
-      // O aviso sai pelo bloco "Avisar o lead" da porta humano, não daqui:
-      // assim ele aparece no desenho e não é enviado duas vezes.
-      mensagemAoTransferir: '',
+      // ETAPA G: o que a IA escreveu ao transferir (1–2 frases de
+      // orientação, pedidas no prompt) É enviado antes da transferência…
+      enviarTextoAoTransferir: true,
+      // …e a mensagem fixa do spec só sai se ela não escreveu nada.
+      mensagemAoTransferir: spec.transferencia.mensagemAoCliente,
     },
     position: { x: X.centro, y: proximoY() },
   });
@@ -151,29 +159,22 @@ export function montarGrafo(p: ParametrosDoTemplate): FlowGraph {
   liga(NOS.aindaAtendendo, NOS.etapaAtender);
 
   // ---- Porta HUMANO (coluna da direita) ----
-  no({
-    id: NOS.avisar,
-    type: 'chat.reply',
-    label: 'Avisar o lead',
-    config: { texto: spec.transferencia.mensagemAoCliente },
-    position: { x: X.direita, y: yPortas },
-  });
+  // O aviso ao lead já saiu do bloco "Atender" (ver cabeçalho).
   no({
     id: NOS.etapaTransferir,
     type: 'crm.apply_stage',
     label: `Etapa: ${spec.funil.etapaAoTransferir}`,
     config: { etapa: etapas.transferir },
-    position: { x: X.direita, y: yPortas + PASSO_Y },
+    position: { x: X.direita, y: yPortas },
   });
   no({
     id: NOS.transferir,
     type: 'chat.assign_human',
     label: 'Transferir para atendente',
     config: {},
-    position: { x: X.direita, y: yPortas + 2 * PASSO_Y },
+    position: { x: X.direita, y: yPortas + PASSO_Y },
   });
-  liga(NOS.atender, NOS.avisar, 'humano');
-  liga(NOS.avisar, NOS.etapaTransferir);
+  liga(NOS.atender, NOS.etapaTransferir, 'humano');
   liga(NOS.etapaTransferir, NOS.transferir);
 
   // ---- Porta ENCERROU (coluna da esquerda) ----
@@ -218,15 +219,16 @@ export function montarGrafo(p: ParametrosDoTemplate): FlowGraph {
   if (spec.followup.ativo) {
     let anterior: string = NOS.etapaAtender;
     let yFu = yPortas + 2 * PASSO_Y;
-    const horas = spec.followup.aposHoras;
-    const rotuloEspera = horas % 24 === 0 ? `${horas / 24} dia${horas / 24 > 1 ? 's' : ''}` : `${horas}h`;
+    const tentativas = spec.followup.tentativas;
 
-    for (let i = 1; i <= spec.followup.maxTentativas; i++) {
+    for (let i = 1; i <= tentativas.length; i++) {
       const ids = NOS.followup(i);
+      // ETAPA G: cada toque tem o próprio intervalo ("2h", "1d", "3d").
+      const horas = horasDoIntervalo(tentativas[i - 1]);
       no({
         id: ids.espera,
         type: 'flow.aguardar',
-        label: `Aguardar ${rotuloEspera}`,
+        label: `Aguardar ${rotuloDeHoras(horas)}`,
         config: {
           valor: horas,
           unidade: 'horas',
@@ -244,7 +246,7 @@ export function montarGrafo(p: ParametrosDoTemplate): FlowGraph {
           conversaResolvida: true,
           janelaHumanoMinutos: 240,
           leadFalouPorUltimo: true,
-          maxToques: spec.followup.maxTentativas,
+          maxToques: tentativas.length,
           etiquetasBloqueio: [etapas.agendar, etapas.transferir, ...etapas.terminais],
           horarioComercial: janelaComercial(spec),
         },
@@ -276,13 +278,21 @@ export function montarGrafo(p: ParametrosDoTemplate): FlowGraph {
   return { nodes, edges };
 }
 
+/** "2h", "1 dia", "3 dias" — o rótulo do bloco no canvas. */
+export function rotuloDeHoras(horas: number): string {
+  if (horas % 24 === 0) return `${horas / 24} dia${horas / 24 > 1 ? 's' : ''}`;
+  return `${horas}h`;
+}
+
 /**
  * O objetivo de cada toque — segue a régua da cadência semeada (retomar →
- * ângulo novo → saída digna), com a mensagem de referência do spec.
+ * ângulo novo → saída digna), com a mensagem de referência do spec: a do
+ * toque (`followup.mensagens[i-1]`) se houver, senão a geral (`mensagem`).
  */
 function objetivoDoToque(spec: SpecV1, i: number): string {
-  const referencia = `Mensagem de referência (adapte; onde estiver {{nome}}, use o nome do lead se souber, senão omita): "${spec.followup.mensagem.trim()}"`;
-  const ultimo = i === spec.followup.maxTentativas;
+  const mensagem = (spec.followup.mensagens[i - 1] ?? spec.followup.mensagem).trim();
+  const referencia = `Mensagem de referência (adapte; onde estiver {{nome}}, use o nome do lead se souber, senão omita): "${mensagem}"`;
+  const ultimo = i === spec.followup.tentativas.length;
   if (i === 1) {
     return (
       'FOLLOW-UP, toque 1 — RETOMAR. O lead parou de responder. Volte ao ponto exato onde a conversa parou ' +
@@ -304,15 +314,16 @@ function objetivoDoToque(spec: SpecV1, i: number): string {
   );
 }
 
-/** A janela em que follow-up pode sair: o expediente do spec, ou 09–18 de segunda a sexta. */
+/**
+ * A janela em que o follow-up pode sair: horas de `followup.janela` (padrão
+ * 08:00–20:00, já resolvido no spec) nos dias de expediente da agenda — ou
+ * segunda a sexta quando não há agenda.
+ */
 function janelaComercial(spec: SpecV1): { inicio: string; fim: string; dias: number[]; timezone: string } {
   const faixas = spec.agenda.horarios;
   const timezone = spec.agenda.fuso?.trim() || 'America/Sao_Paulo';
-  if (faixas.length === 0) return { inicio: '09:00', fim: '18:00', dias: [1, 2, 3, 4, 5], timezone };
-  const dias = Array.from(new Set(faixas.flatMap((f) => f.dias))).sort();
-  const inicio = faixas.map((f) => f.inicio).sort()[0];
-  const fim = faixas.map((f) => f.fim).sort().reverse()[0];
-  return { inicio, fim, dias, timezone };
+  const dias = faixas.length > 0 ? Array.from(new Set(faixas.flatMap((f) => f.dias))).sort() : [1, 2, 3, 4, 5];
+  return { inicio: spec.followup.janela.inicio, fim: spec.followup.janela.fim, dias, timezone };
 }
 
 /** Nome do fluxo provisionado — fixo, é por ele que o re-provisionamento o reencontra. */

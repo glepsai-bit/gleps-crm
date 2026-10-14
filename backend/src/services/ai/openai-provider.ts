@@ -20,7 +20,7 @@ export class OpenAIProvider {
    * NUNCA loga a chave; mensagens de erro vem do provider e sao seguras
    * (OpenAI nao ecoa a chave no payload de erro).
    */
-  async testConnection(apiKey: string): Promise<{ ok: boolean; message: string }> {
+  async testConnection(apiKey: string): Promise<{ ok: boolean; message: string; status?: number }> {
     if (!apiKey || apiKey.trim() === '') {
       return { ok: false, message: 'Chave vazia' };
     }
@@ -35,10 +35,11 @@ export class OpenAIProvider {
     } catch (err: any) {
       const status = err?.status ?? err?.statusCode;
       const msg = err?.message ?? String(err);
-      if (status === 401) return { ok: false, message: 'Chave invalida (401)' };
-      if (status === 403) return { ok: false, message: 'Chave sem permissao (403)' };
-      if (status === 429) return { ok: false, message: 'Rate limit atingido (429)' };
-      return { ok: false, message: `Falha na conexao: ${msg.slice(0, 200)}` };
+      // `status` (HTTP do provider) deixa quem chama decidir sem ler a mensagem: 401 = chave recusada.
+      if (status === 401) return { ok: false, status, message: 'Chave invalida (401)' };
+      if (status === 403) return { ok: false, status, message: 'Chave sem permissao (403)' };
+      if (status === 429) return { ok: false, status, message: 'Rate limit atingido (429)' };
+      return { ok: false, status, message: `Falha na conexao: ${msg.slice(0, 200)}` };
     }
   }
 }

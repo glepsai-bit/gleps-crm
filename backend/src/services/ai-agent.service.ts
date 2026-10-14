@@ -15,8 +15,25 @@ export { autoriaDaMemoria, valorDaMemoria };
 import { prisma } from '../config/database';
 import { NotFoundError, ValidationError, ConflictError, AppError } from '../utils/errors';
 import { logger } from '../utils/logger';
-import { chat, type ChatMessage, type ChatToolCall, type ChatToolDef, type ChatUsage } from './ai/chat';
+import {
+  chat,
+  type ChatMessage,
+  type ChatToolCall,
+  type ChatToolDef,
+  type ChatUsage,
+  type ReasoningEffort,
+} from './ai/chat';
+
+/**
+ * Lista local de propósito (e não importada de ai/chat): os testes do agente
+ * mockam `./ai/chat` só com `chat`, e um valor importado de módulo mockado
+ * chega como proxy que lança ao ser lido.
+ */
+const ESFORCOS_DE_RACIOCINIO: readonly ReasoningEffort[] = ['minimal', 'low', 'medium', 'high'];
 import type { AiProviderName } from './ai/client-factory';
+import { exigirModeloValido } from './ai/modelos';
+import { agendaService, type ReservaPendente } from './agenda.service';
+import { formatInTimeZone } from 'date-fns-tz';
 import {
   search,
   loadOverview,
@@ -58,8 +75,35 @@ import { contextoDoDisparoParaAgente } from './disparo/contexto';
 
 export type AgentRole = 'classifier' | 'responder' | 'custom';
 
-/** Teto de rodadas de ferramenta por execução — trava anti-loop. */
-const MAX_TOOL_ROUNDS = 3;
+/**
+ * Teto de FERRAMENTAS CONTADAS por mensagem — trava anti-loop.
+ *
+ * Era 3 rodadas, e um agendamento normal gasta mais que isso: consultar,
+ * reservar, lembrar o nome, agendar. O piloto batia no teto e respondia sem
+ * marcar. Agora são 8 chamadas, e nem tudo conta: `lembrar` (anotar nunca
+ * deveria competir com agir) e `consultar_horarios` com parâmetros NOVOS (o
+ * lead mudou o pedido — repetir a mesma consulta, sim, conta). Uma
+ * ferramenta que falha devolve o erro ao modelo, que pode tentar de novo
+ * dentro do teto.
+ */
+export const TETO_DE_FERRAMENTAS = 8;
+/** Teto absoluto de rodadas (idas ao modelo com ferramenta), contadas ou não. */
+const MAX_TOOL_ROUNDS = 12;
+/** O que o modelo recebe no lugar do resultado quando o teto estoura. */
+const AVISO_DE_TETO =
+  'Limite de ferramentas desta mensagem atingido. Responda ao lead agora com o que já tem; ' +
+  'se ainda faltar confirmar algo, diga que confirma na próxima mensagem.';
+/**
+ * PRAZO DO TURNO. O nó do fluxo desiste do turno aos 120 s, mas desistir não cancela: o turno
+ * órfão seguia em frente e enviava/agendava DEPOIS de o run ter sido marcado como falho. Aos
+ * 100 s (desde o início de `run`, e vale também pros especialistas consultados) não se inicia
+ * mais ferramenta nem rodada com ferramentas: a rodada final vai SEM ferramentas, com folga
+ * pra terminar antes do nó.
+ */
+export const PRAZO_DO_TURNO_MS = 100_000;
+const AVISO_DE_PRAZO =
+  'O tempo desta mensagem acabou. Não use mais ferramentas: responda ao lead agora com o que já tem; ' +
+  'se ainda faltar confirmar algo, diga que confirma na próxima mensagem.';
 /**
  * Profundidade máxima de consulta entre agentes. 1 = o coordenador consulta o
  * especialista, e o especialista responde sozinho. Sem esse teto, dois agentes
@@ -94,6 +138,8 @@ export interface UpsertAgentInput {
   provider?: AiProviderName;
   model?: string | null;
   temperature?: number;
+  /** Esforço de raciocínio (gpt-5*, o1*, o3*, o4*). null = padrão do provider. */
+  raciocinio?: ReasoningEffort | null;
   maxTokens?: number;
   historyLimit?: number;
   knowledgeBaseId?: string | null;
@@ -177,6 +223,25 @@ export interface RunAgentInput {
    * simulador mostrar o atendimento como ele vai acontecer.
    */
   shadow?: boolean;
+  /**
+   * Sombra: a chave do calendário em memória — a "conversa" da simulação. É
+   * o que faz a reserva fingida de um turno existir no seguinte. Sem ela, em
+   * sombra, vale `conversationId`.
+   */
+  chaveDeSombra?: string | null;
+  /**
+   * Instante (epoch ms) em que o turno deixa de iniciar ferramentas. Ausente = agora + PRAZO_DO_TURNO_MS.
+   * O coordenador repassa o SEU prazo ao especialista que consulta: o turno é um só.
+   */
+  prazoEm?: number;
+}
+
+/** Uma ferramenta que rodou: o que o modelo pediu e o que recebeu de volta. */
+export interface ExecucaoDeFerramenta {
+  id: string;
+  nome: string;
+  argumentos: Record<string, unknown>;
+  resultado: string;
 }
 
 export interface RunAgentResult {
@@ -189,6 +254,8 @@ export interface RunAgentResult {
   /** Objeto validado contra outputSchema; null quando o agente não define schema. */
   structured: Record<string, unknown> | null;
   toolCalls: ChatToolCall[];
+  /** As mesmas chamadas, com o resultado que cada uma devolveu ao modelo. */
+  execucoesDeFerramentas: ExecucaoDeFerramenta[];
   hits: SearchHit[];
   usage: ChatUsage;
   model: string;
@@ -294,7 +361,25 @@ class AiAgentService {
       data.provider = input.provider;
     }
 
-    if (input.model !== undefined) data.model = input.model?.trim() || null;
+    if (input.model !== undefined) {
+      const model = input.model?.trim() || null;
+      // O modelo existe, e a chave da conta alcança ele? Só quando MUDA: a
+      // listagem é cacheada, mas nem assim vale conferir a cada edição de
+      // prompt. Sem chave na conta a função deixa passar — não há o que
+      // conferir, e o provisionamento exige chave antes disso.
+      if (model && model !== (current?.model ?? null)) {
+        const provider = (data.provider as AiProviderName | undefined) ?? (current?.provider as AiProviderName | undefined) ?? 'openai';
+        await exigirModeloValido({ accountId, provider, model });
+      }
+      data.model = model;
+    }
+
+    if (input.raciocinio !== undefined) {
+      if (input.raciocinio !== null && !ESFORCOS_DE_RACIOCINIO.includes(input.raciocinio)) {
+        throw new ValidationError(`raciocinio precisa ser um de: ${ESFORCOS_DE_RACIOCINIO.join(', ')}`);
+      }
+      data.raciocinio = input.raciocinio;
+    }
 
     if (input.temperature !== undefined) {
       if (input.temperature < 0 || input.temperature > 2) {
@@ -411,6 +496,9 @@ class AiAgentService {
   // ============================================
 
   async run(input: RunAgentInput): Promise<RunAgentResult> {
+    const prazoEm = input.prazoEm ?? Date.now() + PRAZO_DO_TURNO_MS;
+    const prazoEstourou = () => Date.now() > prazoEm;
+
     const agent = await this.get(input.accountId, input.agentId);
     if (!agent.active) {
       throw new AppError(`O agente "${agent.name}" está desativado.`, 409);
@@ -506,6 +594,10 @@ class AiAgentService {
     const agenda = lerAgendaDoAgente(agent.agenda);
     let ferramentasDeAgenda: ChatToolDef[] = [];
     let catalogoDeAgenda: CatalogoDoAgente | null = null;
+    // A RESERVA PENDENTE desta conversa entra no prompt a cada mensagem. É o
+    // que substitui a ref que o modelo tinha de carregar entre turnos — e
+    // perdia. Best-effort: falhar aqui não derruba o atendimento.
+    let reservaPendente: string | null = null;
     if (agenda) {
       try {
         const def = await definicoesDasFerramentasDeAgenda(input.accountId, agenda);
@@ -517,11 +609,28 @@ class AiAgentService {
           error: err instanceof Error ? err.message : String(err),
         });
       }
+      if (ferramentasDeAgenda.length > 0 && (input.conversationId || input.chaveDeSombra)) {
+        try {
+          const r = await agendaService.reservaPendente({
+            accountId: input.accountId,
+            conversationId: input.conversationId ?? null,
+            chaveDeSombra: input.chaveDeSombra ?? null,
+            shadow: input.shadow === true,
+          });
+          reservaPendente = r ? formatReservaPendente(r, timezone) : null;
+        } catch (err) {
+          logger.warn('[ai-agent] não foi possível ler a reserva pendente da conversa; seguindo sem', {
+            conversationId: input.conversationId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
     }
 
     const system = this.buildSystemPrompt({
       agent,
       agora,
+      reservaPendente,
       hits,
       camposDeMemoria,
       temFerramentaLembrar,
@@ -603,9 +712,10 @@ class AiAgentService {
 
     const usageTotal: ChatUsage = { inputTokens: 0, outputTokens: 0, usdEstimate: 0, priced: true };
     const allToolCalls: ChatToolCall[] = [];
+    const execucoes: ExecucaoDeFerramenta[] = [];
     const efeitos: Record<string, unknown> = {};
 
-    const callModel = async () => {
+    const callModel = async (opts: { semFerramentas?: boolean } = {}) => {
       const res = await chat({
         accountId: input.accountId,
         provider: agent.provider as AiProviderName,
@@ -613,9 +723,11 @@ class AiAgentService {
         system,
         messages,
         tools: tools.length > 0 ? tools : undefined,
+        toolChoice: opts.semFerramentas ? 'none' : undefined,
         jsonSchema: schema ? { name: 'resposta_do_agente', schema } : undefined,
         temperature: Number(agent.temperature),
         maxTokens: agent.maxTokens,
+        reasoningEffort: (agent.raciocinio as ReasoningEffort | null) ?? null,
       });
       usageTotal.inputTokens += res.usage.inputTokens;
       usageTotal.outputTokens += res.usage.outputTokens;
@@ -624,99 +736,143 @@ class AiAgentService {
       return res;
     };
 
+    // Uma chamada de ferramenta → o texto que o modelo recebe de volta. Toda
+    // falha vira frase: o modelo lê o erro e decide (tentar de novo, pedir um
+    // instante) — nunca uma exceção no meio do atendimento.
+    const executarChamada = async (call: ChatToolCall): Promise<string> => {
+      if (call.name === FERRAMENTA_CONSULTA) {
+        return this.consultarEspecialista(input.accountId, especialistas, call.arguments, {
+          conversationId: input.conversationId,
+          contactId: input.contactId,
+          memory,
+          session: input.session,
+          contato: input.contato,
+          historySummary: input.historySummary ?? historico.summary,
+          // O mesmo histórico que este agente está usando. São 3 consultas
+          // a menos por consulta, e os dois passam a ler exatamente a
+          // mesma conversa — sem a janela entre as duas leituras.
+          history: historico.messages,
+          depth: depth + 1,
+          // Em sombra o especialista também finge: sem isto ele reservava e
+          // agendava DE VERDADE durante a simulação do coordenador.
+          shadow: input.shadow === true,
+          chaveDeSombra: input.chaveDeSombra ?? null,
+          prazoEm,
+        });
+      }
+
+      // Ferramenta do próprio agente vem antes da whitelist de sistema: o
+      // admin nomeia as dele, e um nome que colida com `lembrar` seria
+      // confuso — a validação no create/update impede isso.
+      const propria = httpTools.find((t) => t.nome === call.name);
+      if (propria) return executarHttpTool(propria, call.arguments);
+
+      // AGENDA. Só existe se a habilidade está ligada — e a resposta é
+      // sempre uma frase, inclusive nas recusas, porque é o que o modelo
+      // vai repassar ao lead.
+      if (agenda && catalogoDeAgenda && ehFerramentaDeAgenda(call.name)) {
+        try {
+          return await executarFerramentaDeAgenda(
+            call.name,
+            call.arguments,
+            {
+              accountId: input.accountId,
+              contactId: input.contactId ?? null,
+              conversationId: input.conversationId ?? null,
+              shadow: input.shadow === true,
+              chaveDeSombra: input.chaveDeSombra ?? null,
+              efeitos,
+            },
+            agenda,
+            catalogoDeAgenda
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn('[ai-agent] ferramenta de agenda falhou', { agentId: agent.id, tool: call.name, error: msg });
+          return `Não consegui agora (${msg}). Não diga ao lead que está feito; peça um instante e tente de novo.`;
+        }
+      }
+
+      const tool = AVAILABLE_TOOLS[call.name];
+      if (!tool) return `Ferramenta "${call.name}" não está disponível.`;
+      try {
+        return await tool.execute(call.arguments, {
+          accountId: input.accountId,
+          agent,
+          contactId: input.contactId,
+          // Campo de escopo `sessao` grava na CONVERSA — sem o id dela a
+          // ferramenta não teria onde pôr.
+          conversationId: input.conversationId,
+          camposDeMemoria,
+        });
+      } catch (err) {
+        return `Erro ao executar: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    };
+
+    // O que CONTA no teto. Ver TETO_DE_FERRAMENTAS.
+    const consultasVistas = new Set<string>();
+    const contaNoTeto = (call: ChatToolCall): boolean => {
+      if (call.name === 'lembrar') return false;
+      if (call.name === 'consultar_horarios') {
+        const args = call.arguments ?? {};
+        const assinatura = JSON.stringify(args, Object.keys(args).sort());
+        if (!consultasVistas.has(assinatura)) {
+          consultasVistas.add(assinatura);
+          return false;
+        }
+      }
+      return true;
+    };
+
     let res = await callModel();
+    let contadas = 0;
 
     // Rodadas de ferramenta, com teto: um agente que insiste em chamar a mesma
     // ferramenta trava a conversa em vez de responder.
-    for (let round = 0; round < MAX_TOOL_ROUNDS && res.toolCalls.length > 0; round++) {
-      allToolCalls.push(...res.toolCalls);
+    for (let round = 0; res.toolCalls.length > 0; round++) {
+      const semPrazo = prazoEstourou();
+      if (round >= MAX_TOOL_ROUNDS || contadas >= TETO_DE_FERRAMENTAS || semPrazo) {
+        // Teto (ou prazo). As chamadas pendentes recebem o aviso no lugar do
+        // resultado e a rodada final vai SEM ferramentas — senão o modelo
+        // devolvia outra chamada e o lead recebia texto vazio.
+        logger.warn(
+          semPrazo
+            ? '[ai-agent] prazo do turno estourou; pedindo resposta final'
+            : '[ai-agent] teto de ferramentas atingido; pedindo resposta final',
+          {
+            agentId: agent.id,
+            contadas,
+            rodadas: round,
+            pendentes: res.toolCalls.map((c) => c.name),
+          }
+        );
+        messages.push({ role: 'assistant', content: res.text, toolCalls: res.toolCalls });
+        for (const call of res.toolCalls) {
+          messages.push({ role: 'tool', content: semPrazo ? AVISO_DE_PRAZO : AVISO_DE_TETO, toolCallId: call.id });
+        }
+        res = await callModel({ semFerramentas: true });
+        break;
+      }
+
       messages.push({ role: 'assistant', content: res.text, toolCalls: res.toolCalls });
 
       for (const call of res.toolCalls) {
-        if (call.name === FERRAMENTA_CONSULTA) {
-          const saida = await this.consultarEspecialista(
-            input.accountId,
-            especialistas,
-            call.arguments,
-            {
-              conversationId: input.conversationId,
-              contactId: input.contactId,
-              memory,
-              session: input.session,
-              contato: input.contato,
-              historySummary: input.historySummary ?? historico.summary,
-              // O mesmo histórico que este agente está usando. São 3 consultas
-              // a menos por consulta, e os dois passam a ler exatamente a
-              // mesma conversa — sem a janela entre as duas leituras.
-              history: historico.messages,
-              depth: depth + 1,
-            }
-          );
-          messages.push({ role: 'tool', content: saida, toolCallId: call.id });
+        // O prazo acabou no meio da rodada (uma ferramenta lenta): as que
+        // faltam NÃO começam — iniciar agora é o que gerava o turno órfão.
+        if (prazoEstourou()) {
+          messages.push({ role: 'tool', content: AVISO_DE_PRAZO, toolCallId: call.id });
           continue;
         }
-
-        // Ferramenta do próprio agente vem antes da whitelist de sistema: o
-        // admin nomeia as dele, e um nome que colida com `lembrar` seria
-        // confuso — a validação no create/update impede isso.
-        const propria = httpTools.find((t) => t.nome === call.name);
-        if (propria) {
-          const saida = await executarHttpTool(propria, call.arguments);
-          messages.push({ role: 'tool', content: saida, toolCallId: call.id });
-          continue;
-        }
-
-        // AGENDA. Só existe se a habilidade está ligada — e a resposta é
-        // sempre uma frase, inclusive nas recusas, porque é o que o modelo
-        // vai repassar ao lead.
-        if (agenda && catalogoDeAgenda && ehFerramentaDeAgenda(call.name)) {
-          let saida: string;
-          try {
-            saida = await executarFerramentaDeAgenda(
-              call.name,
-              call.arguments,
-              {
-                accountId: input.accountId,
-                contactId: input.contactId ?? null,
-                conversationId: input.conversationId ?? null,
-                shadow: input.shadow === true,
-                efeitos,
-              },
-              agenda,
-              catalogoDeAgenda
-            );
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            logger.warn('[ai-agent] ferramenta de agenda falhou', { agentId: agent.id, tool: call.name, error: msg });
-            saida = `Não consegui agora (${msg}). Não diga ao lead que está feito; peça um instante e tente de novo.`;
-          }
-          messages.push({ role: 'tool', content: saida, toolCallId: call.id });
-          continue;
-        }
-
-        const tool = AVAILABLE_TOOLS[call.name];
-        let output: string;
-        if (!tool) {
-          output = `Ferramenta "${call.name}" não está disponível.`;
-        } else {
-          try {
-            output = await tool.execute(call.arguments, {
-              accountId: input.accountId,
-              agent,
-              contactId: input.contactId,
-              // Campo de escopo `sessao` grava na CONVERSA — sem o id dela a
-              // ferramenta não teria onde pôr.
-              conversationId: input.conversationId,
-              camposDeMemoria,
-            });
-          } catch (err) {
-            output = `Erro ao executar: ${err instanceof Error ? err.message : String(err)}`;
-          }
-        }
-        messages.push({ role: 'tool', content: output, toolCallId: call.id });
+        allToolCalls.push(call);
+        const saida = await executarChamada(call);
+        execucoes.push({ id: call.id, nome: call.name, argumentos: call.arguments ?? {}, resultado: saida });
+        messages.push({ role: 'tool', content: saida, toolCallId: call.id });
+        if (contaNoTeto(call)) contadas++;
       }
 
-      res = await callModel();
+      // O prazo acabou durante a rodada: esta ida ao modelo já é a final, sem ferramentas.
+      res = await callModel({ semFerramentas: prazoEstourou() });
     }
 
     // Sem schema: o texto é a resposta.
@@ -726,6 +882,7 @@ class AiAgentService {
         efeitos,
         structured: null,
         toolCalls: allToolCalls,
+        execucoesDeFerramentas: execucoes,
         hits,
         usage: usageTotal,
         model: res.model,
@@ -772,6 +929,7 @@ class AiAgentService {
       efeitos,
       structured: parsed as Record<string, unknown>,
       toolCalls: allToolCalls,
+      execucoesDeFerramentas: execucoes,
       hits,
       usage: usageTotal,
       model: res.model,
@@ -802,6 +960,11 @@ class AiAgentService {
       /** O histórico que o coordenador já carregou. Evita a releitura. */
       history?: ChatMessage[];
       depth: number;
+      /** Sombra: o especialista herda o modo e a chave do calendário fingido do coordenador. */
+      shadow?: boolean;
+      chaveDeSombra?: string | null;
+      /** O prazo do turno do coordenador. */
+      prazoEm?: number;
     }
   ): Promise<string> {
     const nome = typeof args.especialista === 'string' ? args.especialista : '';
@@ -832,6 +995,9 @@ class AiAgentService {
         // o coordenador acabou de ler.
         preloadedHistory: ctx.history,
         depth: ctx.depth,
+        shadow: ctx.shadow === true,
+        chaveDeSombra: ctx.chaveDeSombra ?? null,
+        prazoEm: ctx.prazoEm,
       });
       logger.info('[ai-agent] especialista consultado', {
         especialista: alvo.name,
@@ -874,6 +1040,8 @@ class AiAgentService {
     agent: AiAgent;
     /** Data e hora de agora, por extenso, no fuso da conta. */
     agora?: string;
+    /** A reserva em aberto desta conversa, já em frase. Entra no bloco AGORA. */
+    reservaPendente?: string | null;
     hits: SearchHit[];
     /** Campos declarados deste agente. Vazio = prompt igual ao de antes. */
     camposDeMemoria?: CampoDeMemoria[];
@@ -930,7 +1098,10 @@ class AiAgentService {
     if (p.agora) {
       blocos.push(
         `AGORA\n\nHoje é ${p.agora}. Toda referência a dia ou hora ("amanhã", "sexta", ` +
-          '"semana que vem") parte daqui. Nunca invente data: se precisar de horário, consulte a agenda.'
+          '"semana que vem") parte daqui. Nunca invente data: se precisar de horário, consulte a agenda.' +
+          // A reserva fica DENTRO do bloco AGORA: é estado do momento, e é
+          // aqui que o modelo olha quando o lead diz "sim".
+          (p.reservaPendente ? `\n\n${p.reservaPendente}` : '')
       );
     }
 
@@ -1270,6 +1441,27 @@ function formatContatoBlock(c: ContatoResumo | null | undefined): string {
       ? 'Já conversamos antes: receba como quem volta, não como desconhecido, e não peça de novo o que está aqui.'
       : 'Não pergunte o que já está aqui.';
   return `QUEM É ESTA PESSOA\n${instrucao}\n\n${linhas.join('\n')}`;
+}
+
+/**
+ * A reserva pendente como o modelo a lê no bloco AGORA. Viva: "se confirmar,
+ * agende". Vencida: ainda vale tentar — `agendar` reconfere o horário.
+ */
+export function formatReservaPendente(r: ReservaPendente, tz: string): string {
+  const hora = formatInTimeZone(r.expiraEm, tz, 'HH:mm');
+  const quem = `${r.rotulo} com ${r.profissional} (${r.servico})`;
+  if (r.vencida) {
+    return (
+      `RESERVA PENDENTE: havia uma reserva de ${quem} que venceu às ${hora}. ` +
+      'Se o lead confirmar esse horário, chame agendar mesmo assim (sem id): o horário é reconferido na hora. ' +
+      'Se ele quiser outro, consulte e reserve de novo.'
+    );
+  }
+  return (
+    `RESERVA PENDENTE nesta conversa: ${quem}, segura até às ${hora}. ` +
+    'Se o lead confirmar, chame agendar (sem id) — não pergunte de novo qual horário. ' +
+    'Se ele quiser outro horário, consulte e reserve de novo.'
+  );
 }
 
 /** As etapas do funil como o modelo deve escrevê-las: pelo slug, na ordem. */

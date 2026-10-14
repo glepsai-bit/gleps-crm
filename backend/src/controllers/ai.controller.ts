@@ -26,6 +26,8 @@ const agentCreateSchema = z.object({
   provider: z.enum(PROVIDERS).optional(),
   model: z.string().max(80).optional().nullable(),
   temperature: z.number().min(0).max(2).optional(),
+  // ETAPA G — esforço de raciocínio (gpt-5*, o1*, o3*, o4*). null = padrão.
+  raciocinio: z.enum(['minimal', 'low', 'medium', 'high']).optional().nullable(),
   maxTokens: z.number().int().min(64).max(32_000).optional(),
   historyLimit: z.number().int().min(0).max(60).optional(),
   knowledgeBaseId: z.string().uuid().optional().nullable(),

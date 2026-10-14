@@ -46,6 +46,10 @@ export interface ChatMessage {
   toolCallId?: string;
 }
 
+/** Esforço de raciocínio dos modelos que raciocinam (gpt-5*, o1*, o3*, o4*). */
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
+export const REASONING_EFFORTS: readonly ReasoningEffort[] = ['minimal', 'low', 'medium', 'high'];
+
 export interface ChatRequest {
   accountId: string;
   provider: AiProviderName;
@@ -57,6 +61,18 @@ export interface ChatRequest {
   jsonSchema?: { name: string; schema: Record<string, unknown> };
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Só vale pros modelos de raciocínio (ver `ehModeloDeRaciocinio`). Pros
+   * outros é ignorado em silêncio — mandar `reasoning_effort` pro gpt-4.1 é
+   * 400 na OpenAI.
+   */
+  reasoningEffort?: ReasoningEffort | null;
+  /**
+   * 'none' = as ferramentas continuam declaradas (o histórico tem tool_use,
+   * e a Anthropic exige a definição), mas o modelo NÃO pode chamá-las: é a
+   * rodada final quando o teto de ferramentas estourou.
+   */
+  toolChoice?: 'auto' | 'none';
   timeoutMs?: number;
 }
 
@@ -83,21 +99,38 @@ export interface ChatResult {
 // Só entram modelos com preço confirmado. Modelo fora da tabela devolve
 // priced:false em vez de um número inventado — custo estimado errado é pior
 // que custo ausente, porque vira teto de gasto e cobrança pro cliente.
-const PRICING: Record<string, { input: number; output: number }> = {
+export const PRICING: Record<string, { input: number; output: number }> = {
   // Anthropic
   'claude-opus-5': { input: 5, output: 25 },
   'claude-opus-4-8': { input: 5, output: 25 },
   'claude-sonnet-5': { input: 3, output: 15 },
   'claude-haiku-4-5': { input: 1, output: 5 },
-  // OpenAI
+  // OpenAI — preços públicos (USD por 1M tokens) da tabela da OpenAI.
   'gpt-4o-mini': { input: 0.15, output: 0.6 },
+  'gpt-4o': { input: 2.5, output: 10 },
+  'gpt-4.1': { input: 2, output: 8 },
+  'gpt-4.1-mini': { input: 0.4, output: 1.6 },
+  'gpt-4.1-nano': { input: 0.1, output: 0.4 },
+  'gpt-5': { input: 1.25, output: 10 },
+  'gpt-5-mini': { input: 0.25, output: 2 },
+  'gpt-5-nano': { input: 0.05, output: 0.4 },
+  'o4-mini': { input: 1.1, output: 4.4 },
 };
 
-/** Casa 'claude-haiku-4-5-20251001' com a entrada 'claude-haiku-4-5'. */
-function priceFor(model: string): { input: number; output: number } | null {
+/** O que pode vir depois do nome na tabela: só o carimbo de versão ('-20251001', '-2025-04-14', '-latest'). */
+const SUFIXO_DE_VERSAO = /^-(latest|\d{8}|\d{4}-\d{2}-\d{2})$/;
+
+/**
+ * Casa 'claude-haiku-4-5-20251001' com a entrada 'claude-haiku-4-5' — e
+ * 'gpt-4.1-mini-2025-04-14' com 'gpt-4.1-mini', NÃO com 'gpt-4.1' (o mini seria
+ * cobrado como o grande, 5x). O prefixo só vale com FRONTEIRA: o resto do nome
+ * tem de ser um carimbo de versão. 'gpt-5.1-mini' ou 'gpt-5-pro' NÃO são o
+ * 'gpt-5' — têm outro preço, e sem entrada na tabela voltam null (priced:false).
+ */
+export function priceFor(model: string): { input: number; output: number } | null {
   if (PRICING[model]) return PRICING[model];
-  const prefix = Object.keys(PRICING).find((k) => model.startsWith(k));
-  return prefix ? PRICING[prefix] : null;
+  const chave = Object.keys(PRICING).find((k) => model.startsWith(k) && SUFIXO_DE_VERSAO.test(model.slice(k.length)));
+  return chave ? PRICING[chave] : null;
 }
 
 function estimateCost(model: string, inputTokens: number, outputTokens: number): ChatUsage {
@@ -132,7 +165,41 @@ const NO_SAMPLING_PREFIXES = [
   'claude-mythos-5',
 ];
 
+/**
+ * Modelos de RACIOCÍNIO da OpenAI: TODO gpt-5* (gpt-5, 5-mini, 5.1, 5.2, 5.4-mini…) e a série
+ * o1..o9. Têm três diferenças de contrato, e cada uma é 400 se ignorada: `max_tokens` virou
+ * `max_completion_tokens`, `temperature` não existe, e `reasoning_effort` passa a ser aceito
+ * (menos no `-chat`, ver `esforcoDeRaciocinio`). O piloto com gpt-5 quebrava exatamente aqui.
+ */
+const MODELO_DE_RACIOCINIO = /^(gpt-5|o[1-9])/;
+
+export function ehModeloDeRaciocinio(model: string): boolean {
+  return MODELO_DE_RACIOCINIO.test(model.trim().toLowerCase());
+}
+
+/**
+ * O `reasoning_effort` que o modelo aceita, ou undefined (não manda o campo).
+ * Os `-chat` (gpt-5-chat-latest) não raciocinam e recusam o campo. 'minimal' só existe no gpt-5
+ * original: o 5.1+ e a série o* devolvem 400 — 'low' é o mais perto.
+ */
+function esforcoDeRaciocinio(model: string, pedido: ReasoningEffort | null | undefined): ReasoningEffort | undefined {
+  const m = model.trim().toLowerCase();
+  if (!pedido || m.includes('-chat')) return undefined;
+  if (pedido === 'minimal' && !/^gpt-5(?!\.)/.test(m)) return 'low';
+  return pedido;
+}
+
+/**
+ * Teto de `max_completion_tokens` nos modelos de raciocínio: o orçamento inclui os tokens de
+ * PENSAR, que o lead nunca vê. O limite do agente (1024) é o da RESPOSTA — então vai 4x, com piso
+ * de 8192; com 2048 o gpt-5 ainda gastava tudo pensando e devolvia `finish_reason: length` com
+ * texto vazio.
+ */
+const PISO_COMPLETION_RACIOCINIO = 8192;
+const FATOR_COMPLETION_RACIOCINIO = 4;
+
 export function acceptsTemperature(model: string): boolean {
+  if (ehModeloDeRaciocinio(model)) return false;
   return !NO_SAMPLING_PREFIXES.some((p) => model.startsWith(p));
 }
 
@@ -181,17 +248,26 @@ async function chatOpenAI(
     }
   }
 
-  const body: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
-    model,
-    messages,
-    max_tokens: req.maxTokens ?? 1024,
-  };
-  if (req.temperature !== undefined) body.temperature = req.temperature;
+  const body: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = { model, messages };
+  const raciocina = ehModeloDeRaciocinio(model);
+  if (raciocina) {
+    body.max_completion_tokens = Math.max(
+      (req.maxTokens ?? 1024) * FATOR_COMPLETION_RACIOCINIO,
+      PISO_COMPLETION_RACIOCINIO
+    );
+    const esforco = esforcoDeRaciocinio(model, req.reasoningEffort);
+    if (esforco) body.reasoning_effort = esforco;
+    // temperature NÃO vai: o modelo rejeita a requisição inteira.
+  } else {
+    body.max_tokens = req.maxTokens ?? 1024;
+    if (req.temperature !== undefined) body.temperature = req.temperature;
+  }
   if (req.tools?.length) {
     body.tools = req.tools.map((t) => ({
       type: 'function' as const,
       function: { name: t.name, description: t.description, parameters: t.parameters },
     }));
+    if (req.toolChoice === 'none') body.tool_choice = 'none';
   }
   if (req.jsonSchema) {
     body.response_format = {
@@ -206,8 +282,29 @@ async function chatOpenAI(
     };
   }
 
-  const res = await client.chat.completions.create(body);
-  const choice = res.choices[0];
+  let res = await client.chat.completions.create(body);
+  let choice = res.choices[0];
+  let tokensDeEntrada = res.usage?.prompt_tokens ?? 0;
+  let tokensDeSaida = res.usage?.completion_tokens ?? 0;
+
+  // O raciocínio comeu o orçamento todo e não sobrou resposta (`length` com texto vazio): UMA nova
+  // tentativa, pensando pouco e com o dobro de espaço. O que a primeira gastou é custo de verdade.
+  if (raciocina && choice?.finish_reason === 'length' && !(choice.message?.content ?? '').trim()) {
+    logger.warn('[ai/chat] raciocínio esgotou o limite sem resposta — repetindo uma vez com esforço baixo', {
+      model,
+      limite: body.max_completion_tokens,
+    });
+    const segunda: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+      ...body,
+      max_completion_tokens: (body.max_completion_tokens ?? PISO_COMPLETION_RACIOCINIO) * 2,
+    };
+    const esforcoBaixo = esforcoDeRaciocinio(model, 'low');
+    if (esforcoBaixo) segunda.reasoning_effort = esforcoBaixo;
+    res = await client.chat.completions.create(segunda);
+    choice = res.choices[0];
+    tokensDeEntrada += res.usage?.prompt_tokens ?? 0;
+    tokensDeSaida += res.usage?.completion_tokens ?? 0;
+  }
   const rawCalls = choice?.message?.tool_calls ?? [];
 
   return {
@@ -223,11 +320,7 @@ async function chatOpenAI(
       })),
     model: res.model || model,
     provider: 'openai',
-    usage: estimateCost(
-      res.model || model,
-      res.usage?.prompt_tokens ?? 0,
-      res.usage?.completion_tokens ?? 0
-    ),
+    usage: estimateCost(res.model || model, tokensDeEntrada, tokensDeSaida),
     finishReason: choice?.finish_reason ?? 'unknown',
   };
 }
@@ -293,6 +386,7 @@ async function chatAnthropic(
       description: t.description,
       input_schema: t.parameters as Anthropic.Tool.InputSchema,
     }));
+    if (req.toolChoice === 'none') body.tool_choice = { type: 'none' };
   }
   if (req.jsonSchema) {
     body.output_config = {

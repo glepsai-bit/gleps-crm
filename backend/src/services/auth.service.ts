@@ -128,6 +128,16 @@ class AuthService {
       }
     }
 
+    // ETAPA G (P0-7): senha igual ao e-mail é a primeira coisa que um
+    // atacante tenta. Não bloqueia (a troca é do usuário), mas fica no log
+    // para o operador cobrar.
+    if (password.trim().toLowerCase() === email.trim().toLowerCase()) {
+      logger.warn('[auth] senha igual ao e-mail — peça ao usuário para trocar a senha', {
+        userId: user.id,
+        accountId: user.accountId,
+      });
+    }
+
     // Generate tokens
     const { token, expiresAt } = this.generateAccessToken(user);
     const refreshToken = await this.generateRefreshToken(user.id);

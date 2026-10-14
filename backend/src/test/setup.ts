@@ -1,5 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { beforeEach, afterAll } from 'vitest';
+// Servidores HTTP dos testes (supertest) só em 127.0.0.1 — ver servidor-loopback.ts.
+import './servidor-loopback';
 
 /**
  * Prisma client dedicado ao DB de teste (gleps_crm_test).

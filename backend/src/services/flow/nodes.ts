@@ -190,11 +190,14 @@ const guardConditions: NodeDefinition = {
     // TETO DE TOQUES.
     // O quarto toque não converte — só marca o número como incômodo. O
     // contador vem do run (quantas vezes já acordou), não do grafo: o mesmo
-    // desenho serve pra três ou pra cinco toques.
+    // desenho serve pra três ou pra cinco toques. `__toque` já conta ESTE
+    // despertar (o run incrementa ao acordar: 1 no primeiro toque), então com
+    // teto N saem os toques 1..N e só o N+1 é barrado — com `>=` o último toque
+    // nunca saía, e com um toque só nenhum.
     const maxToques = num(c.maxToques, 0);
     if (maxToques > 0) {
       const toque = num(ctx.vars.__toque, 0);
-      if (toque >= maxToques) motivos.push(`teto_de_toques:${toque}`);
+      if (toque > maxToques) motivos.push(`teto_de_toques:${toque}`);
     }
 
     const bloqueadoras = Array.isArray(c.etiquetasBloqueio)
@@ -516,20 +519,33 @@ const aiAtender: NodeDefinition = {
       ? (c.rotasSempreHumano as string[]).map((x) => String(x).toLowerCase())
       : [];
     if (rota && sempreHumano.includes(rota.toLowerCase())) {
-      const aviso = str(c.mensagemAoTransferir).trim();
-      if (aviso) await enviar(ctx, aviso);
+      // Interpolada como o "Responder no WhatsApp" fazia ({{memoria.nome}} etc.): a frase
+      // fixa do spec é texto do operador e pode levar variável.
+      const aviso = interpolate(str(c.mensagemAoTransferir), ctx.vars).trim();
+      // ETAPA G — `enviarTextoAoTransferir`: o texto que o agente escreveu
+      // vai ANTES da transferência ("isso é urgência, procure o pronto
+      // atendimento; estou te passando pra equipe"). Desligado (padrão),
+      // vale a regra de sempre: o texto é descartado e só o aviso fixo sai.
+      // Ligado, o aviso fixo só sai quando o agente não escreveu nada — o
+      // lead não recebe duas despedidas.
+      const textoDoAgenteEnviado = bool(c.enviarTextoAoTransferir, false) && resposta.length > 0;
+      const textoEnviado = textoDoAgenteEnviado ? resposta : aviso;
+      if (textoEnviado) await enviar(ctx, textoEnviado);
       return {
         branch: 'humano',
-        vars,
+        // Quem vem depois (o bloco "Avisar o lead" do template) lê daqui se
+        // o lead já foi avisado pelo próprio agente.
+        vars: { ...vars, transferencia: { textoDoAgenteEnviado } },
         output: {
           rota,
           motivo: 'assunto_sempre_humano',
-          // `texto` é o que o lead REALMENTE recebeu — aqui, o aviso de
-          // transferência, não o que a IA escreveu. É por esta chave que o
+          // `texto` é o que o lead REALMENTE recebeu — o texto do agente (se
+          // ligado) ou o aviso de transferência. É por esta chave que o
           // simulador descobre o que foi dito; sem ela o lead recebia o aviso
           // e a tela de teste não mostrava nada.
-          texto: aviso || null,
-          respostaDescartada: resposta.slice(0, 200),
+          texto: textoEnviado || null,
+          textoDoAgenteEnviado,
+          ...(textoDoAgenteEnviado ? {} : { respostaDescartada: resposta.slice(0, 200) }),
           custoUsd: Number(r.usage.usdEstimate.toFixed(6)),
         },
       };
@@ -810,6 +826,14 @@ const chatReply: NodeDefinition = {
   mutates: true,
   async execute(node, ctx) {
     const c = cfg(node);
+    // ETAPA G — `soSeAgenteNaoFalou`: o aviso fixo de transferência só sai
+    // quando o bloco "Atender com IA" NÃO mandou o texto do próprio agente
+    // (ver `enviarTextoAoTransferir`). Sem isto o lead recebia a orientação
+    // do agente E a frase fixa, uma atrás da outra.
+    if (bool(c.soSeAgenteNaoFalou, false)) {
+      const t = ctx.vars.transferencia as { textoDoAgenteEnviado?: boolean } | undefined;
+      if (t?.textoDoAgenteEnviado === true) return { output: { pulado: 'agente_ja_avisou' } };
+    }
     const texto = interpolate(str(c.texto, '{{agente.mensagem_de_resposta}}'), ctx.vars).trim();
     if (!texto) return { output: { pulado: 'resposta_vazia' } };
 
@@ -843,6 +867,26 @@ const chatReply: NodeDefinition = {
   },
 };
 
+/**
+ * Já tem humano na conversa? Atendente atribuído, ou atividade humana recente
+ * (`human_active_at`, na mesma janela de 30 min da guarda de entrada).
+ */
+async function humanoJaTemAConversa(ctx: NodeContext): Promise<{ assigneeId: string | null } | null> {
+  const atual = await prisma.conversation.findFirst({
+    where: { id: ctx.conversationId, accountId: ctx.accountId },
+    select: { assigneeId: true, customAttributes: true },
+  });
+  if (!atual) return null;
+  if (atual.assigneeId) return { assigneeId: atual.assigneeId };
+  const attrs = (atual.customAttributes ?? {}) as Record<string, unknown>;
+  const humanAt = attrs.human_active_at ?? attrs.humanActiveAt;
+  if (typeof humanAt === 'string') {
+    const idadeMs = Date.now() - new Date(humanAt).getTime();
+    if (Number.isFinite(idadeMs) && idadeMs < 30 * 60_000) return { assigneeId: null };
+  }
+  return null;
+}
+
 const chatAssignHuman: NodeDefinition = {
   type: 'chat.assign_human',
   label: 'Transferir para humano',
@@ -856,6 +900,20 @@ const chatAssignHuman: NodeDefinition = {
   mutates: true,
   async execute(node, ctx) {
     const teamId = str(cfg(node).teamId).trim() || null;
+
+    // UM HUMANO PODE TER ASSUMIDO DURANTE O TURNO (o agrupamento e o agente levam
+    // segundos). Atribuir por cima o tiraria da conversa — o bloco "Avisar o lead",
+    // que já conferia isso antes de falar, saiu do desenho. A etapa (aplicada antes
+    // deste bloco) fica registrada; a conversa continua com quem já está nela.
+    if (!ctx.shadow) {
+      const humano = await humanoJaTemAConversa(ctx);
+      if (humano) {
+        return {
+          output: { transferido: false, motivo: 'humano_ja_assumiu', atendenteId: humano.assigneeId },
+        };
+      }
+    }
+
     const disponiveis = await agentAvailabilityService.listOnline(ctx.accountId);
 
     // ---- SEM TIME: o comportamento de sempre ----
@@ -1171,15 +1229,19 @@ const flowAguardar: NodeDefinition = {
       };
     }
 
+    // Dispersão: sem isto, 200 follow-ups saem às 09:00:00 em ponto — que é
+    // exatamente o padrão que marca o número como robô. Entra ANTES de
+    // encaixar na janela: somada depois, empurrava um toque marcado para o
+    // último minuto do expediente para fora dele, e a guarda o descartava.
+    // (O encaixe anda de 30 em 30 min a partir de `quando`, então a dispersão
+    // sobrevive a ele.)
+    const jitterMs = Math.floor(Math.random() * num(c.dispersaoMinutos, 12) * 60_000);
+    quando = new Date(quando.getTime() + jitterMs);
+
     const horario = c.horarioComercial as JanelaComercial | undefined;
     if (horario?.inicio && horario?.fim) {
       quando = proximaJanelaUtil(quando, horario);
     }
-
-    // Dispersão: sem isto, 200 follow-ups saem às 09:00:00 em ponto — que é
-    // exatamente o padrão que marca o número como robô.
-    const jitterMs = Math.floor(Math.random() * num(c.dispersaoMinutos, 12) * 60_000);
-    quando = new Date(quando.getTime() + jitterMs);
 
     return {
       sleep: { until: quando },
