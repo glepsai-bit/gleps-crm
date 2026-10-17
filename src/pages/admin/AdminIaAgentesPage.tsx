@@ -55,6 +55,8 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { SeletorDeModelo, SeletorDeRaciocinio } from '@/components/ia/SeletorDeModelo';
+import { ehModeloDeRaciocinio, raciocinioParaSalvar } from '@/config/modelosIa';
 import { useToast } from '@/hooks/use-toast';
 import {
   Plus,
@@ -79,18 +81,6 @@ const NO_TEMPERATURE_PREFIXES = [
   'claude-fable-5',
 ];
 
-const MODEL_SUGGESTIONS: Record<AiProviderName, { value: string; label: string }[]> = {
-  openai: [
-    { value: 'gpt-4o-mini', label: 'gpt-4o-mini — rápido e barato (padrão)' },
-    { value: 'gpt-4o', label: 'gpt-4o — mais capaz' },
-  ],
-  anthropic: [
-    { value: 'claude-haiku-4-5', label: 'claude-haiku-4-5 — rápido e barato (padrão)' },
-    { value: 'claude-sonnet-5', label: 'claude-sonnet-5 — equilíbrio' },
-    { value: 'claude-opus-5', label: 'claude-opus-5 — mais capaz' },
-  ],
-};
-
 const ROLE_LABEL: Record<string, string> = {
   responder: 'Responde ao lead',
   classifier: 'Classifica (não responde)',
@@ -104,6 +94,7 @@ const EMPTY_FORM: AiAgentInput & { name: string; systemPrompt: string } = {
   systemPrompt: '',
   provider: 'openai',
   model: '',
+  raciocinio: null,
   temperature: 0.7,
   maxTokens: 1024,
   historyLimit: 20,
@@ -180,6 +171,7 @@ export default function AdminIaAgentesPage() {
       systemPrompt: agent.systemPrompt,
       provider: agent.provider,
       model: agent.model ?? '',
+      raciocinio: agent.raciocinio ?? null,
       temperature: Number(agent.temperature),
       maxTokens: agent.maxTokens,
       historyLimit: agent.historyLimit,
@@ -217,6 +209,7 @@ export default function AdminIaAgentesPage() {
     saveMutation.mutate({
       ...form,
       model: form.model?.trim() || null,
+      raciocinio: raciocinioParaSalvar(form.model, form.raciocinio),
       description: form.description?.trim() || null,
       outputSchema,
     });
@@ -436,25 +429,23 @@ export default function AdminIaAgentesPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="ag-modelo">Modelo</Label>
-                <Select
-                  value={form.model || '__default__'}
-                  onValueChange={(v) => setForm({ ...form, model: v === '__default__' ? '' : v })}
-                >
-                  <SelectTrigger id="ag-modelo">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default__">Padrão do provedor</SelectItem>
-                    {MODEL_SUGGESTIONS[form.provider ?? 'openai'].map((m) => (
-                      <SelectItem key={m.value} value={m.value}>
-                        {m.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {/* A `key` recomeça o "Outro modelo…" quando muda o agente ou o provedor. */}
+              <SeletorDeModelo
+                key={`${editing?.id ?? 'novo'}-${form.provider}`}
+                idBase="ag"
+                provider={form.provider ?? 'openai'}
+                model={form.model ?? ''}
+                onChange={(model) => setForm({ ...form, model })}
+              />
+              {ehModeloDeRaciocinio(form.model) && (
+                <div className="sm:col-span-2">
+                  <SeletorDeRaciocinio
+                    id="ag-raciocinio"
+                    valor={form.raciocinio}
+                    onChange={(raciocinio) => setForm({ ...form, raciocinio })}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="grid gap-4 sm:grid-cols-3">

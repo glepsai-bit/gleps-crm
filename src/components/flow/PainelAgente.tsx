@@ -35,8 +35,11 @@ import {
   type AiAgentAgenda,
   type AiAgentInput,
   type AiProviderName,
+  type NivelDeRaciocinio,
 } from '@/services/ai.backend.service';
 import { agendaBackendService } from '@/services/agenda.backend.service';
+import { ehModeloDeRaciocinio, raciocinioParaSalvar } from '@/config/modelosIa';
+import { SeletorDeModelo, SeletorDeRaciocinio } from '@/components/ia/SeletorDeModelo';
 import { useEtapasDoFunil, useTimesDaConta } from './CamposDoNo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -130,18 +133,6 @@ const SEM_TEMPERATURA = [
   'claude-fable-5',
 ];
 
-const MODELOS: Record<AiProviderName, { value: string; label: string }[]> = {
-  openai: [
-    { value: 'gpt-4o-mini', label: 'gpt-4o-mini — rápido e barato' },
-    { value: 'gpt-4o', label: 'gpt-4o — mais capaz' },
-  ],
-  anthropic: [
-    { value: 'claude-haiku-4-5', label: 'claude-haiku-4-5 — rápido e barato' },
-    { value: 'claude-sonnet-5', label: 'claude-sonnet-5 — equilíbrio' },
-    { value: 'claude-opus-5', label: 'claude-opus-5 — mais capaz' },
-  ],
-};
-
 type CampoNumerico = 'temperature' | 'maxTokens' | 'historyLimit';
 
 /**
@@ -164,6 +155,12 @@ interface Rascunho {
   systemPrompt: string;
   provider: AiProviderName;
   model: string;
+  /**
+   * Fica guardado mesmo com um modelo que não raciocina (a tela só o esconde):
+   * ir e voltar de gpt-5 para gpt-4.1 não perde o nível. Vai `null` ao backend
+   * quando o modelo não raciocina — ver `raciocinioParaSalvar`.
+   */
+  raciocinio: NivelDeRaciocinio | null;
   /**
    * Os três numéricos ficam como TEXTO: apagar "1024" pra digitar "2048" passa
    * por um instante vazio, e `Number('')` é 0 — o campo travava no zero.
@@ -191,6 +188,7 @@ const RASCUNHO_VAZIO: Rascunho = {
   systemPrompt: '',
   provider: 'openai',
   model: '',
+  raciocinio: null,
   temperature: FAIXAS.temperature.padrao,
   maxTokens: FAIXAS.maxTokens.padrao,
   historyLimit: FAIXAS.historyLimit.padrao,
@@ -470,6 +468,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
       systemPrompt: agente.systemPrompt,
       provider: agente.provider,
       model: agente.model ?? '',
+      raciocinio: agente.raciocinio ?? null,
       temperature: textoDeNumero(agente.temperature, FAIXAS.temperature.padrao),
       maxTokens: textoDeNumero(agente.maxTokens, FAIXAS.maxTokens.padrao),
       historyLimit: textoDeNumero(agente.historyLimit, FAIXAS.historyLimit.padrao),
@@ -620,6 +619,7 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
         systemPrompt: rascunho.systemPrompt,
         provider: rascunho.provider,
         model: rascunho.model.trim() || null,
+        raciocinio: raciocinioParaSalvar(rascunho.model, rascunho.raciocinio),
         temperature: numeros.temperature,
         maxTokens: numeros.maxTokens,
         historyLimit: numeros.historyLimit,
@@ -952,7 +952,8 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
 
               <Separator />
 
-              <div className="grid grid-cols-2 gap-2">
+              {/* Empilhados: numa meia coluna de 340px o "nome — uso" do modelo não cabe no gatilho. */}
+              <div className="space-y-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="pa-provedor" className="text-xs">
                     Provedor
@@ -977,27 +978,23 @@ export function PainelAgente({ agentId, onEscolher, onFechar }: Props) {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="pa-modelo" className="text-xs">
-                    Modelo
-                  </Label>
-                  <Select
-                    value={rascunho.model || '__padrao__'}
-                    onValueChange={(v) => editar({ model: v === '__padrao__' ? '' : v })}
-                  >
-                    <SelectTrigger id="pa-modelo" className="h-9">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__padrao__">Padrão do provedor</SelectItem>
-                      {MODELOS[rascunho.provider].map((m) => (
-                        <SelectItem key={m.value} value={m.value}>
-                          {m.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                {/* A `key` recomeça o "Outro modelo…" quando muda o agente ou o provedor. */}
+                <SeletorDeModelo
+                  key={`${criando ? 'novo' : (agentId ?? 'sem-agente')}-${rascunho.provider}`}
+                  idBase="pa"
+                  compacto
+                  provider={rascunho.provider}
+                  model={rascunho.model}
+                  onChange={(model) => editar({ model })}
+                />
+                {ehModeloDeRaciocinio(rascunho.model) && (
+                  <SeletorDeRaciocinio
+                    id="pa-raciocinio"
+                    compacto
+                    valor={rascunho.raciocinio}
+                    onChange={(raciocinio) => editar({ raciocinio })}
+                  />
+                )}
               </div>
 
               <div className="grid grid-cols-3 gap-2">

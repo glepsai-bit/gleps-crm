@@ -10,6 +10,11 @@ interface DataEnvelope<T> {
 }
 
 export type AiProviderName = 'openai' | 'anthropic';
+/**
+ * Quanto o modelo "pensa" antes de responder. Só vale nos modelos de raciocínio
+ * (gpt-5*, o1..o9); nos outros o agente grava `null`.
+ */
+export type NivelDeRaciocinio = 'minimal' | 'low' | 'medium' | 'high';
 export type AiAgentRole = 'classifier' | 'responder' | 'custom';
 export type KnowledgeDocStatus = 'pending' | 'indexing' | 'ready' | 'failed';
 
@@ -41,6 +46,8 @@ export interface AiAgent {
   systemPrompt: string;
   provider: AiProviderName;
   model: string | null;
+  /** Opcional no tipo: um backend anterior à coluna não devolve o campo. */
+  raciocinio?: NivelDeRaciocinio | null;
   temperature: string | number;
   maxTokens: number;
   historyLimit: number;
@@ -63,6 +70,7 @@ export interface AiAgentInput {
   systemPrompt?: string;
   provider?: AiProviderName;
   model?: string | null;
+  raciocinio?: NivelDeRaciocinio | null;
   temperature?: number;
   maxTokens?: number;
   historyLimit?: number;

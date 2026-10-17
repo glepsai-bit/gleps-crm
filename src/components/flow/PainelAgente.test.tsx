@@ -15,7 +15,7 @@
  * nenhuma; o "quando usar" de cada rota vai na descrição que o modelo lê; e a
  * memória virou nativa — `lembrar` deixou de ser um toggle.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PainelAgente } from './PainelAgente';
@@ -265,6 +265,20 @@ async function salvar() {
   fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
   await waitFor(() => expect(servico.updateAgent).toHaveBeenCalled());
 }
+
+// O Select do Radix, aberto em jsdom, precisa de três coisas que o jsdom não
+// tem (scrollIntoView, pointer capture e ResizeObserver) — mesmas do CamposDoNo.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.hasPointerCapture = vi.fn(() => false);
+  Element.prototype.releasePointerCapture = vi.fn();
+  class ResizeObserverFalso {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  Object.defineProperty(window, 'ResizeObserver', { writable: true, value: ResizeObserverFalso });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -868,5 +882,198 @@ describe('Agenda — habilidade do agente', () => {
 
     fireEvent.click(screen.getByRole('switch', { name: 'Este agente pode marcar horários' }));
     expect(screen.getByTitle('agendou')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Modelo e raciocínio — a lista de modelos saiu da tela e foi para o catálogo
+ * único (`@/config/modelosIa`). Aqui se trava o que o admin enxerga e o que
+ * sai para a API; a regra pura (quem raciocina, quanto custa) tem teste próprio.
+ */
+describe('modelo e raciocínio', () => {
+  const gatilho = (nome: string) => screen.getByRole('combobox', { name: nome });
+
+  /** Abre o Select pelo nome acessível do gatilho e escolhe a opção. */
+  async function escolherNoSelect(nomeDoSelect: string, opcao: string | RegExp) {
+    fireEvent.click(gatilho(nomeDoSelect));
+    fireEvent.click(await screen.findByRole('option', { name: opcao }));
+  }
+
+  it('o Select oferece o catálogo, "nome — uso", e o padrão do provedor com o id real', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    fireEvent.click(gatilho('Modelo'));
+    const opcoes = (await screen.findAllByRole('option')).map((o) => o.textContent);
+
+    expect(opcoes).toEqual([
+      'Padrão do provedor (gpt-4o-mini)',
+      'gpt-4.1 — recomendado para venda',
+      'gpt-5-mini — custo-benefício, raciocínio',
+      'gpt-5 — máxima qualidade, raciocínio',
+      'gpt-4.1-mini — rápido',
+      'gpt-5-nano — mais barato com raciocínio',
+      'gpt-4o-mini — mais barato, fraco para venda',
+      'gpt-4o',
+      'o4-mini — raciocínio',
+      'Outro modelo…',
+    ]);
+  });
+
+  it('mostra o preço do modelo escolhido; no padrão do provedor, o do modelo que vai rodar', async () => {
+    renderPainel();
+    await esperarFormulario();
+    // O agente do teste usa gpt-4o-mini.
+    expect(screen.getByText('US$ 0,15 entrada / 0,60 saída por 1M tokens')).toBeInTheDocument();
+
+    await escolherNoSelect('Modelo', 'gpt-4.1 — recomendado para venda');
+    expect(screen.getByText('US$ 2,00 entrada / 8,00 saída por 1M tokens')).toBeInTheDocument();
+
+    await escolherNoSelect('Modelo', 'Padrão do provedor (gpt-4o-mini)');
+    expect(screen.getByText('US$ 0,15 entrada / 0,60 saída por 1M tokens')).toBeInTheDocument();
+  });
+
+  it('modelo sem preço (fora do catálogo) não mostra a linha de preço', async () => {
+    servico.listAgents.mockResolvedValue([agente({ model: 'gpt-5.1' })]);
+    renderPainel();
+    await esperarFormulario();
+
+    expect(gatilho('Modelo')).toHaveTextContent('Outro modelo…');
+    expect(screen.queryByText(/por 1M tokens/)).toBeNull();
+  });
+
+  it('escolher gpt-5-mini mostra o seletor de Raciocínio em Baixo e salva raciocinio: "low"', async () => {
+    renderPainel();
+    await esperarFormulario();
+    expect(screen.queryByRole('combobox', { name: 'Raciocínio' })).toBeNull();
+
+    await escolherNoSelect('Modelo', 'gpt-5-mini — custo-benefício, raciocínio');
+
+    expect(gatilho('Raciocínio')).toHaveTextContent('Baixo');
+    await salvar();
+
+    expect(ultimoUpdate()).toMatchObject({ model: 'gpt-5-mini', raciocinio: 'low' });
+  });
+
+  it('o nível escolhido vai no payload', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    await escolherNoSelect('Modelo', 'gpt-5 — máxima qualidade, raciocínio');
+    await escolherNoSelect('Raciocínio', 'Alto');
+    await salvar();
+
+    expect(ultimoUpdate()).toMatchObject({ model: 'gpt-5', raciocinio: 'high' });
+  });
+
+  it('modelo que não raciocina salva raciocinio: null; o nível escolhido sobrevive à ida e volta', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    await escolherNoSelect('Modelo', 'gpt-5 — máxima qualidade, raciocínio');
+    await escolherNoSelect('Raciocínio', 'Alto');
+
+    await escolherNoSelect('Modelo', 'gpt-4.1 — recomendado para venda');
+    expect(screen.queryByRole('combobox', { name: 'Raciocínio' })).toBeNull();
+
+    await escolherNoSelect('Modelo', 'gpt-5 — máxima qualidade, raciocínio');
+    expect(gatilho('Raciocínio')).toHaveTextContent('Alto');
+
+    await escolherNoSelect('Modelo', 'gpt-4.1 — recomendado para venda');
+    await salvar();
+
+    expect(ultimoUpdate()).toMatchObject({ model: 'gpt-4.1', raciocinio: null });
+  });
+
+  it('agente que já usa modelo de raciocínio abre com o nível gravado', async () => {
+    servico.listAgents.mockResolvedValue([agente({ model: 'gpt-5', raciocinio: 'high' })]);
+    renderPainel();
+    await esperarFormulario();
+
+    expect(gatilho('Raciocínio')).toHaveTextContent('Alto');
+    await salvar();
+
+    expect(ultimoUpdate()).toMatchObject({ model: 'gpt-5', raciocinio: 'high' });
+  });
+
+  it('"Padrão do provedor" salva model: null', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    await escolherNoSelect('Modelo', 'Padrão do provedor (gpt-4o-mini)');
+    await salvar();
+
+    expect(ultimoUpdate()).toMatchObject({ model: null, raciocinio: null });
+  });
+
+  it('agente com modelo fora do catálogo abre em "Outro modelo…" com o id preenchido', async () => {
+    servico.listAgents.mockResolvedValue([agente({ model: 'gpt-5.1', raciocinio: null })]);
+    renderPainel();
+    await esperarFormulario();
+
+    expect(gatilho('Modelo')).toHaveTextContent('Outro modelo…');
+    expect(screen.getByRole('textbox', { name: 'Id do modelo' })).toHaveValue('gpt-5.1');
+    // gpt-5.1 raciocina e o agente ainda não tinha nível: aparece o padrão, que é o que se salva.
+    expect(gatilho('Raciocínio')).toHaveTextContent('Baixo');
+
+    await salvar();
+
+    expect(ultimoUpdate()).toMatchObject({ model: 'gpt-5.1', raciocinio: 'low' });
+  });
+
+  it('"Outro modelo…" aceita o id digitado e não sai do modo quando o id passa por um do catálogo', async () => {
+    renderPainel();
+    await esperarFormulario();
+    expect(screen.queryByRole('textbox', { name: 'Id do modelo' })).toBeNull();
+
+    await escolherNoSelect('Modelo', 'Outro modelo…');
+    // Abre com o id que já estava, pronto para editar.
+    expect(screen.getByRole('textbox', { name: 'Id do modelo' })).toHaveValue('gpt-4o-mini');
+
+    // `gpt-5` existe no catálogo, mas é o caminho de `gpt-5.1`: o campo não pode sumir.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Id do modelo' }), { target: { value: 'gpt-5' } });
+    expect(screen.getByRole('textbox', { name: 'Id do modelo' })).toHaveValue('gpt-5');
+    expect(gatilho('Modelo')).toHaveTextContent('Outro modelo…');
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Id do modelo' }), {
+      target: { value: 'gpt-5.1-mini' },
+    });
+    expect(gatilho('Raciocínio')).toHaveTextContent('Baixo');
+    await salvar();
+
+    expect(ultimoUpdate()).toMatchObject({ model: 'gpt-5.1-mini', raciocinio: 'low' });
+  });
+
+  it('trocar para a Anthropic mostra o catálogo dela, o padrão com o id real e o preço', async () => {
+    renderPainel();
+    await esperarFormulario();
+
+    await escolherNoSelect('Provedor', 'Anthropic');
+
+    expect(gatilho('Modelo')).toHaveTextContent('Padrão do provedor (claude-haiku-4-5-20251001)');
+    expect(screen.getByText('US$ 1,00 entrada / 5,00 saída por 1M tokens')).toBeInTheDocument();
+
+    fireEvent.click(gatilho('Modelo'));
+    const opcoes = (await screen.findAllByRole('option')).map((o) => o.textContent);
+    expect(opcoes).toEqual([
+      'Padrão do provedor (claude-haiku-4-5-20251001)',
+      'claude-haiku-4-5 — rápido e barato',
+      'claude-sonnet-5 — equilíbrio',
+      'claude-opus-5 — mais capaz',
+      'Outro modelo…',
+    ]);
+  });
+
+  it('o 400 do backend (modelo que a chave não alcança) aparece no toast com a mensagem dele', async () => {
+    const mensagem = 'O modelo "gpt-9" não existe ou a chave desta conta não tem acesso a ele.';
+    servico.updateAgent.mockRejectedValue({ message: mensagem, status: 400 });
+    renderPainel();
+    await esperarFormulario();
+
+    await escolherNoSelect('Modelo', 'Outro modelo…');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Id do modelo' }), { target: { value: 'gpt-9' } });
+    await salvar();
+
+    await waitFor(() => expect(avisos.error).toHaveBeenCalledWith(mensagem));
   });
 });
